@@ -12,8 +12,7 @@ export type PageKey =
   | "operations"
   | "action-graph"
   | "ranking"
-  | "config"
-  | "logs";
+  | "config";
 
 export const PAGE_TITLES: Record<PageKey, string> = {
   dashboard: "DASHBOARD // OVERVIEW",
@@ -30,7 +29,6 @@ export const PAGE_TITLES: Record<PageKey, string> = {
   "action-graph": "ACTION GRAPH // SEQUENCE & DAG",
   ranking: "RANKING // EVOLUTION & AZ",
   config: "STRATEGY // CONFIG BUCKETS",
-  logs: "TERMINAL // LIVE LOGS",
 };
 
 export interface ResourceBundle {
@@ -189,6 +187,7 @@ export interface PlannedActionData {
   kind?: string;
   planet_id?: number;
   planet_coords?: string;
+  planet_name?: string;
   target_id?: number | null;
   target_name?: string;
   target_level?: number | null;
@@ -221,6 +220,7 @@ export interface StrategyConfigData {
   allow_multi_planet?: boolean;
   allow_fleetsave?: boolean;
   allow_galaxy_scan?: boolean;
+  galaxy_scan_block_other_actions?: boolean;
   allow_raids?: boolean;
   allow_pvp_in_az?: boolean;
   allow_colonize?: boolean;
@@ -236,6 +236,7 @@ export interface StrategyConfigData {
   fleet_save_fuel_reserve_spice?: number;
   action_batch_interval_seconds?: number;
   max_actions_per_hour?: number;
+  page_view_limit_per_minute?: number;
   hot_planet_solar_temp_threshold?: number;
   min_free_fields_warning?: number;
   min_colony_fields?: number;
@@ -367,6 +368,47 @@ export interface ConfigOptimizerResultData {
   limits?: Array<Record<string, any>>;
   planets?: ConfigOptimizerPlanetRecord[];
   [key: string]: any;
+}
+
+export interface YearlyShipsWeekPoint {
+  week: number;
+  year: number;
+  week_in_year: number;
+  ships_per_week: number;
+  resource_cap_per_week: number;
+  shipyard_cap_per_week: number;
+  bottleneck: string;
+  completion_pct: number;
+}
+
+export interface YearlyShipsSummaryRow {
+  year: number;
+  label: string;
+  start_ships_per_week: number;
+  avg_ships_per_week: number;
+  end_ships_per_week: number;
+  peak_ships_per_week: number;
+  delta_ships_per_week: number;
+  total_ships_produced: number;
+  cumulative_ships_produced: number;
+  bottleneck: string;
+  completion_pct: number;
+}
+
+export interface ConfigOptimizerYearlyProjection {
+  target_ship_key: string;
+  target_ship: string;
+  horizon_years: number;
+  total_weeks: number;
+  current_ships_per_week: number;
+  target_ships_per_week: number;
+  target_ships_per_month: number;
+  total_upgrade_levels: number;
+  weeks_to_90_pct?: number | null;
+  weeks_to_full_target?: number | null;
+  years_to_full_target?: number | null;
+  years: YearlyShipsSummaryRow[];
+  weeks: YearlyShipsWeekPoint[];
 }
 
 export interface ConfigOptimizerGetPayload {
@@ -909,12 +951,28 @@ export interface DashboardPayload {
       }
     >;
   } | null;
-  logs?: {
-    commander?: string;
-    game_api?: string;
-    [key: string]: any;
-  };
+  novnc_url?: string | null;
   db_summary?: Record<string, any> | null;
+  db_backend?: {
+    backend?: "postgres" | "sqlite" | string;
+    target?: string;
+    selection_source?: string;
+    container_mode?: boolean;
+    postgres_target?: string;
+    sqlite_target?: string;
+    sqlite_exists?: boolean;
+    sqlite_size_bytes?: number;
+    postgres_reachable?: boolean;
+    postgres_latency_ms?: number;
+    postgres_server?: string;
+    podman?: {
+      runtime?: string;
+      container_name?: string;
+      container_running?: boolean;
+      container_status?: string;
+    };
+    [key: string]: any;
+  } | null;
   galaxy_sweep?: {
     cursor_galaxy?: number;
     cursor_system?: number;

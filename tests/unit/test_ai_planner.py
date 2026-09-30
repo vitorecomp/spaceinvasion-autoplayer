@@ -2844,6 +2844,131 @@ class AiPlannerUnitTests(unittest.TestCase):
         # Strict Step 1 helper skips text-hostile/enemy and uses destination (last) coord on normal jobs
         self.assertEqual(ap.compute_inbound_friendly_cargo_by_planet(st), {})
 
+    def test_allow_demolition_triggers_demolish_strictly_when_planet_is_out_of_fields(self) -> None:
+        from spaceinvasion.planner import action_graph as ag
+
+        # Planet starts at 38/40 fields (2 free fields):
+        # b1: 5 -> 9 (+4 fields needed -> 2 free fields used first, then 2 demolitions of b3 triggered @ 40/40!)
+        # b3: 5 -> 0 planned in Config Optimizer, so 3 levels of b3 remain untouched because builds finish!
+        p_38 = _make_planet(
+            701,
+            "02:380:01",
+            "TightColony",
+            fields_max=40,
+            fields_used=38,
+            buildings={"b1": 5, "b3": 5, "b5": 15, "b7": 5, "b8": 3, "b11": 2, "b12": 1, "b13": 1, "b14": 1},
+            resources=Resources(500_000, 500_000, 500_000, 500_000),
+            energy=EnergyBalance(produced=900, used=300),
+        )
+        state_38 = GameState(
+            universe_id=31,
+            user_id=1,
+            nickname="OutOfFields",
+            timestamp=1_700_000_000.0,
+            planets=(p_38,),
+            active_planet_id=701,
+            researches={"r1": 4, "r2": 4},
+            speedup_factor=20.0,
+        )
+        target_cfg = {
+            "schema_version": 1,
+            "generated_at": "2026-11-20T01:00:00+00:00",
+            "meta_parameters": {
+                "allow_demolition": True,
+                "min_fleet_per_planet": {},
+            },
+            "inputs": {"universe_speedup_factor": 20.0},
+            "planned_research_levels": {f"r{i}": (4 if i in (1, 2) else 0) for i in range(1, 16)},
+            "summary": {"target_ship": "Imperial starbase", "ships_per_month": 100.0, "allow_demolition": True},
+            "planets": [
+                {
+                    "slot": 1,
+                    "slot_index": 1,
+                    "planet_id": 701,
+                    "coords": "02:380:01",
+                    "name": "TightColony",
+                    "is_placeholder": False,
+                    "planet_status": "colonized",
+                    "is_central_planet": True,
+                    "pays_for_research": True,
+                    "temperature": 20,
+                    "temperature_c": 20,
+                    "fields_max": 40,
+                    "built_floors": dict(p_38.buildings),
+                    "buildings": [
+                        {"key": "b1", "built_level": 5, "target_level": 9},
+                        {"key": "b3", "built_level": 5, "target_level": 0},
+                        {"key": "b5", "built_level": 15, "target_level": 15},
+                        {"key": "b7", "built_level": 5, "target_level": 5},
+                        {"key": "b8", "built_level": 3, "target_level": 3},
+                        {"key": "b11", "built_level": 2, "target_level": 2},
+                        {"key": "b12", "built_level": 1, "target_level": 1},
+                        {"key": "b13", "built_level": 1, "target_level": 1},
+                        {"key": "b14", "built_level": 1, "target_level": 1},
+                    ],
+                }
+            ],
+        }
+        plan = ap.run_ai_planner(
+            state_38,
+            target_cfg,
+            params={"reward_weeks": 4, "ga_generations": 1, "ga_population_size": 4},
+        )
+        self.assertEqual(plan["summary"]["status"], "reached")
+        self.assertTrue(plan["allow_demolition"])
+        kinds = [s["kind"] for s in plan["steps"]]
+        # Exactly 4 BUILD steps and ONLY 2 DEMOLISH steps (triggered strictly when 38 -> 40/40 fields)!
+        self.assertEqual(kinds.count("BUILD"), 4)
+        self.assertEqual(kinds.count("DEMOLISH"), 2)
+        # First 2 steps MUST be BUILD (while 38/40 and 39/40 still had free fields!)
+        self.assertEqual(kinds[:2], ["BUILD", "BUILD"])
+        # Last step MUST be BUILD (no trailing demolitions after builds complete!)
+        self.assertEqual(kinds[-1], "BUILD")
+
+        # 1) Live reconcile at 38/40 fields (free fields remain): emits BUILD b1 L6, ZERO DEMOLISH_BUILDING!
+        acts_38, confs_38 = ap.reconcile_live_ai_actions(state_38, plan, StrategyConfig())
+        self.assertEqual(confs_38, [])
+        self.assertEqual(len(acts_38), 1)
+        self.assertEqual(acts_38[0].kind, "BUILD")
+        self.assertEqual((acts_38[0].target_id, acts_38[0].target_level), (1, 6))
+
+        # 2) Live reconcile at 40/40 fields (out of fields!): emits DEMOLISH_BUILDING b3 L5 -> L4!
+        p_40 = _make_planet(
+            701,
+            "02:380:01",
+            "TightColony",
+            fields_max=40,
+            fields_used=40,
+            buildings={"b1": 7, "b3": 5, "b5": 15, "b7": 5, "b8": 3, "b11": 2, "b12": 1, "b13": 1, "b14": 1},
+            resources=Resources(500_000, 500_000, 500_000, 500_000),
+            energy=EnergyBalance(produced=900, used=350),
+        )
+        state_40 = GameState(
+            universe_id=31,
+            user_id=1,
+            nickname="OutOfFields",
+            timestamp=1_700_000_000.0,
+            planets=(p_40,),
+            active_planet_id=701,
+            researches={"r1": 4, "r2": 4},
+            speedup_factor=20.0,
+        )
+        acts_40, confs_40 = ap.reconcile_live_ai_actions(state_40, plan, StrategyConfig())
+        self.assertEqual(confs_40, [])
+        self.assertEqual(len(acts_40), 1)
+        self.assertEqual(acts_40[0].kind, "DEMOLISH_BUILDING")
+        self.assertEqual(acts_40[0].target_id, 3)
+        self.assertEqual(acts_40[0].target_level, 4)
+        self.assertTrue(acts_40[0].executable_now)
+
+        # 3) Action Graph DAG renders DEMOLISH -> BUILD field-freeing edges cleanly
+        dag = ag.build_ai_planner_graph(state_38, plan)
+        dag_kinds = [n["kind"] for n in dag["nodes"]]
+        self.assertIn("DEMOLISH", dag_kinds)
+        self.assertTrue(
+            any("frees 1 field" in str(e.get("label") or "") for e in dag["edges"])
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

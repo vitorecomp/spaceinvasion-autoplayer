@@ -19,7 +19,6 @@ import { AttacksView } from "./features/attacks";
 import { RecyclersView } from "./features/recyclers";
 import { RankingView } from "./features/ranking";
 import { ConfigView } from "./features/config";
-import { LogsView } from "./features/logs";
 
 export interface AppProps {
   disableInitialFetch?: boolean;
@@ -48,7 +47,6 @@ export const App: React.FC<AppProps> = ({ disableInitialFetch = false }) => {
               <RecyclersView />
               <RankingView />
               <ConfigView />
-              <LogsView />
             </main>
           </div>
         </div>

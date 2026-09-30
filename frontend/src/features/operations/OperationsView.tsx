@@ -10,6 +10,7 @@ import {
   PlanActionRow,
   actionPayloadFor,
   buildPinPayloadFromAction,
+  buildPlanetNameMaps,
   dashboardQueueDomainForAction,
   isPlanetConstructing,
 } from "./planActions";
@@ -37,6 +38,10 @@ export const OperationsView: React.FC = () => {
   } = useConsole();
 
   const planets = useMemo(() => dashboard?.state?.planets || [], [dashboard?.state?.planets]);
+  const planetNameMaps = useMemo(
+    () => buildPlanetNameMaps(planets, dashboard?.custom_planet_names),
+    [dashboard?.custom_planet_names, planets]
+  );
   const activeQueues = useMemo(
     () => (Array.isArray(dashboard?.state?.active_queues) ? dashboard!.state!.active_queues! : []),
     [dashboard?.state?.active_queues]
@@ -398,6 +403,8 @@ export const OperationsView: React.FC = () => {
                     action={act}
                     compact={false}
                     nowEpochSec={nowEpochSec}
+                    planetNameById={planetNameMaps.byId}
+                    planetNameByCoords={planetNameMaps.byCoords}
                     onDispatch={handleDispatch}
                     onUpdateQueue={handleUpdateQueue}
                     onCancelQueue={handleCancelQueue}

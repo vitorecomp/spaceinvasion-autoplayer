@@ -18,6 +18,7 @@ import requests
 from spaceinvasion.core import game_data
 
 BASE_URL = "https://spaceinvasion.bitmeup.com"
+DEFAULT_SESSIONS_DIR = Path(os.environ.get("SPACEINVASION_SESSIONS_DIR", "data/sessions"))
 DEFAULT_USER_AGENT = (
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
@@ -720,7 +721,7 @@ def _submit_login_post(
 
 def login(
     creds: Credentials,
-    session_dir: Path = Path(".sessions"),
+    session_dir: Path = DEFAULT_SESSIONS_DIR,
     base_url: str = BASE_URL,
     timeout: float = 20.0,
     two_factor_provider: Optional[Callable[[], str]] = None,
@@ -833,7 +834,7 @@ def login(
 
 def verify_saved_session(
     account: Optional[str] = None,
-    session_dir: Path = Path(".sessions"),
+    session_dir: Path = DEFAULT_SESSIONS_DIR,
     base_url: str = BASE_URL,
     timeout: float = 20.0,
 ) -> tuple[bool, str, str]:

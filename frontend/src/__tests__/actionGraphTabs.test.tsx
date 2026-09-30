@@ -385,6 +385,152 @@ describe("ActionGraph 4-Tab Workspace", () => {
               }),
           };
         }
+        if (cmd === "sync_planet_names") {
+          return {
+            ok: true,
+            status: 200,
+            text: async () =>
+              JSON.stringify({
+                ok: true,
+                command: "sync_planet_names",
+                synced_count: 1,
+                synced: [
+                  {
+                    planet_id: body.planet_id || 100,
+                    coords: "02:380:1",
+                    old_game_name: "Homeworld",
+                    requested_name: body.name || "Citadel Prime",
+                    game_name: body.name || "Citadel Prime",
+                    verified: true,
+                  },
+                ],
+                skipped: [],
+                custom_planet_names: {
+                  [String(body.planet_id || 100)]: body.name || "Citadel Prime",
+                },
+                message: "Synced 1 planet name in-game via internalSettings.",
+              }),
+          };
+        }
+        if (cmd === "config_optimizer_update_planet") {
+          const tb = body.target_buildings || {};
+          return {
+            ok: true,
+            status: 200,
+            text: async () =>
+              JSON.stringify({
+                ok: true,
+                command: "config_optimizer_update_planet",
+                run_id: 99,
+                planet_specializations:
+                  body.locked_specialization && body.locked_specialization !== "auto"
+                    ? { [String(body.planet_id || 100)]: body.locked_specialization }
+                    : {},
+                custom_planet_names: body.planet_name
+                  ? { [String(body.planet_id || 100)]: body.planet_name }
+                  : {},
+                active: {
+                  run_id: 99,
+                  result: {
+                    elapsed_ms: 12,
+                    summary: {
+                      ships_per_month: 96.4,
+                      whole_ships_per_month: 96,
+                      target_ship_key: "s16",
+                      limiting_factor: "spice",
+                      fields_used: Object.values(tb).reduce(
+                        (acc: number, v: any) => acc + Number(v || 0),
+                        0
+                      ),
+                      fields_max: body.fields_max_override || 300,
+                      warehouse_fields: 36,
+                    },
+                    planets: [
+                      {
+                        slot: body.slot || 1,
+                        planet_id: body.planet_id || 100,
+                        coords: body.coords || "02:380:1",
+                        name: body.planet_name || "Homeworld",
+                        game_name: "Homeworld",
+                        temperature_c: 20,
+                        fields_used_target: Object.values(tb).reduce(
+                          (acc: number, v: any) => acc + Number(v || 0),
+                          0
+                        ),
+                        fields_max: body.fields_max_override || 300,
+                        detected_specialization: body.locked_specialization || "spice_shipyard",
+                        locked_specialization: body.locked_specialization || "auto",
+                        built_floors: { b1: 12, b3: 10, b4: 8, b5: 14, b7: 12, b9: 13 },
+                        buildings: Object.entries(tb).map(([k, v]) => ({
+                          key: k,
+                          built_level: 0,
+                          target_level: Number(v || 0),
+                        })),
+                      },
+                    ],
+                  },
+                },
+              }),
+          };
+        }
+        if (cmd === "config_optimizer_yearly_projection") {
+          const hy = Number(body.horizon_years || 5);
+          const yrs = Array.from({ length: hy }, (_, i) => ({
+            year: i + 1,
+            label: `Year ${i + 1}`,
+            start_ships_per_week: i * 8,
+            avg_ships_per_week: (i + 0.5) * 8,
+            end_ships_per_week: (i + 1) * 8,
+            peak_ships_per_week: (i + 1) * 8,
+            delta_ships_per_week: 8,
+            total_ships_produced: Math.round((i + 0.5) * 8 * 52),
+            cumulative_ships_produced: Math.round(((i + 1) * (i + 1) * 8 * 52) / 2),
+            bottleneck: i < 2 ? "shipyards" : "kryptonite",
+            completion_pct: Math.min(100, 30 + i * 15),
+          }));
+          return {
+            ok: true,
+            status: 200,
+            text: async () =>
+              JSON.stringify({
+                ok: true,
+                command: "config_optimizer_yearly_projection",
+                projection: {
+                  target_ship_key: "s16",
+                  target_ship: "Imperial Starbase",
+                  horizon_years: hy,
+                  total_weeks: hy * 52,
+                  current_ships_per_week: 0,
+                  target_ships_per_week: 42.5,
+                  target_ships_per_month: 182.1,
+                  total_upgrade_levels: 320,
+                  years: yrs,
+                  weeks: [
+                    {
+                      week: 0,
+                      year: 1,
+                      week_in_year: 0,
+                      ships_per_week: 0,
+                      resource_cap_per_week: 5,
+                      shipyard_cap_per_week: 0,
+                      bottleneck: "shipyards",
+                      completion_pct: 0,
+                    },
+                    {
+                      week: hy * 52,
+                      year: hy,
+                      week_in_year: 52,
+                      ships_per_week: hy * 8,
+                      resource_cap_per_week: hy * 9,
+                      shipyard_cap_per_week: hy * 8,
+                      bottleneck: "kryptonite",
+                      completion_pct: 95,
+                    },
+                  ],
+                },
+              }),
+          };
+        }
         if (cmd === "ai_planner_get" || cmd === "ai_planner_run") {
           return {
             ok: true,
@@ -702,14 +848,11 @@ describe("ActionGraph 4-Tab Workspace", () => {
       expect(lockAllCmd?.planet_specializations).toEqual({ "100": "kryptonite" });
     });
 
-    // Switch to Research sub-tab and trigger Export JSON
+    // Switch to Research sub-tab and verify Export buttons are removed
     fireEvent.click(document.getElementById("co-subtab-research")!);
     expect(document.getElementById("co-research-table")?.textContent).toContain("Mining technology");
-
-    fireEvent.click(document.getElementById("btn-co-export")!);
-    await waitFor(() => {
-      expect(postedCommands.some((c) => c.command === "config_optimizer_export")).toBe(true);
-    });
+    expect(document.getElementById("btn-co-export")).toBeNull();
+    expect(document.getElementById("btn-co-export-footer")).toBeNull();
   });
 
   it("enforces 7/11 vs 11/11 Colony Gate and handles Field Conflict Demolish & Keep/Reserve actions", async () => {
@@ -1646,5 +1789,129 @@ describe("ActionGraph 4-Tab Workspace", () => {
     // Zero duplicate HTML IDs across entire rendered tree
     const allIds = Array.from(container.querySelectorAll("[id]")).map((el) => el.id);
     expect(new Set(allIds).size).toBe(allIds.length);
+
+    // Switch to Config Optimization tab and verify #co-param-min_warehouse_level renders and submits in config_optimizer_run
+    fireEvent.click(document.getElementById("ag-tab-btn-config-optimizer")!);
+    await waitFor(() => {
+      expect(document.getElementById("co-param-min_warehouse_level")).not.toBeNull();
+    });
+    const minWhInput = document.getElementById("co-param-min_warehouse_level") as HTMLInputElement;
+    expect(minWhInput.value).toBe("0");
+    const minWhRow = minWhInput.closest(".ag-param-item")!;
+    expect(minWhRow.querySelector(".ag-param-item-key")?.textContent).toBe("min_warehouse_level");
+    expect((minWhRow.querySelector(".ag-param-item-desc")?.textContent || "").length).toBeGreaterThan(80);
+
+    const allowDemCheckbox = document.getElementById("co-param-allow_demolition") as HTMLInputElement;
+    expect(allowDemCheckbox).not.toBeNull();
+    expect(allowDemCheckbox.checked).toBe(false);
+    const allowDemRow = allowDemCheckbox.closest(".ag-param-item")!;
+    expect(allowDemRow.querySelector(".ag-param-item-key")?.textContent).toBe("allow_demolition");
+    expect((allowDemRow.querySelector(".ag-param-item-desc")?.textContent || "").length).toBeGreaterThan(80);
+    fireEvent.click(allowDemCheckbox);
+
+    fireEvent.change(minWhInput, { target: { value: "10" } });
+    fireEvent.click(document.getElementById("btn-co-run")!);
+    await waitFor(() => {
+      expect(
+        postedCommands.some(
+          (c) =>
+            c.command === "config_optimizer_run" &&
+            c.params?.min_warehouse_level === 10 &&
+            c.params?.allow_demolition === true
+        )
+      ).toBe(true);
+    });
+  });
+
+  it("opens Planet Configuration modal on planet click, syncs planet names to game, and renders year-by-year Ships/Week canvas graph with zero extra SVGs", async () => {
+    const { container } = render(
+      <Harness initialDashboard={mockDashboardState}>
+        <ActionGraphView />
+      </Harness>
+    );
+
+    fireEvent.click(document.getElementById("ag-tab-btn-config-optimizer")!);
+    await waitFor(() => {
+      expect(document.querySelector('[data-co-planet-slot="1"]')).not.toBeNull();
+    });
+
+    // 1. Verify Ships/Week Graph button is present and Export JSON is removed
+    expect(document.getElementById("btn-co-export")).toBeNull();
+    const graphBtn = document.getElementById("btn-co-yearly-graph")!;
+    expect(graphBtn).not.toBeNull();
+
+    // 2. Open Year-by-Year Ships/Week Graph modal, switch horizon 5Y -> 10Y, verify <canvas> & 0 SVGs
+    fireEvent.click(graphBtn);
+    await waitFor(() => {
+      expect(document.getElementById("co-yearly-graph-modal")).not.toBeNull();
+      expect(document.getElementById("co-yearly-breakdown-table")?.textContent).toContain("Year 5");
+    });
+    expect(document.getElementById("co-yearly-graph-canvas")?.tagName).toBe("CANVAS");
+    expect(document.getElementById("co-yearly-graph-modal")!.querySelectorAll("svg").length).toBe(0);
+
+    fireEvent.click(document.getElementById("btn-co-yr-10")!);
+    await waitFor(() => {
+      expect(
+        postedCommands.some(
+          (c) => c.command === "config_optimizer_yearly_projection" && c.horizon_years === 10
+        )
+      ).toBe(true);
+      expect(document.getElementById("co-yearly-breakdown-table")?.textContent).toContain("Year 10");
+    });
+    fireEvent.click(document.getElementById("btn-co-yearly-close")!);
+    expect(document.getElementById("co-yearly-graph-modal")).toBeNull();
+
+    // 3. Click planet row -> opens #co-planet-edit-modal, edit target buildings + name + specialization, sync name & save
+    const row1 = document.querySelector('[data-co-planet-slot="1"]') as HTMLElement;
+    fireEvent.click(row1);
+    await waitFor(() => {
+      expect(document.getElementById("co-planet-edit-modal")).not.toBeNull();
+    });
+    expect(document.getElementById("co-planet-edit-modal")!.querySelectorAll("svg").length).toBe(0);
+
+    const modalName = document.getElementById("co-modal-name") as HTMLInputElement;
+    fireEvent.change(modalName, { target: { value: "Citadel Prime" } });
+    fireEvent.click(document.getElementById("btn-co-modal-sync-name")!);
+    await waitFor(() => {
+      expect(
+        postedCommands.some(
+          (c) =>
+            c.command === "sync_planet_names" &&
+            c.planet_id === 100 &&
+            c.name === "Citadel Prime"
+        )
+      ).toBe(true);
+    });
+
+    fireEvent.change(document.getElementById("co-modal-spec")!, {
+      target: { value: "spice_shipyard" },
+    });
+    fireEvent.change(document.getElementById("co-modal-bld-b4")!, {
+      target: { value: "28" },
+    });
+    fireEvent.click(document.getElementById("btn-co-bld-inc-b9")!);
+    fireEvent.click(document.getElementById("btn-co-modal-save")!);
+
+    await waitFor(() => {
+      const saveCmd = postedCommands.find((c) => c.command === "config_optimizer_update_planet");
+      expect(saveCmd).toBeDefined();
+      expect(saveCmd?.planet_name).toBe("Citadel Prime");
+      expect(saveCmd?.locked_specialization).toBe("spice_shipyard");
+      expect(saveCmd?.target_buildings?.b4).toBe(28);
+    });
+
+    // 4. Toolbar Sync Names to Game button triggers batch sync_planet_names
+    fireEvent.click(document.getElementById("btn-co-sync-planet-names")!);
+    await waitFor(() => {
+      expect(
+        postedCommands.filter((c) => c.command === "sync_planet_names").length
+      ).toBeGreaterThanOrEqual(2);
+    });
+
+    // Zero SVGs inside Config Optimizer pane & modals
+    expect(
+      document.getElementById("ag-pane-config-optimizer")!.querySelectorAll("svg").length
+    ).toBe(0);
+    expect(container.querySelectorAll("canvas#co-yearly-graph-canvas").length).toBe(0);
   });
 });

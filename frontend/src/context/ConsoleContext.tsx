@@ -15,6 +15,7 @@ import {
   apiGet as rawApiGet,
   feedbackKindForError,
   isRateLimitError,
+  isSweepBlockedError,
   parseResponseJson,
   registerHttpBridgeCallbacks,
   safeFiniteNumber,
@@ -1254,6 +1255,17 @@ export const ConsoleProvider: React.FC<ConsoleProviderProps> = ({
           syncNotificationsPayload(nextDash.notifications);
         }
 
+        if (refresh && (nextDash as any).sweep_deferred_refresh) {
+          showFeedback(
+            String(
+              (nextDash as any).sweep_message ||
+                "Galaxy scan in progress — live browser refresh deferred until scan finishes."
+            ),
+            "warn",
+            { autoHideMs: 4200 }
+          );
+        }
+
         const curPage = sharedLegacyState.activePage;
         if (curPage === "sectors") {
           refreshSectorsView(undefined, undefined, undefined, { background: true });
@@ -1299,6 +1311,9 @@ export const ConsoleProvider: React.FC<ConsoleProviderProps> = ({
         if (isRateLimitError(err)) {
           setApiStatus(true);
           showFeedback(`SpaceInvasion rate-limit cooldown active: ${err.message}`, "warn");
+        } else if (isSweepBlockedError(err)) {
+          setApiStatus(true);
+          showFeedback(err.message, "warn", { autoHideMs: 4200 });
         } else {
           const msg = err?.name === "AbortError" ? "timeout" : err?.message || "unreachable";
           setApiStatus(false, msg);

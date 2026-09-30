@@ -66,6 +66,17 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--env-file", type=Path, default=Path(".env"), help="Path to .env file.")
     parser.add_argument("--account", default="default", help="Account profile in .env.")
+    parser.add_argument(
+        "--db-backend",
+        choices=("auto", "postgres", "sqlite"),
+        default=None,
+        help="Database backend ('postgres' on Podman, 'sqlite', or 'auto').",
+    )
+    parser.add_argument(
+        "--db-url",
+        default=None,
+        help="Explicit PostgreSQL DSN (e.g. postgresql://user:pass@127.0.0.1:5433/spaceinvasion).",
+    )
     return parser
 
 
@@ -224,6 +235,10 @@ def main(argv: list[str] | None = None) -> int:
         args.account,
         "--reload",
     ]
+    if args.db_backend:
+        api_cmd.extend(["--db-backend", args.db_backend])
+    if args.db_url:
+        api_cmd.extend(["--db-url", args.db_url])
     raw_iv = args.interval
     if raw_iv is None or (
         isinstance(raw_iv, (int, float))

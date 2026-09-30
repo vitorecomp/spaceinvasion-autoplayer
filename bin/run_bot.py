@@ -33,7 +33,9 @@ _maybe_reexec_venv()
 from spaceinvasion.core import game_data # noqa: E402
 from spaceinvasion.session.auth import SpaceInvasionAuthError, load_credentials  # noqa: E402
 from spaceinvasion.session.browser import (  # noqa: E402
+    DEFAULT_DEBUG_HOST,
     DEFAULT_DEBUG_PORT,
+    DEFAULT_PROFILE_ROOT,
     BrowserConfig,
     is_debug_port_open,
     login_with_browser,
@@ -324,11 +326,17 @@ def ensure_debug_browser_ready(
 
     Always detaches leaving Chrome alive on `127.0.0.1:<debug_port>`.
     """
-    if not is_debug_port_open(debug_port):
+    port_open = (
+        is_debug_port_open(debug_port)
+        if DEFAULT_DEBUG_HOST == "127.0.0.1"
+        else is_debug_port_open(debug_port, DEFAULT_DEBUG_HOST)
+    )
+    if not port_open:
         creds = load_credentials(env_path=env_file, account=account)
         cfg = BrowserConfig(
-            profile_dir=Path(".browser_profile") / creds.account_name,
+            profile_dir=DEFAULT_PROFILE_ROOT / creds.account_name,
             debug_port=debug_port,
+            debug_host=DEFAULT_DEBUG_HOST,
             detach=True,
         )
         login_with_browser(creds=creds, config=cfg, require_in_game=True)
@@ -336,15 +344,21 @@ def ensure_debug_browser_ready(
 
     # Verify attached Chrome is still inside the game; recover automatically if kicked to portal
     try:
-        with GameBrowserClient.attach(port=debug_port) as client:
+        attach_ctx = (
+            GameBrowserClient.attach(port=debug_port)
+            if DEFAULT_DEBUG_HOST == "127.0.0.1"
+            else GameBrowserClient.attach(port=debug_port, host=DEFAULT_DEBUG_HOST)
+        )
+        with attach_ctx as client:
             client.ensure_in_game()
     except RateLimitError:
         raise
     except SpaceInvasionAuthError:
         creds = load_credentials(env_path=env_file, account=account)
         cfg = BrowserConfig(
-            profile_dir=Path(".browser_profile") / creds.account_name,
+            profile_dir=DEFAULT_PROFILE_ROOT / creds.account_name,
             debug_port=debug_port,
+            debug_host=DEFAULT_DEBUG_HOST,
             attach=True,
             detach=True,
         )

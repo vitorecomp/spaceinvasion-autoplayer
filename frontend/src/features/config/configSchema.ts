@@ -262,6 +262,16 @@ export const CONFIG_GROUPS: ConfigGroupSpec[] = [
         defaultValue: false,
       },
       {
+        key: "galaxy_scan_block_other_actions",
+        id: "cfg-galaxy_scan_block_other_actions",
+        title: "Block Other Browser Actions During Galaxy Scan",
+        boundsLabel: "default: true · boolean",
+        description:
+          "Keeps Chrome exclusively on internalGalaxy during multi-page Galaxy sweeps so step_galaxy_system arrow chains are never interrupted by Commander ticks, economy syncs, or manual live page jumps. Defers autonomous ticks until the sweep finishes, warns on manual live browser actions mid-scan, and still lets Pause, disabling Galaxy Scan, or P0 emergency Escape Flights (SAVE) interrupt immediately. Boolean toggle.",
+        control: "checkbox",
+        defaultValue: true,
+      },
+      {
         key: "galaxy_sweep_pages",
         id: "cfg-galaxy_sweep_pages",
         title: "Galaxy Sweep Pages per Cycle",
@@ -559,6 +569,19 @@ export const CONFIG_GROUPS: ConfigGroupSpec[] = [
         min: 1,
         max: 100000,
         step: 1,
+      },
+      {
+        key: "page_view_limit_per_minute",
+        id: "cfg-page_view_limit_per_minute",
+        title: "Max Page Views per Rolling Minute",
+        boundsLabel: "default: 60 · 6–600 views/min",
+        description:
+          "Rolling 60-second local browser page-view budget enforced by PageViewLimiter across Commander ticks and interactive commands (reserving up to 6 slots for interactive bursts and scaling inter-page pacing delay proportionally). Note that BitMeUp's game server enforces its own server-side throttle around 30–35 views/min with a 45s cooldown if exceeded. Accepts integers from 6 to 600 views/minute.",
+        control: "number",
+        defaultValue: 60,
+        min: 6,
+        max: 600,
+        step: 2,
       },
       {
         key: "ga_population_size",

@@ -28,6 +28,7 @@ from spaceinvasion.core import game_data
 from spaceinvasion.session.auth import AntiBotChallengeError, SpaceInvasionAuthError, detect_antibot_challenge
 from spaceinvasion.core.logging_utils import append_crash_debug_log
 from spaceinvasion.session.browser import (
+    DEFAULT_DEBUG_HOST,
     DEFAULT_DEBUG_PORT,
     attach_chrome_driver,
     close_or_detach_driver,
@@ -253,6 +254,32 @@ class PageViewLimiter:
     def rate_limit_hits(self) -> int:
         with self._lock:
             return int(self._rate_limit_hits)
+
+    def configure(
+        self,
+        *,
+        max_views_per_minute: Optional[int] = None,
+        min_delay_range: Optional[tuple[float, float]] = None,
+        reserved_interactive_views: Optional[int] = None,
+    ) -> None:
+        """Thread-safely update rolling page-view cap, pacing gap, or interactive reserve in place."""
+        with self._lock:
+            if max_views_per_minute is not None:
+                self.max_views_per_minute = _safe_clamped_int(
+                    max_views_per_minute,
+                    DEFAULT_MAX_VIEWS_PER_MINUTE,
+                    min_val=1,
+                    max_val=100_000,
+                )
+            if min_delay_range is not None:
+                self.min_delay_range = min_delay_range
+            if reserved_interactive_views is not None:
+                self.reserved_interactive_views = _safe_clamped_int(
+                    reserved_interactive_views,
+                    DEFAULT_RESERVED_INTERACTIVE_VIEWS,
+                    min_val=0,
+                    max_val=100_000,
+                )
 
     def _prune_locked(self, now: float) -> None:
         cutoff = now - self.window_seconds
@@ -660,7 +687,7 @@ class GameBrowserClient:
     def attach(
         cls,
         port: int = DEFAULT_DEBUG_PORT,
-        host: str = "127.0.0.1",
+        host: str = DEFAULT_DEBUG_HOST,
         timeout: float = 20.0,
         *,
         page_limiter: Optional[PageViewLimiter] = None,
@@ -726,17 +753,33 @@ class GameBrowserClient:
         except Exception:
             pass
         if html:
-            low = html.lower()
+            cleaned_diag_html = _EMPTY_PAGEVIEW_MODAL_RE.sub("", html)
+            low = cleaned_diag_html.lower()
             idx_m = low.find("made more than")
             idx_p = low.find("page views")
             diag["html_len"] = len(html)
-            diag["matched_made_more_than"] = html[max(0, idx_m - 160) : idx_m + 320] if idx_m >= 0 else None
-            diag["matched_page_views"] = html[max(0, idx_p - 160) : idx_p + 320] if idx_p >= 0 else None
+            diag["matched_made_more_than"] = (
+                cleaned_diag_html[max(0, idx_m - 160) : idx_m + 320] if idx_m >= 0 else None
+            )
+            diag["matched_page_views"] = (
+                cleaned_diag_html[max(0, idx_p - 160) : idx_p + 320] if idx_p >= 0 else None
+            )
             try:
-                soup = BeautifulSoup(html, "html.parser")
+                soup = BeautifulSoup(cleaned_diag_html, "html.parser")
+                for hidden_el in soup.find_all(["script", "style", "template", "noscript"]):
+                    hidden_el.decompose()
+                for el in list(soup.find_all(True)):
+                    if getattr(el, "attrs", None) is None:
+                        continue
+                    if el.has_attr("hidden") or str(el.get("aria-hidden") or "").strip().lower() == "true":
+                        el.decompose()
+                        continue
+                    st_inline = str(el.get("style") or "").lower().replace(" ", "")
+                    if "display:none" in st_inline or "visibility:hidden" in st_inline:
+                        el.decompose()
                 diag["visible_text_preview"] = " ".join(soup.get_text(" ", strip=True).split())[:1000]
             except Exception:
-                diag["raw_preview"] = html[:1000]
+                diag["raw_preview"] = cleaned_diag_html[:1000]
         return diag
 
     def _is_antibot_visible_in_live_dom(self) -> Optional[bool]:
@@ -1750,16 +1793,6 @@ class GameBrowserClient:
                         },
                     )
                 raise
-            if self.detach_on_close and self._is_real_selenium_driver():
-                append_crash_debug_log(
-                    component="client.open_galaxy_with_coords",
-                    event="open_galaxy_loaded",
-                    details={
-                        "target_url": target_url,
-                        "p_galaxy_js": p_gal_js,
-                        **self._capture_dom_diag(html),
-                    },
-                )
         else:
             nav_token = self._mark_frame_navigation("F_Hauptframe")
             self._switch_frame("F_Navi")

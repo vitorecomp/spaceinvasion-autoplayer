@@ -1,0 +1,15 @@
+.git
+.venv
+.agents
+.agent
+data
+state
+logs
+backups
+frontend/node_modules
+frontend/.vite
+__pycache__
+*.pyc
+*.db
+*.db-wal
+*.db-shm

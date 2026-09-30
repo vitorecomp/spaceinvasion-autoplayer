@@ -5,6 +5,7 @@ export type { RenamePlanetResponse };
 export interface ApiError extends Error {
   status?: number;
   rateLimited?: boolean;
+  sweepBlocked?: boolean;
   retryAfter?: number;
 }
 
@@ -112,8 +113,15 @@ export function isRateLimitError(err: any): boolean {
   );
 }
 
+export function isSweepBlockedError(err: any): boolean {
+  if (!err) return false;
+  if (err.sweepBlocked || err.status === 409) return true;
+  const msg = String(err.message || err || "").toLowerCase();
+  return msg.includes("galaxy scan in progress") || msg.includes("galaxy sweep in progress");
+}
+
 export function feedbackKindForError(err: any): "warn" | "error" {
-  return isRateLimitError(err) ? "warn" : "error";
+  return isRateLimitError(err) || isSweepBlockedError(err) ? "warn" : "error";
 }
 
 export interface HttpBridgeCallbacks {
@@ -137,6 +145,7 @@ export async function apiGet<T = Record<string, any>>(
     const err: ApiError = new Error(data?.error || `HTTP ${res.status}`);
     err.status = res.status;
     err.rateLimited = Boolean(data?.rate_limited || res.status === 429);
+    err.sweepBlocked = Boolean(data?.sweep_blocked || res.status === 409);
     err.retryAfter = safeFiniteNumber(data?.retry_after, 0) ?? 0;
     throw err;
   }
@@ -173,6 +182,7 @@ export async function apiCommand<T = Record<string, any>>(
     const err: ApiError = new Error(data?.error || `HTTP ${res.status}`);
     err.status = res.status;
     err.rateLimited = Boolean(data?.rate_limited || res.status === 429);
+    err.sweepBlocked = Boolean(data?.sweep_blocked || res.status === 409);
     err.retryAfter = safeFiniteNumber(data?.retry_after, 0) ?? 0;
     throw err;
   }

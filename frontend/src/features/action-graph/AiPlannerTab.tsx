@@ -27,7 +27,6 @@ import {
   AiPlannerDraft,
   DEFAULT_AI_PLANNER_DRAFT,
   computeColonyGateInfo,
-  downloadTextFile,
   formatDurationSecondsCompact,
   formatJobBadgeText,
   normalizeUiPlannerMode,
@@ -550,18 +549,6 @@ export const AiPlannerTab: React.FC<AiPlannerTabProps> = ({ hidden = false }) =>
     }
   };
 
-  const onExportTxt = async () => {
-    try {
-      const res = await apiCommand({ command: "ai_planner_export" });
-      const filename = String(res.filename || "full_planner_path.txt");
-      const content = String(res.content || "");
-      downloadTextFile(filename, content, "text/plain");
-      showFeedback(`Exported ${filename}.`, "ok");
-    } catch (err: any) {
-      showFeedback(`Export .txt failed: ${err.message}`, feedbackKindForError(err));
-    }
-  };
-
   const summary = aiData?.active_summary || {};
   const telemetry = aiData?.live_attack_telemetry || aiData?.attack_telemetry || {};
   const planets = Array.isArray(dashboard?.state?.planets) ? dashboard!.state!.planets! : [];
@@ -670,15 +657,19 @@ export const AiPlannerTab: React.FC<AiPlannerTabProps> = ({ hidden = false }) =>
       : `${initLiveMode.toUpperCase()} (${initLiveEnabledCount}/${totalB2Planets} ON)`;
 
   const customPlanetNames = useMemo<Record<string, string>>(() => {
-    const raw = (dashboard as Record<string, any> | null | undefined)?.custom_planet_names;
-    if (!raw || typeof raw !== "object") return {};
     const out: Record<string, string> = {};
-    for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
-      const clean = String(v || "").trim();
-      if (clean) out[String(k)] = clean;
+    for (const src of [
+      (dashboard as Record<string, any> | null | undefined)?.custom_planet_names,
+      (aiData as Record<string, any> | null | undefined)?.custom_planet_names,
+    ]) {
+      if (!src || typeof src !== "object") continue;
+      for (const [k, v] of Object.entries(src as Record<string, unknown>)) {
+        const clean = String(v || "").trim();
+        if (clean) out[String(k)] = clean;
+      }
     }
     return out;
-  }, [dashboard]);
+  }, [aiData, dashboard]);
 
   const planetNameById = useMemo(() => {
     const map = new Map<number, string>();
@@ -781,14 +772,6 @@ export const AiPlannerTab: React.FC<AiPlannerTabProps> = ({ hidden = false }) =>
                 {`Smelting (${smeltingTogglesCount})`}
               </button>
             </div>
-            <button
-              type="button"
-              className="btn btn-secondary btn-sm"
-              id="btn-ai-export"
-              onClick={onExportTxt}
-            >
-              Export .txt
-            </button>
             <button
               type="button"
               className="btn btn-secondary btn-sm"
@@ -1534,7 +1517,11 @@ export const AiPlannerTab: React.FC<AiPlannerTabProps> = ({ hidden = false }) =>
                         <td className="tabular">{String(ev.from_mode || "off").toUpperCase()}</td>
                         <td className="tabular">
                           {ev.step_label
-                            ? `${ev.step_label}${ev.step_planet_coords ? ` [${ev.step_planet_coords}]` : ""}`
+                            ? `${ev.step_label}${
+                                ev.step_planet_coords
+                                  ? ` · ${(ev as any).step_planet_name ? `${(ev as any).step_planet_name} ` : ""}[${ev.step_planet_coords}]`
+                                  : ""
+                              }`
                             : "—"}
                         </td>
                         <td>{ev.reason || "—"}</td>
@@ -1957,14 +1944,6 @@ export const AiPlannerTab: React.FC<AiPlannerTabProps> = ({ hidden = false }) =>
               onClick={onRunAiPlanner}
             >
               {isJobRunning ? "Running AI-Planner..." : "Run AI-Planner"}
-            </button>
-            <button
-              type="button"
-              className="btn btn-secondary btn-sm"
-              id="btn-ai-export-footer"
-              onClick={onExportTxt}
-            >
-              Export .txt
             </button>
             <button
               type="button"

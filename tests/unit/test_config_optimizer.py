@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import copy
+import dataclasses
 import json
 import math
 from pathlib import Path
@@ -110,6 +111,7 @@ class ConfigOptimizerUnitTests(unittest.TestCase):
         self.assertEqual(d["ga_elite_count"], 4)
         self.assertEqual(d["ga_random_seed"], 20261117)
         self.assertFalse(d["pad_generic_colonies"])
+        self.assertFalse(d["allow_demolition"])
         self.assertEqual(d["max_planets"], 11)
         self.assertEqual(d["empty_colony_fields"], 300)
         self.assertEqual(d["reserved_floors_by_planet"], {})
@@ -813,6 +815,389 @@ class ConfigOptimizerUnitTests(unittest.TestCase):
         self.assertTrue(step_names_by_pid)
         for pid_k, pname in step_names_by_pid.items():
             self.assertEqual(pname, res["planet_names"][str(pid_k)])
+
+    def test_min_warehouse_level_enforced_across_all_resources_and_colonies(self) -> None:
+        p1 = _make_planet(401, "02:380:01", "Hub", temperature=20, fields_max=280, buildings={"b1": 10, "b5": 10})
+        p2 = _make_planet(402, "02:380:02", "MetalCol", temperature=10, fields_max=280, buildings={"b1": 12, "b2": 10, "b5": 12})
+        p3 = _make_planet(403, "02:380:03", "SpiceCol", temperature=-40, fields_max=280, buildings={"b4": 12, "b5": 12})
+        state = GameState(
+            universe_id=31,
+            user_id=1,
+            nickname="WhMin",
+            timestamp=1_700_000_000.0,
+            planets=(p1, p2, p3),
+            active_planet_id=401,
+            researches={"r1": 8, "r2": 8, "r6": 8, "r15": 1},
+            speedup_factor=5.0,
+        )
+        res = co.run_config_optimizer(
+            state,
+            universe_research_max={"r1": 8, "r2": 8, "r6": 8, "r15": 1},
+            params=_fast_params(
+                min_warehouse_level=12,
+                central_planet_min_warehouse_level=15,
+                optimized_building_max_levels={
+                    "b1": 25,
+                    "b2": 25,
+                    "b3": 25,
+                    "b4": 25,
+                    "b5": 25,
+                    "b9": 20,
+                    "b17": 5,
+                },
+            ),
+        )
+        self.assertEqual(res["meta_parameters"]["min_warehouse_level"], 12)
+        for pl in res["planets"]:
+            b_by_key = {row["key"]: row["target_level"] for row in pl["buildings"]}
+            min_expected = 15 if pl["is_central_planet"] else 12
+            for wh_key in ("b11", "b12", "b13", "b14"):
+                self.assertGreaterEqual(
+                    b_by_key[wh_key],
+                    min_expected,
+                    f"{pl['coords']} {wh_key}={b_by_key[wh_key]} < {min_expected}",
+                )
+        non_central_wh_drivers = {
+            w["set_by"]
+            for pl in res["planets"]
+            if not pl["is_central_planet"]
+            for w in pl["warehouses"]
+        }
+        self.assertIn("minimum warehouse level", non_central_wh_drivers)
+
+        with self.assertRaises(ValueError):
+            co.run_config_optimizer(
+                state,
+                params=_fast_params(min_warehouse_level=-1),
+            )
+        with self.assertRaises(ValueError):
+            co.run_config_optimizer(
+                state,
+                params=_fast_params(min_warehouse_level=61),
+            )
+
+    def test_allow_demolition_reclaims_off_role_mines_while_honoring_reserved_floors(self) -> None:
+        # Tight 230-field shipyard planet loaded with off-role mines + b6 Thermosolar,
+        # plus 5 Metal colonies + Kryptonite + Spice colonies so shipyard & central reserve bind.
+        p1 = _make_planet(
+            501,
+            "02:380:12",
+            "PP Planet",
+            temperature=10,
+            fields_max=230,
+            buildings={
+                "b1": 22,
+                "b2": 22,
+                "b3": 21,
+                "b4": 17,
+                "b5": 21,
+                "b6": 3,
+                "b7": 9,
+                "b8": 8,
+                "b9": 8,
+                "b10": 7,
+                "b11": 7,
+                "b12": 4,
+                "b13": 6,
+                "b14": 6,
+            },
+            ships={"s2": 100, "s10": 10, "s11": 100},
+        )
+        metal_colonies = [
+            _make_planet(
+                502 + idx,
+                f"02:379:0{idx + 1}",
+                f"Metal Colony {idx + 1}",
+                temperature=20,
+                fields_max=330,
+                buildings={"b1": 23, "b2": 17, "b3": 15, "b4": 10, "b5": 21, "b7": 12, "b9": 6, "b10": 5},
+                ships={"s2": 100, "s10": 10, "s11": 100},
+            )
+            for idx in range(5)
+        ]
+        p_krypt = _make_planet(
+            510,
+            "02:379:06",
+            "Krypt Colony",
+            temperature=0,
+            fields_max=320,
+            buildings={"b1": 15, "b2": 16, "b3": 21, "b4": 15, "b5": 20, "b7": 12, "b10": 5},
+            ships={"s2": 100, "s10": 10, "s11": 100},
+        )
+        p_spice = _make_planet(
+            511,
+            "02:381:05",
+            "Spice Colony",
+            temperature=-40,
+            fields_max=304,
+            buildings={"b1": 9, "b2": 8, "b3": 7, "b4": 18, "b5": 18, "b7": 12, "b10": 5},
+            ships={"s2": 100, "s10": 10, "s11": 100},
+        )
+        state = GameState(
+            universe_id=31,
+            user_id=1,
+            nickname="DemolishTester",
+            timestamp=1_700_000_000.0,
+            planets=(p1, *metal_colonies, p_krypt, p_spice),
+            active_planet_id=501,
+            researches={"r1": 12, "r2": 9, "r6": 5, "r15": 1},
+            speedup_factor=20.0,
+        )
+        specs = {
+            "501": "spice_shipyard",
+            **{str(502 + idx): "metal" for idx in range(5)},
+            "510": "kryptonite",
+            "511": "spice",
+        }
+        uni_max = {"r1": 24, "r2": 22, "r6": 20, "r15": 2}
+        res_no_dem = co.run_config_optimizer(
+            state,
+            universe_research_max=uni_max,
+            params=_fast_params(
+                allow_demolition=False,
+                hill_climb_step_sizes=[1, 2, 4, 8],
+                min_warehouse_level=15,
+                central_planet_min_warehouse_level=15,
+                warehouse_hours_of_production=72.0,
+                planet_specializations=specs,
+                optimized_building_max_levels={
+                    "b1": 80,
+                    "b2": 80,
+                    "b3": 80,
+                    "b4": 80,
+                    "b5": 80,
+                    "b9": 40,
+                    "b17": 15,
+                },
+            ),
+        )
+        self.assertFalse(res_no_dem["summary"]["allow_demolition"])
+        self.assertEqual(res_no_dem["summary"]["levels_to_demolish"], 0)
+        # Central-reserve overshoot convergence ensures Slot 1 uses its fields instead of stranding at b9=13, b17=6 (26,406)!
+        p1_no_dem = res_no_dem["planets"][0]
+        p1_nd_targets = {r["key"]: r["target_level"] for r in p1_no_dem["buildings"]}
+        self.assertGreater(res_no_dem["summary"]["ships_per_month"], 50_000.0)
+        self.assertGreater(p1_nd_targets["b9"] + p1_nd_targets["b17"], 19)
+        self.assertTrue(all(r["holds_the_production"] for r in res_no_dem["search"]["rounds"][-1:]))
+
+        res_dem = co.run_config_optimizer(
+            state,
+            universe_research_max=uni_max,
+            params=_fast_params(
+                allow_demolition=True,
+                hill_climb_step_sizes=[1, 2, 4, 8],
+                min_warehouse_level=15,
+                central_planet_min_warehouse_level=15,
+                warehouse_hours_of_production=72.0,
+                planet_specializations=specs,
+                reserved_floors_by_planet={"501": {"b3": 5}},
+                optimized_building_max_levels={
+                    "b1": 80,
+                    "b2": 80,
+                    "b3": 80,
+                    "b4": 80,
+                    "b5": 80,
+                    "b9": 40,
+                    "b17": 15,
+                },
+            ),
+        )
+        self.assertTrue(res_dem["summary"]["allow_demolition"])
+        self.assertGreater(res_dem["summary"]["levels_to_demolish"], 0)
+        self.assertGreater(
+            res_dem["summary"]["ships_per_month"],
+            res_no_dem["summary"]["ships_per_month"],
+        )
+        p1_dem = res_dem["planets"][0]
+        p1_rows = {r["key"]: r for r in p1_dem["buildings"]}
+        # Off-role b1/b2 and b6 Thermosolar cleared to 0; reserved floor b3 >= 5 honored!
+        self.assertEqual(p1_rows["b1"]["target_level"], 0)
+        self.assertEqual(p1_rows["b1"]["levels_to_demolish"], 22)
+        self.assertEqual(p1_rows["b2"]["target_level"], 0)
+        self.assertEqual(p1_rows["b6"]["target_level"], 0)
+        self.assertEqual(p1_rows["b3"]["target_level"], 5)
+        self.assertEqual(p1_rows["b3"]["levels_to_demolish"], 16)
+
+    def test_manual_planet_override_yearly_projection_and_ingame_planet_name_sync(self) -> None:
+        from unittest.mock import MagicMock
+        from spaceinvasion.runtime.api_server import GameApiBridge
+        from spaceinvasion.session.executor import ActionExecutor
+
+        p1 = _make_planet(
+            601,
+            "02:380:12",
+            "Colony",
+            temperature=20,
+            fields_max=260,
+            buildings={"b1": 18, "b2": 16, "b3": 16, "b4": 14, "b5": 20, "b7": 10, "b8": 10, "b9": 10},
+        )
+        p2 = _make_planet(
+            602,
+            "02:380:08",
+            "Colony",
+            temperature=-20,
+            fields_max=300,
+            buildings={"b1": 14, "b3": 16, "b4": 16, "b5": 18, "b7": 8},
+        )
+        state = GameState(
+            universe_id=31,
+            user_id=7,
+            nickname="Architect",
+            timestamp=1_700_000_000.0,
+            planets=(p1, p2),
+            active_planet_id=601,
+            researches={"r1": 8, "r2": 8, "r3": 8, "r6": 8, "r13": 8, "r15": 1},
+            speedup_factor=10.0,
+        )
+
+        # 1. Manual planet override updates target buildings, auto-raises b7 prereq for b17, and pins for future GA runs
+        manual_res = co.apply_manual_planet_override(
+            state,
+            slot=2,
+            target_buildings={"b3": 24, "b4": 26, "b5": 26, "b9": 14, "b17": 2, "b13": 10, "b14": 10},
+            planet_name="Starforge II",
+            locked_specialization="spice_shipyard",
+            lock_for_ga=True,
+            universe_research_max={"r1": 12, "r2": 12, "r3": 10, "r6": 12, "r13": 12, "r15": 3},
+            params=_fast_params(max_planets=2, central_planet_min_warehouse_level=10),
+        )
+        p2_rec = manual_res["planets"][1]
+        p2_blds = {r["key"]: r["target_level"] for r in p2_rec["buildings"]}
+        self.assertEqual(p2_rec["name"], "Starforge II")
+        self.assertEqual(p2_rec["game_name"], "Colony")
+        self.assertTrue(p2_rec["manual_pinned"])
+        self.assertEqual(p2_blds["b4"], 26)
+        self.assertEqual(p2_blds["b9"], 14)
+        self.assertEqual(p2_blds["b17"], 2)
+        self.assertGreaterEqual(p2_blds["b7"], 12)  # Auto-raised b7 prereq for b17!
+
+        # Over-field manual override raises ValueError cleanly
+        with self.assertRaises(ValueError):
+            co.apply_manual_planet_override(
+                state,
+                base_result=manual_res,
+                slot=2,
+                target_buildings={"b1": 95, "b2": 95, "b3": 95, "b5": 95},
+            )
+
+        # Pinned manual planet survives subsequent GA run while Slot 1 optimizes around it
+        ga_after_pin = co.run_config_optimizer(
+            state,
+            universe_research_max={"r1": 12, "r2": 12, "r3": 10, "r6": 12, "r13": 12, "r15": 3},
+            params=manual_res["meta_parameters"],
+            previous_result=manual_res,
+        )
+        ga_p2_blds = {r["key"]: r["target_level"] for r in ga_after_pin["planets"][1]["buildings"]}
+        self.assertEqual(ga_p2_blds["b4"], 26)
+        self.assertEqual(ga_p2_blds["b9"], 14)
+        self.assertEqual(ga_p2_blds["b17"], 2)
+
+        # 2. Year-by-year Ships/Week projection produces 5 years (261 weekly points) climbing toward target
+        proj = co.compute_yearly_ships_per_week_projection(ga_after_pin, state, horizon_years=5)
+        self.assertEqual(proj["horizon_years"], 5)
+        self.assertEqual(len(proj["years"]), 5)
+        self.assertEqual(len(proj["weeks"]), 5 * 52 + 1)
+        self.assertGreater(proj["target_ships_per_week"], 0.0)
+        self.assertGreaterEqual(
+            proj["years"][-1]["end_ships_per_week"],
+            proj["years"][0]["start_ships_per_week"],
+        )
+        self.assertGreater(proj["years"][-1]["cumulative_ships_produced"], 0.0)
+
+        # 3. ActionExecutor.sync_planet_names_in_game submits internalSettings form & NEVER clicks delete triggers
+        settings_before = """
+        <html><body>
+          <form method="POST">
+            <table>
+              <tr>
+                <td><b>Pos. 1</b></td>
+                <td><input name="planet_601" type="text" value="Colony" maxlength="24"/></td>
+                <td>02:380:12</td>
+                <td><a onclick="confirmPlanetDeletion('02:380:12', 601)">Delete</a></td>
+              </tr>
+              <tr>
+                <td><b>Pos. 2</b></td>
+                <td><input name="planet_602" type="text" value="Colony" maxlength="24"/></td>
+                <td>02:380:08</td>
+                <td><a onclick="confirmPlanetDeletion('02:380:08', 602)">Delete</a></td>
+              </tr>
+            </table>
+            <input type="submit" value="Save"/>
+          </form>
+        </body></html>
+        """
+        settings_after = settings_before.replace('name="planet_602" type="text" value="Colony"', 'name="planet_602" type="text" value="Starforge II"')
+        executed_scripts: list[tuple[str, Any]] = []
+
+        fake_client = MagicMock()
+        fake_client.navigate_menu.return_value = settings_before
+        fake_client._wait_frame_ready.return_value = settings_after
+
+        def _fake_exec_script(script: str, *args: Any) -> Any:
+            executed_scripts.append((script, args))
+            if "const updates = arguments[0]" in script:
+                return {"ok": True, "method": "submit_button", "applied": args[0]}
+            return 1
+
+        fake_client.driver.execute_script.side_effect = _fake_exec_script
+        updated_p2 = dataclasses.replace(p2, name="Starforge II")
+        fake_client.read_planets_overview.return_value = dataclasses.replace(state, planets=(p1, updated_p2))
+
+        executor = ActionExecutor(action_delay_range=(0.0, 0.0))
+        sync_res = executor.sync_planet_names_in_game(fake_client, state, {602: "Starforge II"})
+        self.assertTrue(sync_res["ok"])
+        self.assertEqual(sync_res["synced_count"], 1)
+        self.assertEqual(sync_res["synced"][0]["game_name"], "Starforge II")
+        self.assertTrue(sync_res["synced"][0]["verified"])
+        for scr, _a in executed_scripts:
+            self.assertNotIn("executeDeletePlanet", scr)
+            self.assertNotIn("confirmPlanetDeletion", scr)
+
+        # 4. GameApiBridge commands: rename_planet preserves true game_name, sync_planet_names updates game_name,
+        #    and config_optimizer_update_planet + config_optimizer_yearly_projection work end-to-end.
+        fake_client_cm = MagicMock()
+        fake_client_cm.__enter__.return_value = fake_client
+        fake_client_cm.__exit__.return_value = False
+        bridge = GameApiBridge(
+            debug_port=9222,
+            client_factory=lambda _port: fake_client_cm,
+            ensure_session_fn=lambda: None,
+            db_path=None,
+        )
+        bridge._last_state = state
+        bridge._live_executor = executor
+
+        ren_out = bridge.handle_command({"command": "rename_planet", "planet_id": 602, "name": "Starforge II"})
+        self.assertTrue(ren_out["ok"])
+        self.assertEqual(ren_out["name"], "Starforge II")
+        self.assertEqual(ren_out["game_name"], "Colony")
+
+        upd_out = bridge.handle_command(
+            {
+                "command": "config_optimizer_update_planet",
+                "slot": 2,
+                "planet_id": 602,
+                "planet_name": "Starforge II",
+                "locked_specialization": "spice_shipyard",
+                "target_buildings": {"b4": 25, "b5": 24, "b9": 13, "b17": 1},
+                "auto_replan_ai": False,
+            }
+        )
+        self.assertTrue(upd_out["ok"])
+        # Before in-game sync, game_name remains "Colony" while display name is "Starforge II"
+        self.assertEqual(upd_out["result"]["planets"][1]["name"], "Starforge II")
+        self.assertEqual(upd_out["result"]["planets"][1]["game_name"], "Colony")
+
+        proj_out = bridge.handle_command({"command": "config_optimizer_yearly_projection", "horizon_years": 3})
+        self.assertTrue(proj_out["ok"])
+        self.assertEqual(len(proj_out["projection"]["years"]), 3)
+
+        sync_api_out = bridge.handle_command({"command": "sync_planet_names"})
+        self.assertTrue(sync_api_out["ok"])
+        self.assertEqual(sync_api_out["synced_count"], 1)
+        co_get_after = bridge.handle_command({"command": "config_optimizer_get"})
+        self.assertEqual(co_get_after["active"]["result"]["planets"][1]["name"], "Starforge II")
+        self.assertEqual(co_get_after["active"]["result"]["planets"][1]["game_name"], "Starforge II")
 
 
 if __name__ == "__main__":

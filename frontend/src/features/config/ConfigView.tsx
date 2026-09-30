@@ -70,6 +70,14 @@ export const ConfigView: React.FC = () => {
 
   const botCtrl = dashboard?.bot_control || {};
   const modeVal = uiPrefs.modeOverride || botCtrl.mode_override || "auto";
+  const activeDbBackend = String(
+    dashboard?.db_backend?.backend || dashboard?.db_summary?.backend || "sqlite"
+  ).toLowerCase() === "postgres"
+    ? "postgres"
+    : "sqlite";
+  const activeDbTarget = String(
+    dashboard?.db_backend?.target || dashboard?.db_summary?.db_path || "state/spaceinvasion.db"
+  );
 
   const onModeChange = async (mode: string) => {
     const val = mode === "auto" ? null : mode;
@@ -249,7 +257,7 @@ export const ConfigView: React.FC = () => {
         setDashboard(nextDash);
         hydrateFromConfig(res.config);
       }
-      showFeedback("Saved config.yaml — Commander & API updated.", "ok");
+      showFeedback("Saved strategy config to database — Commander & API updated.", "ok");
       await loadDashboard({ refresh: false, preserveConfig: false, force: true });
     } catch (err: any) {
       setConfigDirty(true);
@@ -370,7 +378,10 @@ export const ConfigView: React.FC = () => {
         <div className="window-bar window-bar-wrap">
           <div className="window-title-group">
             <span className="module-code tabular">CFG</span>
-            <h2>Strategy Profile &amp; Decision Buckets (SQLite)</h2>
+            <h2>
+              Strategy Profile &amp; Decision Buckets (
+              {activeDbBackend === "postgres" ? "PostgreSQL · Podman" : "SQLite"})
+            </h2>
           </div>
           <div className="inline-actions">
             <button
@@ -412,8 +423,8 @@ export const ConfigView: React.FC = () => {
           <section className="config-group" aria-labelledby="cfg-grp-execution-mode">
             <div className="config-group-head">
               <h3 id="cfg-grp-execution-mode">Runtime &amp; Autopilot Execution</h3>
-              <p className="config-group-sub">
-                Override how the Commander loop executes ticks against Chrome without restarting the stack or editing config.yaml.
+                <p className="config-group-sub">
+                Override how the Commander loop executes ticks against Chrome without restarting the stack. Strategy configuration is persisted directly in the active database.
               </p>
             </div>
             <div className="config-list">
@@ -457,6 +468,26 @@ export const ConfigView: React.FC = () => {
                       );
                     })}
                   </div>
+                </div>
+              </div>
+
+              <div className="config-item config-item-mode" id="cfg-item-db-backend">
+                <div className="config-item-info">
+                  <div className="config-item-head">
+                    <span className="config-item-label">Active Database</span>
+                    <code className="config-item-key tabular">
+                      {activeDbBackend === "postgres" ? "postgresql (docker)" : "sqlite (local)"}
+                    </code>
+                  </div>
+                  <p className="config-item-desc">
+                    Docker / Podman Compose runs exclusively on PostgreSQL (<code>./data/postgres</code>), while containerless <code>./starter.sh</code> uses local SQLite (<code>state/spaceinvasion.db</code>). Sync both databases anytime with <code>./scripts/sync_db.py</code>. Active target:{" "}
+                    <code className="tabular">{activeDbTarget}</code>
+                  </p>
+                </div>
+                <div className="config-item-control">
+                  <span className="nav-badge tabular" id="badge-active-db-backend">
+                    {activeDbBackend === "postgres" ? "POSTGRESQL · DOCKER" : "SQLITE · LOCAL"}
+                  </span>
                 </div>
               </div>
             </div>

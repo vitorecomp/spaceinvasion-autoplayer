@@ -35,7 +35,9 @@ from spaceinvasion.planner.action_graph import (
 )
 from spaceinvasion.session.auth import AntiBotChallengeError, SpaceInvasionAuthError, load_credentials
 from spaceinvasion.session.browser import (
+    DEFAULT_DEBUG_HOST,
     DEFAULT_DEBUG_PORT,
+    DEFAULT_PROFILE_ROOT,
     BrowserConfig,
     is_debug_port_open,
     login_with_browser,
@@ -115,6 +117,18 @@ from spaceinvasion.core.state import (
     parse_universe_research_records,
     parse_unread_banner_count,
 )
+from spaceinvasion.db.backend import (
+    ResolvedDatabaseConfig,
+    build_default_postgres_url,
+    ensure_postgres_container_ready,
+    get_podman_postgres_status,
+    is_container_runtime,
+    is_postgres_dsn,
+    ping_postgres,
+    redact_db_url,
+    resolve_database_config,
+    sync_database_stores,
+)
 from spaceinvasion.db.migrations import DatabaseMigrationRegistry, LATEST_SCHEMA_VERSION
 from spaceinvasion.db.storage import GameDatabase, server_day_key
 from spaceinvasion.planner.strategy import (
@@ -129,6 +143,7 @@ from spaceinvasion.planner.strategy import (
     plan_fleet_and_attack_actions,
 )
 
+REPO_ROOT_DIR = Path(__file__).resolve().parents[2]
 UI_DIR = Path(__file__).resolve().parents[1] / "ui"
 MAX_REQUEST_BYTES = 1_048_576
 _SERVER_BOOT_ID = secrets.token_hex(4)
@@ -193,6 +208,10 @@ ALLOWED_MENU_ACTIONS = frozenset(
 
 class ApiRequestError(ValueError):
     """Raised when an API request payload is malformed or unsupported."""
+
+
+class GalaxyScanInProgressError(RuntimeError):
+    """Raised when a non-emergency live browser action is requested during an active galaxy scan."""
 
 
 _API_SECRET_DICT_KEYS: frozenset[str] = _SECRET_DICT_KEYS
@@ -597,6 +616,7 @@ def _validate_config_patch(raw_cfg: Mapping[str, Any], *, strict_bools: bool = T
         "ga_seed": (-2_147_483_648, 2_147_483_647, True),
         "action_batch_interval_seconds": (5, 86400, False),
         "max_actions_per_hour": (1, 100_000, False),
+        "page_view_limit_per_minute": (6, 600, False),
         "min_free_fields_warning": (1, 1000, False),
         "min_colony_fields": (50, 600, False),
         "max_planets": (1, 50, False),
@@ -649,6 +669,7 @@ def _validate_config_patch(raw_cfg: Mapping[str, Any], *, strict_bools: bool = T
         "allow_multi_planet",
         "allow_fleetsave",
         "allow_galaxy_scan",
+        "galaxy_scan_block_other_actions",
         "allow_raids",
         "allow_pvp_in_az",
         "allow_colonize",
@@ -1190,30 +1211,55 @@ def _dashboard_state_sig(
 def ensure_debug_browser_ready(
     *,
     debug_port: int = DEFAULT_DEBUG_PORT,
+    debug_host: str = DEFAULT_DEBUG_HOST,
     env_file: Path = Path(".env"),
     account: str = "default",
 ) -> None:
-    """Ensure Chrome stays open on `debug_port` and logged into the configured universe."""
-    if not is_debug_port_open(debug_port):
-        creds = load_credentials(env_path=env_file, account=account)
-        cfg = BrowserConfig(
-            profile_dir=Path(".browser_profile") / creds.account_name,
-            debug_port=debug_port,
-            detach=True,
-        )
-        login_with_browser(creds=creds, config=cfg, require_in_game=True)
-        return
+    """Ensure Chrome stays open on `debug_host:debug_port` and logged into the configured universe."""
+    eff_host = str(debug_host or DEFAULT_DEBUG_HOST).strip() or "127.0.0.1"
+    is_remote_browser = eff_host not in ("127.0.0.1", "localhost", "::1")
+
+    if is_remote_browser:
+        deadline = time.monotonic() + 30.0
+        port_open = False
+        while time.monotonic() < deadline:
+            if is_debug_port_open(debug_port, eff_host):
+                port_open = True
+                break
+            time.sleep(0.5)
+        if not port_open:
+            raise SpaceInvasionAuthError(
+                f"Remote browser container at {eff_host}:{debug_port} is not reachable."
+            )
+    else:
+        port_open = is_debug_port_open(debug_port)
+        if not port_open:
+            creds = load_credentials(env_path=env_file, account=account)
+            cfg = BrowserConfig(
+                profile_dir=DEFAULT_PROFILE_ROOT / creds.account_name,
+                debug_port=debug_port,
+                debug_host=eff_host,
+                detach=True,
+            )
+            login_with_browser(creds=creds, config=cfg, require_in_game=True)
+            return
 
     try:
-        with GameBrowserClient.attach(port=debug_port) as client:
+        attach_ctx = (
+            GameBrowserClient.attach(port=debug_port)
+            if eff_host == "127.0.0.1"
+            else GameBrowserClient.attach(port=debug_port, host=eff_host)
+        )
+        with attach_ctx as client:
             client.ensure_in_game()
     except RateLimitError:
         raise
     except SpaceInvasionAuthError:
         creds = load_credentials(env_path=env_file, account=account)
         cfg = BrowserConfig(
-            profile_dir=Path(".browser_profile") / creds.account_name,
+            profile_dir=DEFAULT_PROFILE_ROOT / creds.account_name,
             debug_port=debug_port,
+            debug_host=eff_host,
             attach=True,
             detach=True,
         )
@@ -1499,12 +1545,15 @@ class GameApiBridge:
         self,
         *,
         debug_port: int = DEFAULT_DEBUG_PORT,
+        debug_host: str = DEFAULT_DEBUG_HOST,
         env_file: Path = Path(".env"),
         account: str = "default",
         config_path: Optional[Path] = None,
         max_actions_per_hour: Optional[int] = None,
         log_dir: Optional[Path] = Path("logs"),
-        db_path: Optional[Path] = None,
+        db_path: Optional[Path | str] = None,
+        db_backend: Optional[str] = None,
+        db_url: Optional[str] = None,
         client_factory: Optional[Callable[[int], Any]] = None,
         ensure_session_fn: Optional[Callable[[], None]] = None,
         page_limiter: Optional[PageViewLimiter] = None,
@@ -1512,26 +1561,32 @@ class GameApiBridge:
         executor_max_limiter_wait: Optional[float] = 8.0,
     ) -> None:
         self.debug_port = _safe_debug_port(debug_port, DEFAULT_DEBUG_PORT)
+        self.debug_host = str(debug_host or DEFAULT_DEBUG_HOST).strip() or "127.0.0.1"
+        raw_novnc = (os.environ.get("SPACEINVASION_NOVNC_URL") or "").strip()
+        self.novnc_url: Optional[str] = raw_novnc or (
+            "http://127.0.0.1:7900/vnc.html?autoconnect=true&resize=scale"
+            if (is_container_runtime() or self.debug_host not in ("127.0.0.1", "localhost", "::1"))
+            else None
+        )
         self.env_file = env_file
         self.account = account
-        self._config_file_explicit = bool(
-            config_path is not None and config_path != Path("config.yaml")
-        )
+        self._config_file_explicit = config_path is not None
+        self.config_path: Optional[Path] = config_path
         if config_path is not None:
-            self.config_path = config_path
             self.strategy_config: StrategyConfig = load_strategy_config(config_path)
-        elif log_dir is not None:
-            self.config_path = Path("config.yaml")
+        elif log_dir is not None or db_backend is not None or db_url is not None or is_container_runtime():
             self.strategy_config = load_strategy_config(None)
         else:
-            self.config_path = Path("config.yaml")
             self.strategy_config = StrategyConfig()
         self.log_dir = log_dir
         self._lock = threading.Lock()
         # Dedicated lightweight lock for read-only SQLite intel/colony views so
         # UI polls never block behind Chrome/Selenium actions holding `_lock`.
         self._intel_read_lock = threading.RLock()
+        self._custom_page_limiter_injected = page_limiter is not None
         self._page_limiter = page_limiter or PageViewLimiter()
+        if not self._custom_page_limiter_injected:
+            self._sync_page_limiter_from_config(self.strategy_config)
         self._max_limiter_wait = _safe_limiter_wait(max_limiter_wait, 8.0)
         if executor_max_limiter_wait is None:
             self._executor_max_limiter_wait: Optional[float] = None
@@ -1565,6 +1620,8 @@ class GameApiBridge:
         self._throttle_timestamps: dict[int, float] = {}
         self._metal_overflow_paused_planets: dict[int, float] = {}
         self._fleet_slot_cooldown_until: dict[int, float] = {}
+        self._observed_fleet_slots_by_pid: dict[int, tuple[int, int]] = {}
+        self._observed_fleet_slot_base_offset: Optional[int] = None
         self._target_blocks: dict[str, tuple[float, str]] = {}
         # Colony trial ledger (`colony_attempts`): dedupe keys for kept/settled observations,
         # secondary planets seen without a parsed field count yet, and recent failed-dispatch throttle.
@@ -1592,26 +1649,73 @@ class GameApiBridge:
         self._active_ai_cache: Optional[dict[str, Any]] = None
         self._last_bot_control_payload: Optional[dict[str, Any]] = None
         self._last_dashboard_payload: Optional[dict[str, Any]] = None
-        resolved_db = (
-            db_path
-            if db_path is not None
-            else ((log_dir.parent / "state" / "spaceinvasion.db") if log_dir is not None else None)
-        )
-        legacy_rank_path: Optional[Path] = (
-            (resolved_db.parent / "rank_history.json")
-            if (
-                resolved_db is not None
-                and str(resolved_db) != ":memory:"
-                and (resolved_db.parent / "rank_history.json").is_file()
-            )
-            else None
-        )
         self._rank_history_path: Optional[Path] = None
-        self._db: Optional[GameDatabase] = (
-            GameDatabase(resolved_db, legacy_rank_json=legacy_rank_path)
-            if resolved_db is not None
-            else None
-        )
+        self._db_selection_source: str = "explicit"
+        self._resolved_sqlite_path: Path = REPO_ROOT_DIR / "state" / "spaceinvasion.db"
+        self._resolved_postgres_url: str = build_default_postgres_url()
+
+        is_live_repo_default_db = False
+        if db_path is None and (db_backend is not None or db_url is not None or is_container_runtime()):
+            is_live_repo_default_db = True
+        elif db_path is None and log_dir is not None:
+            try:
+                is_live_repo_default_db = Path(log_dir).resolve() == (REPO_ROOT_DIR / "logs").resolve()
+            except OSError:
+                is_live_repo_default_db = False
+
+        if db_path is not None and is_postgres_dsn(str(db_path)):
+            self._db_selection_source = "explicit_dsn"
+            self._resolved_postgres_url = str(db_path).strip()
+            self._db: Optional[GameDatabase] = GameDatabase(self._resolved_postgres_url, backend="postgres")
+        elif is_live_repo_default_db:
+            resolved_cfg: ResolvedDatabaseConfig = resolve_database_config(
+                explicit_backend=db_backend,
+                explicit_db_url=db_url,
+                root_dir=REPO_ROOT_DIR,
+            )
+            self._db_selection_source = resolved_cfg.selection_source
+            self._resolved_sqlite_path = resolved_cfg.sqlite_path
+            self._resolved_postgres_url = resolved_cfg.postgres_url
+            if resolved_cfg.backend == "postgres":
+                ensure_postgres_container_ready(
+                    resolved_cfg.postgres_url,
+                    root_dir=REPO_ROOT_DIR,
+                    auto_start=resolved_cfg.auto_start_podman,
+                )
+                self._db = GameDatabase(
+                    resolved_cfg.postgres_url,
+                    backend="postgres",
+                )
+                self._maybe_initial_sync_sqlite_to_postgres(resolved_cfg.sqlite_path)
+            else:
+                legacy_rank_path_live: Optional[Path] = (
+                    (resolved_cfg.sqlite_path.parent / "rank_history.json")
+                    if (resolved_cfg.sqlite_path.parent / "rank_history.json").is_file()
+                    else None
+                )
+                self._db = GameDatabase(resolved_cfg.sqlite_path, legacy_rank_json=legacy_rank_path_live)
+        else:
+            resolved_db = (
+                Path(db_path) if isinstance(db_path, (Path, str)) and str(db_path) != ":memory:" and not str(db_path).startswith("file:") else db_path
+                if db_path is not None
+                else ((log_dir.parent / "state" / "spaceinvasion.db") if log_dir is not None else None)
+            )
+            if isinstance(resolved_db, Path):
+                self._resolved_sqlite_path = resolved_db
+            legacy_rank_path: Optional[Path] = (
+                (resolved_db.parent / "rank_history.json")
+                if (
+                    isinstance(resolved_db, Path)
+                    and str(resolved_db) != ":memory:"
+                    and (resolved_db.parent / "rank_history.json").is_file()
+                )
+                else None
+            )
+            self._db = (
+                GameDatabase(resolved_db, legacy_rank_json=legacy_rank_path)
+                if resolved_db is not None
+                else None
+            )
         if self._db is not None:
             self._rank_samples = self._db.get_rank_samples()
             self._economy_rates.update(self._db.get_all_economy_rates())
@@ -1662,6 +1766,12 @@ class GameApiBridge:
         self._sweep_run_lock = threading.Lock()
         self._sweep_in_progress = False
         self._sweep_stop_event = threading.Event()
+        self._sweep_wake_event = threading.Event()
+        self._sweep_preempt_event = threading.Event()
+        self._sweep_preempt_reason: Optional[str] = None
+        self._sweep_done_event = threading.Event()
+        self._sweep_done_event.set()
+        self._last_live_command_mono: float = 0.0
         self._sweep_thread: Optional[threading.Thread] = None
         # Cached Smart 2-Phase Galaxy Scanner telemetry (`scan_phase`, coverage, `sample_targets`)
         self._smart_sweep_summary: dict[str, Any] = {}
@@ -1679,6 +1789,7 @@ class GameApiBridge:
         self._reserved_floors_mem: dict[str, dict[str, int]] = {}
         self._planet_specializations_mem: dict[str, str] = {}
         self._custom_planet_names: dict[str, str] = {}
+        self._co_yearly_proj_cache: dict[tuple[Any, ...], dict[str, Any]] = {}
         self._recent_transport_dispatches: list[dict[str, Any]] = []
         self._galaxy_debris_amounts: dict[str, dict[str, int]] = {}
         self._last_early_transport_needs: dict[int, dict[str, Any]] = {}
@@ -1733,19 +1844,42 @@ class GameApiBridge:
             max_limiter_wait=self._executor_max_limiter_wait,
         )
         self._client_factory = client_factory or (
-            lambda port: GameBrowserClient.attach(
-                port=port,
-                page_limiter=self._page_limiter,
-                max_limiter_wait=self._max_limiter_wait,
+            lambda port: (
+                GameBrowserClient.attach(
+                    port=port,
+                    page_limiter=self._page_limiter,
+                    max_limiter_wait=self._max_limiter_wait,
+                )
+                if self.debug_host == "127.0.0.1"
+                else GameBrowserClient.attach(
+                    port=port,
+                    host=self.debug_host,
+                    page_limiter=self._page_limiter,
+                    max_limiter_wait=self._max_limiter_wait,
+                )
             )
         )
         self._ensure_session_fn = ensure_session_fn or (
-            lambda: ensure_debug_browser_ready(
-                debug_port=self.debug_port,
-                env_file=self.env_file,
-                account=self.account,
+            lambda: (
+                ensure_debug_browser_ready(
+                    debug_port=self.debug_port,
+                    env_file=self.env_file,
+                    account=self.account,
+                )
+                if self.debug_host == "127.0.0.1"
+                else ensure_debug_browser_ready(
+                    debug_port=self.debug_port,
+                    debug_host=self.debug_host,
+                    env_file=self.env_file,
+                    account=self.account,
+                )
             )
         )
+
+    def _is_browser_port_open(self) -> bool:
+        if self.debug_host == "127.0.0.1":
+            return is_debug_port_open(self.debug_port)
+        return is_debug_port_open(self.debug_port, self.debug_host)
 
     def close(self) -> None:
         """Close owned database resources idempotently."""
@@ -1755,12 +1889,13 @@ class GameApiBridge:
         self.stop_galaxy_sweep_worker()
         lock = getattr(self, "_lock", None)
         with (lock if lock is not None else contextlib.nullcontext()):
-            db = getattr(self, "_db", None)
-            if db is not None:
-                self._db = None
-                close_fn = getattr(db, "close", None)
-                if callable(close_fn):
-                    close_fn()
+            if not getattr(self, "_db_closed", False):
+                self._db_closed = True
+                db = getattr(self, "_db", None)
+                if db is not None:
+                    close_fn = getattr(db, "close", None)
+                    if callable(close_fn):
+                        close_fn()
 
     def __enter__(self) -> "GameApiBridge":
         return self
@@ -1798,12 +1933,119 @@ class GameApiBridge:
             setattr(err, "_recorded_limiter_id", id(self._page_limiter))
             raise err
 
+    def _maybe_initial_sync_sqlite_to_postgres(self, sqlite_path: Path) -> None:
+        """Automatically migrate existing `state/spaceinvasion.db` rows into PostgreSQL on first boot."""
+        if self._db is None or getattr(self._db, "backend_name", "sqlite") != "postgres":
+            return
+        if not sqlite_path.is_file():
+            return
+        try:
+            marker = self._db.load_meta_json("initial_sqlite_sync_v1")
+            if marker is not None:
+                return
+            # Check if PostgreSQL already received the bulk sync (> 1,000 history rows)
+            with self._db._lock:
+                cnt_row = self._db._conn.execute("SELECT COUNT(*) FROM galaxy_slot_history").fetchone()
+                existing_hist = int(cnt_row[0] or 0) if cnt_row is not None else 0
+            if existing_hist > 100:
+                self._db.save_meta_json(
+                    "initial_sqlite_sync_v1",
+                    {"synced_ts": round(time.time(), 3), "already_populated": True, "galaxy_slot_history": existing_hist},
+                )
+                return
+            sq_db = GameDatabase(sqlite_path, attack_history_path="")
+            try:
+                res = sync_database_stores(sq_db, self._db)
+            finally:
+                sq_db.close()
+            self._db.save_meta_json(
+                "initial_sqlite_sync_v1",
+                {
+                    "synced_ts": round(time.time(), 3),
+                    "rows_processed": int(res.get("rows_processed", 0)),
+                    "tables_synced": int(res.get("tables_synced", 0)),
+                },
+            )
+            print(
+                f"[API] Migrated {res.get('rows_processed', 0)} rows across "
+                f"{res.get('tables_synced', 0)} tables from SQLite -> PostgreSQL in {res.get('elapsed_ms', 0)}ms.",
+                flush=True,
+            )
+        except Exception as exc:
+            print(
+                f"[API] Initial SQLite -> PostgreSQL sync warning: {redact_sensitive(str(exc))}",
+                file=sys.stderr,
+                flush=True,
+            )
+
+    def _build_db_backend_status(self, *, include_ping: bool = False) -> dict[str, Any]:
+        db = self._db
+        backend = str(getattr(db, "backend_name", "sqlite")) if db is not None else "none"
+        target = str(getattr(db, "display_target", "")) if db is not None else ""
+        sqlite_exists = self._resolved_sqlite_path.is_file()
+        sqlite_size = self._resolved_sqlite_path.stat().st_size if sqlite_exists else 0
+        out: dict[str, Any] = {
+            "backend": backend,
+            "target": target,
+            "selection_source": self._db_selection_source,
+            "container_mode": is_container_runtime(),
+            "postgres_target": redact_db_url(self._resolved_postgres_url),
+            "sqlite_target": str(self._resolved_sqlite_path),
+            "sqlite_exists": sqlite_exists,
+            "sqlite_size_bytes": sqlite_size,
+        }
+        if include_ping:
+            podman_info = get_podman_postgres_status(force=False)
+            out["podman"] = podman_info
+            pg_ok, pg_ms, pg_msg = ping_postgres(self._resolved_postgres_url, timeout=1.5)
+            out["postgres_reachable"] = pg_ok
+            out["postgres_latency_ms"] = pg_ms
+            out["postgres_server"] = pg_msg if pg_ok else ""
+            out["postgres_error"] = "" if pg_ok else pg_msg
+        return out
+
+    def _rebind_database_locked(self, new_db: GameDatabase, *, selection_source: str) -> None:
+        old_db = self._db
+        self._db = new_db
+        self._db_selection_source = selection_source
+        self._db_summary_cache_key = None
+        self._db_summary_cache = None
+        self._raid_stats_cache_key = None
+        self._raid_stats_cache = None
+        self._raid_targets_cache_key = None
+        self._co_goals_cache_key = None
+        self._co_goals_cache = None
+        self._active_ai_cache_key = None
+        self._active_ai_cache = None
+        self._hourly_prod_cache_key = None
+        self._hourly_prod_cache = []
+        self._loot_recycle_cache_key = None
+        self._loot_recycle_cache = None
+        self._rank_samples = self._db.get_rank_samples()
+        self._economy_rates.clear()
+        self._economy_rates.update(self._db.get_all_economy_rates())
+        self._refresh_raid_targets_locked(limit=100)
+        self._scanned_systems.clear()
+        self._scanned_systems.update(self._db.get_galaxy_scans())
+        self._throttle_timestamps.clear()
+        self._throttle_timestamps.update(self._db.get_last_throttle_timestamps())
+        self._colony_attempt_seen.clear()
+        self._hydrate_colony_attempt_seen()
+        self._hydrate_persisted_bridge_state()
+        self._invalidate_dashboard_cache()
+        if old_db is not None and old_db is not new_db:
+            with contextlib.suppress(Exception):
+                old_db.close()
+
     def _hydrate_persisted_bridge_state(self) -> None:
         if self._db is None:
             return
         load_cfg_fn = getattr(self._db, "load_strategy_config_snapshot", None)
         save_cfg_fn = getattr(self._db, "save_strategy_config_snapshot", None)
-        if not (self._config_file_explicit and self.config_path.exists()) and callable(load_cfg_fn):
+        has_explicit_file = bool(
+            self._config_file_explicit and self.config_path is not None and self.config_path.exists()
+        )
+        if not has_explicit_file and callable(load_cfg_fn):
             saved_cfg = load_cfg_fn()
             if isinstance(saved_cfg, Mapping) and saved_cfg:
                 try:
@@ -1812,6 +2054,8 @@ class GameApiBridge:
                     pass
         if callable(save_cfg_fn):
             save_cfg_fn(asdict(self.strategy_config))
+        if not self._custom_page_limiter_injected:
+            self._sync_page_limiter_from_config(self.strategy_config)
 
         load_rt_fn = getattr(self._db, "load_runtime_state", None)
         rt = load_rt_fn() if callable(load_rt_fn) else {}
@@ -1861,6 +2105,23 @@ class GameApiBridge:
                     rem = until_w - now_wall
                     if pid_i > 0 and 0.0 < rem <= 86400.0:
                         self._fleet_slot_cooldown_until[pid_i] = now_mono + rem
+            raw_obs_off = rt.get("observed_fleet_slot_base_offset")
+            if isinstance(raw_obs_off, int) and not isinstance(raw_obs_off, bool) and raw_obs_off in (0, 1):
+                self._observed_fleet_slot_base_offset = raw_obs_off
+            raw_obs_pid_slots = rt.get("observed_fleet_slots_by_pid")
+            if isinstance(raw_obs_pid_slots, Mapping):
+                for raw_pid_s, raw_pair in raw_obs_pid_slots.items():
+                    pid_i = _safe_api_int(raw_pid_s, 0)
+                    if (
+                        pid_i > 0
+                        and isinstance(raw_pair, Sequence)
+                        and not isinstance(raw_pair, (str, bytes))
+                        and len(raw_pair) == 2
+                    ):
+                        b10_v = _safe_api_int(raw_pair[0], -1)
+                        av_v = _safe_api_int(raw_pair[1], -1)
+                        if b10_v >= 0 and av_v >= 0:
+                            self._observed_fleet_slots_by_pid[pid_i] = (b10_v, av_v)
 
             def _wall_to_mono(wall_key: str) -> float:
                 wv = _safe_api_float(rt.get(wall_key, 0.0), 0.0)
@@ -2123,6 +2384,11 @@ class GameApiBridge:
                 if isinstance(v, (int, float)) and math.isfinite(v) and v > 0.0
             },
             "fleet_slot_cooldown_until_wall": fsc_wall,
+            "observed_fleet_slot_base_offset": self._observed_fleet_slot_base_offset,
+            "observed_fleet_slots_by_pid": {
+                str(int(k)): [int(v[0]), int(v[1])]
+                for k, v in self._observed_fleet_slots_by_pid.items()
+            },
             "last_synced_unread_total": max(0, int(self._last_synced_unread_total)),
             "pending_spy_sync": bool(self._pending_spy_sync),
             "spio_sync_at_wall": _mono_to_wall(self._last_spio_sync_at),
@@ -2268,31 +2534,19 @@ class GameApiBridge:
             )
         )
         if is_prot:
-            if kind_s == "SPY":
-                act_reason_l = _bounded_api_str(getattr(act, "reason", ""), default="").lower()
-                is_free_probe = "free slot" in tname_s.lower() or "free slot" in act_reason_l
-                if not is_free_probe and self._db is not None:
-                    m_fc = re.search(r"(\d{1,2}):(\d{1,3}):(\d{1,2})", tname_s, re.ASCII)
-                    get_gs_fn = getattr(self._db, "get_galaxy_slots", None)
-                    if m_fc and callable(get_gs_fn):
-                        norm_fc = normalize_coords(m_fc.group(0))
-                        for s_row in get_gs_fn(galaxy=int(m_fc.group(1)), system=int(m_fc.group(2)), limit=20):
-                            if normalize_coords(s_row.get("coords") or "") == norm_fc:
-                                if str(s_row.get("status_color") or "").strip().lower() == "free" and not str(s_row.get("owner") or "").strip():
-                                    is_free_probe = True
-                                break
-                if is_free_probe:
-                    return None
-            severity = "warning"
-            category = "fleet_protection"
-            title = f"{kind_s} blocked: Target protected ({tname_s})"
-            help_prompt = (
-                f"The game server rejected {kind_s} on {tname_s} ('{val_err or msg_s}'). "
-                "A 6-hour target cooldown was recorded automatically so the bot stops retrying this target. "
-                "Please check the target in Chrome (:9222) if you pinned it manually, or acknowledge this alert."
+            # Target protection / AZ / vacation / bash rejections are normal in SpaceInvasion
+            # when cached galaxy targets despawn (e.g. Spacia) or change status between scans,
+            # and are handled automatically via target cooldowns — log only, no UI popup spam.
+            cd_hours = round(float(raw_tcd) / 3600.0, 2) if has_tcd else 6.0
+            print(
+                redact_sensitive(
+                    f"[API] {kind_s} target protected ({tname_s}): {val_err or msg_s} "
+                    f"(cooldown={cd_hours:g}h)"
+                ),
+                flush=True,
             )
-            dkey = f"prot:{kind_s}:{tname_s}"
-        elif executed and not validated:
+            return None
+        if executed and not validated:
             severity = "error"
             category = "action_validation"
             title = f"Validation failed after {kind_s}: {tname_s}"
@@ -2421,6 +2675,69 @@ class GameApiBridge:
             )
         return out
 
+    def _max_fleet_slots_for_planet_locked(self, planet: Optional[PlanetState]) -> int:
+        if planet is None:
+            return 1
+        b10_lvl = max(0, planet.building_level(10))
+        obs_pair = self._observed_fleet_slots_by_pid.get(int(planet.planet_id))
+        if obs_pair is not None and obs_pair[0] == b10_lvl:
+            return max(0, int(obs_pair[1]))
+        if self._observed_fleet_slot_base_offset is not None:
+            return max(0, b10_lvl + int(self._observed_fleet_slot_base_offset))
+        return 1 + b10_lvl
+
+    def _record_observed_fleet_slots_locked(
+        self,
+        planet: Optional[PlanetState],
+        available: Optional[int],
+    ) -> None:
+        if planet is None or available is None or isinstance(available, bool):
+            return
+        avail_i = _safe_api_int(available, -1)
+        if avail_i < 0:
+            return
+        pid_i = int(planet.planet_id)
+        b10_lvl = max(0, planet.building_level(10))
+        changed = False
+        if pid_i > 0 and self._observed_fleet_slots_by_pid.get(pid_i) != (b10_lvl, avail_i):
+            self._observed_fleet_slots_by_pid[pid_i] = (b10_lvl, avail_i)
+            changed = True
+        if b10_lvl >= 1 and avail_i in (b10_lvl, b10_lvl + 1):
+            new_off = avail_i - b10_lvl
+            if self._observed_fleet_slot_base_offset != new_off:
+                self._observed_fleet_slot_base_offset = new_off
+                changed = True
+        if changed:
+            self._invalidate_dashboard_cache()
+
+    def _compute_fleet_slot_busy_cooldown_s(
+        self,
+        state: GameState,
+        planet: Optional[PlanetState],
+    ) -> float:
+        if planet is None:
+            return self.FLEET_SLOT_COOLDOWN_S
+        norm_p = normalize_coords(getattr(planet, "coords", "") or "")
+        earliest_rem: Optional[float] = None
+        for q in getattr(state, "active_queues", ()) or ():
+            if not is_in_flight_fleet_job(q):
+                continue
+            q_orig = normalize_coords(getattr(q, "origin_coords", "") or "")
+            if q_orig and norm_p and q_orig != norm_p:
+                continue
+            rem_s = getattr(q, "remaining_seconds", None)
+            if (
+                isinstance(rem_s, (int, float))
+                and not isinstance(rem_s, bool)
+                and math.isfinite(rem_s)
+                and rem_s > 0.0
+            ):
+                if earliest_rem is None or float(rem_s) < earliest_rem:
+                    earliest_rem = float(rem_s)
+        if earliest_rem is not None:
+            return max(30.0, min(earliest_rem + 2.0, 1800.0))
+        return self.FLEET_SLOT_COOLDOWN_S
+
     def _apply_fleet_slot_holds(
         self,
         state: GameState,
@@ -2456,7 +2773,7 @@ class GameApiBridge:
         }
 
         def _spy_res_for(p_o: PlanetState) -> int:
-            max_s = 1 + max(0, p_o.building_level(10))
+            max_s = self._max_fleet_slots_for_planet_locked(p_o)
             has_dem = (
                 res_spy_cfg > 0
                 and _safe_api_int(p_o.ships.get("s10", 0), 0) > 0
@@ -2492,13 +2809,13 @@ class GameApiBridge:
         tr_res_by_pid: dict[int, int] = {}
         for pid_t, n_t in tr_count_by_pid.items():
             p_o = planets_by_id.get(pid_t, default_p)
-            max_s = 1 + max(0, p_o.building_level(10))
+            max_s = self._max_fleet_slots_for_planet_locked(p_o)
             tr_res_by_pid[pid_t] = min(n_t, max(0, max_s - _spy_res_for(p_o)))
 
         col_res_by_pid: dict[int, int] = {}
         for pid_c, n_c in col_count_by_pid.items():
             p_o = planets_by_id.get(pid_c, default_p)
-            max_s = 1 + max(0, p_o.building_level(10))
+            max_s = self._max_fleet_slots_for_planet_locked(p_o)
             col_res_by_pid[pid_c] = min(
                 n_c,
                 max(0, _safe_api_int(p_o.ships.get("s8", 0), 0)),
@@ -2508,7 +2825,7 @@ class GameApiBridge:
         st_res_by_pid: dict[int, int] = {}
         for pid_st, n_st in st_count_by_pid.items():
             p_o = planets_by_id.get(pid_st, default_p)
-            max_s = 1 + max(0, p_o.building_level(10))
+            max_s = self._max_fleet_slots_for_planet_locked(p_o)
             st_res_by_pid[pid_st] = min(
                 n_st,
                 max(0, max_s - _spy_res_for(p_o) - tr_res_by_pid.get(pid_st, 0) - col_res_by_pid.get(pid_st, 0)),
@@ -2522,7 +2839,7 @@ class GameApiBridge:
                 out.append(act)
                 continue
             p_obj = planets_by_id.get(act.planet_id, default_p)
-            max_slots = 1 + max(0, p_obj.building_level(10))
+            max_slots = self._max_fleet_slots_for_planet_locked(p_obj)
             used_slots = _used_for(p_obj)
             if act.kind == "SPY":
                 if used_slots >= max_slots:
@@ -2775,9 +3092,72 @@ class GameApiBridge:
             3,
         )
         st["in_progress"] = bool(self._sweep_in_progress)
+        st["blocking_other_actions"] = bool(self._is_galaxy_scan_blocking_locked())
         if include_smart:
             self._refresh_smart_sweep_summary_locked(now_ts=eff_now)
         return self._merge_smart_sweep_summary_locked(st)
+
+    def _is_galaxy_scan_blocking_locked(self) -> bool:
+        return bool(
+            self._sweep_in_progress
+            and getattr(self.strategy_config, "galaxy_scan_block_other_actions", True)
+        )
+
+    @staticmethod
+    def _galaxy_scan_busy_error_message() -> str:
+        return (
+            "Galaxy scan in progress — wait for scan to finish, "
+            "or Pause / disable Galaxy Scan first."
+        )
+
+    def _has_urgent_p0_escape_flight_locked(self) -> tuple[bool, str]:
+        if not bool(getattr(self.strategy_config, "allow_fleetsave", False)):
+            return False, ""
+        st = self._last_state
+        if st is not None and any(bool(getattr(fa, "hostile", False)) for fa in (st.fleet_alerts or ())):
+            active = st.active_planet()
+            if active is not None:
+                other_coords = next(
+                    (p.coords for p in st.planets if p.planet_id != active.planet_id),
+                    active.coords,
+                )
+                escape = plan_escape_flight(
+                    active,
+                    target_coords=other_coords,
+                    fuel_reserve_spice=self.strategy_config.fleet_save_fuel_reserve_spice,
+                )
+                if escape.feasible:
+                    return True, "Preempted galaxy scan for P0 hostile Escape Flight."
+        if self._db is not None and hasattr(self._db, "get_manual_queue"):
+            try:
+                pending = self._db.get_manual_queue(status="pending", limit=50)
+            except Exception:
+                pending = []
+            for item in pending or ():
+                if (
+                    isinstance(item, Mapping)
+                    and str(item.get("priority") or "").strip().upper() == "P0"
+                    and str(item.get("kind") or "").strip().upper() == "ESCAPE_FLIGHT"
+                ):
+                    return True, "Preempted galaxy scan for pinned P0 Escape Flight."
+        return False, ""
+
+    def _preempt_galaxy_sweep_and_wait(
+        self,
+        reason: str = "Preempted by P0 emergency Escape Flight.",
+        *,
+        timeout: float = 10.0,
+    ) -> None:
+        if not self._sweep_in_progress:
+            return
+        self._sweep_preempt_reason = reason
+        self._sweep_preempt_event.set()
+        wake_ev = getattr(self, "_sweep_wake_event", None)
+        if wake_ev is not None:
+            wake_ev.set()
+        done_ev = getattr(self, "_sweep_done_event", None)
+        if done_ev is not None and threading.current_thread() is not getattr(self, "_sweep_thread", None):
+            done_ev.wait(timeout=max(0.1, float(timeout)))
 
     # ---- Smart 2-Phase Galaxy Scanner (exploratory -> weighted targeted refresh) ----
 
@@ -3263,6 +3643,24 @@ class GameApiBridge:
     def _get_custom_planet_names_locked(self) -> dict[str, str]:
         return dict(self._custom_planet_names)
 
+    def _sync_page_limiter_from_config(self, cfg: StrategyConfig) -> None:
+        if getattr(self, "_custom_page_limiter_injected", False):
+            return
+        limit = max(6, min(600, _safe_api_int(getattr(cfg, "page_view_limit_per_minute", 60), 60)))
+        if limit <= 24:
+            delay_range = (0.9, 1.8)
+        else:
+            scale = min(1.0, 24.0 / float(limit))
+            delay_range = (max(0.25, round(0.9 * scale, 2)), max(0.45, round(1.8 * scale, 2)))
+        reserve = min(6, max(1, limit // 4))
+        configure_fn = getattr(self._page_limiter, "configure", None)
+        if callable(configure_fn):
+            configure_fn(
+                max_views_per_minute=limit,
+                min_delay_range=delay_range,
+                reserved_interactive_views=reserve,
+            )
+
     def _patch_last_dashboard_custom_names_locked(self) -> None:
         prev = self._last_dashboard_payload
         if isinstance(prev, Mapping):
@@ -3316,14 +3714,53 @@ class GameApiBridge:
             return state
         changed = False
         new_planets: list[PlanetState] = []
+        owned_custom_by_coords: dict[str, tuple[str, str]] = {}
         for p in state.planets:
             custom = names_map.get(str(p.planet_id))
+            if custom:
+                nc = normalize_coords(p.coords)
+                if nc:
+                    owned_custom_by_coords[nc] = (str(p.name or ""), custom)
             if custom and custom != p.name:
                 changed = True
                 new_planets.append(replace(p, name=custom))
             else:
                 new_planets.append(p)
-        return replace(state, planets=tuple(new_planets)) if changed else state
+
+        new_queues: Optional[tuple[QueueJob, ...]] = None
+        if owned_custom_by_coords and state.active_queues:
+            q_changed = False
+            patched_q: list[QueueJob] = []
+            for q in state.active_queues:
+                q_name = str(getattr(q, "name", "") or "")
+                if q_name and is_in_flight_fleet_job(q):
+                    dest_nc = _extract_coords_from_text(q_name)
+                    if dest_nc and dest_nc in owned_custom_by_coords:
+                        raw_nm, cust_nm = owned_custom_by_coords[dest_nc]
+                        alts = [re.escape(cust_nm), "Colony"]
+                        if raw_nm and raw_nm.lower() != "colony":
+                            alts.append(re.escape(raw_nm))
+                        pat = r"(\[\s*\d{1,2}:\d{1,3}:\d{1,2}\s*\]\s*)(?:" + "|".join(alts) + r")\s*$"
+                        updated_q_name = re.sub(
+                            pat,
+                            lambda m, cn=cust_nm: f"{m.group(1)}{cn}",
+                            q_name,
+                            flags=re.IGNORECASE,
+                        )
+                        if updated_q_name != q_name:
+                            q = replace(q, name=updated_q_name)
+                            q_changed = True
+                patched_q.append(q)
+            if q_changed:
+                new_queues = tuple(patched_q)
+                changed = True
+
+        if not changed:
+            return state
+        upd: dict[str, Any] = {"planets": tuple(new_planets)}
+        if new_queues is not None:
+            upd["active_queues"] = new_queues
+        return replace(state, **upd)
 
     def _serialize_state_with_custom_names(
         self,
@@ -3387,24 +3824,59 @@ class GameApiBridge:
                 nc = normalize_coords(str(d.get("coords") or ""))
                 if nc and nc in pid_by_coords:
                     pid = pid_by_coords[nc]
-            raw_game = str(d.get("game_name") or raw_by_pid.get(pid) or d.get("name") or "")
+            raw_game = str(
+                (raw_by_pid.get(pid) if pid in raw_by_pid and raw_by_pid.get(pid) else "")
+                or d.get("game_name")
+                or d.get("name")
+                or ""
+            )
             custom = custom_names.get(str(pid)) if pid > 0 else None
             d["game_name"] = raw_game
             d["custom_name"] = custom if custom else None
             if custom:
                 d["name"] = custom
-            elif pid > 0 and pid in raw_by_pid:
+            elif pid > 0 and pid in raw_by_pid and raw_by_pid[pid]:
                 d["name"] = raw_by_pid[pid]
             return d
 
         res_copy = dict(res)
+        patched_planets: Optional[list[Any]] = None
         if isinstance(res_copy.get("planets"), Sequence) and not isinstance(res_copy.get("planets"), (str, bytes)):
-            res_copy["planets"] = [_patch_planet_row(r) for r in res_copy["planets"]]
+            patched_planets = [_patch_planet_row(r) for r in res_copy["planets"]]
+            res_copy["planets"] = patched_planets
         if isinstance(res_copy.get("inputs"), Mapping):
             inp_copy = dict(res_copy["inputs"])
             if isinstance(inp_copy.get("planets"), Sequence) and not isinstance(inp_copy.get("planets"), (str, bytes)):
                 inp_copy["planets"] = [_patch_planet_row(r) for r in inp_copy["planets"]]
             res_copy["inputs"] = inp_copy
+        if patched_planets is not None:
+            res_copy["planet_names"] = {
+                str(_safe_api_int(pr.get("planet_id"), 0)): str(pr.get("name") or "")
+                for pr in patched_planets
+                if isinstance(pr, Mapping) and _safe_api_int(pr.get("planet_id"), 0) > 0
+            }
+            if isinstance(res_copy.get("summary"), Mapping):
+                central_row = next(
+                    (
+                        pr
+                        for pr in patched_planets
+                        if isinstance(pr, Mapping) and bool(pr.get("is_central_planet", False))
+                    ),
+                    None,
+                )
+                if central_row is not None:
+                    sum_copy = dict(res_copy["summary"])
+                    c_name = str(central_row.get("name") or "")
+                    c_coords = str(central_row.get("coords") or "")
+                    c_slot = _safe_api_int(central_row.get("slot_index", central_row.get("slot")), 1)
+                    sum_copy["central_planet_name"] = c_name
+                    if c_coords:
+                        sum_copy["central_planet"] = (
+                            f"{c_name} [{c_coords}] (slot {c_slot})"
+                            if c_name and c_name != c_coords
+                            else f"{c_coords} (slot {c_slot})"
+                        )
+                    res_copy["summary"] = sum_copy
         out["result"] = res_copy
         return out
 
@@ -5046,6 +5518,12 @@ class GameApiBridge:
         db = self._db
         if db is None:
             return None
+        tok_fn = getattr(db, "change_token", None)
+        if callable(tok_fn):
+            try:
+                return tok_fn()
+            except Exception:
+                return None
         conn = getattr(db, "_conn", None)
         if conn is None:
             return None
@@ -5306,6 +5784,20 @@ class GameApiBridge:
             val = raw.get(key)
             if isinstance(val, float) and not math.isfinite(val):
                 raw[key] = None if key.startswith(("wait_", "total_")) else 0.0
+        pid = _safe_api_int(raw.get("planet_id"), 0)
+        p_name = self._custom_planet_names.get(str(pid), "") if pid > 0 else ""
+        if not p_name:
+            ref_st = state if state is not None else self._last_state
+            if ref_st is not None:
+                nc_act = normalize_coords(str(raw.get("planet_coords") or ""))
+                for p_it in ref_st.planets or ():
+                    if (pid > 0 and int(p_it.planet_id) == pid) or (
+                        nc_act and normalize_coords(p_it.coords) == nc_act
+                    ):
+                        p_name = self._custom_planet_names.get(str(p_it.planet_id)) or str(p_it.name or "")
+                        break
+        if p_name:
+            raw["planet_name"] = p_name
         return _sanitize_finite_json(raw)
 
     @staticmethod
@@ -5534,11 +6026,21 @@ class GameApiBridge:
 
     def _list_field_conflicts_locked(self, status: Optional[str] = "pending") -> list[dict[str, Any]]:
         if self._db is not None and hasattr(self._db, "list_field_conflict_prompts"):
-            return list(self._db.list_field_conflict_prompts(status=status))
-        items = list(self._field_conflicts_mem.values())
-        if status is not None:
-            items = [c for c in items if str(c.get("status", "pending")) == status]
-        return items
+            raw_items = list(self._db.list_field_conflict_prompts(status=status))
+        else:
+            raw_items = list(self._field_conflicts_mem.values())
+            if status is not None:
+                raw_items = [c for c in raw_items if str(c.get("status", "pending")) == status]
+        if not self._custom_planet_names:
+            return raw_items
+        out_items: list[dict[str, Any]] = []
+        for c in raw_items:
+            cd = dict(c)
+            cpid = _safe_api_int(cd.get("planet_id"), 0)
+            if cpid > 0 and self._custom_planet_names.get(str(cpid)):
+                cd["planet_name"] = self._custom_planet_names[str(cpid)]
+            out_items.append(cd)
+        return out_items
 
     def _upsert_field_conflict_locked(self, conflict: Mapping[str, Any]) -> dict[str, Any]:
         enriched = dict(conflict)
@@ -5987,9 +6489,10 @@ class GameApiBridge:
             t0 = time.monotonic()
             try:
                 res = co_mod.run_config_optimizer(
-                    display_state,
+                    snap_state,
                     universe_research_max=uni_max,
                     params=base_params,
+                    planet_names=custom_names,
                     previous_result=previous_result,
                     progress_cb=_progress,
                 )
@@ -6095,7 +6598,7 @@ class GameApiBridge:
         with self._lock:
             if (
                 refresh
-                and is_debug_port_open(self.debug_port)
+                and self._is_browser_port_open()
                 and self._page_limiter.rate_limit_remaining() <= 0.0
                 and not self._bot_control.get("captcha_blocked")
             ):
@@ -6447,8 +6950,40 @@ class GameApiBridge:
             active_plan_result,
             cfg,
         )
-        # Belt-and-suspenders: never emit automatic demolitions from AI-Planner
-        ai_actions = [a for a in raw_ai_actions if a.kind != "DEMOLISH_BUILDING"]
+        summary_m = (
+            active_plan_result.get("summary")
+            if isinstance(active_plan_result.get("summary"), Mapping)
+            else {}
+        )
+        meta_m = (
+            active_plan_result.get("meta_parameters")
+            if isinstance(active_plan_result.get("meta_parameters"), Mapping)
+            else {}
+        )
+        plan_allows_demolition = bool(
+            active_plan_result.get("allow_demolition", False)
+            or summary_m.get("allow_demolition", False)
+            or meta_m.get("allow_demolition", False)
+        )
+        if plan_allows_demolition:
+            planets_by_pid = {int(p.planet_id): p for p in (enriched_state.planets or ())}
+            ai_actions = []
+            for a in raw_ai_actions:
+                if a.kind != "DEMOLISH_BUILDING":
+                    ai_actions.append(a)
+                    continue
+                p_obj = planets_by_pid.get(_safe_api_int(a.planet_id, 0))
+                # Strict triple gate: allow_demolition enabled + planet strictly out of fields + energy-safe
+                if (
+                    p_obj is not None
+                    and p_obj.fields_max > 0
+                    and p_obj.fields_used >= p_obj.fields_max
+                    and a.target_id is not None
+                    and self._check_demolish_energy_safety(enriched_state, p_obj, int(a.target_id))[0]
+                ):
+                    ai_actions.append(a)
+        else:
+            ai_actions = [a for a in raw_ai_actions if a.kind != "DEMOLISH_BUILDING"]
         if record_conflicts and field_conflicts:
             for conflict in field_conflicts:
                 if isinstance(conflict, Mapping):
@@ -6607,7 +7142,7 @@ class GameApiBridge:
                     ):
                         return (0, 0)
                     return (1, 0)
-                if a.kind in ("BUILD", "RESEARCH"):
+                if a.kind in ("BUILD", "DEMOLISH_BUILDING", "RESEARCH"):
                     return (0, 1)
                 if a.kind == "TRANSPORT":
                     return (0, 2)
@@ -6941,7 +7476,7 @@ class GameApiBridge:
     def health(self) -> dict[str, Any]:
         acquired = self._lock.acquire(timeout=1.5)
         if not acquired:
-            port_open = is_debug_port_open(self.debug_port)
+            port_open = self._is_browser_port_open()
             rate_rem = self._page_limiter.rate_limit_remaining()
             bot_ctrl_snap = dict(self._bot_control)
             cap_blocked = bool(bot_ctrl_snap.get("captcha_blocked"))
@@ -6952,8 +7487,10 @@ class GameApiBridge:
                     {
                         "ok": port_open,
                         "busy": True,
+                        "debug_host": self.debug_host,
                         "debug_port": self.debug_port,
                         "debug_port_open": port_open,
+                        "novnc_url": self.novnc_url,
                         "in_game": in_game,
                         "rate_limited": rate_rem > 0.0,
                         "retry_after": round(rate_rem, 1),
@@ -6963,17 +7500,21 @@ class GameApiBridge:
                         "url": current_url if current_url else None,
                         "action_batch_interval_seconds": self.strategy_config.action_batch_interval_seconds,
                         "remaining_hourly_actions": self._live_executor.remaining_hourly_budget(),
+                        "galaxy_sweep_in_progress": bool(self._sweep_in_progress),
                         "bot_control": bot_ctrl_snap,
+                        "db_backend": self._build_db_backend_status(include_ping=False),
                     }
                 )
             )
         try:
-            port_open = is_debug_port_open(self.debug_port)
+            port_open = self._is_browser_port_open()
             rate_rem = self._page_limiter.rate_limit_remaining()
             cap_blocked = bool(self._bot_control.get("captcha_blocked"))
             in_game = port_open and not cap_blocked and (self._last_state is not None or rate_rem > 0.0)
             current_url: Optional[str] = self._last_url
-            if port_open and rate_rem <= 0.0 and not cap_blocked:
+            if port_open and not cap_blocked and self._sweep_in_progress:
+                in_game = True
+            elif port_open and rate_rem <= 0.0 and not cap_blocked:
                 try:
                     with self._client_factory(self.debug_port) as client:
                         try:
@@ -7004,8 +7545,10 @@ class GameApiBridge:
                 _redact_api_payload(
                     {
                         "ok": port_open,
+                        "debug_host": self.debug_host,
                         "debug_port": self.debug_port,
                         "debug_port_open": port_open,
+                        "novnc_url": self.novnc_url,
                         "in_game": in_game,
                         "rate_limited": rate_rem > 0.0,
                         "retry_after": round(rate_rem, 1),
@@ -7015,7 +7558,9 @@ class GameApiBridge:
                         "url": current_url if current_url else None,
                         "action_batch_interval_seconds": self.strategy_config.action_batch_interval_seconds,
                         "remaining_hourly_actions": self._live_executor.remaining_hourly_budget(),
+                        "galaxy_sweep_in_progress": bool(self._sweep_in_progress),
                         "bot_control": dict(self._bot_control),
+                        "db_backend": self._build_db_backend_status(include_ping=False),
                     }
                 )
             )
@@ -7027,11 +7572,22 @@ class GameApiBridge:
         if not acquired:
             cached = self._last_bot_control_payload
             bot_ctrl_snap = dict(self._bot_control)
+            sw_active = bool(self._sweep_in_progress)
+            sw_blocking = bool(
+                sw_active and getattr(self.strategy_config, "galaxy_scan_block_other_actions", True)
+            )
             if isinstance(cached, Mapping):
                 fallback = dict(cached)
                 fallback.update(bot_ctrl_snap)
                 fallback["ok"] = True
                 fallback["busy"] = True
+                fallback["galaxy_sweep_in_progress"] = sw_active
+                fallback["galaxy_scan_blocking"] = sw_blocking
+                raw_fb_sw = fallback.get("galaxy_sweep")
+                fb_sw = dict(raw_fb_sw) if isinstance(raw_fb_sw, Mapping) else {}
+                fb_sw["in_progress"] = sw_active
+                fb_sw["blocking_other_actions"] = sw_blocking
+                fallback["galaxy_sweep"] = fb_sw
                 return _sanitize_finite_json(_redact_api_payload(fallback))
             return _sanitize_finite_json(
                 _redact_api_payload(
@@ -7039,6 +7595,9 @@ class GameApiBridge:
                         "ok": True,
                         "busy": True,
                         **bot_ctrl_snap,
+                        "galaxy_sweep_in_progress": sw_active,
+                        "galaxy_scan_blocking": sw_blocking,
+                        "p0_escape_flight_ready": False,
                         "scanned_systems": dict(self._scanned_systems),
                         "throttle_cooldowns": {},
                         "metal_overflow_paused_planets": sorted(
@@ -7049,7 +7608,10 @@ class GameApiBridge:
                         "metal_production_by_planet": {},
                         "manual_queue": [],
                         "transmitter_status": {},
-                        "galaxy_sweep": {},
+                        "galaxy_sweep": {
+                            "in_progress": sw_active,
+                            "blocking_other_actions": sw_blocking,
+                        },
                     }
                 )
             )
@@ -7059,11 +7621,15 @@ class GameApiBridge:
                 for pid, rates in self._economy_rates.items()
                 if isinstance(rates, Mapping)
             }
+            p0_esc_ready, _ = self._has_urgent_p0_escape_flight_locked()
             payload = _sanitize_finite_json(
                 _redact_api_payload(
                     {
                         "ok": True,
                         **dict(self._bot_control),
+                        "galaxy_sweep_in_progress": bool(self._sweep_in_progress),
+                        "galaxy_scan_blocking": bool(self._is_galaxy_scan_blocking_locked()),
+                        "p0_escape_flight_ready": bool(p0_esc_ready),
                         "scanned_systems": self._get_scanned_systems(),
                         "throttle_cooldowns": self._get_throttle_cooldowns(),
                         "metal_overflow_paused_planets": sorted(
@@ -7079,6 +7645,8 @@ class GameApiBridge:
                         ),
                         "transmitter_status": self._get_transmitter_status_locked(),
                         "galaxy_sweep": self._get_galaxy_sweep_state_locked(),
+                        "novnc_url": self.novnc_url,
+                        "strategy_config": asdict(self.strategy_config),
                     }
                 )
             )
@@ -7476,7 +8044,23 @@ class GameApiBridge:
                     if fetched_research and state.research_offers:
                         refreshed_q_cats.add("research")
                     cur_cats = {q.category for q in state.active_queues} | refreshed_q_cats
-                    extra_q = [q for q in prev.active_queues if q.category not in cur_cats]
+                    now_extra_wall = time.time()
+                    extra_q = [
+                        q
+                        for q in prev.active_queues
+                        if q.category not in cur_cats
+                        and not (
+                            q.category == "building"
+                            and (
+                                (q.finish_ts is not None and _safe_api_float(q.finish_ts, 0.0) <= now_extra_wall)
+                                or (
+                                    q.finish_ts is None
+                                    and q.remaining_seconds is not None
+                                    and _safe_api_float(q.remaining_seconds, 0.0) <= 0.0
+                                )
+                            )
+                        )
+                    ]
                     if extra_q:
                         upd_kwargs["active_queues"] = tuple(list(state.active_queues) + extra_q)
             if upd_kwargs:
@@ -7530,15 +8114,23 @@ class GameApiBridge:
         stamped_queues: list[QueueJob] = []
         queues_changed = False
         stamp_active_b = bool(active_norm_coords and (fetched_buildings or fetched_home or prev is None))
+        existing_b_slots: set[tuple[str, int]] = set()
         for q in state.active_queues or ():
             if q.category == "building":
                 q_orig = normalize_coords(q.origin_coords)
                 if not q_orig and stamp_active_b:
                     q = replace(q, origin_coords=active_norm_coords)
+                    q_orig = active_norm_coords
                     queues_changed = True
                 elif q_orig and q_orig != q.origin_coords:
                     q = replace(q, origin_coords=q_orig)
                     queues_changed = True
+                if q_orig:
+                    slot_sig = (q_orig, int(q.queue_slot or 1))
+                    if slot_sig in existing_b_slots:
+                        queues_changed = True
+                        continue
+                    existing_b_slots.add(slot_sig)
             stamped_queues.append(q)
 
         if prev is not None and prev.active_queues and active_norm_coords:
@@ -7568,6 +8160,9 @@ class GameApiBridge:
                         continue
                 elif pq.remaining_seconds is not None and _safe_api_float(pq.remaining_seconds, 0.0) <= 0.0:
                     continue
+                slot_sig_b = (pq_orig, int(pq.queue_slot or 1))
+                if slot_sig_b in existing_b_slots:
+                    continue
                 sig_b = (
                     pq_orig,
                     str(pq.name or "").strip().lower(),
@@ -7576,6 +8171,7 @@ class GameApiBridge:
                 )
                 if sig_b in existing_b_sigs:
                     continue
+                existing_b_slots.add(slot_sig_b)
                 existing_b_sigs.add(sig_b)
                 stamped_queues.append(replace(pq, origin_coords=pq_orig) if pq.origin_coords != pq_orig else pq)
                 queues_changed = True
@@ -7714,15 +8310,20 @@ class GameApiBridge:
         else:
             self._lock.acquire()
         try:
-            port_open = is_debug_port_open(self.debug_port)
+            port_open = self._is_browser_port_open()
             rate_rem = self._page_limiter.rate_limit_remaining()
             cap_blocked_dash = bool(self._bot_control.get("captcha_blocked"))
-            in_game = port_open and not cap_blocked_dash and (self._last_state is not None or rate_rem > 0.0)
+            sweep_blocking_dash = self._is_galaxy_scan_blocking_locked()
+            sweep_deferred_refresh = bool(refresh and sweep_blocking_dash)
+            in_game = port_open and not cap_blocked_dash and (
+                self._last_state is not None or rate_rem > 0.0 or self._sweep_in_progress
+            )
             current_url = self._last_url
             if (
                 port_open
                 and rate_rem <= 0.0
                 and not cap_blocked_dash
+                and not sweep_blocking_dash
                 and (refresh or self._last_state is None or self._last_snapshot_at < 0.0)
             ):
                 try:
@@ -7814,6 +8415,7 @@ class GameApiBridge:
                 ai_mem_sig = None if db_tok_plan is not None else _freeze_sig_tree(self._active_ai_plan_mem)
                 plan_key = (
                     dash_sig,
+                    custom_names_sig,
                     cfg_sig,
                     eff_mode,
                     db_tok_plan,
@@ -7824,12 +8426,15 @@ class GameApiBridge:
                     throttle_sig,
                     overflow_paused_sig,
                     fleet_cd_sig,
+                    self._observed_fleet_slot_base_offset,
+                    tuple(sorted(self._observed_fleet_slots_by_pid.items())),
                     target_blocks_sig,
                     plan_actions,
                     run_optimizer,
                     plan_fleet_and_attack_actions,
                     round(float(self._transport_realized_utilization), 4),
                 )
+                plan_state_in = display_state if display_state is not None else dash_state
                 if (
                     not refresh
                     and self._dash_plan_cache_val is not None
@@ -7841,13 +8446,13 @@ class GameApiBridge:
                         self._last_early_transport_needs = {
                             int(k): dict(v) for k, v in cached_early_needs.items()
                         }
-                        self._last_early_transport_needs_sig = id(dash_state)
+                        self._last_early_transport_needs_sig = id(plan_state_in)
                     plan_cache_hit = True
                 else:
-                    actions, opt_summary = self._plan_with_summary(dash_state, _already_enriched=True)
+                    actions, opt_summary = self._plan_with_summary(plan_state_in, _already_enriched=True)
                     early_copy = (
                         {int(k): dict(v) for k, v in self._last_early_transport_needs.items()}
-                        if self._last_early_transport_needs_sig == id(dash_state)
+                        if self._last_early_transport_needs_sig == id(plan_state_in)
                         else {}
                     )
                     post_db_tok = self._db_total_changes_token()
@@ -7865,6 +8470,7 @@ class GameApiBridge:
                     )
                     store_plan_key = (
                         dash_sig,
+                        custom_names_sig,
                         cfg_sig,
                         eff_mode,
                         post_db_tok,
@@ -7967,7 +8573,7 @@ class GameApiBridge:
                 if (
                     dash_state is not None
                     and planner_status["effective_planner_mode"] == "ai_planner"
-                    and self._last_early_transport_needs_sig == id(dash_state)
+                    and self._last_early_transport_needs_sig in (id(dash_state), id(display_state))
                 )
                 else {}
             )
@@ -8046,6 +8652,7 @@ class GameApiBridge:
                         "page_view_limit_per_minute": self._page_limiter.max_views_per_minute,
                         "rate_limit_hits": self._page_limiter.rate_limit_hits,
                         "url": current_url if current_url else None,
+                        "novnc_url": self.novnc_url,
                         "action_batch_interval_seconds": self.strategy_config.action_batch_interval_seconds,
                         "remaining_hourly_actions": self._live_executor.remaining_hourly_budget(),
                     },
@@ -8062,10 +8669,7 @@ class GameApiBridge:
                     "transmitter_status": self._get_transmitter_status_locked(),
                     "galaxy_sweep": self._get_galaxy_sweep_state_locked(),
                     "universe_research_max": self._get_universe_research_max_locked(dash_state),
-                    "logs": {
-                        "commander": self._read_log_tail("commander.log"),
-                        "game_api": self._read_log_tail("game_api.log"),
-                    },
+                    "novnc_url": self.novnc_url,
                 }
             )
             env_opt = envelope.get("optimizer_summary")
@@ -8113,7 +8717,8 @@ class GameApiBridge:
                 "combat": static_val["combat"],
                 "ranking": static_val["ranking"],
                 "db_summary": db_summary_clean,
-                "logs": envelope["logs"],
+                "db_backend": self._build_db_backend_status(include_ping=False),
+                "novnc_url": envelope.get("novnc_url"),
             }
             if (
                 dash_state is not None
@@ -8129,6 +8734,12 @@ class GameApiBridge:
                         + self._dash_plan_cache_key[4:]
                     )
             self._last_dashboard_payload = result
+            if sweep_deferred_refresh:
+                result = {
+                    **result,
+                    "sweep_deferred_refresh": True,
+                    "sweep_message": self._galaxy_scan_busy_error_message(),
+                }
         finally:
             self._lock.release()
         self._maybe_trigger_ai_drift_replan()
@@ -8146,6 +8757,19 @@ class GameApiBridge:
                     )
                 )
             self._raise_if_rate_limited()
+            if self._is_galaxy_scan_blocking_locked():
+                if self._last_state is not None:
+                    cached = self._refresh_cached_economy(self._last_state)
+                    custom_names = self._get_custom_planet_names_locked()
+                    enriched_cached = self._attach_raid_stats(cached)
+                    serialized = self._serialize_state_with_custom_names(
+                        enriched_cached,
+                        custom_names=custom_names,
+                    )
+                    serialized["custom_planet_names"] = custom_names
+                    serialized["sweep_in_progress"] = True
+                    return _sanitize_finite_json(_redact_api_payload(serialized))
+                raise GalaxyScanInProgressError(self._galaxy_scan_busy_error_message())
             if self._last_state is None:
                 self._active_planet_confirmed = False
                 self._last_home_fetched = False
@@ -8273,7 +8897,9 @@ class GameApiBridge:
                     )
                 raise
             except (SpaceInvasionAuthError, Exception) as exc:
-                if self.log_dir is not None and not isinstance(exc, ApiRequestError):
+                if self.log_dir is not None and not isinstance(
+                    exc, (ApiRequestError, GalaxyScanInProgressError)
+                ):
                     append_crash_debug_log(
                         component="api_server.get_state",
                         event="state_error",
@@ -8817,16 +9443,18 @@ class GameApiBridge:
         saved = 0
         for s in slots:
             has_debris = bool(getattr(s, "has_debris", False))
+            norm_sc = normalize_coords(s.coords)
             if (
                 getattr(s, "status_color", "free") == "free"
                 and not getattr(s, "is_spacia", False)
                 and not has_debris
             ):
+                by_coords.pop(norm_sc, None)
                 continue
             status_color = _bounded_api_str(getattr(s, "status_color", "yellow") or "yellow", default="yellow")
             is_spacia = bool(getattr(s, "is_spacia", False))
-            norm_sc = normalize_coords(s.coords)
             prev = by_coords.get(norm_sc, {})
+            reset_stale_spacia = status_color == "free" or (bool(prev.get("is_spacia", False)) and not is_spacia)
             by_coords[norm_sc] = {
                 "coords": norm_sc,
                 "owner": _bounded_api_str(getattr(s, "owner", "") or "", default=""),
@@ -8835,14 +9463,18 @@ class GameApiBridge:
                 "is_inactive": bool(status_color == "yellow" or is_spacia),
                 "is_spacia": is_spacia,
                 "has_debris": has_debris,
-                "points": prev.get("points"),
-                "resources": prev.get("resources") or {"pig_iron": 0, "metal": 0, "kryptonite": 0, "spice": 0},
-                "fleet": prev.get("fleet") or {},
-                "defense": prev.get("defense") or {},
-                "dug_in": prev.get("dug_in", False),
+                "points": None if reset_stale_spacia else prev.get("points"),
+                "resources": (
+                    {"pig_iron": 0, "metal": 0, "kryptonite": 0, "spice": 0}
+                    if reset_stale_spacia
+                    else (prev.get("resources") or {"pig_iron": 0, "metal": 0, "kryptonite": 0, "spice": 0})
+                ),
+                "fleet": {} if reset_stale_spacia else (prev.get("fleet") or {}),
+                "defense": {} if reset_stale_spacia else (prev.get("defense") or {}),
+                "dug_in": False if reset_stale_spacia else prev.get("dug_in", False),
                 "last_scanned_ts": now_ts,
-                "last_spied_ts": prev.get("last_spied_ts", 0.0),
-                "has_spy_intel": bool(prev.get("has_spy_intel", False)),
+                "last_spied_ts": 0.0 if reset_stale_spacia else prev.get("last_spied_ts", 0.0),
+                "has_spy_intel": False if reset_stale_spacia else bool(prev.get("has_spy_intel", False)),
                 "blocked_until_ts": _safe_api_float(prev.get("blocked_until_ts", 0.0)),
                 "block_reason": _bounded_api_str(prev.get("block_reason") or "", default=""),
                 "bash_hits": _safe_api_int(prev.get("bash_hits", 0)),
@@ -8948,6 +9580,23 @@ class GameApiBridge:
                         }
                     )
                 )
+            if not dry_run:
+                p0_urg_start, p0_rsn_start = self._has_urgent_p0_escape_flight_locked()
+                if p0_urg_start:
+                    cur_st_p0 = self._get_galaxy_sweep_state_locked()
+                    return _sanitize_finite_json(
+                        _redact_api_payload(
+                            {
+                                "ok": True,
+                                "command": "galaxy_sweep",
+                                "executed": False,
+                                "dry_run": False,
+                                "preempted": True,
+                                "message": p0_rsn_start,
+                                "galaxy_sweep": cur_st_p0,
+                            }
+                        )
+                    )
         if not self._sweep_run_lock.acquire(blocking=False):
             with self._lock:
                 cur_st = self._get_galaxy_sweep_state_locked()
@@ -8975,7 +9624,12 @@ class GameApiBridge:
 
         try:
             with self._lock:
-                self._sweep_in_progress = True
+                self._sweep_preempt_event.clear()
+                self._sweep_wake_event.clear()
+                self._sweep_preempt_reason = None
+                if not dry_run:
+                    self._sweep_in_progress = True
+                    self._sweep_done_event.clear()
                 cfg = self.strategy_config
                 started_with_scans_allowed = bool(getattr(cfg, "allow_galaxy_scan", False))
                 enforce_scan_toggle = (automatic or started_with_scans_allowed) and priority != "interactive"
@@ -9235,9 +9889,36 @@ class GameApiBridge:
                         self._smart_sweep_summary_ts = time.time()
                     self._invalidate_dashboard_cache()
 
+            def _wait_sweep_pacing(duration_s: float) -> bool:
+                rem = max(0.0, float(duration_s))
+                if rem <= 0.0:
+                    return False
+                if (
+                    self._sweep_stop_event.is_set()
+                    or self._sweep_preempt_event.is_set()
+                    or bool(self._bot_control.get("captcha_blocked"))
+                    or (bool(self._bot_control.get("paused")) and priority != "interactive")
+                    or (
+                        enforce_scan_toggle
+                        and not bool(getattr(self.strategy_config, "allow_galaxy_scan", False))
+                    )
+                ):
+                    return True
+                stop_ev = self._sweep_stop_event
+                if "wait" in getattr(stop_ev, "__dict__", {}):
+                    return bool(stop_ev.wait(rem))
+                if self._sweep_wake_event.wait(rem):
+                    return True
+                return bool(stop_ev.is_set())
+
             for step_idx, (cur_gal, cur_sys) in enumerate(sweep_targets):
                 if self._sweep_stop_event.is_set():
                     aborted_reason = "Sweep stopped on shutdown."
+                    break
+                if self._sweep_preempt_event.is_set():
+                    aborted_reason = str(
+                        self._sweep_preempt_reason or "Preempted by P0 emergency Escape Flight."
+                    )
                     break
 
                 if step_idx > 0 and has_pacing:
@@ -9257,9 +9938,10 @@ class GameApiBridge:
                             0.2,
                             base_delay + (random.uniform(-jitter, jitter) if jitter > 0.0 else 0.0),
                         )
-                    if wait_jitter > 0.0 and self._sweep_stop_event.wait(wait_jitter):
-                        aborted_reason = "Sweep stopped on shutdown."
-                        break
+                    if wait_jitter > 0.0 and _wait_sweep_pacing(wait_jitter):
+                        if self._sweep_stop_event.is_set():
+                            aborted_reason = "Sweep stopped on shutdown."
+                            break
 
                 needed_xhr = 1
                 if (
@@ -9276,19 +9958,35 @@ class GameApiBridge:
                 if has_pacing:
                     budget_deadline = time.monotonic() + 75.0
                     while not self._sweep_stop_event.is_set() and time.monotonic() < budget_deadline:
+                        if self._sweep_preempt_event.is_set():
+                            break
+                        if bool(self._bot_control.get("captcha_blocked")) or (
+                            bool(self._bot_control.get("paused")) and priority != "interactive"
+                        ):
+                            break
                         if enforce_scan_toggle and not bool(
                             getattr(self.strategy_config, "allow_galaxy_scan", False)
                         ):
                             break
                         rem_rl = self.rate_limit_remaining()
                         total_60s = self._page_limiter.views_last_60s() + self._sweep_views_last_60s()
-                        if rem_rl <= 0.0 and (total_60s + needed_xhr) <= 24:
+                        sweep_cap = max(6, int(self._page_limiter.max_views_per_minute))
+                        if rem_rl <= 0.0 and (total_60s + needed_xhr) <= sweep_cap:
                             break
                         sleep_s = max(1.0, min(5.0, rem_rl if rem_rl > 0.0 else random.uniform(1.1, 2.2)))
-                        if self._sweep_stop_event.wait(sleep_s):
+                        if _wait_sweep_pacing(sleep_s):
                             break
 
                 with self._lock:
+                    if self._sweep_preempt_event.is_set():
+                        aborted_reason = str(
+                            self._sweep_preempt_reason or "Preempted by P0 emergency Escape Flight."
+                        )
+                        break
+                    p0_urg_step, p0_rsn_step = self._has_urgent_p0_escape_flight_locked()
+                    if p0_urg_step:
+                        aborted_reason = p0_rsn_step
+                        break
                     if self._bot_control.get("captcha_blocked"):
                         aborted_reason = str(
                             self._bot_control.get("captcha_message") or "CAPTCHA active"
@@ -9512,6 +10210,7 @@ class GameApiBridge:
         finally:
             with self._lock:
                 self._sweep_in_progress = False
+                self._sweep_done_event.set()
             self._sweep_run_lock.release()
 
     def _galaxy_sweep_worker_loop(self) -> None:
@@ -9527,14 +10226,18 @@ class GameApiBridge:
                 cap_blk = bool(self._bot_control.get("captcha_blocked"))
                 mode_ov = self._bot_control.get("mode_override")
                 is_dry = mode_ov == "dry-run"
+                p0_urg_wk, _ = self._has_urgent_p0_escape_flight_locked()
+                cmd_idle_ok = (time.monotonic() - self._last_live_command_mono) >= 3.0
                 if (
                     bool(getattr(cfg, "allow_galaxy_scan", False))
                     and not paused
                     and not cap_blk
                     and not is_dry
+                    and not p0_urg_wk
+                    and cmd_idle_ok
                     and bool(sw.get("due", True))
                     and self.rate_limit_remaining() <= 0.0
-                    and is_debug_port_open(self.debug_port)
+                    and self._is_browser_port_open()
                 ):
                     should_run = True
             if should_run:
@@ -9568,6 +10271,9 @@ class GameApiBridge:
         ev = getattr(self, "_sweep_stop_event", None)
         if ev is not None:
             ev.set()
+        wake_ev = getattr(self, "_sweep_wake_event", None)
+        if wake_ev is not None:
+            wake_ev.set()
         t = getattr(self, "_sweep_thread", None)
         if t is not None and t.is_alive() and t is not threading.current_thread():
             t.join(timeout=3.0)
@@ -10205,7 +10911,7 @@ class GameApiBridge:
                 or state.active_planet()
             )
             if spy_planet is not None:
-                max_spy_sl = 1 + max(0, spy_planet.building_level(10))
+                max_spy_sl = self._max_fleet_slots_for_planet_locked(spy_planet)
                 spy_cap = min(
                     max_spy_sl,
                     max(0, _safe_api_int(getattr(self.strategy_config, "reserved_spy_slots", 1), 1)),
@@ -10241,6 +10947,206 @@ class GameApiBridge:
                         )
                     )
 
+        # Pre-dispatch safety verification for Spacia SPY / ATTACK (matching RECYCLE):
+        # Temporary Spacia NPC planets despawn or get settled by real players between galaxy scans.
+        # Open the target solar system in live `internalGalaxy` right before dispatching so we:
+        # 1) Persist fresh slot/debris intel for all 16 positions in that system, and
+        # 2) Confirm the target coordinate is STILL a live Spacia planet before touching `internalFleet`.
+        if not dry_run and planned.kind in ("SPY", "ATTACK") and client is not None:
+            sp_tname = game_data.safe_key(planned.target_name) if planned.target_name is not None else ""
+            sp_reason = game_data.safe_key(planned.reason) if planned.reason is not None else ""
+            is_free_probe_act = "free slot" in sp_tname.lower() or "free slot" in sp_reason.lower()
+            m_sp_pre = re.search(r"(\d{1,2}):(\d{1,3}):(\d{1,2})", sp_tname, re.ASCII)
+            if m_sp_pre and not is_free_probe_act:
+                sp_gal = int(m_sp_pre.group(1))
+                sp_sys = int(m_sp_pre.group(2))
+                sp_pos = int(m_sp_pre.group(3))
+                norm_sp_target = f"{sp_gal:02d}:{sp_sys:03d}:{sp_pos:02d}"
+                is_expected_spacia = (
+                    "spacia" in sp_tname.lower()
+                    or "spacia" in sp_reason.lower()
+                )
+                if not is_expected_spacia:
+                    for rt_row in (self._raid_targets or ()):
+                        if normalize_coords(rt_row.get("coords") or rt_row.get("target_coords") or "") == norm_sp_target:
+                            if bool(rt_row.get("is_spacia")) or str(rt_row.get("owner") or "").strip().lower() == "spacia":
+                                is_expected_spacia = True
+                            break
+                if not is_expected_spacia and self._db is not None:
+                    get_by_c = getattr(self._db, "get_spy_target_by_coords", None)
+                    if callable(get_by_c):
+                        st_row = get_by_c(norm_sp_target)
+                        if isinstance(st_row, Mapping) and (
+                            bool(st_row.get("is_spacia"))
+                            or str(st_row.get("owner") or "").strip().lower() == "spacia"
+                        ):
+                            is_expected_spacia = True
+                    if not is_expected_spacia:
+                        get_gs = getattr(self._db, "get_galaxy_slots", None)
+                        if callable(get_gs):
+                            for gs_row in get_gs(galaxy=sp_gal, system=sp_sys, limit=20):
+                                if normalize_coords(gs_row.get("coords") or "") == norm_sp_target:
+                                    if bool(gs_row.get("is_spacia")) or str(gs_row.get("owner") or "").strip().lower() == "spacia":
+                                        is_expected_spacia = True
+                                    break
+                if is_expected_spacia and self._is_real_client_method(client, "open_galaxy"):
+                    sp_origin = (
+                        next((p for p in (state.planets or ()) if p.planet_id == planned.planet_id), None)
+                        or state.active_planet()
+                    )
+                    if sp_origin is not None:
+                        if planned.kind == "SPY" and _safe_api_int(sp_origin.ships.get("s10", 0), 0) <= 0:
+                            abort_msg = f"Aborted: no spy probes (s10) stationed on [{sp_origin.coords}]."
+                            aborted_act = replace(planned, executable_now=False)
+                            if self._db is not None:
+                                self._db.record_action(
+                                    source="api",
+                                    command=cmd,
+                                    action=aborted_act,
+                                    executed=False,
+                                    dry_run=False,
+                                    message=abort_msg,
+                                )
+                            return _sanitize_finite_json(
+                                _redact_api_payload(
+                                    {
+                                        "ok": True,
+                                        "command": cmd,
+                                        "executed": False,
+                                        "validated": True,
+                                        "dry_run": False,
+                                        "message": abort_msg,
+                                        "action": self._serialize_action(aborted_act, state),
+                                        "next_action": None,
+                                    }
+                                )
+                            )
+                        sp_max_slots = self._max_fleet_slots_for_planet_locked(sp_origin)
+                        sp_used_slots = count_in_flight_fleets_for_planet(state, sp_origin)
+                        sp_cd_rem = float(self._fleet_slot_cooldown_until.get(int(sp_origin.planet_id), 0.0)) - time.monotonic()
+                        if sp_used_slots >= sp_max_slots or sp_cd_rem > 0.0:
+                            abort_msg = (
+                                f"Aborted: no free fleet slot on [{sp_origin.coords}] "
+                                f"({sp_used_slots}/{sp_max_slots} in flight)."
+                            )
+                            aborted_act = replace(planned, executable_now=False)
+                            if self._db is not None:
+                                self._db.record_action(
+                                    source="api",
+                                    command=cmd,
+                                    action=aborted_act,
+                                    executed=False,
+                                    dry_run=False,
+                                    message=abort_msg,
+                                )
+                            return _sanitize_finite_json(
+                                _redact_api_payload(
+                                    {
+                                        "ok": True,
+                                        "command": cmd,
+                                        "executed": False,
+                                        "validated": True,
+                                        "dry_run": False,
+                                        "message": abort_msg,
+                                        "action": self._serialize_action(aborted_act, state),
+                                        "next_action": None,
+                                    }
+                                )
+                            )
+                    try:
+                        sp_gal_html = self._open_galaxy(
+                            client,
+                            galaxy=sp_gal,
+                            system=sp_sys,
+                            priority="interactive",
+                        )
+                    except (RateLimitError, AntiBotChallengeError):
+                        raise
+                    except Exception:
+                        sp_gal_html = ""
+                    sp_live_slots = (
+                        parse_galaxy_system_html(sp_gal_html, galaxy=sp_gal, system=sp_sys)
+                        if isinstance(sp_gal_html, str) and sp_gal_html.strip()
+                        else []
+                    )
+                    sp_live_slot = None
+                    if sp_live_slots:
+                        self._persist_galaxy_scan(sp_gal, sp_sys, sp_live_slots)
+                        self._persist_galaxy_slots(sp_live_slots)
+                        sp_live_slot = next(
+                            (s for s in sp_live_slots if normalize_coords(s.coords) == norm_sp_target),
+                            None,
+                        )
+                    if sp_live_slot is None:
+                        abort_msg = (
+                            f"Aborted: live galaxy view could not confirm Spacia at [{norm_sp_target}] "
+                            f"before {planned.kind.lower()} dispatch."
+                        )
+                        print(redact_sensitive(f"[API] {abort_msg}"), flush=True)
+                        aborted_act = replace(planned, executable_now=False)
+                        if self._db is not None:
+                            self._db.record_action(
+                                source="api",
+                                command=cmd,
+                                action=aborted_act,
+                                executed=False,
+                                dry_run=False,
+                                message=abort_msg,
+                            )
+                        return _sanitize_finite_json(
+                            _redact_api_payload(
+                                {
+                                    "ok": True,
+                                    "command": cmd,
+                                    "executed": False,
+                                    "validated": True,
+                                    "dry_run": False,
+                                    "message": abort_msg,
+                                    "action": self._serialize_action(aborted_act, state),
+                                    "next_action": None,
+                                }
+                            )
+                        )
+                    if not bool(getattr(sp_live_slot, "is_spacia", False)):
+                        self._dash_ag_cache_json = None
+                        live_col = str(getattr(sp_live_slot, "status_color", "") or "").strip().lower()
+                        live_own = str(getattr(sp_live_slot, "owner", "") or "").strip()
+                        if live_col == "free" and not live_own:
+                            abort_msg = (
+                                f"Aborted: live galaxy check confirmed [{norm_sp_target}] is now uninhabited "
+                                "(Spacia despawned); cleared stale Spacia target."
+                            )
+                        else:
+                            abort_msg = (
+                                f"Aborted: live galaxy check confirmed [{norm_sp_target}] is no longer Spacia "
+                                f"(now {live_own or 'occupied'} [{live_col or 'unknown'}]); updated galaxy intel."
+                            )
+                        print(redact_sensitive(f"[API] {abort_msg}"), flush=True)
+                        aborted_act = replace(planned, executable_now=False)
+                        if self._db is not None:
+                            self._db.record_action(
+                                source="api",
+                                command=cmd,
+                                action=aborted_act,
+                                executed=False,
+                                dry_run=False,
+                                message=abort_msg,
+                            )
+                        return _sanitize_finite_json(
+                            _redact_api_payload(
+                                {
+                                    "ok": True,
+                                    "command": cmd,
+                                    "executed": False,
+                                    "validated": True,
+                                    "dry_run": False,
+                                    "message": abort_msg,
+                                    "action": self._serialize_action(aborted_act, state),
+                                    "next_action": None,
+                                }
+                            )
+                        )
+
         # Pre-dispatch safety verification for RECYCLE:
         # 1) Never duplicate an already in-flight Recycle wave (auto-planned / step / execute_action).
         # 2) Always open the target system in live `internalGalaxy` right before dispatching so we
@@ -10248,6 +11154,70 @@ class GameApiBridge:
         #    RECYCLE on 0-rubble slots without error, wasting hours of flight time).
         # 3) Re-size auto-planned Recycler quantity to exact live `rubblefield1` volume.
         if not dry_run and planned.kind == "RECYCLE" and client is not None:
+            rec_origin = (
+                next((p for p in (state.planets or ()) if p.planet_id == planned.planet_id), None)
+                or state.active_planet()
+            )
+            if rec_origin is not None:
+                rec_avail = _safe_api_int(rec_origin.ships.get("s11", 0), 0)
+                if rec_avail <= 0:
+                    abort_msg = f"Aborted: no recyclers (s11) stationed on [{rec_origin.coords}]."
+                    aborted_act = replace(planned, executable_now=False)
+                    if self._db is not None:
+                        self._db.record_action(
+                            source="api",
+                            command=cmd,
+                            action=aborted_act,
+                            executed=False,
+                            dry_run=False,
+                            message=abort_msg,
+                        )
+                    return _sanitize_finite_json(
+                        _redact_api_payload(
+                            {
+                                "ok": True,
+                                "command": cmd,
+                                "executed": False,
+                                "validated": True,
+                                "dry_run": False,
+                                "message": abort_msg,
+                                "action": self._serialize_action(aborted_act, state),
+                                "next_action": None,
+                            }
+                        )
+                    )
+                rec_max_slots = self._max_fleet_slots_for_planet_locked(rec_origin)
+                rec_used_slots = count_in_flight_fleets_for_planet(state, rec_origin)
+                rec_cd_rem = float(self._fleet_slot_cooldown_until.get(int(rec_origin.planet_id), 0.0)) - time.monotonic()
+                if rec_used_slots >= rec_max_slots or rec_cd_rem > 0.0:
+                    abort_msg = (
+                        f"Aborted: no free fleet slot on [{rec_origin.coords}] "
+                        f"({rec_used_slots}/{rec_max_slots} in flight)."
+                    )
+                    aborted_act = replace(planned, executable_now=False)
+                    if self._db is not None:
+                        self._db.record_action(
+                            source="api",
+                            command=cmd,
+                            action=aborted_act,
+                            executed=False,
+                            dry_run=False,
+                            message=abort_msg,
+                        )
+                    return _sanitize_finite_json(
+                        _redact_api_payload(
+                            {
+                                "ok": True,
+                                "command": cmd,
+                                "executed": False,
+                                "validated": True,
+                                "dry_run": False,
+                                "message": abort_msg,
+                                "action": self._serialize_action(aborted_act, state),
+                                "next_action": None,
+                            }
+                        )
+                    )
             tname_pre = game_data.safe_key(planned.target_name) if planned.target_name is not None else ""
             m_rc_pre = re.search(r"(\d{1,2}):(\d{1,3}):(\d{1,2})", tname_pre, re.ASCII)
             if m_rc_pre:
@@ -10504,14 +11474,19 @@ class GameApiBridge:
                         self._persist_runtime_state()
             if res.action.kind in ("ATTACK", "SPY", "TRANSPORT", "STATION", "RECYCLE", "ESCAPE_FLIGHT", "COLONIZE"):
                 pid_f = game_data.cap_json_int(_safe_api_int(res.action.planet_id, 0))
+                origin_p_f = next((p for p in (state.planets or ()) if p.planet_id == pid_f), None)
+                obs_f_avail = getattr(res, "observed_fleet_slots_available", None)
+                if obs_f_avail is not None:
+                    self._record_observed_fleet_slots_locked(origin_p_f, obs_f_avail)
                 if pid_f > 0:
                     if res.executed:
                         self._fleet_slot_cooldown_until.pop(pid_f, None)
                     else:
                         msg_l = _bounded_api_str(res.message, default="").lower()
                         if any(marker in msg_l for marker in self._FLEET_SLOT_BUSY_MARKERS):
+                            cd_dur_s = self._compute_fleet_slot_busy_cooldown_s(state, origin_p_f)
                             self._fleet_slot_cooldown_until[pid_f] = (
-                                time.monotonic() + self.FLEET_SLOT_COOLDOWN_S
+                                time.monotonic() + cd_dur_s
                             )
                 tname_f = (
                     game_data.safe_key(res.action.target_name)
@@ -10802,17 +11777,21 @@ class GameApiBridge:
                 self._active_planet_confirmed = False
             after_plan = self._plan_with_context(after_state)
         else:
-            state_to_record = state
+            state_to_record = (
+                res_updated
+                if (not dry_run and isinstance(res_updated, GameState))
+                else state
+            )
             obs_flag = False
             if not dry_run and obs_conf_bool is True:
                 obs_flag = True
                 if (
                     valid_obs_pid is not None
-                    and any(p.planet_id == valid_obs_pid for p in state.planets)
-                    and state.active_planet_id != valid_obs_pid
+                    and any(p.planet_id == valid_obs_pid for p in state_to_record.planets)
+                    and state_to_record.active_planet_id != valid_obs_pid
                 ):
                     state_to_record = replace(
-                        state,
+                        state_to_record,
                         active_planet_id=valid_obs_pid,
                         research_offers=(),
                     )
@@ -10825,7 +11804,7 @@ class GameApiBridge:
                 ),
                 fetched_home=False,
                 observed_active_planet=obs_flag,
-                update_snapshot_ts=False,
+                update_snapshot_ts=isinstance(res_updated, GameState) and not dry_run,
             )
             if not dry_run and obs_conf_bool is False and len(merged_state.planets) > 1:
                 self._active_planet_confirmed = False
@@ -10906,6 +11885,7 @@ class GameApiBridge:
             "queue_clear",
             "config",
             "db_summary",
+            "db_backend_status",
             "db_migrations",
             "db_migrate",
             "db_backup",
@@ -10929,12 +11909,13 @@ class GameApiBridge:
             "planner_jobs_status",
             "config_optimizer_get",
             "rename_planet",
+            "sync_planet_names",
             "config_optimizer_set_specializations",
+            "config_optimizer_update_planet",
+            "config_optimizer_yearly_projection",
             "config_optimizer_run",
-            "config_optimizer_export",
             "ai_planner_get",
             "ai_planner_run",
-            "ai_planner_export",
             "resolve_field_conflict",
             "fleet_planner_get",
             "ensure_session",
@@ -11465,6 +12446,19 @@ class GameApiBridge:
                     }
                 )
 
+        if cmd == "db_backend_status":
+            with self._intel_read_lock:
+                st_out = self._build_db_backend_status(include_ping=True)
+                if self._db is not None:
+                    st_out["summary"] = self._get_db_summary_cached_locked()
+                return _sanitize_finite_json(
+                    {
+                        "ok": True,
+                        "command": cmd,
+                        "db_backend": _redact_api_payload(st_out),
+                    }
+                )
+
         if cmd == "state_snapshots":
             snap_limit = _parse_command_int(
                 "limit",
@@ -11499,14 +12493,15 @@ class GameApiBridge:
             cat_str = str(cat).strip() if isinstance(cat, str) and cat.strip() else None
             coords_raw = payload.get("coords")
             coords_str = str(coords_raw).strip() if isinstance(coords_raw, str) and coords_raw.strip() else None
-            with self._lock:
+            with self._intel_read_lock:
+                db_snap = self._db
                 msgs = (
-                    self._db.get_game_messages(
+                    db_snap.get_game_messages(
                         category=cat_str,
                         coords=coords_str,
                         limit=int(limit or 100),
                     )
-                    if self._db is not None
+                    if db_snap is not None
                     else []
                 )
                 return _sanitize_finite_json(
@@ -11527,19 +12522,22 @@ class GameApiBridge:
             ) or 150
             coords_raw = payload.get("coords")
             coords_str = str(coords_raw).strip() if isinstance(coords_raw, str) and coords_raw.strip() else None
-            with self._lock:
+            with self._intel_read_lock:
+                db_snap = self._db
+                state_snap = self._last_state
+                cfg_snap = self.strategy_config
                 origin_coords = ""
-                if self._last_state is not None:
-                    spy_pid = _safe_api_int(getattr(self.strategy_config, "spy_dispatch_planet_id", 0), 0)
+                if state_snap is not None:
+                    spy_pid = _safe_api_int(getattr(cfg_snap, "spy_dispatch_planet_id", 0), 0)
                     orig_p = (
-                        next((p for p in self._last_state.planets if p.planet_id == spy_pid), None)
+                        next((p for p in state_snap.planets if p.planet_id == spy_pid), None)
                         if spy_pid > 0
                         else None
                     )
                     if orig_p is None:
-                        orig_p = self._last_state.active_planet()
-                    if orig_p is None and self._last_state.planets:
-                        orig_p = self._last_state.planets[0]
+                        orig_p = state_snap.active_planet()
+                    if orig_p is None and state_snap.planets:
+                        orig_p = state_snap.planets[0]
                     if orig_p is not None and orig_p.coords:
                         origin_coords = normalize_coords(orig_p.coords)
 
@@ -12309,12 +13307,14 @@ class GameApiBridge:
         if cmd == "universe_research_max":
             do_sync = bool(payload.get("sync", False))
             with self._lock:
+                if do_sync and not dry_run and self._is_galaxy_scan_blocking_locked():
+                    raise GalaxyScanInProgressError(self._galaxy_scan_busy_error_message())
                 synced_live = False
                 parsed_srv: dict[str, dict[str, Any]] = {}
                 if (
                     do_sync
                     and not dry_run
-                    and is_debug_port_open(self.debug_port)
+                    and self._is_browser_port_open()
                     and not self._bot_control.get("captcha_blocked")
                     and self.rate_limit_remaining() <= 0.0
                 ):
@@ -12422,7 +13422,7 @@ class GameApiBridge:
             ) or 150
             coords_raw = payload.get("coords")
             coords_str = str(coords_raw).strip() if isinstance(coords_raw, str) and coords_raw.strip() else None
-            with self._lock:
+            with self._intel_read_lock:
                 battles = (
                     self._db.get_battle_reports(coords=coords_str, limit=int(limit))
                     if self._db is not None
@@ -12512,7 +13512,7 @@ class GameApiBridge:
                 if isinstance(cat_raw, str) and cat_raw.strip() and str(cat_raw).strip().lower() != "all"
                 else None
             )
-            with self._lock:
+            with self._intel_read_lock:
                 recycles = (
                     self._db.get_recycle_reports(limit=int(limit))
                     if self._db is not None
@@ -12599,6 +13599,8 @@ class GameApiBridge:
                     paused_in = None
                 if paused_in is not None:
                     self._bot_control["paused"] = paused_in
+                    if paused_in and getattr(self, "_sweep_wake_event", None) is not None:
+                        self._sweep_wake_event.set()
                     if not paused_in:
                         self._bot_control["captcha_blocked"] = False
                         self._bot_control["captcha_message"] = None
@@ -12647,9 +13649,14 @@ class GameApiBridge:
                         **dict(raw_cfg["fleet_research_targets"]),
                     }
                 new_cfg = strategy_config_from_dict(merged)
-                if self._config_file_explicit or self._db is None:
+                if self.config_path is not None:
                     save_strategy_config(new_cfg, self.config_path)
                 self.strategy_config = new_cfg
+                if (
+                    not bool(getattr(new_cfg, "allow_galaxy_scan", False))
+                    and getattr(self, "_sweep_wake_event", None) is not None
+                ):
+                    self._sweep_wake_event.set()
                 if self._db is not None:
                     save_cfg_fn = getattr(self._db, "save_strategy_config_snapshot", None)
                     if callable(save_cfg_fn):
@@ -12659,6 +13666,7 @@ class GameApiBridge:
                     getattr(new_cfg, k, None) != getattr(prev_cfg, k, None)
                     for k in (
                         "allow_galaxy_scan",
+                        "galaxy_scan_block_other_actions",
                         "galaxy_sweep_pages",
                         "galaxy_scan_explore_first",
                         "galaxy_scan_refresh_pct",
@@ -12691,6 +13699,7 @@ class GameApiBridge:
                     ex.max_actions_per_hour = _safe_hourly_budget(new_cfg.max_actions_per_hour, 60)
                     if "max_actions_per_hour" in raw_cfg:
                         ex.enforce_hourly_cap = True
+                self._sync_page_limiter_from_config(new_cfg)
                 upd_resp: dict[str, Any] = {
                     "ok": True,
                     "command": cmd,
@@ -12769,9 +13778,15 @@ class GameApiBridge:
                         raw_ag_cfg,
                         planner_mode_override=ag_req_mode,
                     )
-                    ag_state = (
+                    custom_names = self._get_custom_planet_names_locked()
+                    ag_raw_state = (
                         self._attach_raid_stats(self._last_state)
                         if self._last_state is not None
+                        else None
+                    )
+                    ag_state = (
+                        self._apply_custom_planet_names_to_state(ag_raw_state, custom_names)
+                        if ag_raw_state is not None
                         else None
                     )
                     if ag_state is not None and ag_pid is not None:
@@ -12802,6 +13817,7 @@ class GameApiBridge:
                             "ok": True,
                             "command": cmd,
                             "action_graph": graph_obj,
+                            "custom_planet_names": custom_names,
                         }
                     )
 
@@ -13119,20 +14135,202 @@ class GameApiBridge:
             )
             return _sanitize_finite_json(_redact_api_payload(resp))
 
-        if cmd == "config_optimizer_export":
+        if cmd == "config_optimizer_yearly_projection":
+            horizon_years = _parse_command_int(
+                "horizon_years",
+                payload.get("horizon_years", 5),
+                min_val=1,
+                max_val=15,
+            ) or 5
             co_mod = self._load_config_optimizer_mod()
-            with self._lock:
+            with self._intel_read_lock:
                 active_co = self._get_active_config_optimizer_locked()
+                snap_state = self._get_planner_state_locked()
             if not isinstance(active_co, Mapping) or not isinstance(active_co.get("result"), Mapping):
-                raise ApiRequestError("No active Config Optimizer result available to export yet.")
-            content = co_mod.export_config_optimizer_json(active_co["result"])
+                raise ApiRequestError(
+                    "No active Config Optimizer result available yet; run Config Optimizer first."
+                )
+            cache_key = (
+                active_co.get("run_id"),
+                active_co.get("updated_ts"),
+                int(horizon_years),
+                round(float(getattr(snap_state, "timestamp", 0.0) or 0.0), 0) if snap_state is not None else 0.0,
+            )
+            cached_proj = self._co_yearly_proj_cache.get(cache_key)
+            if cached_proj is None:
+                cached_proj = co_mod.compute_yearly_ships_per_week_projection(
+                    active_co["result"],
+                    snap_state,
+                    horizon_years=int(horizon_years),
+                )
+                if len(self._co_yearly_proj_cache) >= 16:
+                    self._co_yearly_proj_cache.clear()
+                self._co_yearly_proj_cache[cache_key] = cached_proj
             return _sanitize_finite_json(
                 _redact_api_payload(
                     {
                         "ok": True,
                         "command": cmd,
-                        "filename": "config_optimizer_result.json",
-                        "content": str(content),
+                        "projection": cached_proj,
+                    }
+                )
+            )
+
+        if cmd == "config_optimizer_update_planet":
+            raw_blds = payload.get("target_buildings")
+            if not isinstance(raw_blds, Mapping):
+                raise ApiRequestError(
+                    "'config_optimizer_update_planet' requires a dictionary 'target_buildings'."
+                )
+            slot_val = _parse_command_int(
+                "slot",
+                payload.get("slot"),
+                allow_none=True,
+                min_val=1,
+                max_val=100,
+            )
+            pid_val = _parse_command_int(
+                "planet_id",
+                payload.get("planet_id"),
+                allow_none=True,
+                min_val=-1000,
+                max_val=2**63 - 1,
+            )
+            coords_val = (
+                str(payload.get("coords") or "").strip()
+                if payload.get("coords") is not None
+                else None
+            )
+            fm_val = _parse_command_int(
+                "fields_max_override",
+                payload.get("fields_max_override"),
+                allow_none=True,
+                min_val=1,
+                max_val=2000,
+            )
+            spec_raw = payload.get("locked_specialization")
+            if spec_raw is not None and not isinstance(spec_raw, str):
+                raise ApiRequestError("'locked_specialization' must be a string.")
+            pname_raw = payload.get("planet_name")
+            if pname_raw is not None and not isinstance(pname_raw, str):
+                raise ApiRequestError("'planet_name' must be a string.")
+            lock_for_ga = payload.get("lock_for_ga", True)
+            if not isinstance(lock_for_ga, bool):
+                raise ApiRequestError("'lock_for_ga' must be a boolean.")
+            auto_wh = payload.get("auto_warehouses", False)
+            if not isinstance(auto_wh, bool):
+                raise ApiRequestError("'auto_warehouses' must be a boolean.")
+            auto_replan_ai = payload.get("auto_replan_ai", True)
+            if not isinstance(auto_replan_ai, bool):
+                raise ApiRequestError("'auto_replan_ai' must be a boolean.")
+
+            co_mod = self._load_config_optimizer_mod()
+            with self._lock:
+                snap_state = self._get_planner_state_locked()
+                if snap_state is None:
+                    raise ApiRequestError("No game state snapshot available yet; open /dashboard first.")
+                if pname_raw is not None and pid_val is not None and int(pid_val) > 0:
+                    if any(int(p.planet_id) == int(pid_val) for p in snap_state.planets):
+                        self._set_custom_planet_name_locked(int(pid_val), pname_raw)
+                uni_max = self._snapshot_universe_research_max_map_locked(snap_state)
+                reserved_floors = self._get_reserved_floors_locked()
+                persisted_specs = self._get_planet_specializations_locked()
+                custom_names = self._get_custom_planet_names_locked()
+                active_co = self._get_active_config_optimizer_locked()
+                cfg_snap = self.strategy_config
+
+            base_res = (
+                dict(active_co["result"])
+                if isinstance(active_co, Mapping) and isinstance(active_co.get("result"), Mapping)
+                else None
+            )
+            merged_params = dict(getattr(co_mod, "DEFAULT_CONFIG_OPTIMIZER_PARAMS", {}) or {})
+            if isinstance(active_co, Mapping) and isinstance(active_co.get("params"), Mapping):
+                merged_params.update(dict(active_co["params"]))
+            merged_params["planet_specializations"] = dict(persisted_specs)
+            merged_params["planet_names"] = dict(custom_names)
+            merged_params["custom_planet_names"] = dict(custom_names)
+            merged_params["max_planets"] = max(1, _safe_api_int(getattr(cfg_snap, "max_planets", 11), 11))
+            merged_floors = {
+                str(pk): {str(bk): max(0, _safe_api_int(lv, 0)) for bk, lv in bm.items()}
+                for pk, bm in reserved_floors.items()
+                if isinstance(bm, Mapping)
+            }
+            merged_params["reserved_floors_by_planet"] = merged_floors
+
+            try:
+                updated_res = co_mod.apply_manual_planet_override(
+                    snap_state,
+                    target_buildings=raw_blds,
+                    base_result=base_res,
+                    slot=slot_val,
+                    planet_id=pid_val,
+                    coords=coords_val,
+                    fields_max_override=fm_val,
+                    locked_specialization=spec_raw,
+                    planet_name=pname_raw,
+                    lock_for_ga=bool(lock_for_ga),
+                    auto_warehouses=bool(auto_wh),
+                    universe_research_max=uni_max,
+                    params=merged_params,
+                )
+            except ValueError as exc:
+                raise ApiRequestError(str(_redact_api_payload(exc))) from exc
+
+            out_params = (
+                dict(updated_res.get("meta_parameters") or merged_params)
+                if isinstance(updated_res.get("meta_parameters"), Mapping)
+                else merged_params
+            )
+            run_id = self._persist_config_optimizer_result(
+                updated_res,
+                params=out_params,
+                reserved_floors=merged_floors,
+                trigger_source="manual_planet_edit",
+                elapsed_ms=float(updated_res.get("elapsed_ms", 0.0) or 0.0),
+            )
+            with self._lock:
+                if spec_raw is not None and isinstance(out_params.get("planet_specializations"), Mapping):
+                    updated_specs = self._update_planet_specializations_locked(
+                        out_params["planet_specializations"],
+                        replace=True,
+                    )
+                else:
+                    updated_specs = self._get_planet_specializations_locked()
+                custom_names_after = self._get_custom_planet_names_locked()
+                overlaid_active = self._overlay_custom_names_on_config_optimizer(
+                    self._get_active_config_optimizer_locked(),
+                    snap_state,
+                    custom_names_after,
+                )
+                self._co_yearly_proj_cache.clear()
+                self._invalidate_dashboard_cache()
+
+            ai_job_out: Optional[dict[str, Any]] = None
+            if auto_replan_ai and not self._planner_closed:
+                with contextlib.suppress(Exception):
+                    ai_resp = self._start_ai_planner_job(
+                        params=None,
+                        sync=False,
+                        trigger_source="auto_replan:manual_planet_edit",
+                        auto_run_config_if_missing=False,
+                        override_config_run_id=run_id,
+                        override_config_result=updated_res,
+                    )
+                    if isinstance(ai_resp, Mapping) and isinstance(ai_resp.get("job"), Mapping):
+                        ai_job_out = dict(ai_resp["job"])
+
+            return _sanitize_finite_json(
+                _redact_api_payload(
+                    {
+                        "ok": True,
+                        "command": cmd,
+                        "run_id": run_id,
+                        "active": overlaid_active,
+                        "result": overlaid_active["result"] if isinstance(overlaid_active, Mapping) else updated_res,
+                        "planet_specializations": updated_specs,
+                        "custom_planet_names": custom_names_after,
+                        "ai_planner_job": ai_job_out,
                     }
                 )
             )
@@ -13296,6 +14494,13 @@ class GameApiBridge:
             smelting_snap: Optional[dict[str, Any]] = None
             if has_plan and isinstance(active_result.get("smelting"), Mapping):
                 smelting_snap = dict(active_result.get("smelting") or {})
+                coords_to_cname: dict[str, str] = {}
+                if snap_state is not None:
+                    for pl_s in snap_state.planets or ():
+                        cn_s = custom_names.get(str(pl_s.planet_id))
+                        nc_s = normalize_coords(pl_s.coords)
+                        if cn_s and nc_s:
+                            coords_to_cname[nc_s] = cn_s
                 for list_key in ("planets", "initial_planets_needing_toggle"):
                     raw_rows = smelting_snap.get(list_key)
                     if isinstance(raw_rows, Sequence) and not isinstance(raw_rows, (str, bytes)):
@@ -13309,6 +14514,23 @@ class GameApiBridge:
                                 rd["name"] = custom_names[str(rpid)]
                             patched_rows.append(rd)
                         smelting_snap[list_key] = patched_rows
+                raw_evs = smelting_snap.get("events")
+                if isinstance(raw_evs, Sequence) and not isinstance(raw_evs, (str, bytes)):
+                    patched_evs: list[dict[str, Any]] = []
+                    for ev in raw_evs:
+                        if not isinstance(ev, Mapping):
+                            continue
+                        evd = dict(ev)
+                        ev_pid = _safe_api_int(evd.get("step_planet_id"), 0)
+                        ev_nc = normalize_coords(str(evd.get("step_planet_coords") or ""))
+                        ev_cn = (
+                            (custom_names.get(str(ev_pid)) if ev_pid > 0 else None)
+                            or (coords_to_cname.get(ev_nc) if ev_nc else None)
+                        )
+                        if ev_cn:
+                            evd["step_planet_name"] = ev_cn
+                        patched_evs.append(evd)
+                    smelting_snap["events"] = patched_evs
             live_blast_furnace = (
                 ai_mod.summarize_live_blast_furnace_state(display_state if display_state is not None else snap_state)
                 if hasattr(ai_mod, "summarize_live_blast_furnace_state")
@@ -13470,6 +14692,10 @@ class GameApiBridge:
                     "'ai_planner_run' field 'auto_run_config_if_missing' must be a boolean."
                 )
             trig = _bounded_api_str(payload.get("trigger_source") or "manual", default="manual")[:64]
+            if bool(refresh_raw):
+                with self._lock:
+                    if self._is_galaxy_scan_blocking_locked():
+                        raise GalaxyScanInProgressError(self._galaxy_scan_busy_error_message())
             resp = self._start_ai_planner_job(
                 params=raw_params,
                 sync=bool(sync_raw),
@@ -13478,24 +14704,6 @@ class GameApiBridge:
                 auto_run_config_if_missing=bool(auto_cfg_raw),
             )
             return _sanitize_finite_json(_redact_api_payload(resp))
-
-        if cmd == "ai_planner_export":
-            ai_mod = self._load_ai_planner_mod()
-            with self._lock:
-                active_ai = self._get_active_ai_planner_locked()
-            if not isinstance(active_ai, Mapping) or not isinstance(active_ai.get("result"), Mapping):
-                raise ApiRequestError("No active AI-Planner path available to export yet.")
-            content = ai_mod.export_ai_planner_txt(active_ai["result"])
-            return _sanitize_finite_json(
-                _redact_api_payload(
-                    {
-                        "ok": True,
-                        "command": cmd,
-                        "filename": "full_planner_path.txt",
-                        "content": str(content),
-                    }
-                )
-            )
 
         if cmd == "resolve_field_conflict":
             raw_ck = payload.get("conflict_key")
@@ -13681,12 +14889,18 @@ class GameApiBridge:
                     raw_fp_cfg,
                 )
                 snap_state = self._get_planner_state_locked()
-                enriched_fp = (
+                custom_names = self._get_custom_planet_names_locked()
+                raw_enriched_fp = (
                     self._merge_colony_candidates_if_needed(
                         self._attach_raid_stats(snap_state),
                         effective_fp_cfg,
                     )
                     if snap_state is not None
+                    else None
+                )
+                enriched_fp = (
+                    self._apply_custom_planet_names_to_state(raw_enriched_fp, custom_names)
+                    if raw_enriched_fp is not None
                     else None
                 )
                 atk_tel = self._compute_live_attack_telemetry_locked(enriched_fp)
@@ -13799,12 +15013,24 @@ class GameApiBridge:
                         "attack_telemetry": atk_tel,
                         "spare_budget": spare_budget,
                         "config": asdict(effective_fp_cfg),
+                        "custom_planet_names": custom_names,
                     }
                 )
             )
 
+        if cmd == "escape_flight" and not dry_run:
+            with self._lock:
+                allow_p0_preempt = bool(
+                    self._sweep_in_progress
+                    and getattr(self.strategy_config, "allow_fleetsave", False)
+                )
+            if allow_p0_preempt:
+                self._preempt_galaxy_sweep_and_wait("Preempted by P0 emergency Escape Flight.")
+
         with self._lock:
             if cmd == "ensure_session":
+                if self._is_galaxy_scan_blocking_locked():
+                    raise GalaxyScanInProgressError(self._galaxy_scan_busy_error_message())
                 self._raise_if_rate_limited()
                 try:
                     self._ensure_session_fn()
@@ -13821,8 +15047,9 @@ class GameApiBridge:
                     min_val=1,
                     max_val=2**63 - 1,
                 )
-                planet = self._resolve_planet(self._last_state, pid) if pid is not None else self._last_state.active_planet()
-                eta_payload = build_buildings_eta(self._last_state, planet)
+                disp_st = self._apply_custom_planet_names_to_state(self._last_state) or self._last_state
+                planet = self._resolve_planet(disp_st, pid) if pid is not None else disp_st.active_planet()
+                eta_payload = build_buildings_eta(disp_st, planet)
                 co_goals = self._get_config_optimizer_building_goals_locked()
                 if isinstance(eta_payload, dict):
                     eta_payload["config_optimizer_goals"] = co_goals
@@ -13843,14 +15070,15 @@ class GameApiBridge:
                     min_val=1,
                     max_val=2**63 - 1,
                 )
-                planet = self._resolve_planet(self._last_state, pid) if pid is not None else self._last_state.active_planet()
+                disp_st = self._apply_custom_planet_names_to_state(self._last_state) or self._last_state
+                planet = self._resolve_planet(disp_st, pid) if pid is not None else disp_st.active_planet()
                 return _sanitize_finite_json(
                     {
                         "ok": True,
                         "command": cmd,
                         "combat": _redact_api_payload(
                             build_combat_overview(
-                                self._last_state,
+                                disp_st,
                                 planet,
                                 safety_margin=self.strategy_config.combat_safety_margin,
                             )
@@ -13878,7 +15106,8 @@ class GameApiBridge:
                     override_cfg_fast = replace(self.strategy_config, planner_mode=req_mode_fast)
                 effective_cfg_fast = override_cfg_fast or self.strategy_config
                 effective_mode_fast = normalize_planner_mode(effective_cfg_fast.planner_mode)
-                state_fast = self._refresh_cached_economy(self._last_state)
+                state_fast_raw = self._refresh_cached_economy(self._last_state)
+                state_fast = self._apply_custom_planet_names_to_state(state_fast_raw) or state_fast_raw
                 actions_fast, opt_summary_fast = self._plan_with_summary(state_fast, config=override_cfg_fast)
                 gate_fast = self._evaluate_ai_planner_gate_locked(state_fast, cfg=effective_cfg_fast)
                 return _sanitize_finite_json(
@@ -13917,10 +15146,23 @@ class GameApiBridge:
                                     or "Paused for CAPTCHA — confirm solved in UI to resume."
                                 )
                             )
+                        if self._is_galaxy_scan_blocking_locked() and not (
+                            cmd == "escape_flight" and not dry_run
+                        ):
+                            raise GalaxyScanInProgressError(self._galaxy_scan_busy_error_message())
                         if _client_state[0] is None:
                             _client_state[0] = stack.enter_context(
                                 self._client_factory(self.debug_port)
                             )
+                        if not dry_run and cmd not in (
+                            "plan",
+                            "action_graph",
+                            "buildings_eta",
+                            "combat_overview",
+                            "ranking_evolution",
+                            "fleetsave_plan",
+                        ):
+                            self._last_live_command_mono = time.monotonic()
                         return _client_state[0]
 
                     def _exec_client(planned: PlannedAction) -> Any:
@@ -13945,6 +15187,12 @@ class GameApiBridge:
                         priority: str = "interactive",
                     ) -> GameState:
                         if self._bot_control.get("captcha_blocked") and self._last_state is not None:
+                            return self._refresh_cached_economy(self._last_state)
+                        if (
+                            self._is_galaxy_scan_blocking_locked()
+                            and not force_refresh
+                            and self._last_state is not None
+                        ):
                             return self._refresh_cached_economy(self._last_state)
                         if (
                             not force_refresh
@@ -13992,6 +15240,12 @@ class GameApiBridge:
                         *,
                         is_spy: bool,
                     ) -> GameState:
+                        if (
+                            self._is_galaxy_scan_blocking_locked()
+                            and not force_refresh
+                            and self._last_state is not None
+                        ):
+                            return self._refresh_cached_economy(self._last_state)
                         if dry_run or force_refresh:
                             return _cached_or_fetch(
                                 include_buildings=False,
@@ -14177,8 +15431,9 @@ class GameApiBridge:
                                 observed_active_planet=False,
                                 update_snapshot_ts=False,
                             )
-                        actions, opt_summary = self._plan_with_summary(state, config=override_cfg)
-                        gate = self._evaluate_ai_planner_gate_locked(state, cfg=effective_cfg)
+                        disp_plan_state = self._apply_custom_planet_names_to_state(state) or state
+                        actions, opt_summary = self._plan_with_summary(disp_plan_state, config=override_cfg)
+                        gate = self._evaluate_ai_planner_gate_locked(disp_plan_state, cfg=effective_cfg)
                         return _sanitize_finite_json(
                             _redact_api_payload(
                                 {
@@ -14190,7 +15445,7 @@ class GameApiBridge:
                                     "live_ai_unlocked": gate["live_ai_unlocked"],
                                     "colonies_owned": gate["colonies_owned"],
                                     "max_planets": gate["max_planets"],
-                                    "actions": [self._serialize_action(a) for a in actions],
+                                    "actions": [self._serialize_action(a, disp_plan_state) for a in actions],
                                     "optimizer_summary": opt_summary,
                                 }
                             )
@@ -14208,15 +15463,17 @@ class GameApiBridge:
                             include_shipyard=False,
                             priority="normal",
                         )
+                        custom_names = self._get_custom_planet_names_locked()
+                        disp_ag_state = self._apply_custom_planet_names_to_state(state, custom_names) or state
                         if ag_pid is not None:
-                            self._resolve_planet(state, ag_pid)
+                            self._resolve_planet(disp_ag_state, ag_pid)
                         actions, ag_opt_summary = self._plan_with_summary(
-                            state,
+                            disp_ag_state,
                             config=effective_ag_cfg,
                             record_summary=(not ag_simulated and not has_ag_overrides),
                         )
                         graph_obj = build_action_graph(
-                            state,
+                            disp_ag_state,
                             actions,
                             effective_config=effective_ag_cfg,
                             active_config=self.strategy_config,
@@ -14230,6 +15487,7 @@ class GameApiBridge:
                                     "ok": True,
                                     "command": cmd,
                                     "action_graph": graph_obj,
+                                    "custom_planet_names": custom_names,
                                 }
                             )
                         )
@@ -14248,8 +15506,9 @@ class GameApiBridge:
                             min_val=1,
                             max_val=2**63 - 1,
                         )
-                        planet = self._resolve_planet(state, pid) if pid is not None else state.active_planet()
-                        eta_payload = build_buildings_eta(state, planet)
+                        disp_eta_state = self._apply_custom_planet_names_to_state(state) or state
+                        planet = self._resolve_planet(disp_eta_state, pid) if pid is not None else disp_eta_state.active_planet()
+                        eta_payload = build_buildings_eta(disp_eta_state, planet)
                         co_goals = self._get_config_optimizer_building_goals_locked()
                         if isinstance(eta_payload, dict):
                             eta_payload["config_optimizer_goals"] = co_goals
@@ -14276,14 +15535,15 @@ class GameApiBridge:
                             min_val=1,
                             max_val=2**63 - 1,
                         )
-                        planet = self._resolve_planet(state, pid) if pid is not None else state.active_planet()
+                        disp_cmb_state = self._apply_custom_planet_names_to_state(state) or state
+                        planet = self._resolve_planet(disp_cmb_state, pid) if pid is not None else disp_cmb_state.active_planet()
                         return _sanitize_finite_json(
                             {
                                 "ok": True,
                                 "command": cmd,
                                 "combat": _redact_api_payload(
                                     build_combat_overview(
-                                        state,
+                                        disp_cmb_state,
                                         planet,
                                         safety_margin=self.strategy_config.combat_safety_margin,
                                     )
@@ -14388,6 +15648,140 @@ class GameApiBridge:
                                     "ok": True,
                                     "command": cmd,
                                     "items": items,
+                                }
+                            )
+                        )
+
+                    if cmd == "sync_planet_names":
+                        snap_state = self._get_planner_state_locked()
+                        if snap_state is None or not snap_state.planets:
+                            snap_state = _cached_or_fetch(
+                                include_buildings=False,
+                                include_research=False,
+                                include_shipyard=False,
+                                include_home=False,
+                                priority="interactive",
+                            )
+                        planets_by_id = {int(p.planet_id): p for p in snap_state.planets if int(p.planet_id) > 0}
+                        raw_batch_sync = payload.get("planet_names")
+                        single_pid_sync = _parse_command_int(
+                            "planet_id",
+                            payload.get("planet_id"),
+                            allow_none=True,
+                            min_val=1,
+                            max_val=2**63 - 1,
+                        )
+                        targets_to_sync: dict[int, str] = {}
+                        if raw_batch_sync is not None:
+                            if not isinstance(raw_batch_sync, Mapping):
+                                raise ApiRequestError(
+                                    "'sync_planet_names' field 'planet_names' must be a dictionary."
+                                )
+                            batch_local: dict[int, str] = {}
+                            for raw_pid_s, raw_nm_s in raw_batch_sync.items():
+                                pid_s = _parse_command_int("planet_id", raw_pid_s, min_val=1, max_val=2**63 - 1)
+                                if pid_s is None or pid_s not in planets_by_id:
+                                    raise ApiRequestError(f"Planet {raw_pid_s} does not belong to this empire.")
+                                if raw_nm_s is not None and not isinstance(raw_nm_s, str):
+                                    raise ApiRequestError("Planet names must be strings.")
+                                clean_s = GameDatabase.sanitize_custom_planet_name(raw_nm_s)
+                                batch_local[int(pid_s)] = clean_s
+                                if clean_s:
+                                    targets_to_sync[int(pid_s)] = clean_s
+                            if batch_local:
+                                self._set_custom_planet_names_batch_locked(batch_local)
+                        elif single_pid_sync is not None:
+                            if single_pid_sync not in planets_by_id:
+                                raise ApiRequestError(f"Planet {single_pid_sync} does not belong to this empire.")
+                            if "name" in payload and payload.get("name") is not None:
+                                if not isinstance(payload.get("name"), str):
+                                    raise ApiRequestError("Field 'name' must be a string.")
+                                self._set_custom_planet_name_locked(int(single_pid_sync), str(payload["name"]))
+                            cur_custom = self._get_custom_planet_names_locked().get(str(single_pid_sync), "")
+                            desired_nm = cur_custom or str(planets_by_id[single_pid_sync].name or "")
+                            if desired_nm:
+                                targets_to_sync[int(single_pid_sync)] = desired_nm
+                        else:
+                            # Sync all custom planet names that differ from the live in-game name (or all if force=True)
+                            force_all = bool(payload.get("force", False))
+                            custom_map = self._get_custom_planet_names_locked()
+                            for pid_s_str, c_name in custom_map.items():
+                                pid_i = _safe_api_int(pid_s_str, 0)
+                                if pid_i <= 0 or pid_i not in planets_by_id or not c_name:
+                                    continue
+                                g_name = str(planets_by_id[pid_i].name or "").strip()
+                                if force_all or c_name != g_name:
+                                    targets_to_sync[pid_i] = str(c_name)
+
+                        if not targets_to_sync:
+                            return _sanitize_finite_json(
+                                _redact_api_payload(
+                                    {
+                                        "ok": True,
+                                        "command": cmd,
+                                        "synced_count": 0,
+                                        "synced": [],
+                                        "skipped": [],
+                                        "custom_planet_names": self._get_custom_planet_names_locked(),
+                                        "message": "All planet names in Config Optimizer already match in-game names.",
+                                    }
+                                )
+                            )
+
+                        if dry_run:
+                            return _sanitize_finite_json(
+                                _redact_api_payload(
+                                    {
+                                        "ok": True,
+                                        "command": cmd,
+                                        "dry_run": True,
+                                        "synced_count": 0,
+                                        "pending_targets": {str(k): v for k, v in targets_to_sync.items()},
+                                        "custom_planet_names": self._get_custom_planet_names_locked(),
+                                        "message": f"Dry run: would sync {len(targets_to_sync)} planet name(s) via internalSettings.",
+                                    }
+                                )
+                            )
+
+                        client = _get_client()
+                        self._call_with_optional_priority(client.ensure_in_game, priority="interactive")
+                        sync_out = self._live_executor.sync_planet_names_in_game(
+                            client,
+                            snap_state,
+                            targets_to_sync,
+                        )
+                        updated_st = sync_out.get("updated_state")
+                        if isinstance(updated_st, GameState):
+                            self._record_state(
+                                updated_st,
+                                fetched_buildings=False,
+                                fetched_research=False,
+                                fetched_shipyard=False,
+                                fetched_home=False,
+                                observed_active_planet=False,
+                            )
+                        # Reconcile any game-side length truncation into custom_planet_names
+                        reconcile_batch: dict[int, str] = {}
+                        for s_row in sync_out.get("synced") or ():
+                            if not isinstance(s_row, Mapping):
+                                continue
+                            s_pid = _safe_api_int(s_row.get("planet_id"), 0)
+                            obs_gname = str(s_row.get("game_name") or "").strip()
+                            if s_pid > 0 and obs_gname:
+                                reconcile_batch[s_pid] = obs_gname
+                        if reconcile_batch:
+                            self._set_custom_planet_names_batch_locked(reconcile_batch)
+                        self._invalidate_dashboard_cache()
+                        return _sanitize_finite_json(
+                            _redact_api_payload(
+                                {
+                                    "ok": bool(sync_out.get("ok", True)),
+                                    "command": cmd,
+                                    "synced_count": int(sync_out.get("synced_count", 0) or 0),
+                                    "synced": list(sync_out.get("synced") or []),
+                                    "skipped": list(sync_out.get("skipped") or []),
+                                    "custom_planet_names": self._get_custom_planet_names_locked(),
+                                    "message": str(sync_out.get("message") or "Synced planet names in-game."),
                                 }
                             )
                         )
@@ -14504,6 +15898,22 @@ class GameApiBridge:
                                     self._note_daily_login_bonus_seen_locked(
                                         present=bool(parse_daily_login_bonus(html).get("present", False)),
                                     )
+                            elif action == "internalFleet" and self._last_state is not None:
+                                nav_fc = ActionExecutor._extract_internal_fleet_planet_coords(html)
+                                nav_fp = (
+                                    next(
+                                        (p for p in self._last_state.planets if normalize_coords(p.coords) == nav_fc),
+                                        None,
+                                    )
+                                    if nav_fc
+                                    else self._last_state.active_planet()
+                                )
+                                if nav_fp is not None and nav_fc:
+                                    obs_nav_pid = nav_fp.planet_id
+                                nav_slots = ActionExecutor._parse_internal_fleet_slot_status(html)
+                                if nav_slots is not None:
+                                    self._record_observed_fleet_slots_locked(nav_fp, nav_slots[0])
+                                    self._persist_runtime_state()
                             elif action in (
                                 "internalBuildings",
                                 "internalEconomy",
@@ -14988,7 +16398,7 @@ class GameApiBridge:
                         )
                         if not dry_run:
                             if bool(getattr(self.strategy_config, "spy_reserved_slots_only", False)):
-                                max_spy_sl_live = 1 + max(0, planet.building_level(10))
+                                max_spy_sl_live = self._max_fleet_slots_for_planet_locked(planet)
                                 spy_cap_live = min(
                                     max_spy_sl_live,
                                     max(0, _safe_api_int(getattr(self.strategy_config, "reserved_spy_slots", 1), 1)),
@@ -16354,7 +17764,9 @@ class GameApiBridge:
                     )
                 raise
             except (SpaceInvasionAuthError, Exception) as exc:
-                if self.log_dir is not None and not isinstance(exc, ApiRequestError):
+                if self.log_dir is not None and not isinstance(
+                    exc, (ApiRequestError, GalaxyScanInProgressError)
+                ):
                     append_crash_debug_log(
                         component="api_server.handle_command",
                         event=f"command_error:{cmd}",
@@ -16621,6 +18033,16 @@ def create_api_server(
                     self._send_json(HTTPStatus.OK, bridge.get_state(include_buildings=inc))
                     return
                 self._send_json(HTTPStatus.NOT_FOUND, {"ok": False, "error": _redact_api_payload(f"Unknown route {parsed.path}")})
+            except GalaxyScanInProgressError as exc:
+                self._send_json(
+                    HTTPStatus.CONFLICT,
+                    {
+                        "ok": False,
+                        "sweep_in_progress": True,
+                        "sweep_blocked": True,
+                        "error": format_clean_error(_redact_api_payload(exc), max_chars=1024),
+                    },
+                )
             except RateLimitError as exc:
                 body, headers = _build_rate_limit_response(exc)
                 self._send_json(
@@ -16680,6 +18102,14 @@ def create_api_server(
             except _RequestTooLargeError as exc:
                 status_code = HTTPStatus.REQUEST_ENTITY_TOO_LARGE
                 body = {"ok": False, "error": _redact_api_payload(exc)}
+            except GalaxyScanInProgressError as exc:
+                status_code = HTTPStatus.CONFLICT
+                body = {
+                    "ok": False,
+                    "sweep_in_progress": True,
+                    "sweep_blocked": True,
+                    "error": format_clean_error(_redact_api_payload(exc), max_chars=1024),
+                }
             except (ValueError, ApiRequestError) as exc:
                 status_code = HTTPStatus.BAD_REQUEST
                 body = {"ok": False, "error": _redact_api_payload(exc)}
@@ -16703,7 +18133,7 @@ def create_api_server(
                 body = {"ok": False, "error": format_clean_error(_redact_api_payload(exc), max_chars=1024)}
 
             log_dir = getattr(bridge, "log_dir", None)
-            if isinstance(log_dir, (str, Path)):
+            if isinstance(log_dir, (str, Path)) or is_container_runtime():
                 log_payload = (
                     payload
                     if isinstance(payload, Mapping)
@@ -16711,7 +18141,7 @@ def create_api_server(
                 )
                 try:
                     append_api_log(
-                        Path(log_dir),
+                        Path(log_dir) if isinstance(log_dir, (str, Path)) else None,
                         method="POST",
                         path=parsed.path,
                         status=int(status_code),

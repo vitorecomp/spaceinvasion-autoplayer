@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import re
+import sys
 from typing import Any, Optional, Sequence
 
 from spaceinvasion.core import game_data
@@ -714,8 +715,25 @@ def pick_next_action(
     return actions[1] if len(actions) > 1 else None
 
 
+_REPO_ROOT_DIR: Path = Path(__file__).resolve().parents[2]
+_REPO_LOGS_DIR: Path = (_REPO_ROOT_DIR / "logs").resolve()
+DEFAULT_CRASH_LOG_DIR: Path = (_REPO_ROOT_DIR / "state").resolve()
+
+
+def _should_skip_disk_log(target_dir: Optional[Path]) -> bool:
+    if target_dir is None:
+        return True
+    if os.environ.get("SPACEINVASION_DISK_LOGS", "0").strip() == "1":
+        return False
+    try:
+        resolved = Path(target_dir).resolve()
+    except OSError:
+        return True
+    return resolved in (_REPO_LOGS_DIR, DEFAULT_CRASH_LOG_DIR)
+
+
 def append_tick_logs(
-    log_dir: Path,
+    log_dir: Optional[Path],
     *,
     source: str,
     tick: int,
@@ -726,7 +744,11 @@ def append_tick_logs(
     next_action: PlannedAction | dict[str, Any] | None,
     outcomes: Sequence[dict[str, Any]] = (),
 ) -> tuple[Path, Path]:
-    """Write structured JSONL and readable `.log` entries under `log_dir`."""
+    """Write structured JSONL and readable `.log` entries when `log_dir` is an explicit path, or no-op on disk in Podman/stdout mode."""
+    skip_disk = _should_skip_disk_log(log_dir)
+    if skip_disk:
+        return Path("/dev/null"), Path("/dev/null")
+    assert log_dir is not None
     log_dir.mkdir(parents=True, exist_ok=True)
     jsonl_path = log_dir / f"{source}.jsonl"
     text_path = log_dir / f"{source}.log"
@@ -796,7 +818,7 @@ def append_tick_logs(
 
 
 def append_api_log(
-    log_dir: Path,
+    log_dir: Optional[Path],
     *,
     method: str,
     path: str,
@@ -804,10 +826,10 @@ def append_api_log(
     payload: Optional[dict[str, Any]] = None,
     response: Optional[dict[str, Any]] = None,
 ) -> tuple[Path, Path]:
-    """Append an HTTP API request/command audit event into `logs/game_api.*`."""
-    log_dir.mkdir(parents=True, exist_ok=True)
-    jsonl_path = log_dir / "game_api.jsonl"
-    text_path = log_dir / "game_api.log"
+    """Emit an HTTP API request/command audit event to container stdout (or explicit test `log_dir`)."""
+    skip_disk = _should_skip_disk_log(log_dir)
+    jsonl_path = (log_dir / "game_api.jsonl") if (not skip_disk and log_dir is not None) else Path("/dev/null")
+    text_path = (log_dir / "game_api.log") if (not skip_disk and log_dir is not None) else Path("/dev/null")
 
     ts = datetime.now(timezone.utc).isoformat()
     payload_map = payload if isinstance(payload, Mapping) else {}
@@ -839,8 +861,6 @@ def append_api_log(
             )
         )
     )
-    with jsonl_path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(record, allow_nan=False) + "\n")
 
     method_label = _safe_summary_text(record.get("method"), "")
     redacted_path = _safe_summary_text(record.get("path"), "")
@@ -861,13 +881,39 @@ def append_api_log(
         f"[{ts}] {method_label} {redacted_path} -> {status_label} | actual={actual_str}"
         f" | next={next_str}" + (f" | {msg}" if msg else "") + "\n"
     )
+    if skip_disk:
+        # Avoid spamming read-only UI polling commands in pod logs; log mutating/action/error commands cleanly
+        noisy_poll_cmds = {
+            "planner_jobs_status",
+            "notifications_list",
+            "db_summary",
+            "db_backend_status",
+            "config_optimizer_get",
+            "ai_planner_get",
+            "fleet_planner_get",
+            "buildings_eta",
+            "combat_overview",
+            "espionage_intel",
+            "colony_candidates",
+            "attack_results",
+            "recycler_results",
+            "ranking_evolution",
+            "game_messages",
+            "universe_research_max",
+        }
+        if int(status) >= 400 or cmd_label not in noisy_poll_cmds:
+            sys.stdout.write(f"[API] {line}")
+            sys.stdout.flush()
+        return jsonl_path, text_path
+
+    assert log_dir is not None
+    log_dir.mkdir(parents=True, exist_ok=True)
+    with jsonl_path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(record, allow_nan=False) + "\n")
     with text_path.open("a", encoding="utf-8") as handle:
         handle.write(line)
 
     return jsonl_path, text_path
-
-
-DEFAULT_CRASH_LOG_DIR: Path = Path(__file__).resolve().parents[2] / "state"
 
 
 def append_crash_debug_log(
@@ -878,7 +924,7 @@ def append_crash_debug_log(
     details: Optional[Mapping[str, Any]] = None,
     crash_dir: Optional[Path] = None,
 ) -> Optional[tuple[Path, Path]]:
-    """Append a gitignored, `sid=`-redacted diagnostic/crash record to `state/crash_debug.*`.
+    """Emit a `sid=`-redacted diagnostic/crash record to stderr (or explicit `crash_dir` in tests).
 
     Never raises so instrumentation cannot mask or alter runtime behavior.
     """
@@ -886,9 +932,7 @@ def append_crash_debug_log(
 
     try:
         target_dir = crash_dir if crash_dir is not None else DEFAULT_CRASH_LOG_DIR
-        target_dir.mkdir(parents=True, exist_ok=True)
-        jsonl_path = target_dir / "crash_debug.jsonl"
-        text_path = target_dir / "crash_debug.log"
+        skip_disk = _should_skip_disk_log(target_dir)
 
         ts = datetime.now(timezone.utc).isoformat()
         exc_type = type(error).__name__ if error is not None else None
@@ -916,8 +960,6 @@ def append_crash_debug_log(
                 )
             )
         )
-        with jsonl_path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(record, allow_nan=False) + "\n")
 
         comp_s = _safe_summary_text(record.get("component"), "")
         evt_s = _safe_summary_text(record.get("event"), "")
@@ -932,6 +974,20 @@ def append_crash_debug_log(
             json.dumps(record.get("details") or {}, indent=2, allow_nan=False)
         )
         tb_redacted = redact_sensitive(str(record.get("traceback") or ""))
+        if skip_disk:
+            sys.stderr.write(header)
+            if det_json and det_json != "{}":
+                sys.stderr.write(f"details: {det_json}\n")
+            if tb_redacted:
+                sys.stderr.write(f"traceback:\n{tb_redacted}\n")
+            sys.stderr.flush()
+            return None
+
+        target_dir.mkdir(parents=True, exist_ok=True)
+        jsonl_path = target_dir / "crash_debug.jsonl"
+        text_path = target_dir / "crash_debug.log"
+        with jsonl_path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, allow_nan=False) + "\n")
         with text_path.open("a", encoding="utf-8") as handle:
             handle.write(header)
             if det_json and det_json != "{}":

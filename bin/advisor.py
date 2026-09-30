@@ -309,13 +309,24 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--save-db",
         action="store_true",
-        help="Persist the full state + action plan snapshot into SQLite (state/spaceinvasion.db).",
+        help="Persist the full state + action plan snapshot into the active database (PostgreSQL or SQLite).",
     )
     parser.add_argument(
         "--db",
         type=Path,
         default=None,
         help="Explicit SQLite database path for persisting the advisor snapshot (e.g. state/spaceinvasion.db).",
+    )
+    parser.add_argument(
+        "--db-backend",
+        choices=("auto", "postgres", "sqlite"),
+        default=None,
+        help="Database backend ('postgres', 'sqlite', or 'auto') when --save-db is enabled.",
+    )
+    parser.add_argument(
+        "--db-url",
+        default=None,
+        help="Explicit PostgreSQL DSN when persisting advisor snapshots to Postgres.",
     )
     parser.add_argument(
         "--snapshot-out",
@@ -435,19 +446,36 @@ def main(argv: list[str] | None = None) -> int:
             "state": asdict(state),
             "plan": [asdict(a) for a in actions],
         }
-        target_db_path: Path | None = args.db
-        if target_db_path is None and getattr(args, "save_db", False):
-            target_db_path = Path("state") / "spaceinvasion.db"
+        target_db_path: Path | str | None = args.db
+        use_pg_backend = False
         if args.snapshot_out:
             if args.snapshot_out.suffix.lower() in {".db", ".sqlite", ".sqlite3"}:
                 target_db_path = args.snapshot_out
             else:
                 args.snapshot_out.parent.mkdir(parents=True, exist_ok=True)
                 args.snapshot_out.write_text(_safe_cli_json(payload), encoding="utf-8")
+        if target_db_path is None and (getattr(args, "save_db", False) or args.db_backend or args.db_url):
+            from spaceinvasion.db.backend import ensure_postgres_container_ready, resolve_database_config
+
+            resolved_cfg = resolve_database_config(
+                explicit_backend=args.db_backend,
+                explicit_db_url=args.db_url,
+                root_dir=_REPO_ROOT,
+            )
+            if resolved_cfg.backend == "postgres":
+                ensure_postgres_container_ready(resolved_cfg.postgres_url, root_dir=_REPO_ROOT, auto_start=True)
+                target_db_path = resolved_cfg.postgres_url
+                use_pg_backend = True
+            else:
+                target_db_path = resolved_cfg.sqlite_path
         if target_db_path is not None:
             from spaceinvasion.db.storage import GameDatabase
 
-            db = GameDatabase(target_db_path)
+            db = (
+                GameDatabase(target_db_path, backend="postgres")
+                if use_pg_backend
+                else GameDatabase(target_db_path)
+            )
             try:
                 db.record_state_snapshot(state)
                 db.record_full_state_snapshot(state, actions, source="advisor")

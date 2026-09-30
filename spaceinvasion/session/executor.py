@@ -195,6 +195,8 @@ class ExecutionResult:
     clear_target_debris: bool = False
     validated: bool = True
     validation_error: Optional[str] = None
+    observed_fleet_slots_available: Optional[int] = None
+    observed_fleet_slots_filled: Optional[int] = None
 
 
 class ActionExecutor:
@@ -360,6 +362,49 @@ class ActionExecutor:
         if selected_value is not None and target_re.search(selected_value):
             return False, None
         return True, target_value
+
+    @staticmethod
+    def _parse_internal_fleet_slot_status(html: str) -> Optional[tuple[int, int]]:
+        """Parse `Fleet bases (available: N, filled: M)` from `internalFleet` HTML."""
+        if not html:
+            return None
+        soup = BeautifulSoup(html, "html.parser")
+        txt = " ".join(soup.get_text(" ", strip=True).split())
+        m = re.search(
+            r"(?:Fleet\s+bases|Flottenst(?:ü|ue)tzpunkte)\s*\(\s*"
+            r"(?:available|verf(?:ü|ue)gbar)\s*:\s*(\d+)\s*,\s*"
+            r"(?:filled|besetzt|belegt)\s*:\s*(\d+)\s*\)",
+            txt,
+            re.IGNORECASE,
+        )
+        if not m:
+            return None
+        avail = game_data.safe_int(m.group(1), -1)
+        filled = game_data.safe_int(m.group(2), -1)
+        if avail < 0 or filled < 0:
+            return None
+        return (avail, filled)
+
+    @staticmethod
+    def _extract_internal_fleet_planet_coords(html: str) -> str:
+        """Extract active planet coordinates (`GG:SSS:PP`) from `internalFleet` header/filter."""
+        if not html:
+            return ""
+        soup = BeautifulSoup(html, "html.parser")
+        p_el = soup.select_one("#planet-coords")
+        if p_el is not None:
+            m_pc = re.search(r"(\d{1,2}:\d{1,3}:\d{1,2})", p_el.get_text(" ", strip=True), re.ASCII)
+            if m_pc:
+                return normalize_coords(m_pc.group(1))
+        txt = " ".join(soup.get_text(" ", strip=True).split())
+        m_only = re.search(
+            r"(?:Only\s+flights\s+from\s+here|Nur\s+Fl(?:ü|ue)ge\s+von\s+hier)\s*:\s*[^\[\n]{0,80}\[\s*(\d{1,2}:\d{1,3}:\d{1,2})\s*\]",
+            txt,
+            re.IGNORECASE,
+        )
+        if m_only:
+            return normalize_coords(m_only.group(1))
+        return ""
 
     @staticmethod
     def _extract_selected_planet_id(html: str, url: str = "") -> Optional[int]:
@@ -2350,6 +2395,7 @@ class ActionExecutor:
         t_gal, t_sys, t_pos = int(m.group(1)), int(m.group(2)), int(m.group(3))
         is_asteroid = bool(re.search(r"\[\s*a\s*\]|\basteroid\b", f"{tname_s} {reason_s}", re.IGNORECASE))
 
+        did_force_reconfirm = not active_planet_confirmed
         fleet_html = self._navigate_and_select_planet(
             client,
             state,
@@ -2357,6 +2403,31 @@ class ActionExecutor:
             action.planet_id,
             active_planet_confirmed=active_planet_confirmed,
         )
+        obs_fleet_coords = self._extract_internal_fleet_planet_coords(fleet_html or "")
+        if obs_fleet_coords and len(getattr(state, "planets", ()) or ()) > 1:
+            obs_p_by_coords = next(
+                (p for p in state.planets if normalize_coords(p.coords) == obs_fleet_coords),
+                None,
+            )
+            if obs_p_by_coords is not None:
+                self._record_observed_planet(obs_p_by_coords.planet_id, confirmed=True)
+                if obs_p_by_coords.planet_id != action.planet_id and not did_force_reconfirm:
+                    did_force_reconfirm = True
+                    fleet_html = self._navigate_and_select_planet(
+                        client,
+                        state,
+                        "internalFleet",
+                        action.planet_id,
+                        active_planet_confirmed=False,
+                    )
+                    obs_after_c = self._extract_internal_fleet_planet_coords(fleet_html or "")
+                    if obs_after_c:
+                        obs_p2 = next(
+                            (p for p in state.planets if normalize_coords(p.coords) == obs_after_c),
+                            None,
+                        )
+                        if obs_p2 is not None:
+                            self._record_observed_planet(obs_p2.planet_id, confirmed=True)
         mismatch_pid = self._confirmed_planet_mismatch(action.planet_id)
         if mismatch_pid is not None:
             return ExecutionResult(
@@ -2370,41 +2441,47 @@ class ActionExecutor:
                 observed_active_planet_id=mismatch_pid,
                 observed_active_planet_confirmed=True,
             )
-        fleet_soup = BeautifulSoup(fleet_html or "", "html.parser")
-        send_form_soup = fleet_soup.select_one('form[action*="internalSendFleet"]')
-        fleet_named_soup = fleet_soup.select_one('form[name="fleet"]')
-        step1_form_soup = send_form_soup or fleet_named_soup
-        if step1_form_soup is None:
-            for cand_form in fleet_soup.find_all("form"):
-                if all(cand_form.find(attrs={"name": fn}) is not None for fn in ("gal", "sun", "pla")):
-                    step1_form_soup = cand_form
-                    break
 
-        step1_form_css = ""
-        if send_form_soup is not None:
-            step1_form_css = 'form[action*="internalSendFleet"]'
-        elif fleet_named_soup is not None:
-            step1_form_css = 'form[name="fleet"]'
-        elif step1_form_soup is not None:
-            fid = str(step1_form_soup.get("id") or "").strip()
-            faction = str(step1_form_soup.get("action") or "").strip()
-            if fid and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_-]*", fid):
-                step1_form_css = f"form#{fid}"
-            elif faction:
-                esc_action = faction.replace('"', '\\"')
-                step1_form_css = f'form[action="{esc_action}"]'
+        def _parse_step1_dom(raw_fhtml: str):
+            f_soup = BeautifulSoup(raw_fhtml or "", "html.parser")
+            s_form = f_soup.select_one('form[action*="internalSendFleet"]')
+            n_form = f_soup.select_one('form[name="fleet"]')
+            st1_soup = s_form or n_form
+            if st1_soup is None:
+                for cand_f in f_soup.find_all("form"):
+                    if all(cand_f.find(attrs={"name": fn}) is not None for fn in ("gal", "sun", "pla")):
+                        st1_soup = cand_f
+                        break
+            st1_css = ""
+            if s_form is not None:
+                st1_css = 'form[action*="internalSendFleet"]'
+            elif n_form is not None:
+                st1_css = 'form[name="fleet"]'
+            elif st1_soup is not None:
+                fid = str(st1_soup.get("id") or "").strip()
+                faction = str(st1_soup.get("action") or "").strip()
+                if fid and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_-]*", fid):
+                    st1_css = f"form#{fid}"
+                elif faction:
+                    esc_action = faction.replace('"', '\\"')
+                    st1_css = f'form[action="{esc_action}"]'
+            sc_soup = st1_soup if st1_soup is not None else f_soup
+            in_names = {
+                str(inp.get("name") or "")
+                for inp in sc_soup.find_all("input")
+                if inp.get("name")
+            }
+            sub_css = (
+                f'{st1_css} input[type="submit"], {st1_css} button[type="submit"]'
+                if st1_css
+                else 'form[name="fleet"] input[type="submit"], form[name="fleet"] button[type="submit"]'
+            )
+            return f_soup, st1_soup, st1_css, in_names, sub_css
 
-        scope_soup = step1_form_soup if step1_form_soup is not None else fleet_soup
-        soup_input_names = {
-            str(inp.get("name") or "")
-            for inp in scope_soup.find_all("input")
-            if inp.get("name")
-        }
-        step1_submit_css = (
-            f'{step1_form_css} input[type="submit"], {step1_form_css} button[type="submit"]'
-            if step1_form_css
-            else 'form[name="fleet"] input[type="submit"], form[name="fleet"] button[type="submit"]'
+        fleet_soup, step1_form_soup, step1_form_css, soup_input_names, step1_submit_css = _parse_step1_dom(
+            fleet_html or ""
         )
+        slot_status = self._parse_internal_fleet_slot_status(fleet_html or "")
 
         def _field_needs_scoping(fname: str) -> bool:
             if not step1_form_css or step1_form_soup is None:
@@ -2447,11 +2524,82 @@ class ActionExecutor:
                         self._set_text_input_value(client, els[0], str(qty_safe))
                         filled_any = True
                 if not filled_any:
+                    slots_full = slot_status is not None and slot_status[1] >= slot_status[0]
+                    if (
+                        not slots_full
+                        and not did_force_reconfirm
+                        and len(getattr(state, "planets", ()) or ()) > 1
+                        and attempt == 0
+                    ):
+                        did_force_reconfirm = True
+                        fleet_html = self._navigate_and_select_planet(
+                            client,
+                            state,
+                            "internalFleet",
+                            action.planet_id,
+                            active_planet_confirmed=False,
+                        )
+                        mismatch_retry = self._confirmed_planet_mismatch(action.planet_id)
+                        if mismatch_retry is not None:
+                            return ExecutionResult(
+                                executed=False,
+                                dry_run=False,
+                                action=action,
+                                message=(
+                                    f"Aborted: active planet is {mismatch_retry}, "
+                                    f"not requested origin {game_data.fmt_compact_int(action.planet_id)}."
+                                ),
+                                observed_active_planet_id=mismatch_retry,
+                                observed_active_planet_confirmed=True,
+                            )
+                        (
+                            fleet_soup,
+                            step1_form_soup,
+                            step1_form_css,
+                            soup_input_names,
+                            step1_submit_css,
+                        ) = _parse_step1_dom(fleet_html or "")
+                        slot_status = self._parse_internal_fleet_slot_status(fleet_html or "")
+                        client._switch_frame("F_Hauptframe")
+                        continue
+                    obs_avail = slot_status[0] if slot_status is not None else None
+                    obs_filled = slot_status[1] if slot_status is not None else None
+                    if slot_status is not None and slot_status[1] >= slot_status[0]:
+                        return ExecutionResult(
+                            executed=False,
+                            dry_run=False,
+                            action=action,
+                            message=(
+                                f"Aborted: Fleet bases full ({slot_status[1]}/{slot_status[0]} filled on [{coords_s}]) "
+                                "— no ship input fields found on internalFleet."
+                            ),
+                            observed_fleet_slots_available=obs_avail,
+                            observed_fleet_slots_filled=obs_filled,
+                        )
+                    refreshed_abort_state: Optional[GameState] = None
+                    read_ov_fn = getattr(client, "read_planets_overview", None)
+                    if callable(read_ov_fn):
+                        with contextlib.suppress(Exception):
+                            ov_abort = _call_with_optional_priority(
+                                read_ov_fn,
+                                refresh=True,
+                                priority="interactive",
+                            )
+                            refreshed_abort_state = self._build_updated_state(
+                                client,
+                                state,
+                                action,
+                                ov_abort,
+                                is_fleet=True,
+                            )
                     return ExecutionResult(
                         executed=False,
                         dry_run=False,
                         action=action,
                         message="Aborted: no ship input fields found on internalFleet.",
+                        updated_state=refreshed_abort_state,
+                        observed_fleet_slots_available=obs_avail,
+                        observed_fleet_slots_filled=obs_filled,
                     )
                 for fname, fval in (("gal", str(t_gal)), ("sun", str(t_sys)), ("pla", str(t_pos))):
                     if _field_needs_scoping(fname):
@@ -2870,6 +3018,35 @@ class ActionExecutor:
         ship_desc = ", ".join(
             f"{game_data.fmt_compact_int(qty)}x {k}" for k, qty in ships_to_send.items()
         )
+        if updated_state is not None:
+            norm_orig_c = normalize_coords(coords_s)
+            norm_dest_c = f"{t_gal:02d}:{t_sys:03d}:{t_pos:02d}"
+            mission_lbl_map = {
+                "SPY": "Spy",
+                "ESCAPE": "Escape",
+                "RECYCLE": "Recycle",
+                "COLONIZE": "Colonize",
+                "TRANSPORT": "Transport",
+                "STATION": "Station",
+                "ATTACK": "Attack",
+            }
+            m_lbl = mission_lbl_map.get(mission_kind, mission_kind.title())
+            synth_job = QueueJob(
+                category="fleet",
+                name=f"{m_lbl} → [{norm_dest_c}]",
+                remaining_text="in transit",
+                remaining_seconds=1800.0,
+                finish_ts=round(time.time() + 1800.0, 3),
+                queue_slot=1,
+                detail=f"Outbound · {ship_desc}"[:160],
+                origin_coords=norm_orig_c,
+                cargo=cargo_resources if mission_kind == "TRANSPORT" else None,
+                expected_cargo=cargo_resources if mission_kind == "TRANSPORT" else None,
+            )
+            updated_state = replace(
+                updated_state,
+                active_queues=tuple(list(updated_state.active_queues or ()) + [synth_job]),
+            )
         if mission_kind == "SPY":
             verb = "spy probe"
         elif mission_kind == "ESCAPE":
@@ -2884,6 +3061,8 @@ class ActionExecutor:
             verb = "one-way fleet stationing"
         else:
             verb = "attack"
+        obs_avail_ok = slot_status[0] if slot_status is not None else None
+        obs_filled_ok = min(slot_status[0], slot_status[1] + 1) if slot_status is not None else None
         return ExecutionResult(
             executed=True,
             dry_run=False,
@@ -2894,6 +3073,8 @@ class ActionExecutor:
             ),
             updated_state=updated_state,
             clear_target_debris=(mission_kind == "RECYCLE"),
+            observed_fleet_slots_available=obs_avail_ok,
+            observed_fleet_slots_filled=obs_filled_ok,
         )
 
     def _execute_escape_flight(
@@ -4136,11 +4317,38 @@ class ActionExecutor:
                 ),
             )
 
-        settings_html = _call_with_optional_priority(
-            client.navigate_menu,
-            "internalSettings",
-            priority="interactive",
-        )
+        try:
+            settings_html = _call_with_optional_priority(
+                client.navigate_menu,
+                "internalSettings",
+                priority="interactive",
+            )
+        except Exception as nav_exc:
+            low_exc = type(nav_exc).__name__.lower()
+            if "captcha" in low_exc or "antibot" in low_exc or "ratelimit" in low_exc or "auth" in low_exc:
+                raise
+            build_url = getattr(client, "_build_internal_url", None)
+            res_sid = getattr(client, "_resolve_sid_query", None)
+            mark_nav = getattr(client, "_mark_frame_navigation", None)
+            wait_fr = getattr(client, "_wait_frame_ready", None)
+            sw_fr = getattr(client, "_switch_frame", None)
+            drv_obj = getattr(client, "driver", None)
+            if not (
+                callable(build_url)
+                and callable(res_sid)
+                and callable(mark_nav)
+                and callable(wait_fr)
+                and callable(sw_fr)
+                and drv_obj is not None
+            ):
+                raise
+            sid_q = str(res_sid() or "")
+            q_str = "action=internalSettings" + (f"&{sid_q}" if sid_q else "")
+            tgt_url = build_url(q_str)
+            tok = mark_nav("F_Hauptframe")
+            sw_fr("F_Hauptframe")
+            drv_obj.execute_script("location.href = arguments[0];", tgt_url)
+            settings_html = wait_fr("F_Hauptframe", expected_action="internalSettings", nav_token=tok)
         soup = BeautifulSoup(settings_html if isinstance(settings_html, str) else "", "html.parser")
         inp = soup.find("input", attrs={"name": f"planet_{planet.planet_id}"})
         if inp is None:
@@ -4360,6 +4568,234 @@ class ActionExecutor:
                 else f"Colony planet_{planet.planet_id} ([{coords_s}]) still present after executeDeletePlanet."
             ),
         )
+
+    def sync_planet_names_in_game(
+        self,
+        client: GameBrowserClient,
+        state: GameState,
+        target_names: Mapping[int, str],
+    ) -> dict[str, Any]:
+        """Update owned planet names in SpaceInvasion Classic via `action=internalSettings`.
+
+        SAFETY INVARIANT: Strictly edits `input[name="planet_<pid>"]` text inputs and submits
+        their enclosing settings `<form>`. Never clicks or touches `confirmPlanetDeletion`,
+        `deletePlanet`, or `#delete-confirm`.
+        """
+        planets_by_id = {int(p.planet_id): p for p in (state.planets or ()) if int(p.planet_id) > 0}
+        requested: dict[int, str] = {}
+        for raw_pid, raw_name in (target_names or {}).items():
+            pid = game_data.safe_int(raw_pid, 0)
+            if pid <= 0 or pid not in planets_by_id:
+                continue
+            cleaned = " ".join(
+                "".join(" " if ord(ch) < 32 or ord(ch) == 127 else ch for ch in str(raw_name or "")).split()
+            ).strip()
+            if cleaned:
+                requested[pid] = cleaned[:48]
+
+        if not requested:
+            return {
+                "ok": True,
+                "synced_count": 0,
+                "synced": [],
+                "skipped": [],
+                "updated_state": state,
+                "message": "No owned planet names to sync.",
+            }
+
+        try:
+            settings_html = _call_with_optional_priority(
+                client.navigate_menu,
+                "internalSettings",
+                priority="interactive",
+            )
+        except Exception as nav_exc:
+            low_exc = type(nav_exc).__name__.lower()
+            if "captcha" in low_exc or "antibot" in low_exc or "ratelimit" in low_exc or "auth" in low_exc:
+                raise
+            build_url = getattr(client, "_build_internal_url", None)
+            res_sid = getattr(client, "_resolve_sid_query", None)
+            mark_nav = getattr(client, "_mark_frame_navigation", None)
+            wait_fr = getattr(client, "_wait_frame_ready", None)
+            sw_fr = getattr(client, "_switch_frame", None)
+            drv_obj = getattr(client, "driver", None)
+            if not (
+                callable(build_url)
+                and callable(res_sid)
+                and callable(mark_nav)
+                and callable(wait_fr)
+                and callable(sw_fr)
+                and drv_obj is not None
+            ):
+                raise
+            sid_q = str(res_sid() or "")
+            q_str = "action=internalSettings" + (f"&{sid_q}" if sid_q else "")
+            tgt_url = build_url(q_str)
+            tok = mark_nav("F_Hauptframe")
+            sw_fr("F_Hauptframe")
+            drv_obj.execute_script("location.href = arguments[0];", tgt_url)
+            settings_html = wait_fr("F_Hauptframe", expected_action="internalSettings", nav_token=tok)
+        soup = BeautifulSoup(settings_html if isinstance(settings_html, str) else "", "html.parser")
+
+        available_inputs: dict[int, str] = {}
+        maxlengths: dict[int, int] = {}
+        for pid in requested:
+            inp = soup.find("input", attrs={"name": f"planet_{pid}"})
+            if inp is not None:
+                available_inputs[pid] = str(inp.get("value") or "").strip()
+                ml = game_data.safe_int(inp.get("maxlength"), 0)
+                if ml > 0:
+                    maxlengths[pid] = ml
+
+        to_change: dict[int, str] = {}
+        skipped: list[dict[str, Any]] = []
+        for pid, desired in requested.items():
+            p_obj = planets_by_id[pid]
+            coords_s = _safe_str(p_obj.coords)
+            if pid not in available_inputs:
+                skipped.append(
+                    {
+                        "planet_id": pid,
+                        "coords": coords_s,
+                        "requested_name": desired,
+                        "reason": f"input planet_{pid} not found on internalSettings",
+                    }
+                )
+                continue
+            eff_desired = desired[: maxlengths[pid]].strip() if pid in maxlengths else desired
+            cur_dom_val = available_inputs[pid]
+            if cur_dom_val == eff_desired and str(p_obj.name or "").strip() == eff_desired:
+                skipped.append(
+                    {
+                        "planet_id": pid,
+                        "coords": coords_s,
+                        "requested_name": eff_desired,
+                        "game_name": cur_dom_val,
+                        "reason": "already_synced",
+                    }
+                )
+                continue
+            to_change[pid] = eff_desired
+
+        if not to_change:
+            updated_ov = _call_with_optional_priority(
+                client.read_planets_overview,
+                refresh=True,
+                priority="interactive",
+            )
+            return {
+                "ok": True,
+                "synced_count": 0,
+                "synced": [],
+                "skipped": skipped,
+                "updated_state": updated_ov if isinstance(updated_ov, GameState) else state,
+                "message": (
+                    "All custom planet names already match in-game names."
+                    if any(s.get("reason") == "already_synced" for s in skipped)
+                    else "No matching planet inputs found on internalSettings."
+                ),
+            }
+
+        client._switch_frame("F_Hauptframe")
+        self._pace_action(client, priority="interactive")
+        nav_token = self._mark_frame_nav(client)
+        time.sleep(random.uniform(*self.action_delay_range))
+
+        js_payload = {f"planet_{pid}": val for pid, val in to_change.items()}
+        submit_result = client.driver.execute_script(
+            """
+            const updates = arguments[0] || {};
+            let targetForm = null;
+            const applied = {};
+            for (const [fieldName, newVal] of Object.entries(updates)) {
+              const inp = document.querySelector(`input[name="${CSS.escape ? CSS.escape(fieldName) : fieldName}"]`);
+              if (!inp) continue;
+              const tagType = String(inp.getAttribute('type') || 'text').toLowerCase();
+              if (tagType !== 'text' && tagType !== '') continue;
+              const maxLen = parseInt(inp.getAttribute('maxlength') || '0', 10);
+              const finalVal = (maxLen > 0) ? String(newVal).slice(0, maxLen) : String(newVal);
+              inp.value = finalVal;
+              inp.setAttribute('value', finalVal);
+              inp.dispatchEvent(new Event('input', { bubbles: true }));
+              inp.dispatchEvent(new Event('change', { bubbles: true }));
+              applied[fieldName] = finalVal;
+              if (!targetForm && inp.form) {
+                targetForm = inp.form;
+              } else if (!targetForm) {
+                targetForm = inp.closest('form');
+              }
+            }
+            if (!targetForm) {
+              return { ok: false, error: 'form_not_found', applied };
+            }
+            const submitBtn = targetForm.querySelector(
+              'input[type="submit"]:not([onclick*="Delete"]):not([onclick*="delete"]), button[type="submit"]:not([onclick*="Delete"]):not([onclick*="delete"])'
+            );
+            if (submitBtn) {
+              submitBtn.click();
+              return { ok: true, method: 'submit_button', applied };
+            }
+            HTMLFormElement.prototype.submit.call(targetForm);
+            return { ok: true, method: 'form_submit', applied };
+            """,
+            js_payload,
+        )
+
+        if isinstance(submit_result, Mapping) and not bool(submit_result.get("ok", True)):
+            err_code = str(submit_result.get("error") or "submit_failed")
+            return {
+                "ok": False,
+                "synced_count": 0,
+                "synced": [],
+                "skipped": skipped,
+                "updated_state": state,
+                "message": f"Failed to submit internalSettings rename form ({err_code}).",
+            }
+
+        after_html = client._wait_frame_ready(
+            "F_Hauptframe",
+            expected_action="internalSettings",
+            nav_token=nav_token,
+        )
+        self._recent_timestamps.append(time.monotonic())
+        after_soup = BeautifulSoup(after_html if isinstance(after_html, str) else "", "html.parser")
+
+        updated_ov = _call_with_optional_priority(
+            client.read_planets_overview,
+            refresh=True,
+            priority="interactive",
+        )
+        final_state = updated_ov if isinstance(updated_ov, GameState) else state
+        final_by_id = {int(p.planet_id): p for p in (final_state.planets or ()) if int(p.planet_id) > 0}
+
+        synced_rows: list[dict[str, Any]] = []
+        for pid, eff_desired in to_change.items():
+            old_p = planets_by_id[pid]
+            new_p = final_by_id.get(pid, old_p)
+            after_inp = after_soup.find("input", attrs={"name": f"planet_{pid}"})
+            dom_after = str(after_inp.get("value") or "").strip() if after_inp is not None else ""
+            observed_game_name = str(new_p.name or "").strip() or dom_after or eff_desired
+            synced_rows.append(
+                {
+                    "planet_id": pid,
+                    "coords": _safe_str(new_p.coords or old_p.coords),
+                    "old_game_name": available_inputs.get(pid) or str(old_p.name or ""),
+                    "requested_name": eff_desired,
+                    "game_name": observed_game_name,
+                    "verified": bool(observed_game_name == eff_desired or dom_after == eff_desired),
+                }
+            )
+
+        return {
+            "ok": True,
+            "synced_count": len(synced_rows),
+            "synced": synced_rows,
+            "skipped": skipped,
+            "updated_state": final_state,
+            "message": (
+                f"Synced {len(synced_rows)} planet name{'s' if len(synced_rows) != 1 else ''} in-game via internalSettings."
+            ),
+        }
 
 
 def _is_unattackable_target_html(html_or_text: str) -> bool:

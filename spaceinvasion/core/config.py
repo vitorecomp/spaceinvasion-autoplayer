@@ -15,6 +15,7 @@ import sqlite3
 import tempfile
 import time
 from typing import Any, Optional
+from urllib.parse import quote
 
 DEFAULT_CONFIG_DB_PATH: Path = Path("state") / "spaceinvasion.db"
 LEGACY_CONFIG_YAML_PATH: Path = Path("config.yaml")
@@ -473,6 +474,7 @@ class StrategyConfig:
     fleet_save_fuel_reserve_spice: int = 500
     action_batch_interval_seconds: int = 120
     max_actions_per_hour: int = 60
+    page_view_limit_per_minute: int = 60
     hot_planet_solar_temp_threshold: int = 40
     min_free_fields_warning: int = 20
     min_colony_fields: int = 300
@@ -484,6 +486,7 @@ class StrategyConfig:
     galaxy_scan_explore_first: bool = True
     galaxy_scan_refresh_pct: int = 0
     galaxy_scan_all_galaxies: bool = False
+    galaxy_scan_block_other_actions: bool = True
     galaxy_scan_near_weight: float = 2.0
     galaxy_scan_attack_weight: float = 3.0
     reserved_spy_slots: int = 1
@@ -1241,6 +1244,9 @@ def strategy_config_from_dict(data: Any) -> StrategyConfig:
         fleet_save_fuel_reserve_spice=max(0, _safe_cfg_int(data.get("fleet_save_fuel_reserve_spice"), 500)),
         action_batch_interval_seconds=max(5, min(86400, _safe_cfg_int(data.get("action_batch_interval_seconds"), 120))),
         max_actions_per_hour=max(1, _safe_cfg_int(data.get("max_actions_per_hour"), 60)),
+        page_view_limit_per_minute=max(
+            6, min(600, _safe_cfg_int(data.get("page_view_limit_per_minute"), 60))
+        ),
         hot_planet_solar_temp_threshold=_safe_cfg_int(data.get("hot_planet_solar_temp_threshold"), 40),
         min_free_fields_warning=max(1, _safe_cfg_int(data.get("min_free_fields_warning"), 20)),
         min_colony_fields=max(50, min(600, _safe_cfg_int(data.get("min_colony_fields"), 300))),
@@ -1258,6 +1264,9 @@ def strategy_config_from_dict(data: Any) -> StrategyConfig:
         galaxy_scan_explore_first=_safe_cfg_bool(data.get("galaxy_scan_explore_first"), True),
         galaxy_scan_refresh_pct=max(0, min(100, _safe_cfg_int(data.get("galaxy_scan_refresh_pct"), 0))),
         galaxy_scan_all_galaxies=_safe_cfg_bool(data.get("galaxy_scan_all_galaxies"), False),
+        galaxy_scan_block_other_actions=_safe_cfg_bool(
+            data.get("galaxy_scan_block_other_actions"), True
+        ),
         galaxy_scan_near_weight=max(
             0.0, min(20.0, _safe_cfg_float(data.get("galaxy_scan_near_weight"), 2.0))
         ),
@@ -1405,21 +1414,151 @@ def save_strategy_config_to_sqlite(
     return db_path
 
 
-def load_strategy_config(path: Optional[Path] = None) -> StrategyConfig:
-    """Load `StrategyConfig` from SQLite (`state/spaceinvasion.db`) or an explicit YAML/JSON file."""
+def load_strategy_config_from_postgres(dsn: str) -> Optional[StrategyConfig]:
+    """Load persisted `StrategyConfig` from PostgreSQL (`strategy_config_store` or `meta['strategy_config']`)."""
+    raw_json: Optional[str] = None
+    try:
+        import psycopg
+
+        with psycopg.connect(str(dsn).strip(), connect_timeout=3) as conn:
+            has_store = conn.execute(
+                "SELECT 1 FROM pg_catalog.pg_tables WHERE schemaname = 'public' AND tablename = 'strategy_config_store' LIMIT 1"
+            ).fetchone()
+            if has_store is not None:
+                row = conn.execute("SELECT config_json FROM strategy_config_store WHERE id = 1").fetchone()
+                if row is not None and isinstance(row[0], str) and row[0].strip():
+                    raw_json = row[0]
+            if raw_json is None:
+                has_meta = conn.execute(
+                    "SELECT 1 FROM pg_catalog.pg_tables WHERE schemaname = 'public' AND tablename = 'meta' LIMIT 1"
+                ).fetchone()
+                if has_meta is not None:
+                    mrow = conn.execute("SELECT value FROM meta WHERE key = 'strategy_config'").fetchone()
+                    if mrow is not None and isinstance(mrow[0], str) and mrow[0].strip():
+                        raw_json = mrow[0]
+    except Exception:
+        return None
+    if not raw_json:
+        return None
+    try:
+        parsed = _sanitize_cfg_json_tree(json.loads(raw_json))
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(parsed, Mapping):
+        return None
+    return strategy_config_from_dict(parsed)
+
+
+def save_strategy_config_to_postgres(
+    cfg: StrategyConfig,
+    dsn: str,
+    *,
+    source: str = "postgres",
+) -> str:
+    """Persist `StrategyConfig` into PostgreSQL (`strategy_config_store`, `meta`, and `config_history`)."""
+    import psycopg
+
+    clean_cfg = strategy_config_from_dict(asdict(cfg))
+    cfg_dict = _sanitize_cfg_json_tree(asdict(clean_cfg))
+    cfg_json = json.dumps(cfg_dict, sort_keys=True, allow_nan=False)
+    now_ts = round(time.time(), 3)
+    target_dsn = str(dsn).strip()
+    with psycopg.connect(target_dsn, connect_timeout=5) as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS strategy_config_store (
+                id BIGINT PRIMARY KEY CHECK (id = 1),
+                config_json TEXT NOT NULL,
+                updated_ts DOUBLE PRECISION NOT NULL,
+                source TEXT NOT NULL DEFAULT 'postgres'
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO strategy_config_store(id, config_json, updated_ts, source)
+            VALUES (1, %s, %s, %s)
+            ON CONFLICT(id) DO UPDATE SET
+                config_json = EXCLUDED.config_json,
+                updated_ts = EXCLUDED.updated_ts,
+                source = EXCLUDED.source
+            """,
+            (cfg_json, now_ts, str(source or "postgres")[:32]),
+        )
+        has_meta = conn.execute(
+            "SELECT 1 FROM pg_catalog.pg_tables WHERE schemaname = 'public' AND tablename = 'meta' LIMIT 1"
+        ).fetchone()
+        if has_meta is not None:
+            conn.execute(
+                """
+                INSERT INTO meta(key, value, updated_ts) VALUES ('strategy_config', %s, %s)
+                ON CONFLICT(key) DO UPDATE SET value = EXCLUDED.value, updated_ts = EXCLUDED.updated_ts
+                """,
+                (cfg_json, now_ts),
+            )
+        has_hist = conn.execute(
+            "SELECT 1 FROM pg_catalog.pg_tables WHERE schemaname = 'public' AND tablename = 'config_history' LIMIT 1"
+        ).fetchone()
+        if has_hist is not None:
+            last_row = conn.execute("SELECT config_json FROM config_history ORDER BY id DESC LIMIT 1").fetchone()
+            if last_row is None or last_row[0] != cfg_json:
+                conn.execute("INSERT INTO config_history(ts, config_json) VALUES (%s, %s)", (now_ts, cfg_json))
+        conn.commit()
+    return target_dsn
+
+
+def _resolve_default_config_target() -> tuple[str, str | Path]:
+    """Pure-stdlib resolver for default `StrategyConfig` storage (`postgres` in Docker, `sqlite` on host)."""
+    env = os.environ
+    in_container = str(env.get("SPACEINVASION_CONTAINER") or "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+    env_url = str(env.get("SPACEINVASION_DB_URL") or "").strip()
+    env_backend = str(env.get("SPACEINVASION_DB_BACKEND") or "").strip().lower()
+
+    def _pg_dsn() -> str:
+        if env_url.lower().startswith(("postgresql://", "postgres://")):
+            return env_url
+        host = str(env.get("SPACEINVASION_PG_HOST") or "127.0.0.1").strip() or "127.0.0.1"
+        try:
+            port = max(1, min(65535, int(str(env.get("SPACEINVASION_PG_PORT") or "5433").strip())))
+        except ValueError:
+            port = 5433
+        dbn = str(env.get("SPACEINVASION_PG_DB") or "spaceinvasion").strip() or "spaceinvasion"
+        usr = str(env.get("SPACEINVASION_PG_USER") or "spaceinvasion").strip() or "spaceinvasion"
+        pw = str(env.get("SPACEINVASION_PG_PASSWORD") or "spaceinvasion")
+        return f"postgresql://{quote(usr, safe='')}:{quote(pw, safe='')}@{host}:{port}/{quote(dbn, safe='')}"
+
+    if (
+        in_container
+        or env_backend in ("pg", "postgres", "postgresql")
+        or env_url.lower().startswith(("postgresql://", "postgres://"))
+    ):
+        return ("postgres", _pg_dsn())
+    return ("sqlite", DEFAULT_CONFIG_DB_PATH)
+
+
+def load_strategy_config(path: Optional[Path | str] = None) -> StrategyConfig:
+    """Load `StrategyConfig` from active database (`postgres` in Docker, `sqlite` on host), or explicit test path."""
     if path is None:
-        if LEGACY_CONFIG_YAML_PATH.is_file():
-            return load_strategy_config(LEGACY_CONFIG_YAML_PATH)
-        from_db = load_strategy_config_from_sqlite(DEFAULT_CONFIG_DB_PATH)
+        backend, target = _resolve_default_config_target()
+        if backend == "postgres":
+            from_pg = load_strategy_config_from_postgres(str(target))
+            return from_pg if from_pg is not None else StrategyConfig()
+        from_db = load_strategy_config_from_sqlite(Path(target))
         return from_db if from_db is not None else StrategyConfig()
+    if isinstance(path, str) and path.strip().lower().startswith(("postgresql://", "postgres://")):
+        from_pg = load_strategy_config_from_postgres(path)
+        return from_pg if from_pg is not None else StrategyConfig()
+    if isinstance(path, str):
+        path = Path(path)
     if _is_sqlite_config_path(path):
         from_db = load_strategy_config_from_sqlite(path)
         return from_db if from_db is not None else StrategyConfig()
     if not path.exists():
-        if path == LEGACY_CONFIG_YAML_PATH:
-            from_db = load_strategy_config_from_sqlite(DEFAULT_CONFIG_DB_PATH)
-            if from_db is not None:
-                return from_db
         return StrategyConfig()
     try:
         text = path.read_text(encoding="utf-8")
@@ -1471,10 +1610,20 @@ def _format_yaml_string(value: str) -> str:
     return value
 
 
-def save_strategy_config(cfg: StrategyConfig, path: Optional[Path] = None) -> Path:
-    """Persist `StrategyConfig` to SQLite (`path=None` or `.db`) or simple YAML when given a YAML path."""
+def save_strategy_config(cfg: StrategyConfig, path: Optional[Path | str] = None) -> Path | str:
+    """Persist `StrategyConfig` to active database (`postgres` in Docker, `sqlite` on host), or explicit test path."""
     if path is None:
-        return save_strategy_config_to_sqlite(cfg, DEFAULT_CONFIG_DB_PATH)
+        backend, target = _resolve_default_config_target()
+        if backend == "postgres":
+            return save_strategy_config_to_postgres(cfg, str(target))
+        return save_strategy_config_to_sqlite(cfg, Path(target))
+    if isinstance(path, str) and path.strip().lower().startswith(("postgresql://", "postgres://")):
+        return save_strategy_config_to_postgres(cfg, path)
+    if not isinstance(path, Path):
+        ok_fsp, fsp_val = _safe_fspath(path)
+        if not ok_fsp:
+            raise TypeError("Expected Path, str, or os.PathLike for config path.")
+        path = Path(os.fsdecode(fsp_val))
     if _is_sqlite_config_path(path):
         return save_strategy_config_to_sqlite(cfg, path)
     storage_warn_ratio = max(0.1, min(0.99, _safe_cfg_float(cfg.storage_warn_ratio, 0.85)))
@@ -1486,6 +1635,9 @@ def save_strategy_config(cfg: StrategyConfig, path: Optional[Path] = None) -> Pa
     fleet_reserve = max(0, _safe_cfg_int(cfg.fleet_save_fuel_reserve_spice, 500))
     batch_interval = max(5, min(86400, _safe_cfg_int(cfg.action_batch_interval_seconds, 120)))
     max_actions = max(1, _safe_cfg_int(cfg.max_actions_per_hour, 60))
+    page_view_limit = max(
+        6, min(600, _safe_cfg_int(getattr(cfg, "page_view_limit_per_minute", 60), 60))
+    )
     hot_temp = _safe_cfg_int(cfg.hot_planet_solar_temp_threshold, 40)
     min_fields = max(1, _safe_cfg_int(cfg.min_free_fields_warning, 20))
     min_colony = max(50, min(600, _safe_cfg_int(cfg.min_colony_fields, 300)))
@@ -1555,6 +1707,7 @@ def save_strategy_config(cfg: StrategyConfig, path: Optional[Path] = None) -> Pa
         f"fleet_save_fuel_reserve_spice: {fleet_reserve}",
         f"action_batch_interval_seconds: {batch_interval}",
         f"max_actions_per_hour: {max_actions}",
+        f"page_view_limit_per_minute: {page_view_limit}",
         f"hot_planet_solar_temp_threshold: {hot_temp}",
         f"min_free_fields_warning: {min_fields}",
         f"min_colony_fields: {min_colony}",
@@ -1566,6 +1719,7 @@ def save_strategy_config(cfg: StrategyConfig, path: Optional[Path] = None) -> Pa
         f"galaxy_scan_explore_first: {'true' if scan_explore_first else 'false'}",
         f"galaxy_scan_refresh_pct: {scan_refresh_pct}",
         f"galaxy_scan_all_galaxies: {'true' if scan_all_galaxies else 'false'}",
+        f"galaxy_scan_block_other_actions: {'true' if _safe_cfg_bool(getattr(cfg, 'galaxy_scan_block_other_actions', True), True) else 'false'}",
         f"galaxy_scan_near_weight: {scan_near_weight}",
         f"galaxy_scan_attack_weight: {scan_attack_weight}",
         f"reserved_spy_slots: {res_spy_slots}",

@@ -1619,7 +1619,9 @@ def build_ai_planner_graph(
     for raw_pos, step in enumerate(raw_steps_seq):
         seq_num = _clean_int(step.get("seq"), raw_pos + 1)
         kind = _clean_str(step.get("kind"), "BUILD").strip().upper() or "BUILD"
-        if kind not in ("BUILD", "RESEARCH", "COLONIZE_PREVIEW"):
+        if kind == "DEMOLISH_BUILDING":
+            kind = "DEMOLISH"
+        elif kind not in ("BUILD", "DEMOLISH", "RESEARCH", "COLONIZE_PREVIEW"):
             kind = "BUILD"
 
         raw_start = step.get("start_sec")
@@ -1668,7 +1670,7 @@ def build_ai_planner_graph(
 
         bid: Optional[int] = None
         rkey: Optional[str] = None
-        if kind == "BUILD":
+        if kind in ("BUILD", "DEMOLISH"):
             bid = _resolve_building_id(entity_key, entity_name)
             if bid is not None:
                 if not entity_key:
@@ -1691,6 +1693,8 @@ def build_ai_planner_graph(
         is_completed = False
         if kind == "BUILD" and p_obj is not None and bid is not None and target_level is not None and target_level > 0:
             is_completed = p_obj.building_level(bid) >= target_level
+        elif kind == "DEMOLISH" and p_obj is not None and bid is not None and target_level is not None and target_level >= 0:
+            is_completed = p_obj.building_level(bid) <= target_level
         elif kind == "RESEARCH" and rkey is not None and target_level is not None and target_level > 0:
             is_completed = researches_map.get(rkey, 0) >= target_level
 
@@ -1825,7 +1829,7 @@ def build_ai_planner_graph(
 
         if kind == "RESEARCH":
             slot_key = "global:research"
-        elif kind == "BUILD":
+        elif kind in ("BUILD", "DEMOLISH"):
             slot_key = f"{lane_id}:build"
         else:
             slot_key = f"{lane_id}:colonize"
@@ -1836,6 +1840,11 @@ def build_ai_planner_graph(
             seen_uncompleted_slot.add(slot_key)
 
         has_missing = any(v > 0 for v in st["missing"].values())
+        p_full_now = bool(
+            st["planet_obj"] is not None
+            and st["planet_obj"].fields_max > 0
+            and st["planet_obj"].fields_used >= st["planet_obj"].fields_max
+        )
         if st["completed"]:
             status = "completed"
             exec_now = False
@@ -1844,6 +1853,15 @@ def build_ai_planner_graph(
             status = "blocked_gate"
             exec_now = False
             prio = "P2"
+        elif kind == "DEMOLISH":
+            if is_first_in_slot and p_full_now:
+                status = "ready"
+                exec_now = True
+                prio = "P1"
+            else:
+                status = "queued"
+                exec_now = False
+                prio = "P2"
         elif is_first_in_slot and not has_missing:
             status = "ready"
             exec_now = True
@@ -1867,7 +1885,11 @@ def build_ai_planner_graph(
             if u_info:
                 unit_reqs = list(u_info.get("requirements", ()))
 
-        category = _classify_node_category(kind if kind != "COLONIZE_PREVIEW" else "COLONIZE", bid, None)
+        category = _classify_node_category(
+            "DEMOLISH_BUILDING" if kind == "DEMOLISH" else (kind if kind != "COLONIZE_PREVIEW" else "COLONIZE"),
+            bid,
+            None,
+        )
         wait_eta = "Done" if st["completed"] else _format_eta_short(st["start_sec"])
         dur_txt = _format_eta_short(st["duration_sec"]) if st["duration_sec"] > 0.5 else "Instant"
         tot_eta = "Done" if st["completed"] else _format_eta_short(st["finish_sec"])
@@ -1880,8 +1902,9 @@ def build_ai_planner_graph(
                 else ""
             )
             ship_suffix = f" · Ship at {req_txt}" if req_txt else " · Transport needed"
+        verb_lbl = "Demolish" if kind == "DEMOLISH" else "Build"
         reason_txt = (
-            f"Week {st['week']} · Step #{st['seq']} · Start {wait_eta} · Build {dur_txt}{ship_suffix}"
+            f"Week {st['week']} · Step #{st['seq']} · Start {wait_eta} · {verb_lbl} {dur_txt}{ship_suffix}"
             if not st["completed"]
             else f"Week {st['week']} · Step #{st['seq']} · Completed in live state"
         )
@@ -1971,6 +1994,19 @@ def build_ai_planner_graph(
                         )
                         _add_ai_edge(u_pos, v_pos, "level_chain", lbl)
                     break
+        elif v_kind == "DEMOLISH" and v_bid is not None:
+            for u_pos in range(v_pos - 1, -1, -1):
+                u = nodes_meta[u_pos]
+                if u["kind"] == "DEMOLISH" and u["lane_id"] == v_lane and u["bid"] == v_bid:
+                    u_tlvl = u["target_level"]
+                    if u_tlvl is None or v_tlvl is None or v_tlvl < u_tlvl:
+                        lbl = (
+                            f"Demolish {v['target_name']} L{u_tlvl} -> L{v_tlvl}"
+                            if (u_tlvl is not None and v_tlvl is not None)
+                            else f"Sequential {v['target_name']} demolition"
+                        )
+                        _add_ai_edge(u_pos, v_pos, "level_chain", lbl)
+                    break
         elif v_kind == "RESEARCH" and v_rkey is not None:
             for u_pos in range(v_pos - 1, -1, -1):
                 u = nodes_meta[u_pos]
@@ -1983,6 +2019,23 @@ def build_ai_planner_graph(
                             else f"Sequential {v['target_name']} research"
                         )
                         _add_ai_edge(u_pos, v_pos, "level_chain", lbl)
+                    break
+
+        # 1b) Field-freeing edge: most recent DEMOLISH on the same planet lane unlocks the next BUILD
+        if v_kind == "BUILD" and v_lane.startswith("lane:planet:"):
+            for u_pos in range(v_pos - 1, -1, -1):
+                u = nodes_meta[u_pos]
+                if u["lane_id"] != v_lane:
+                    continue
+                if u["kind"] == "DEMOLISH":
+                    _add_ai_edge(
+                        u_pos,
+                        v_pos,
+                        "prerequisite",
+                        f"Demolish {u['target_name']} frees 1 field for {v['target_name']}",
+                    )
+                    break
+                if u["kind"] == "BUILD":
                     break
 
         # 2) Wiki game_data tech-tree prerequisites

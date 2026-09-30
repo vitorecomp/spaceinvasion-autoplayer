@@ -179,6 +179,27 @@ export const DagCanvas: React.FC<DagCanvasProps> = ({
     }
   });
 
+  const lanePlanetNameById = new Map<string, string>();
+  activeLanes.forEach((ln) => {
+    const lid = String(ln.id || "");
+    if (!lid || lid === "lane:global") return;
+    const rawLbl = String(ln.label || "").replace(/\s*\[\s*\d{1,2}:\d{1,3}:\d{1,2}\s*\]\s*$/, "").trim();
+    if (rawLbl && rawLbl.toLowerCase() !== "colony") {
+      lanePlanetNameById.set(lid, rawLbl);
+    }
+  });
+  const formatDagNodePlanetBadge = (n: Record<string, any>): string => {
+    const coords = String(n.planet_coords || "").trim();
+    const rawName = String(
+      n.planet_name || lanePlanetNameById.get(String(n.lane_id || "")) || ""
+    ).trim();
+    const cleanName = rawName && rawName.toLowerCase() !== "colony" ? rawName : "";
+    if (cleanName && coords) return `${cleanName} [${coords}]`;
+    if (coords) return `[${coords}]`;
+    if (cleanName) return cleanName;
+    return "[GLOBAL]";
+  };
+
   const cellStacks = new Map<string, number>();
   const maxStackByLane = new Array<number>(activeLanes.length).fill(1);
   let maxCol = 0;
@@ -494,7 +515,7 @@ export const DagCanvas: React.FC<DagCanvasProps> = ({
                   </div>
                   <div className="ag-node-foot">
                     <span className="ag-node-coords">
-                      {node.planet_coords ? `[${node.planet_coords}]` : "[GLOBAL]"}
+                      {sanitizeMainWindowText(formatDagNodePlanetBadge(node))}
                     </span>
                     <span className="ag-node-eta">
                       {sanitizeMainWindowText(`ETA ${node.total_eta || node.duration_text || "Ready"}`)}
@@ -526,7 +547,7 @@ export const DagCanvas: React.FC<DagCanvasProps> = ({
             <strong id={`${idPrefix}-insp-title`}>
               {selectedObj
                 ? sanitizeMainWindowText(
-                    `${selectedObj.priority || (selectedObj.week != null ? `W${selectedObj.week}` : "P2")} · ${formatDagNodeTargetLabel(selectedObj)} ${selectedObj.planet_coords ? `[${selectedObj.planet_coords}]` : "[GLOBAL]"}`
+                    `${selectedObj.priority || (selectedObj.week != null ? `W${selectedObj.week}` : "P2")} · ${formatDagNodeTargetLabel(selectedObj)} ${formatDagNodePlanetBadge(selectedObj)}`
                   )
                 : "Select a node in the graph to inspect dependencies and ETAs"}
             </strong>

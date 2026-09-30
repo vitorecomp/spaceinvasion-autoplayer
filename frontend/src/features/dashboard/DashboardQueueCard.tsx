@@ -3,6 +3,7 @@ import { SortableTh } from "../../components/SortableTh";
 import { useTableSort } from "../../hooks/useTableSort";
 import type {
   BuildingResourceRequestItem,
+  PlanetData,
   PlannedActionData,
   QueueJobData,
 } from "../../types/api";
@@ -16,6 +17,9 @@ import {
   ActiveExecJobRow,
   PLAN_ACTION_SORT_COLUMNS,
   PlanActionRow,
+  buildPlanetNameMaps,
+  execJobBaseKey,
+  normalizeCoordKey,
 } from "../operations/planActions";
 
 export interface DashboardQueueCardProps {
@@ -36,6 +40,8 @@ export interface DashboardQueueCardProps {
   execJobs: QueueJobData[];
   plannedActions: PlannedActionData[];
   resourceRequests?: BuildingResourceRequestItem[];
+  planets?: PlanetData[];
+  customPlanetNames?: Record<string, string>;
   maxRows?: number;
   emptyText: string;
   nowEpochSec: number;
@@ -77,6 +83,8 @@ export const DashboardQueueCard: React.FC<DashboardQueueCardProps> = ({
   execJobs,
   plannedActions,
   resourceRequests,
+  planets,
+  customPlanetNames,
   maxRows,
   emptyText,
   nowEpochSec,
@@ -93,6 +101,31 @@ export const DashboardQueueCard: React.FC<DashboardQueueCardProps> = ({
     maxRows != null && maxRows > 0
       ? planSort.sortedRows.slice(0, maxRows)
       : planSort.sortedRows;
+  const planetNameMaps = React.useMemo(
+    () => buildPlanetNameMaps(planets, customPlanetNames),
+    [customPlanetNames, planets]
+  );
+
+  const execRowKeys = React.useMemo(() => {
+    const counts = new Map<string, number>();
+    return activeList.map((job) => {
+      const base = execJobBaseKey(job);
+      const next = (counts.get(base) || 0) + 1;
+      counts.set(base, next);
+      return next === 1 ? base : `${base}-dup${next}`;
+    });
+  }, [activeList]);
+
+  const reqRowKeys = React.useMemo(() => {
+    const counts = new Map<string, number>();
+    return reqList.map((req, idx) => {
+      const base =
+        req.id || `res-req-${req.planet_id ?? req.planet_coords ?? "p"}-${req.source_coords ?? "s"}-${idx}`;
+      const next = (counts.get(base) || 0) + 1;
+      counts.set(base, next);
+      return next === 1 ? base : `${base}-dup${next}`;
+    });
+  }, [reqList]);
 
   return (
     <article className="hud-window dash-queue-card" id={cardId}>
@@ -159,14 +192,30 @@ export const DashboardQueueCard: React.FC<DashboardQueueCardProps> = ({
               const targetTitle = req.target_building
                 ? `${req.target_building}${req.target_level != null ? ` → L${req.target_level}` : ""}`
                 : req.label || "Resource delivery";
+              const destResolvedName = String(
+                req.planet_name ||
+                  (req.planet_id != null ? planetNameMaps.byId.get(Number(req.planet_id)) : "") ||
+                  (req.planet_coords ? planetNameMaps.byCoords.get(normalizeCoordKey(req.planet_coords)) : "") ||
+                  ""
+              ).trim();
+              const srcResolvedName = String(
+                req.source_name ||
+                  (req.source_planet_id != null ? planetNameMaps.byId.get(Number(req.source_planet_id)) : "") ||
+                  (req.source_coords ? planetNameMaps.byCoords.get(normalizeCoordKey(req.source_coords)) : "") ||
+                  ""
+              ).trim();
+              const cleanDestName =
+                destResolvedName && destResolvedName.toLowerCase() !== "colony" ? destResolvedName : "";
+              const cleanSrcName =
+                srcResolvedName && srcResolvedName.toLowerCase() !== "colony" ? srcResolvedName : "";
               const destLabel = req.planet_coords
-                ? req.planet_name
-                  ? `[${req.planet_coords}] ${req.planet_name}`
+                ? destResolvedName
+                  ? `[${req.planet_coords}] ${destResolvedName}`
                   : `[${req.planet_coords}]`
-                : req.planet_name || "";
+                : destResolvedName || "";
               const routeLabel =
                 req.source_coords && req.planet_coords
-                  ? `[${req.source_coords}] → [${req.planet_coords}]`
+                  ? `${cleanSrcName ? `${cleanSrcName} ` : ""}[${req.source_coords}] → [${req.planet_coords}]${cleanDestName ? ` ${cleanDestName}` : ""}`
                   : destLabel
                     ? `→ ${destLabel}`
                     : "";
@@ -187,7 +236,7 @@ export const DashboardQueueCard: React.FC<DashboardQueueCardProps> = ({
                   : req.reason || undefined;
               return (
                 <div
-                  key={req.id || `res-req-${idx}-${req.planet_id ?? req.planet_coords ?? idx}`}
+                  key={reqRowKeys[idx]}
                   className={`dash-res-req-row is-${st.key.replace("_", "-")}`}
                   data-req-status={st.key}
                   title={req.reason || etaClockTitle}
@@ -263,9 +312,11 @@ export const DashboardQueueCard: React.FC<DashboardQueueCardProps> = ({
           <tbody id={execTbodyId} className="dash-exec-tbody" hidden={activeList.length === 0}>
             {activeList.map((job, idx) => (
               <ActiveExecJobRow
-                key={`exec-${job.category || "job"}-${job.queue_slot ?? idx}-${job.name || idx}`}
+                key={execRowKeys[idx]}
                 job={job}
                 nowEpochSec={nowEpochSec}
+                planetNameById={planetNameMaps.byId}
+                planetNameByCoords={planetNameMaps.byCoords}
               />
             ))}
           </tbody>
@@ -277,6 +328,8 @@ export const DashboardQueueCard: React.FC<DashboardQueueCardProps> = ({
                   action={act}
                   compact={true}
                   nowEpochSec={nowEpochSec}
+                  planetNameById={planetNameMaps.byId}
+                  planetNameByCoords={planetNameMaps.byCoords}
                   onDispatch={onDispatch}
                   onUpdateQueue={onUpdateQueue}
                   onCancelQueue={onCancelQueue}

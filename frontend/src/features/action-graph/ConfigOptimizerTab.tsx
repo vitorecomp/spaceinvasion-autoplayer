@@ -8,11 +8,18 @@ import type {
   ConfigOptimizerGetPayload,
   ConfigOptimizerPlanetRecord,
   ConfigOptimizerResultData,
+  ConfigOptimizerYearlyProjection,
   PlanetData,
   PlannerJobState,
 } from "../../types/api";
 import { fmtCompact, fmtInt, fmtShortDateTime } from "../../utils/formatters";
 import { ActionGraphParamRow } from "./ActionGraphParamRow";
+import {
+  ConfigOptimizerPlanetModal,
+  type EditablePlanetModalModel,
+  type PlanetModalSavePayload,
+} from "./ConfigOptimizerPlanetModal";
+import { ConfigOptimizerYearlyGraphModal } from "./ConfigOptimizerYearlyGraphModal";
 import {
   CONFIG_OPTIMIZER_GROUP_SUBTITLES,
   CONFIG_OPTIMIZER_MIN_FLEET_DOCS,
@@ -33,7 +40,6 @@ import {
   RESEARCH_NAMES,
   SHIP_OPTIONS,
   computeColonyGateInfo,
-  downloadTextFile,
   formatDurationSecondsCompact,
   formatJobBadgeText,
   formatSpecializationLabel,
@@ -116,12 +122,15 @@ interface NormalizedPlanetRow {
   builtLevels: Record<string, number>;
   targetLevels: Record<string, number>;
   reservedFloors: Record<string, number>;
+  levelsToDemolish: number;
+  demolitionsWhenFull: number;
   buildingsDetail: Array<{
     key: string;
     name: string;
     built: number;
     target: number;
     toBuild: number;
+    toDemolish: number;
     reserved: number;
     lastTimeText: string;
   }>;
@@ -257,6 +266,14 @@ function draftFromParams(
         24
       ) ?? 24
     ),
+    min_warehouse_level: String(
+      Math.max(
+        0,
+        Math.round(
+          safeFiniteNumber(get("min_warehouse_level", "MIN_WAREHOUSE_LEVEL", 0), 0) ?? 0
+        )
+      )
+    ),
     central_planet_slot: String(
       Math.max(
         1,
@@ -282,6 +299,7 @@ function draftFromParams(
     min_fleet_per_planet: minFleet,
     misc_building_levels: miscLevels,
     optimized_building_max_levels: optMax,
+    allow_demolition: Boolean(get("allow_demolition", "ALLOW_DEMOLITION", false)),
     pad_generic_colonies: Boolean(get("pad_generic_colonies", "PAD_GENERIC_COLONIES", false)),
     ga_population_size: String(
       Math.max(
@@ -333,8 +351,12 @@ function buildParamsPayload(draft: ConfigOptimizerDraft): Record<string, any> {
       Math.min(200, num(draft.research_percent_of_universe_max, 100))
     ),
     warehouse_hours_of_production: Math.max(0, num(draft.warehouse_hours_of_production, 24)),
+    min_warehouse_level: Math.min(60, intNum(draft.min_warehouse_level, 0, 0)),
     central_planet_slot: intNum(draft.central_planet_slot, 1, 1),
-    central_planet_min_warehouse_level: intNum(draft.central_planet_min_warehouse_level, 15, 0),
+    central_planet_min_warehouse_level: Math.min(
+      60,
+      intNum(draft.central_planet_min_warehouse_level, 15, 0)
+    ),
     preserve_previous_specializations: Boolean(draft.preserve_previous_specializations),
     specialization_switch_threshold_pct: Math.max(
       0,
@@ -344,6 +366,7 @@ function buildParamsPayload(draft: ConfigOptimizerDraft): Record<string, any> {
     min_fleet_per_planet: minFleet,
     misc_building_levels: miscLevels,
     optimized_building_max_levels: optMax,
+    allow_demolition: Boolean(draft.allow_demolition),
     pad_generic_colonies: Boolean(draft.pad_generic_colonies),
     ga_population_size: intNum(draft.ga_population_size, 200, 4),
     ga_generations: intNum(draft.ga_generations, 150, 1),
@@ -401,6 +424,8 @@ function normalizePlanetRows(
     let maxLastSec: number | null = null;
     let maxLastTxt = "";
     let builtSum = 0;
+    let totalToBuild = 0;
+    let totalToDemolish = 0;
 
     if (Array.isArray(p.buildings)) {
       for (const b of p.buildings) {
@@ -411,17 +436,26 @@ function normalizePlanetRows(
           Math.round(safeFiniteNumber(b.built_level ?? b.current_level ?? rawBuilt[bk], 0) ?? 0)
         );
         const target = Math.max(
-          built,
+          0,
           Math.round(safeFiniteNumber(b.target_level ?? b.level ?? built, built) ?? built)
         );
-        const toBuild = Math.max(0, Math.round(safeFiniteNumber(b.levels_to_build, target - built) ?? target - built));
+        const toBuild = Math.max(
+          0,
+          Math.round(safeFiniteNumber(b.levels_to_build, target - built) ?? target - built)
+        );
+        const toDemolish = Math.max(
+          0,
+          Math.round(safeFiniteNumber(b.levels_to_demolish, built - target) ?? built - target)
+        );
         const resLvl = reservedFloors[bk] || 0;
         builtLevels[bk] = built;
         targetLevels[bk] = target;
         builtSum += built;
-        const ltSec = safeFiniteNumber(b.last_level_seconds ?? b.last_level_time_s, null);
+        totalToBuild += toBuild;
+        totalToDemolish += toDemolish;
+        const ltSec = safeFiniteNumber(b.last_level_seconds ?? b.last_level_time_s ?? b.last_level_build_time_s, null);
         const ltText = String(
-          b.last_level_time || b.last_level_build_time || (ltSec !== null ? formatDurationSecondsCompact(ltSec) : "—")
+          b.last_level_time || b.last_level_build_time || b.last_level_build_time_text || (ltSec !== null ? formatDurationSecondsCompact(ltSec) : "—")
         );
         if (toBuild > 0 && ltSec !== null && (maxLastSec === null || ltSec > maxLastSec)) {
           maxLastSec = ltSec;
@@ -431,10 +465,11 @@ function normalizePlanetRows(
         }
         buildingsDetail.push({
           key: bk,
-          name: String(b.name || BUILDING_NAMES[bk] || bk),
+          name: String(b.name || b.building || BUILDING_NAMES[bk] || bk),
           built,
           target,
           toBuild,
+          toDemolish,
           reserved: resLvl,
           lastTimeText: ltText,
         });
@@ -452,7 +487,7 @@ function normalizePlanetRows(
           )
         );
         const target = Math.max(
-          built,
+          0,
           Math.round(
             safeFiniteNumber(
               typeof entry === "object" && entry ? entry.target_level ?? entry.level : entry,
@@ -460,16 +495,21 @@ function normalizePlanetRows(
             ) ?? built
           )
         );
+        const toBuild = Math.max(0, target - built);
+        const toDemolish = Math.max(0, built - target);
         const resLvl = reservedFloors[bk] || 0;
         builtLevels[bk] = built;
         targetLevels[bk] = target;
         builtSum += built;
+        totalToBuild += toBuild;
+        totalToDemolish += toDemolish;
         buildingsDetail.push({
           key: bk,
           name: BUILDING_NAMES[bk] || bk,
           built,
           target,
-          toBuild: Math.max(0, target - built),
+          toBuild,
+          toDemolish,
           reserved: resLvl,
           lastTimeText:
             typeof entry === "object" && entry?.last_level_time
@@ -529,6 +569,20 @@ function normalizePlanetRows(
       rawGameName ||
       (!customName ? resolvedName : String(dashPlanet?.name || p.name || coords));
 
+    const prodLevelsToDemolish = Math.max(
+      0,
+      Math.round(safeFiniteNumber(prod.levels_to_demolish, totalToDemolish) ?? totalToDemolish)
+    );
+    const prodDemolishWhenFull = Math.max(
+      0,
+      Math.round(
+        safeFiniteNumber(
+          prod.demolitions_when_full,
+          Math.min(prodLevelsToDemolish, Math.max(0, builtSum + totalToBuild - fieldsMax))
+        ) ?? 0
+      )
+    );
+
     return {
       slot,
       planetId: pid,
@@ -554,6 +608,8 @@ function normalizePlanetRows(
       builtLevels,
       targetLevels,
       reservedFloors,
+      levelsToDemolish: prodLevelsToDemolish,
+      demolitionsWhenFull: prodDemolishWhenFull,
       buildingsDetail,
     };
   });
@@ -593,6 +649,15 @@ export const ConfigOptimizerTab: React.FC<ConfigOptimizerTabProps> = ({ hidden =
   const [renameDraft, setRenameDraft] = useState<string>("");
   const [renamingPlanetId, setRenamingPlanetId] = useState<number | null>(null);
   const [renameError, setRenameError] = useState<string | null>(null);
+  const [isSyncingNames, setIsSyncingNames] = useState<boolean>(false);
+  const [modalPlanetSlot, setModalPlanetSlot] = useState<number | null>(null);
+  const [isSavingPlanetModal, setIsSavingPlanetModal] = useState<boolean>(false);
+  const [yearlyGraphOpen, setYearlyGraphOpen] = useState<boolean>(false);
+  const [yearlyHorizon, setYearlyHorizon] = useState<number>(5);
+  const [yearlyProjection, setYearlyProjection] =
+    useState<ConfigOptimizerYearlyProjection | null>(null);
+  const [yearlyLoading, setYearlyLoading] = useState<boolean>(false);
+  const [yearlyError, setYearlyError] = useState<string | null>(null);
 
   const fetchOptimizerState = useCallback(
     async ({ silent = false }: { silent?: boolean } = {}) => {
@@ -677,13 +742,10 @@ export const ConfigOptimizerTab: React.FC<ConfigOptimizerTabProps> = ({ hidden =
   const customPlanetNames = useMemo<Record<string, string>>(() => {
     const dashMap = (dashboard as Record<string, any> | null | undefined)?.custom_planet_names;
     const optMap = (optData as Record<string, any> | null | undefined)?.custom_planet_names;
-    if (dashMap && typeof dashMap === "object") {
-      return sanitizeCustomNamesMap(dashMap);
-    }
-    if (optMap && typeof optMap === "object") {
-      return sanitizeCustomNamesMap(optMap);
-    }
-    return {};
+    return {
+      ...(dashMap && typeof dashMap === "object" ? sanitizeCustomNamesMap(dashMap) : {}),
+      ...(optMap && typeof optMap === "object" ? sanitizeCustomNamesMap(optMap) : {}),
+    };
   }, [dashboard, optData]);
 
   const ownedDashboardPlanets = useMemo(() => {
@@ -853,30 +915,6 @@ export const ConfigOptimizerTab: React.FC<ConfigOptimizerTabProps> = ({ hidden =
       showFeedback(`Config Optimization failed: ${err.message}`, feedbackKindForError(err));
     } finally {
       setIsSubmitting(false);
-    }
-  };
-
-  const onExportJson = async () => {
-    try {
-      const res = await apiCommand({ command: "config_optimizer_export" });
-      const filename = String(res.filename || "config_optimizer_result.json");
-      const content =
-        typeof res.content === "string"
-          ? res.content
-          : JSON.stringify(res.result ?? activeResult ?? {}, null, 2);
-      downloadTextFile(filename, content, "application/json");
-      showFeedback(`Exported ${filename}.`, "ok");
-    } catch (err: any) {
-      if (activeResult) {
-        downloadTextFile(
-          "config_optimizer_result.json",
-          JSON.stringify(activeResult, null, 2),
-          "application/json"
-        );
-        showFeedback("Exported cached config_optimizer_result.json.", "ok");
-      } else {
-        showFeedback(`Export JSON failed: ${err.message}`, feedbackKindForError(err));
-      }
     }
   };
 
@@ -1095,9 +1133,25 @@ export const ConfigOptimizerTab: React.FC<ConfigOptimizerTabProps> = ({ hidden =
                 game_name: resolvedGameName || prevActivePl.game_name,
               }
             : prevActivePl;
+        const prevBldEta = prevDash.buildings_eta;
+        const nextBldEta =
+          prevBldEta &&
+          prevBldEta.planet &&
+          Math.round(safeFiniteNumber(prevBldEta.planet.planet_id, 0) ?? 0) === planetId
+            ? {
+                ...prevBldEta,
+                planet: {
+                  ...prevBldEta.planet,
+                  name: resolvedDisplayName,
+                  custom_name: cleared ? null : trimmed,
+                  game_name: resolvedGameName || prevBldEta.planet.game_name,
+                },
+              }
+            : prevBldEta;
         return {
           ...prevDash,
           custom_planet_names: nextCustomNames,
+          ...(prevBldEta ? { buildings_eta: nextBldEta } : {}),
           state: prevDash.state
             ? {
                 ...prevDash.state,
@@ -1175,47 +1229,307 @@ export const ConfigOptimizerTab: React.FC<ConfigOptimizerTabProps> = ({ hidden =
             }
           }}
         />
-        <div className="ag-co-rename-actions">
-          <button
-            type="button"
-            className="btn btn-primary btn-sm"
-            id={`btn-co-rename-save-${planetId}`}
-            disabled={isSavingThis}
-            onClick={() => void submitPlanetRename(planetId, renameDraft, gameName)}
-          >
-            {isSavingThis ? "Saving..." : "Save"}
-          </button>
-          <button
-            type="button"
-            className="btn btn-secondary btn-sm"
-            id={`btn-co-rename-reset-${planetId}`}
-            title="Clear custom name and restore in-game planet name"
-            disabled={isSavingThis}
-            onClick={() => void submitPlanetRename(planetId, "", gameName)}
-          >
-            Reset
-          </button>
-          <button
-            type="button"
-            className="btn btn-secondary btn-sm"
-            id={`btn-co-rename-cancel-${planetId}`}
-            disabled={isSavingThis}
-            onClick={cancelRenamingPlanet}
-          >
-            Cancel
-          </button>
-        </div>
-        {renameError ? (
-          <div
-            className="ag-co-rename-error"
-            id={`co-rename-error-${planetId}`}
-            role="alert"
-          >
-            {renameError}
+          <div className="ag-co-rename-actions">
+            <button
+              type="button"
+              className="btn btn-primary btn-sm"
+              id={`btn-co-rename-save-${planetId}`}
+              disabled={isSavingThis || isSyncingNames}
+              onClick={() => void submitPlanetRename(planetId, renameDraft, gameName)}
+            >
+              {isSavingThis ? "Saving..." : "Save"}
+            </button>
+            <button
+              type="button"
+              className="btn btn-secondary btn-sm"
+              id={`btn-co-rename-sync-${planetId}`}
+              title="Save custom name and immediately update the planet name inside SpaceInvasion Classic"
+              disabled={isSavingThis || isSyncingNames}
+              onClick={() => void onSyncSinglePlanetName(planetId, renameDraft)}
+            >
+              {isSyncingNames ? "Syncing..." : "Save & Sync"}
+            </button>
+            <button
+              type="button"
+              className="btn btn-secondary btn-sm"
+              id={`btn-co-rename-reset-${planetId}`}
+              title="Clear custom name and restore in-game planet name"
+              disabled={isSavingThis || isSyncingNames}
+              onClick={() => void submitPlanetRename(planetId, "", gameName)}
+            >
+              Reset
+            </button>
+            <button
+              type="button"
+              className="btn btn-secondary btn-sm"
+              id={`btn-co-rename-cancel-${planetId}`}
+              disabled={isSavingThis || isSyncingNames}
+              onClick={cancelRenamingPlanet}
+            >
+              Cancel
+            </button>
           </div>
-        ) : null}
-      </div>
-    );
+          {renameError ? (
+            <div
+              className="ag-co-rename-error"
+              id={`co-rename-error-${planetId}`}
+              role="alert"
+            >
+              {renameError}
+            </div>
+          ) : null}
+        </div>
+      );
+    };
+
+  const unsyncedNameCount = useMemo(() => {
+    const sourceList =
+      planetRows.length > 0
+        ? planetRows.filter((r) => !r.isPlaceholder && r.planetId > 0)
+        : ownedDashboardPlanets;
+    let count = 0;
+    for (const item of sourceList) {
+      if (item.hasCustomName && item.name && item.gameName && item.name !== item.gameName) {
+        count += 1;
+      }
+    }
+    return count;
+  }, [ownedDashboardPlanets, planetRows]);
+
+  const onSyncAllPlanetNames = async () => {
+    setIsSyncingNames(true);
+    try {
+      const res = await apiCommand<Record<string, any>>({
+        command: "sync_planet_names",
+      });
+      const msg = String(
+        res?.message ||
+          `Synced ${Number(res?.synced_count ?? 0)} planet name(s) in-game.`
+      );
+      showFeedback(msg, "ok");
+      await Promise.all([
+        fetchOptimizerState({ silent: true }),
+        loadDashboard({ refresh: false, preserveConfig: true, force: true }),
+      ]);
+    } catch (err: any) {
+      showFeedback(
+        `In-game planet name sync failed: ${err.message}`,
+        feedbackKindForError(err)
+      );
+    } finally {
+      setIsSyncingNames(false);
+    }
+  };
+
+  const onSyncSinglePlanetName = async (planetId: number, rawName: string) => {
+    if (planetId <= 0) return;
+    const { trimmed, error } = validatePlanetRename(rawName);
+    if (error) {
+      setRenameError(error);
+      showFeedback(error, "warn");
+      return;
+    }
+    if (!trimmed) {
+      showFeedback("Enter a non-empty planet name to sync in-game.", "warn");
+      return;
+    }
+    setIsSyncingNames(true);
+    setRenameError(null);
+    try {
+      const res = await apiCommand<Record<string, any>>({
+        command: "sync_planet_names",
+        planet_id: planetId,
+        name: trimmed,
+      });
+      setEditingPlanetId(null);
+      setRenameDraft("");
+      showFeedback(
+        String(res?.message || `Synced "${trimmed}" in-game via internalSettings.`),
+        "ok"
+      );
+      await Promise.all([
+        fetchOptimizerState({ silent: true }),
+        loadDashboard({ refresh: false, preserveConfig: true, force: true }),
+      ]);
+    } catch (err: any) {
+      const msg = String(err?.message || "Failed to sync planet name in-game.");
+      setRenameError(msg);
+      showFeedback(`In-game planet name sync failed: ${msg}`, feedbackKindForError(err));
+    } finally {
+      setIsSyncingNames(false);
+    }
+  };
+
+  const editableModalPlanet = useMemo<EditablePlanetModalModel | null>(() => {
+    if (modalPlanetSlot === null) return null;
+    const fromPlan = planetRows.find((r) => r.slot === modalPlanetSlot);
+    if (fromPlan) {
+      return {
+        slot: fromPlan.slot,
+        planetId: fromPlan.planetId,
+        name: fromPlan.name,
+        gameName: fromPlan.gameName,
+        hasCustomName: fromPlan.hasCustomName,
+        coords: fromPlan.coords,
+        isPlaceholder: fromPlan.isPlaceholder,
+        isCentral: fromPlan.isCentral,
+        temperature: fromPlan.temperature,
+        fieldsUsedCurrent: fromPlan.fieldsUsedCurrent,
+        fieldsMax: fromPlan.fieldsMax,
+        detectedSpecialization: fromPlan.detectedSpecialization,
+        lockedSpecialization: resolveLockedSpecForRow(
+          fromPlan,
+          draft.planet_specializations
+        ),
+        builtLevels: fromPlan.builtLevels,
+        targetLevels: fromPlan.targetLevels,
+        reservedFloors: fromPlan.reservedFloors,
+      };
+    }
+    const dashNorms = dashboardPlanets.filter((p) => {
+      const pid = Math.round(safeFiniteNumber(p?.planet_id, 0) ?? 0);
+      const ptype = String(p?.planet_type || "normal").toLowerCase();
+      return pid > 0 && ptype === "normal";
+    });
+    const rawPl = dashNorms[modalPlanetSlot - 1];
+    if (!rawPl) return null;
+    const pid = Math.round(safeFiniteNumber(rawPl.planet_id, 0) ?? 0);
+    const coords = String(rawPl.coords || `Planet ${pid}`);
+    const cName = customPlanetNames[String(pid)] || "";
+    const rawGame = String((rawPl as Record<string, any>).game_name || "").trim();
+    const dispName = cName || String(rawPl.name || coords);
+    const gName = rawGame || (!cName ? dispName : String(rawPl.name || coords));
+    const builtLvls: Record<string, number> = {};
+    if (rawPl.buildings && typeof rawPl.buildings === "object") {
+      for (const [bk, lv] of Object.entries(rawPl.buildings)) {
+        builtLvls[bk] = Math.max(0, Math.round(safeFiniteNumber(lv, 0) ?? 0));
+      }
+    }
+    const fMax = Math.max(1, Math.round(safeFiniteNumber(rawPl.fields_max, 300) ?? 300));
+    const fUsed = Math.max(0, Math.round(safeFiniteNumber(rawPl.fields_used, 0) ?? 0));
+    const temp = safeFiniteNumber(rawPl.temperature, null);
+    return {
+      slot: modalPlanetSlot,
+      planetId: pid,
+      name: dispName,
+      gameName: gName,
+      hasCustomName: Boolean(cName),
+      coords,
+      isPlaceholder: false,
+      isCentral: modalPlanetSlot === Number(draft.central_planet_slot),
+      temperature: temp !== null ? Math.round(temp) : null,
+      fieldsUsedCurrent: fUsed > 0 ? fUsed : null,
+      fieldsMax: fMax,
+      detectedSpecialization: "balanced",
+      lockedSpecialization: normalizeSpecializationKey(
+        draft.planet_specializations[String(pid)] ||
+          draft.planet_specializations[coords] ||
+          "auto"
+      ),
+      builtLevels: builtLvls,
+      targetLevels: { ...builtLvls },
+      reservedFloors: reservedFloorsMap[String(pid)] || reservedFloorsMap[coords] || {},
+    };
+  }, [
+    customPlanetNames,
+    dashboardPlanets,
+    draft.central_planet_slot,
+    draft.planet_specializations,
+    modalPlanetSlot,
+    planetRows,
+    reservedFloorsMap,
+  ]);
+
+  const onSavePlanetModal = async (payload: PlanetModalSavePayload) => {
+    setIsSavingPlanetModal(true);
+    try {
+      const res = await apiCommand<Record<string, any>>({
+        command: "config_optimizer_update_planet",
+        slot: payload.slot,
+        planet_id: payload.planetId,
+        coords: payload.coords,
+        planet_name: payload.planetName,
+        locked_specialization: payload.lockedSpecialization,
+        fields_max_override: payload.fieldsMaxOverride,
+        target_buildings: payload.targetBuildings,
+        lock_for_ga: payload.lockForGa,
+        auto_warehouses: payload.autoWarehouses,
+        auto_replan_ai: true,
+      });
+      if (res && typeof res === "object") {
+        setOptData((prev) => ({
+          ...(prev || {}),
+          active: res.active || prev?.active || null,
+          planet_specializations:
+            res.planet_specializations || prev?.planet_specializations || {},
+          custom_planet_names:
+            res.custom_planet_names || prev?.custom_planet_names || {},
+        }));
+        if (res.planet_specializations && typeof res.planet_specializations === "object") {
+          setDraft((prev) => ({
+            ...prev,
+            planet_specializations: sanitizeSpecializationsMap(res.planet_specializations),
+          }));
+        }
+        if (res.ai_planner_job && plannerJobsStatus) {
+          setPlannerJobsStatus({
+            ...plannerJobsStatus,
+            ai_planner_job: res.ai_planner_job,
+          });
+        }
+      }
+      setYearlyProjection(null);
+      setModalPlanetSlot(null);
+      showFeedback(
+        `Saved desired configuration for Planet #${payload.slot} (${payload.planetName || payload.coords}).`,
+        "ok"
+      );
+      await Promise.all([
+        fetchOptimizerState({ silent: true }),
+        loadDashboard({ refresh: false, preserveConfig: true, force: true }),
+      ]);
+    } catch (err: any) {
+      showFeedback(
+        `Failed to save planet configuration: ${err.message}`,
+        feedbackKindForError(err)
+      );
+    } finally {
+      setIsSavingPlanetModal(false);
+    }
+  };
+
+  const fetchYearlyProjection = useCallback(
+    async (years: number) => {
+      setYearlyLoading(true);
+      setYearlyError(null);
+      try {
+        const res = await apiCommand<{
+          ok?: boolean;
+          projection?: ConfigOptimizerYearlyProjection;
+        }>({
+          command: "config_optimizer_yearly_projection",
+          horizon_years: years,
+        });
+        if (res?.projection) {
+          setYearlyProjection(res.projection);
+        }
+      } catch (err: any) {
+        setYearlyError(String(err?.message || "Failed to compute yearly projection."));
+      } finally {
+        setYearlyLoading(false);
+      }
+    },
+    [apiCommand]
+  );
+
+  const onOpenYearlyGraph = () => {
+    setYearlyGraphOpen(true);
+    void fetchYearlyProjection(yearlyHorizon);
+  };
+
+  const onChangeYearlyHorizon = (years: number) => {
+    setYearlyHorizon(years);
+    void fetchYearlyProjection(years);
   };
 
   const lockedSpecsCount = Object.keys(draft.planet_specializations).length;
@@ -1247,6 +1561,27 @@ export const ConfigOptimizerTab: React.FC<ConfigOptimizerTabProps> = ({ hidden =
     null
   );
   const whFields = safeFiniteNumber(summary.warehouse_fields ?? summary.warehouse_fields_used, null);
+  const totalDemolishWhenFull = Math.max(
+    0,
+    Math.round(
+      safeFiniteNumber(
+        summary.demolitions_when_full,
+        planetRows.reduce((s, r) => s + r.demolitionsWhenFull, 0)
+      ) ?? 0
+    )
+  );
+  const totalLevelsToDemolish = Math.max(
+    0,
+    Math.round(
+      safeFiniteNumber(
+        summary.levels_to_demolish,
+        planetRows.reduce((s, r) => s + r.levelsToDemolish, 0)
+      ) ?? 0
+    )
+  );
+  const activeAllowDemolition = Boolean(
+    summary.allow_demolition ?? activeResult?.meta_parameters?.allow_demolition ?? draft.allow_demolition
+  );
   const elapsedMs = safeFiniteNumber(
     activeResult?.elapsed_ms ?? activeResult?.search?.elapsed_ms ?? activeJob?.elapsed_ms,
     null
@@ -1295,10 +1630,12 @@ export const ConfigOptimizerTab: React.FC<ConfigOptimizerTabProps> = ({ hidden =
             <button
               type="button"
               className="btn btn-secondary btn-sm"
-              id="btn-co-export"
-              onClick={onExportJson}
+              id="btn-co-yearly-graph"
+              disabled={!activeResult}
+              title="Open year-by-year graph of Ships / Week produced toward target configuration"
+              onClick={onOpenYearlyGraph}
             >
-              Export JSON
+              Ships/Week Graph
             </button>
             <button
               type="button"
@@ -1345,8 +1682,10 @@ export const ConfigOptimizerTab: React.FC<ConfigOptimizerTabProps> = ({ hidden =
             </strong>
             <span className="ag-kpi-sub tabular">
               {whFields !== null
-                ? `Warehouse fields: ${fmtInt(Math.round(whFields))}`
-                : "Hard built floors enforced"}
+                ? `Warehouse fields: ${fmtInt(Math.round(whFields))}${totalDemolishWhenFull > 0 ? ` · Demolish @ full: ${fmtInt(totalDemolishWhenFull)}` : ""}`
+                : activeAllowDemolition
+                  ? "Demolition enabled when out of fields"
+                  : "Hard built floors enforced"}
             </span>
           </div>
           <div className="ag-kpi-cell">
@@ -1385,6 +1724,20 @@ export const ConfigOptimizerTab: React.FC<ConfigOptimizerTabProps> = ({ hidden =
               )}
             </div>
             <div className="inline-actions">
+              <button
+                type="button"
+                className={`btn ${unsyncedNameCount > 0 ? "btn-primary" : "btn-secondary"} btn-sm`}
+                id="btn-co-sync-planet-names"
+                disabled={isSyncingNames || isSubmitting}
+                title="Update planet names inside SpaceInvasion Classic (internalSettings) to match Config Optimizer names"
+                onClick={() => void onSyncAllPlanetNames()}
+              >
+                {isSyncingNames
+                  ? "Syncing Names..."
+                  : unsyncedNameCount > 0
+                    ? `Sync Names to Game (${unsyncedNameCount})`
+                    : "Sync Names to Game"}
+              </button>
               <button
                 type="button"
                 className="btn btn-secondary btn-sm"
@@ -1484,8 +1837,13 @@ export const ConfigOptimizerTab: React.FC<ConfigOptimizerTabProps> = ({ hidden =
                     return (
                       <tr
                         key={`${row.slot}-${row.coords}`}
+                        data-co-planet-slot={String(row.slot)}
                         className={`clickable-row${isSel ? " row-selected" : ""}`}
-                        onClick={() => setSelectedSlot(row.slot)}
+                        title="Click to configure desired target buildings and name for this planet"
+                        onClick={() => {
+                          setSelectedSlot(row.slot);
+                          setModalPlanetSlot(row.slot);
+                        }}
                       >
                         <td className="ag-co-planet-cell">
                           {isEditingName ? (
@@ -1496,26 +1854,40 @@ export const ConfigOptimizerTab: React.FC<ConfigOptimizerTabProps> = ({ hidden =
                                 {`#${row.slot} ${row.name}`}
                                 {row.isCentral ? " ★" : ""}
                               </div>
-                              {canRename ? (
+                              <div className="ag-co-planet-row-btns">
                                 <button
                                   type="button"
                                   className="btn btn-secondary btn-sm ag-co-rename-trigger"
-                                  id={`btn-co-rename-${row.planetId}`}
-                                  data-co-rename-planet={String(row.planetId)}
-                                  aria-label={`Rename ${row.name} [${row.coords}]`}
-                                  disabled={renamingPlanetId !== null}
+                                  id={`btn-co-edit-planet-${row.slot}`}
                                   onClick={(e) => {
                                     e.stopPropagation();
-                                    startRenamingPlanet(row.planetId, row.name);
+                                    setSelectedSlot(row.slot);
+                                    setModalPlanetSlot(row.slot);
                                   }}
                                 >
-                                  Rename
+                                  Configure
                                 </button>
-                              ) : null}
+                                {canRename ? (
+                                  <button
+                                    type="button"
+                                    className="btn btn-secondary btn-sm ag-co-rename-trigger"
+                                    id={`btn-co-rename-${row.planetId}`}
+                                    data-co-rename-planet={String(row.planetId)}
+                                    aria-label={`Rename ${row.name} [${row.coords}]`}
+                                    disabled={renamingPlanetId !== null}
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      startRenamingPlanet(row.planetId, row.name);
+                                    }}
+                                  >
+                                    Rename
+                                  </button>
+                                ) : null}
+                              </div>
                             </div>
                           )}
                           <div className="action-sub tabular">
-                            {`[${row.coords}]${row.isPlaceholder ? " · PREVIEW" : ""}${row.hasCustomName && row.gameName && row.gameName !== row.name ? ` · Game: ${row.gameName}` : ""}`}
+                            {`[${row.coords}]${row.isPlaceholder ? " · PREVIEW" : ""}${row.hasCustomName && row.gameName && row.gameName !== row.name ? ` · Unsynced (Game: ${row.gameName})` : ""}`}
                           </div>
                         </td>
                         <td
@@ -1573,8 +1945,8 @@ export const ConfigOptimizerTab: React.FC<ConfigOptimizerTabProps> = ({ hidden =
                               return (
                                 <span
                                   key={bk}
-                                  className={`ag-mini-chip tabular${delta > 0 ? " is-upgrade" : ""}`}
-                                  title={`${BUILDING_NAMES[bk] || bk}: built L${b}, target L${t}`}
+                                  className={`ag-mini-chip tabular${delta > 0 ? " is-upgrade" : delta < 0 ? " is-demolish" : ""}`}
+                                  title={`${BUILDING_NAMES[bk] || bk}: built L${b}, target L${t}${delta < 0 ? " (demolished only when colony runs out of fields)" : ""}`}
                                 >
                                   {`${BUILDING_SHORT_NAMES[bk] || bk} ${b}→${t}`}
                                 </span>
@@ -1628,36 +2000,71 @@ export const ConfigOptimizerTab: React.FC<ConfigOptimizerTabProps> = ({ hidden =
           {planetRows.length === 0 && ownedDashboardPlanets.length > 0 ? (
             <div className="ag-co-pre-run-planets" id="co-owned-planets-rename">
               <div className="ag-co-detail-head tabular">
-                <strong>Owned Planets — Quick Rename</strong>
-                <span className="ag-toolbar-meta">
-                  Custom names sync immediately across Config Optimizer and the console.
-                </span>
+                <strong>Owned Planets — Configure &amp; Sync Names</strong>
+                <div className="inline-actions">
+                  <span className="ag-toolbar-meta">
+                    Click any colony to set target buildings or sync custom names to the game.
+                  </span>
+                  <button
+                    type="button"
+                    className={`btn ${unsyncedNameCount > 0 ? "btn-primary" : "btn-secondary"} btn-sm`}
+                    id="btn-co-sync-planet-names-pre"
+                    disabled={isSyncingNames}
+                    onClick={() => void onSyncAllPlanetNames()}
+                  >
+                    {isSyncingNames
+                      ? "Syncing Names..."
+                      : unsyncedNameCount > 0
+                        ? `Sync Names to Game (${unsyncedNameCount})`
+                        : "Sync Names to Game"}
+                  </button>
+                </div>
               </div>
               <div className="ag-co-pre-run-grid">
                 {ownedDashboardPlanets.map((pl) => {
                   const isEditingName = editingPlanetId === pl.planetId;
                   return (
-                    <div key={pl.planetId} className="ag-co-pre-run-card">
+                    <div
+                      key={pl.planetId}
+                      className="ag-co-pre-run-card clickable-row"
+                      onClick={() => setModalPlanetSlot(pl.slot)}
+                    >
                       {isEditingName ? (
                         renderInlineRenameEditor(pl.planetId, pl.coords, pl.gameName)
                       ) : (
                         <div className="ag-co-planet-head">
                           <div className="action-title tabular">{`#${pl.slot} ${pl.name}`}</div>
-                          <button
-                            type="button"
-                            className="btn btn-secondary btn-sm ag-co-rename-trigger"
-                            id={`btn-co-rename-${pl.planetId}`}
-                            data-co-rename-planet={String(pl.planetId)}
-                            aria-label={`Rename ${pl.name} [${pl.coords}]`}
-                            disabled={renamingPlanetId !== null}
-                            onClick={() => startRenamingPlanet(pl.planetId, pl.name)}
-                          >
-                            Rename
-                          </button>
+                          <div className="ag-co-planet-row-btns">
+                            <button
+                              type="button"
+                              className="btn btn-secondary btn-sm ag-co-rename-trigger"
+                              id={`btn-co-edit-planet-${pl.slot}`}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setModalPlanetSlot(pl.slot);
+                              }}
+                            >
+                              Configure
+                            </button>
+                            <button
+                              type="button"
+                              className="btn btn-secondary btn-sm ag-co-rename-trigger"
+                              id={`btn-co-rename-${pl.planetId}`}
+                              data-co-rename-planet={String(pl.planetId)}
+                              aria-label={`Rename ${pl.name} [${pl.coords}]`}
+                              disabled={renamingPlanetId !== null}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                startRenamingPlanet(pl.planetId, pl.name);
+                              }}
+                            >
+                              Rename
+                            </button>
+                          </div>
                         </div>
                       )}
                       <div className="action-sub tabular">
-                        {`[${pl.coords}]${pl.hasCustomName && pl.gameName && pl.gameName !== pl.name ? ` · Game: ${pl.gameName}` : ""}`}
+                        {`[${pl.coords}]${pl.hasCustomName && pl.gameName && pl.gameName !== pl.name ? ` · Unsynced (Game: ${pl.gameName})` : ""}`}
                       </div>
                     </div>
                   );
@@ -1672,20 +2079,33 @@ export const ConfigOptimizerTab: React.FC<ConfigOptimizerTabProps> = ({ hidden =
                 <strong>
                   {`Slot #${selectedPlanetDetail.slot} · ${selectedPlanetDetail.name} [${selectedPlanetDetail.coords}]`}
                 </strong>
-                <span>
-                  {`Role: ${formatSpecializationLabel(selectedPlanetDetail.detectedSpecialization)} · Fields: ${selectedPlanetDetail.fieldsUsedTarget}/${selectedPlanetDetail.fieldsMax}`}
-                </span>
+                <div className="inline-actions">
+                  <span>
+                    {`Role: ${formatSpecializationLabel(selectedPlanetDetail.detectedSpecialization)} · Fields: ${selectedPlanetDetail.fieldsUsedTarget}/${selectedPlanetDetail.fieldsMax}${selectedPlanetDetail.levelsToDemolish > 0 ? ` · Off-role drop: -${selectedPlanetDetail.levelsToDemolish} (${selectedPlanetDetail.demolitionsWhenFull} when out of fields)` : ""}`}
+                  </span>
+                  <button
+                    type="button"
+                    className="btn btn-secondary btn-sm"
+                    id="btn-co-detail-edit-planet"
+                    onClick={() => setModalPlanetSlot(selectedPlanetDetail.slot)}
+                  >
+                    Edit Planet Config
+                  </button>
+                </div>
               </div>
               <div className="ag-co-detail-grid">
                 {selectedPlanetDetail.buildingsDetail.map((bd) => (
                   <div
                     key={bd.key}
-                    className={`ag-co-bld-cell tabular${bd.toBuild > 0 ? " is-upgrade" : ""}${bd.reserved > 0 ? " is-reserved" : ""}`}
+                    className={`ag-co-bld-cell tabular${bd.toBuild > 0 ? " is-upgrade" : bd.toDemolish > 0 ? " is-demolish" : ""}${bd.reserved > 0 ? " is-reserved" : ""}`}
                   >
                     <span className="ag-co-bld-name">{`${bd.key} ${BUILDING_SHORT_NAMES[bd.key] || bd.name}`}</span>
                     <strong className="ag-co-bld-vals">
-                      {`${bd.built} → ${bd.target}${bd.toBuild > 0 ? ` (+${bd.toBuild})` : ""}`}
+                      {`${bd.built} → ${bd.target}${bd.toBuild > 0 ? ` (+${bd.toBuild})` : bd.toDemolish > 0 ? ` (-${bd.toDemolish})` : ""}`}
                     </strong>
+                    {bd.toDemolish > 0 ? (
+                      <span className="ag-co-bld-res">Demolish @ full fields</span>
+                    ) : null}
                     {bd.reserved > 0 ? (
                       <span className="ag-co-bld-res">{`Floor ≥ ${bd.reserved}`}</span>
                     ) : null}
@@ -1913,6 +2333,28 @@ export const ConfigOptimizerTab: React.FC<ConfigOptimizerTabProps> = ({ hidden =
                 </ActionGraphParamRow>
 
                 <ActionGraphParamRow
+                  doc={CONFIG_OPTIMIZER_PARAM_DOCS.min_warehouse_level}
+                  htmlFor="co-param-min_warehouse_level"
+                  layout="inline"
+                >
+                  <input
+                    type="number"
+                    id="co-param-min_warehouse_level"
+                    min={0}
+                    max={60}
+                    step={1}
+                    value={draft.min_warehouse_level}
+                    onChange={(e) => {
+                      setDraftDirty(true);
+                      setDraft((prev) => ({
+                        ...prev,
+                        min_warehouse_level: e.target.value,
+                      }));
+                    }}
+                  />
+                </ActionGraphParamRow>
+
+                <ActionGraphParamRow
                   doc={CONFIG_OPTIMIZER_PARAM_DOCS.central_planet_slot}
                   htmlFor="co-param-central_planet_slot"
                   layout="inline"
@@ -1948,6 +2390,27 @@ export const ConfigOptimizerTab: React.FC<ConfigOptimizerTabProps> = ({ hidden =
                       setDraft((prev) => ({
                         ...prev,
                         central_planet_min_warehouse_level: e.target.value,
+                      }));
+                    }}
+                  />
+                </ActionGraphParamRow>
+
+                <ActionGraphParamRow
+                  doc={CONFIG_OPTIMIZER_PARAM_DOCS.allow_demolition}
+                  htmlFor="co-param-allow_demolition"
+                  layout="toggle"
+                >
+                  <input
+                    type="checkbox"
+                    className="config-checkbox"
+                    id="co-param-allow_demolition"
+                    checked={draft.allow_demolition}
+                    onChange={(e) => {
+                      const checked = e.target.checked;
+                      setDraftDirty(true);
+                      setDraft((prev) => ({
+                        ...prev,
+                        allow_demolition: checked,
                       }));
                     }}
                   />
@@ -2234,7 +2697,9 @@ export const ConfigOptimizerTab: React.FC<ConfigOptimizerTabProps> = ({ hidden =
             </div>
           ) : (
             <p className="ag-sim-note">
-              Enforces all current built building levels and reserved floors as hard minimums; auto-triggers AI-Planner replan on completion.
+              {draft.allow_demolition
+                ? `Allows off-role mine teardown (${totalLevelsToDemolish > 0 ? `${totalLevelsToDemolish} levels marked` : "honors reserved floors"}); AI-Planner triggers demolitions strictly when a planet runs out of fields.`
+                : "Enforces all current built building levels and reserved floors as hard minimums; auto-triggers AI-Planner replan on completion."}
             </p>
           )}
           <div className="ag-footer-actions">
@@ -2249,10 +2714,11 @@ export const ConfigOptimizerTab: React.FC<ConfigOptimizerTabProps> = ({ hidden =
             <button
               type="button"
               className="btn btn-secondary btn-sm"
-              id="btn-co-export-footer"
-              onClick={onExportJson}
+              id="btn-co-yearly-graph-footer"
+              disabled={!activeResult}
+              onClick={onOpenYearlyGraph}
             >
-              Export JSON
+              Ships/Week Graph
             </button>
             <button
               type="button"
@@ -2266,6 +2732,26 @@ export const ConfigOptimizerTab: React.FC<ConfigOptimizerTabProps> = ({ hidden =
           </div>
         </div>
       </aside>
+
+      <ConfigOptimizerPlanetModal
+        planet={editableModalPlanet}
+        specializationOptions={PLANET_SPECIALIZATION_OPTIONS}
+        isSaving={isSavingPlanetModal}
+        isSyncingName={isSyncingNames}
+        onClose={() => setModalPlanetSlot(null)}
+        onSave={onSavePlanetModal}
+        onSyncSingleName={onSyncSinglePlanetName}
+      />
+
+      <ConfigOptimizerYearlyGraphModal
+        open={yearlyGraphOpen}
+        projection={yearlyProjection}
+        loading={yearlyLoading}
+        error={yearlyError}
+        horizonYears={yearlyHorizon}
+        onChangeHorizon={onChangeYearlyHorizon}
+        onClose={() => setYearlyGraphOpen(false)}
+      />
     </div>
   );
 };

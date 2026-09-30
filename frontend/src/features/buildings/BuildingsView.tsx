@@ -128,8 +128,15 @@ export const BuildingsView: React.FC = () => {
     },
     [planetGoalsMap]
   );
+  const bldCustomName = useMemo(() => {
+    const pid = p.planet_id ?? activePlanet?.planet_id;
+    const customMap = dashboard?.custom_planet_names;
+    const fromMap =
+      pid != null && customMap && typeof customMap === "object" ? customMap[String(pid)] : "";
+    return String(fromMap || p.custom_name || activePlanet?.custom_name || "").trim();
+  }, [activePlanet?.custom_name, activePlanet?.planet_id, dashboard?.custom_planet_names, p.custom_name, p.planet_id]);
   const planetMetaText = etaData
-    ? `[${p.coords || "--"}] · Dev L${finiteNum(p.dev_center_level, 0)} · Micro L${finiteNum(p.microsystem_level, 0)} · Div x${bldDiv}${planetGoalSpec ? ` · Goal: ${planetGoalSpec}` : ""}`
+    ? `${bldCustomName ? `${bldCustomName} ` : ""}[${p.coords || "--"}] · Dev L${finiteNum(p.dev_center_level, 0)} · Micro L${finiteNum(p.microsystem_level, 0)} · Div x${bldDiv}${planetGoalSpec ? ` · Goal: ${planetGoalSpec}` : ""}`
     : "[--] · Dev L0 · Micro L0 · Div x1";
 
   const econBfPct = finiteNum(econ.blast_furnace_pct, null);

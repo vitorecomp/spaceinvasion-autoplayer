@@ -529,6 +529,37 @@ def _extract_target_buildings(entry: Mapping[str, Any]) -> dict[str, int]:
     return out
 
 
+def _extract_explicit_demolition_targets(entry: Mapping[str, Any]) -> dict[str, int]:
+    """Return `{building_key: target_level}` for rows explicitly planned below `built_level`."""
+    raw_buildings = entry.get("buildings")
+    built_floors = entry.get("built_floors") if isinstance(entry.get("built_floors"), Mapping) else {}
+    out: dict[str, int] = {}
+    if isinstance(raw_buildings, Sequence) and not isinstance(raw_buildings, (str, bytes)):
+        for row in raw_buildings:
+            if not isinstance(row, Mapping):
+                continue
+            k = str(row.get("key") or "").strip()
+            if not k:
+                continue
+            built_raw = row.get("built_level", built_floors.get(k, 0))
+            built = max(0, game_data.safe_int(built_raw, 0))
+            tgt = max(0, game_data.safe_int(row.get("target_level"), built))
+            if tgt < built:
+                out[k] = tgt
+    elif isinstance(raw_buildings, Mapping):
+        for k, v in raw_buildings.items():
+            bk = str(k).strip()
+            built = max(0, game_data.safe_int(built_floors.get(bk, 0), 0))
+            if isinstance(v, Mapping):
+                built = max(built, max(0, game_data.safe_int(v.get("built_level"), 0)))
+                tgt = max(0, game_data.safe_int(v.get("target_level", v.get("level", built)), built))
+            else:
+                tgt = max(0, game_data.safe_int(v, built))
+            if tgt < built:
+                out[bk] = tgt
+    return out
+
+
 def _match_live_planet(
     entry: Mapping[str, Any],
     owned_normal: Sequence[PlanetState],
@@ -1339,14 +1370,18 @@ def build_path_problem(
     *,
     pad_generic_colonies: bool = False,
     colony_founding_hours: float = 0.0,
+    demolition_time_factor: float = 1.0,
     planet_names: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
-    """Build the causal step problem from live `state` to `target_config` (ZERO demolition steps).
+    """Build the causal step problem from live `state` to `target_config`.
 
     Always starts strictly from the current live state of every owned colony
     (live per-colony resources, live built levels, live researches, live ships,
     active in-progress construction/research queues, and in-flight incoming cargo)
     and precomputes pairwise planet distance and one-way transport travel times.
+    When `target_config["meta_parameters"]["allow_demolition"]` is enabled, records
+    explicit demolition chains (`target_level < built_level`) which the simulator
+    triggers strictly when a planet runs out of fields (`fields_used >= fields_max`).
     """
     if not isinstance(target_config, Mapping) or target_config.get("schema_version") != 1:
         found = target_config.get("schema_version") if isinstance(target_config, Mapping) else type(target_config).__name__
@@ -1357,9 +1392,16 @@ def build_path_problem(
 
     merged_planet_names: dict[str, str] = {}
     tc_meta = target_config.get("meta_parameters")
+    tc_summary = target_config.get("summary")
+    allow_demolition = False
     if isinstance(tc_meta, Mapping):
         merged_planet_names.update(normalize_planet_names_map(tc_meta.get("planet_names")))
         merged_planet_names.update(normalize_planet_names_map(tc_meta.get("custom_planet_names")))
+        allow_demolition = bool(
+            tc_meta.get("allow_demolition", False) or tc_meta.get("ALLOW_DEMOLITION", False)
+        )
+    if not allow_demolition and isinstance(tc_summary, Mapping):
+        allow_demolition = bool(tc_summary.get("allow_demolition", False))
     merged_planet_names.update(normalize_planet_names_map(target_config.get("planet_names")))
     merged_planet_names.update(normalize_planet_names_map(target_config.get("custom_planet_names")))
     if isinstance(planet_names, Mapping):
@@ -1400,10 +1442,20 @@ def build_path_problem(
             max(0.0, float(getattr(live_planet.resources, r, 0) or 0)) for r in RESOURCE_KEYS
         )
         raw_target = _extract_target_buildings(raw_entry) if raw_entry is not None else {}
-        # HARD REQUIREMENT: never demolish — target level on every building is >= live built level
+        demolish_floors = (
+            _extract_explicit_demolition_targets(raw_entry)
+            if (allow_demolition and raw_entry is not None)
+            else {}
+        )
         target_levels = dict(raw_target)
         for bk, blvl in levels.items():
-            if blvl > target_levels.get(bk, 0):
+            if bk in demolish_floors:
+                df_val = min(blvl, int(demolish_floors[bk]))
+                if df_val > 0:
+                    target_levels[bk] = df_val
+                else:
+                    target_levels.pop(bk, None)
+            elif blvl > target_levels.get(bk, 0):
                 target_levels[bk] = blvl
         slot_idx = (
             game_data.safe_int(raw_entry.get("slot", raw_entry.get("slot_index")), index + 1)
@@ -1438,6 +1490,7 @@ def build_path_problem(
             "pays_for_research": bool(raw_entry.get("pays_for_research", False)) if raw_entry is not None else False,
             "levels": levels,
             "target_levels": target_levels,
+            "demolish_floors": dict(demolish_floors),
             "solar_cells": stationed_s9,
             "resources": res_tuple,
             "ships": transport_ships,
@@ -1644,6 +1697,22 @@ def build_path_problem(
                     requires=_path_requirements(key, index),
                     chain=("build", index, key),
                 )
+            if allow_demolition and start_after > wanted:
+                for level in range(start_after, wanted, -1):
+                    add_step(
+                        kind="demolish",
+                        planet=index,
+                        key=key,
+                        name=name,
+                        level_from=level,
+                        level_to=level - 1,
+                        cost=(0.0, 0.0, 0.0, 0.0),
+                        base_hours=max(0.0, float(demolition_time_factor)) * base_hours(key, level),
+                        queue=index,
+                        pay_planet=index,
+                        requires=[],
+                        chain=("demolish", index, key),
+                    )
 
     for key, info in research_catalog():
         start_after = max(research_now[key], in_progress_r_max.get(key, 0))
@@ -1793,9 +1862,19 @@ def build_path_problem(
         ]
     )
 
+    demolish_targets_by_pid: dict[str, dict[str, int]] = {}
+    for p in problem_planets:
+        dfloors = p.get("demolish_floors")
+        if isinstance(dfloors, Mapping) and dfloors and int(p["planet_id"]) > 0:
+            demolish_targets_by_pid[str(int(p["planet_id"]))] = {
+                str(bk): max(0, int(lvl)) for bk, lvl in dfloors.items()
+            }
+
     return {
         "speedup_factor": speedup,
         "planets": problem_planets,
+        "allow_demolition": bool(allow_demolition),
+        "demolish_targets": demolish_targets_by_pid,
         "initial_blast_furnace": initial_blast_furnace,
         "research_levels": research_now,
         "research_target": research_target,
@@ -1990,6 +2069,11 @@ class EmpirePathSimulator:
                 self.colonize_step[planet] = members[0]
             else:
                 self.research_chains[key] = chain_index
+        self._target_step_count = sum(1 for k in self.kind if k != "demolish")
+        self._builds_per_planet = [
+            sum(1 for p, k in zip(self.step_planet, self.kind) if p == idx and k == "build")
+            for idx in range(self.planet_count)
+        ]
 
         self.research_dependents: dict[str, set[int]] = {}
         for step in self.steps:
@@ -2698,7 +2782,7 @@ class EmpirePathSimulator:
         while True:
             if self.clock < limit:
                 self._decide()
-            if self.unstarted == 0 and not self.heap:
+            if self.unstarted_targets == 0 and not self.heap:
                 status = "reached"
                 break
             if self.clock >= limit:
@@ -2709,12 +2793,12 @@ class EmpirePathSimulator:
             until_stock = self._hours_to_stock_event()
             until_early = (
                 max(1e-9, self.early_dispatch_at - self.clock)
-                if (self.model_transport_travel and self.unstarted > 0 and self.early_dispatch_at < PATH_NEVER)
+                if (self.model_transport_travel and self.unstarted_targets > 0 and self.early_dispatch_at < PATH_NEVER)
                 else PATH_NEVER
             )
             until_review = PATH_NEVER
             if (
-                self.unstarted > 0
+                self.unstarted_targets > 0
                 and (self.heap or self.transit_heap or until_stock < PATH_NEVER)
                 and self.review_at < PATH_NEVER
             ):
@@ -2723,14 +2807,14 @@ class EmpirePathSimulator:
             if elapsed == PATH_NEVER:
                 if self.reserved < 0 and limit < PATH_NEVER:
                     self._advance(max(0.0, limit - self.clock), ends_a_step=False, ends_a_transit=False)
-                    status = "reached" if (self.unstarted == 0 and not self.heap) else "horizon"
+                    status = "reached" if (self.unstarted_targets == 0 and not self.heap) else "horizon"
                 else:
                     status = "stuck"
                 break
             until_limit = limit - self.clock
             if until_limit < elapsed:
                 self._advance(max(0.0, until_limit), ends_a_step=False, ends_a_transit=False)
-                status = "reached" if (self.unstarted == 0 and not self.heap) else "horizon"
+                status = "reached" if (self.unstarted_targets == 0 and not self.heap) else "horizon"
                 break
             events += 1
             if events > event_limit:
@@ -2906,13 +2990,18 @@ class EmpirePathSimulator:
         self.start: list[Optional[float]] = [None] * len(self.steps)
         self.end: list[Optional[float]] = [None] * len(self.steps)
         self.unstarted = len(self.steps)
+        self.unstarted_targets = self._target_step_count
+        self.remaining_builds = list(self._builds_per_planet)
         self.need = [sum(cost[position] for cost in self.cost) for position in range(4)]
         self.work_accelerators = [0.0] * count
         self.work_buildings = [0.0] * count
+        self.work_demolitions = [0.0] * count
         self.work_ships = [0.0] * count
         self.work_research = 0.0
         for step in range(len(self.steps)):
             self._count_work(step, 1.0)
+        for planet in range(count):
+            self._sync_demolish_work(planet)
         self.supply_version = 0
         self.totals = [[0.0] * len(PRODUCTION_FLOW_KEYS) for _ in range(count)]
         self.output: list[tuple[float, ...]] = [(0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0)] * count
@@ -2949,8 +3038,32 @@ class EmpirePathSimulator:
             self.work_ships[planet] += sign * self.base_hours[step]
         elif kind == "build" and self.key[step] in PATH_ACCELERATOR_KEYS:
             self.work_accelerators[planet] += sign * self.base_hours[step]
-        elif kind in ("build", "demolish"):
+        elif kind == "build":
             self.work_buildings[planet] += sign * self.base_hours[step]
+
+    def _sync_demolish_work(self, planet: int) -> None:
+        """Count only the demolitions actually required when `planet` runs out of fields."""
+        old = self.work_demolitions[planet]
+        if not self.demolish_chains[planet]:
+            if old != 0.0:
+                self.work_buildings[planet] = max(0.0, self.work_buildings[planet] - old)
+                self.work_demolitions[planet] = 0.0
+            return
+        running = self.queue_step[planet]
+        in_flight_dem = 1 if (running >= 0 and self.kind[running] == "demolish") else 0
+        eff_used = self.fields_used[planet] - in_flight_dem
+        needed = max(0, eff_used + self.remaining_builds[planet] - self.fields_max[planet])
+        if needed <= 0:
+            new_val = 0.0
+        else:
+            avail_hours: list[float] = []
+            for chain in self.demolish_chains[planet]:
+                for step in self.chain_steps[chain][self.next_step[chain] :]:
+                    avail_hours.append(self.base_hours[step])
+            avail_hours.sort()
+            new_val = sum(avail_hours[:needed])
+        self.work_buildings[planet] = max(0.0, self.work_buildings[planet] - old + new_val)
+        self.work_demolitions[planet] = new_val
 
     def accelerator_hours(self, planet: int) -> float:
         pending: list[list[int]] = []
@@ -3344,8 +3457,14 @@ class EmpirePathSimulator:
         if queue >= 0:
             self.queue_step[queue] = step
             self.queue_end[queue] = self.clock + hours
+        if self.kind[step] != "demolish":
+            self.unstarted_targets -= 1
         if self.kind[step] == "build":
             self.fields_used[planet] += 1
+            self.remaining_builds[planet] = max(0, self.remaining_builds[planet] - 1)
+            self._sync_demolish_work(planet)
+        elif self.kind[step] == "demolish":
+            self._sync_demolish_work(planet)
         if planet < 0:
             self.dirty.add(self.research_queue)
 
@@ -3422,6 +3541,7 @@ class EmpirePathSimulator:
                 self.levels[planet].pop(key, None)
             if kind == "demolish":
                 self.fields_used[planet] -= 1
+                self._sync_demolish_work(planet)
             if key in PATH_FLOW_BUILDING_KEYS:
                 self._refresh_planet(planet)
                 if self.founded[planet]:
@@ -3559,7 +3679,7 @@ class EmpirePathSimulator:
         for _ in range(self.queue_count + 2):
             if not self._start_proposals(self.strategy.proposals(self, forced=False)):
                 break
-        if self.reserved < 0 and not self.heap and not self.transit_heap and self.unstarted > 0:
+        if self.reserved < 0 and not self.heap and not self.transit_heap and self.unstarted_targets > 0:
             allow_forced = (
                 self.clock == 0.0
                 or self.run_limit_hours == PATH_NEVER
@@ -3985,8 +4105,13 @@ class PathStrategy:
                 if step >= 0 and not sim.started[step]:
                     candidates.append(step)
             elif reason == "field":
-                # Zero auto-demolition invariant: never suggest demolishing a building to free fields.
-                continue
+                planet = blocker[1]
+                if sim.fields_used[planet] >= sim.fields_max[planet]:
+                    running = sim.queue_step[planet]
+                    if not (running >= 0 and sim.kind[running] == "demolish"):
+                        step = self._demolition(sim, planet)
+                        if step >= 0:
+                            candidates.append(step)
             else:
                 if reason == "level":
                     _, owner, key, level = blocker
@@ -4025,6 +4150,31 @@ class PathStrategy:
             if energy_used <= energy_produced - standing_energy + fusion_energy + 1e-9:
                 break
         return needed
+
+    def _demolition(self, sim: EmpirePathSimulator, planet: int) -> int:
+        """Choose the next planned demolition step on an out-of-fields planet whose output loss costs least."""
+        if sim.fields_used[planet] < sim.fields_max[planet]:
+            return -1
+        best_step = -1
+        best_key: tuple[int, float, int] = (2, PATH_NEVER, 0)
+        for chain in sim.demolish_chains[planet]:
+            position = sim.next_step[chain]
+            if position >= len(sim.chain_steps[chain]):
+                continue
+            step = sim.chain_steps[chain][position]
+            bkey = sim.key[step]
+            new_lvl = sim.level_to[step]
+            energy_penalty = 0
+            loss = 0.0
+            if sim.founded[planet]:
+                after_totals = sim.changed_totals(planet, {bkey: new_lvl})
+                if bkey in ("b5", "b6") and after_totals[7] > after_totals[6] + 1e-9:
+                    energy_penalty = 1
+                loss = -self._value(self._gain(sim, planet, {bkey: new_lvl}))
+            cand_key = (energy_penalty, loss, step)
+            if cand_key < best_key:
+                best_step, best_key = step, cand_key
+        return best_step
 
     def _research_gain(self, sim: EmpirePathSimulator, key: str) -> tuple[float, ...]:
         token = sim.supply_version
@@ -4141,12 +4291,18 @@ class PathStrategy:
             return
 
         if cheapest:
+            builds_left_cheap = 0
             for chain in sim.build_chains[planet].values():
                 position = sim.next_step[chain]
                 if position < len(sim.chain_steps[chain]):
+                    builds_left_cheap += 1
                     step = sim.chain_steps[chain][position]
                     if not sim.blockers(step):
                         entries.append(((-sim.cost_spice_eq[step], 0.0, -step), step))
+            if builds_left_cheap > 0 and sim.fields_used[planet] >= sim.fields_max[planet]:
+                step = self._demolition(sim, planet)
+                if step >= 0 and not sim.blockers(step):
+                    entries.append(((0.0, 0.0, -step), step))
             return
 
         urgent = 1.0 if (self.critical[planet] or forced) else 0.0
@@ -4851,7 +5007,7 @@ def run_ai_planner(
         if row["factor_kind"] == "research"
     }
 
-    # Sequential steps output strictly using kind in {"BUILD", "RESEARCH", "COLONIZE_PREVIEW"}
+    # Sequential steps output strictly using kind in {"BUILD", "DEMOLISH", "RESEARCH", "COLONIZE_PREVIEW"}
     step_tr_map = best_run.get("step_transport_info") if isinstance(best_run.get("step_transport_info"), Mapping) else {}
     dispatch_delay_sec = round(simulator.dispatch_delay_hours * 3600.0, 2)
     steps_out: list[dict[str, Any]] = []
@@ -4860,6 +5016,8 @@ def run_ai_planner(
         raw_kind = str(details["kind"])
         if raw_kind == "build":
             out_kind = "BUILD"
+        elif raw_kind == "demolish":
+            out_kind = "DEMOLISH"
         elif raw_kind == "research":
             out_kind = "RESEARCH"
         elif raw_kind == "colonize":
@@ -5168,11 +5326,17 @@ def run_ai_planner(
         "lower_bound_hours": round(top_lb_hours, 4) if math.isfinite(top_lb_hours) else None,
         "lower_bound": fmt_path_time(top_lb_hours),
         "lower_bound_set_by": str(top_lb_label),
-        "steps": int(len(simulator.steps)),
+        "steps": (
+            int(simulator._target_step_count) + sum(1 for s in started_steps if simulator.kind[s] == "demolish")
+            if bool(problem.get("allow_demolition", False))
+            else int(len(simulator.steps))
+        ),
         "steps_started": int(best_run["steps_started"]),
         "steps_completed": int(best_run["steps_completed"]),
         "steps_running": int(best_run["steps_running"]),
         "actions_count": int(len(steps_out)),
+        "allow_demolition": bool(problem.get("allow_demolition", False)),
+        "demolitions_planned": sum(1 for s in steps_out if s["kind"] == "DEMOLISH"),
         "stopped_at_hours": round(float(best_run["stopped_at_hours"]), 4),
         "waiting_for": (
             f"{simulator.steps[waiting_for_step]['name']} {simulator.steps[waiting_for_step]['level_to']}"
@@ -5222,6 +5386,8 @@ def run_ai_planner(
             "schema_version": 1,
             "generated_at": datetime.datetime.now().astimezone().isoformat(timespec="seconds"),
             "config_generated_at": str(target_config.get("generated_at") or ""),
+            "allow_demolition": bool(problem.get("allow_demolition", False)),
+            "demolish_targets": dict(problem.get("demolish_targets") or {}),
             "meta_parameters": cfg,
             "attack_telemetry": enriched_telemetry,
             "summary": summary,
@@ -5283,6 +5449,9 @@ def _resolve_in_flight_buildings(state: GameState) -> tuple[dict[int, dict[str, 
         if bid is None:
             continue
         cur_lvl = target_planet.building_level(bid)
+        job_name_low = str(getattr(job, "name", "") or "").lower()
+        if (parsed_tgt is not None and parsed_tgt < cur_lvl) or "demolish" in job_name_low or "tear" in job_name_low:
+            continue
         tgt_lvl = parsed_tgt
         if tgt_lvl is None or tgt_lvl <= cur_lvl:
             m = _LEVEL_RE.search(str(getattr(job, "name", "") or ""))
@@ -5372,12 +5541,48 @@ def _is_stale_remote_resource_wait(offer: Any) -> bool:
     return not any(tok in st for tok in blocking)
 
 
-def _field_conflict_candidates(planet: PlanetState, blocked_bkey: str) -> list[dict[str, Any]]:
+def _is_planet_demolish_energy_safe(state: GameState, planet: PlanetState, bid: int) -> bool:
+    """Return True when tearing down 1 level of `bid` on `planet` keeps planet net energy >= 0."""
+    cur_lvl = planet.building_level(bid)
+    if cur_lvl < 1:
+        return False
+    if normalize_planet_type(planet) in ("asteroid", "raid"):
+        return False
+    raw_loss = max(0, game_data.building_energy_delta(bid, cur_lvl))
+    if raw_loss <= 0:
+        return True
+    r2 = max(0, min(200, game_data.safe_int((state.researches or {}).get("r2", 0), 0)))
+    safe_loss = int(math.ceil(raw_loss * (1.0 + 0.01 * r2)))
+    throttled_res = 0
+    econ_map = planet.economy_rates if isinstance(planet.economy_rates, Mapping) else {}
+    for mbid, rkey in ((1, "resource1"), (2, "resource2"), (3, "resource3"), (4, "resource4")):
+        mlvl = planet.building_level(mbid)
+        if mlvl <= 0:
+            continue
+        mpct = max(0, min(100, game_data.safe_int(econ_map.get(rkey, 100), 100)))
+        if mpct < 100:
+            full_e = game_data.mine_energy_needed(mbid, mlvl)
+            throttled_res += max(0, int(math.ceil(full_e * (100 - mpct) / 100.0)))
+    net_e = game_data.safe_int(getattr(planet.energy, "net", 0), 0)
+    return (net_e - throttled_res - safe_loss) >= 0
+
+
+def _field_conflict_candidates(
+    planet: PlanetState,
+    blocked_bkey: str,
+    *,
+    planned_demolish_floors: Mapping[str, int] | None = None,
+) -> list[dict[str, Any]]:
     """List existing non-zero buildings on `planet` ordered from safest demolition candidate to riskiest."""
-    # Prefer optional/non-power buildings over core mines and power plants (b5 last).
+    dem_floors = planned_demolish_floors or {}
+
+    # Prefer explicitly planned demolitions (`live_lvl > target_lvl`) first, then optional/non-power buildings, b5 last.
     def _sort_key(item: tuple[int, str, int]) -> tuple[int, int, int]:
         bid, bkey, lvl = item
-        if bid == 5:  # Fusion plant — protect energy backbone
+        is_planned_dem = bkey in dem_floors and lvl > int(dem_floors[bkey])
+        if is_planned_dem and bid != 5:
+            group = -1
+        elif bid == 5:  # Fusion plant — protect energy backbone
             group = 4
         elif bid == 6:  # Thermosolar plant (spice-burning) — easiest swap on normal planets
             group = 0
@@ -5400,6 +5605,7 @@ def _field_conflict_candidates(planet: PlanetState, blocked_bkey: str) -> list[d
     candidates: list[dict[str, Any]] = []
     for bid, bkey, lvl in raw_items:
         info = game_data.BUILDING_BY_ID[bid]
+        is_planned_dem = bkey in dem_floors and lvl > int(dem_floors[bkey])
         candidates.append(
             {
                 "building_key": bkey,
@@ -5407,9 +5613,67 @@ def _field_conflict_candidates(planet: PlanetState, blocked_bkey: str) -> list[d
                 "building_name": str(info["name"]),
                 "current_level": int(lvl),
                 "is_power_plant": bid in (5, 6),
+                "planned_for_demolition": bool(is_planned_dem),
             }
         )
     return candidates
+
+
+def _resolve_plan_demolish_floors_by_planet(
+    plan_result: Mapping[str, Any],
+    planets_by_id: Mapping[int, PlanetState],
+    planets_by_coords: Mapping[str, PlanetState],
+) -> tuple[bool, dict[int, dict[str, int]]]:
+    """Extract `(allow_demolition, {planet_id: {bkey: target_floor}})` from `plan_result`."""
+    summary_m = plan_result.get("summary") if isinstance(plan_result.get("summary"), Mapping) else {}
+    meta_m = plan_result.get("meta_parameters") if isinstance(plan_result.get("meta_parameters"), Mapping) else {}
+    allow_dem = bool(
+        plan_result.get("allow_demolition", False)
+        or summary_m.get("allow_demolition", False)
+        or meta_m.get("allow_demolition", False)
+    )
+    floors_by_pid: dict[int, dict[str, int]] = {}
+    raw_dt = plan_result.get("demolish_targets")
+    if isinstance(raw_dt, Mapping):
+        for pk, bmap in raw_dt.items():
+            if not isinstance(bmap, Mapping):
+                continue
+            pid_opt = game_data.safe_optional_int(pk, None)
+            p_obj = planets_by_id.get(pid_opt) if pid_opt is not None else None
+            if p_obj is None:
+                pk_s = str(pk).strip()
+                p_obj = planets_by_coords.get(pk_s) or (planets_by_coords.get(normalize_coords(pk_s)) if pk_s else None)
+            if p_obj is None:
+                continue
+            dst_m = floors_by_pid.setdefault(int(p_obj.planet_id), {})
+            for bk, lvl in bmap.items():
+                bk_s = str(bk).strip()
+                if bk_s:
+                    val = max(0, game_data.safe_int(lvl, 0))
+                    dst_m[bk_s] = min(dst_m[bk_s], val) if bk_s in dst_m else val
+
+    steps_seq = plan_result.get("steps")
+    if isinstance(steps_seq, Sequence) and not isinstance(steps_seq, (str, bytes)):
+        for st in steps_seq:
+            if not isinstance(st, Mapping):
+                continue
+            sk = str(st.get("kind") or "").strip().upper()
+            if sk not in ("DEMOLISH", "DEMOLISH_BUILDING"):
+                continue
+            allow_dem = True
+            spid = game_data.safe_optional_int(st.get("planet_id"), None)
+            scoords = str(st.get("planet_coords") or "").strip()
+            p_obj = planets_by_id.get(spid) if spid is not None else None
+            if p_obj is None and scoords:
+                p_obj = planets_by_coords.get(scoords) or planets_by_coords.get(normalize_coords(scoords))
+            if p_obj is None:
+                continue
+            ek = str(st.get("entity_key") or "").strip()
+            tlvl = max(0, game_data.safe_int(st.get("target_level"), 0))
+            if ek:
+                dst_m = floors_by_pid.setdefault(int(p_obj.planet_id), {})
+                dst_m[ek] = min(dst_m[ek], tlvl) if ek in dst_m else tlvl
+    return allow_dem, floors_by_pid
 
 
 def reconcile_live_ai_actions(
@@ -5470,6 +5734,11 @@ def reconcile_live_ai_actions(
     field_conflicts: list[dict[str, Any]] = []
     handled_planets: set[int] = set()
     handled_research = False
+    allow_live_demolition, demolish_floors_by_pid = _resolve_plan_demolish_floors_by_planet(
+        plan_result,
+        planets_by_id,
+        planets_by_coords,
+    )
 
     for step in steps:
         if not isinstance(step, Mapping):
@@ -5527,9 +5796,67 @@ def reconcile_live_ai_actions(
             if unmet_prereqs:
                 continue
 
-            # HARD REQUIREMENT: Max-field conflict detection (never emit DEMOLISH_BUILDING)
+            # Max-field handling: ONLY trigger demolition when the planet is out of fields (`fields_used >= fields_max`)
+            # and `allow_demolition` is enabled on the plan; otherwise emit a structured `field_conflict` prompt.
             if planet.fields_max > 0 and planet.fields_used >= planet.fields_max:
-                candidates = _field_conflict_candidates(planet, entity_key)
+                planet_dem_floors = demolish_floors_by_pid.get(pid) or {}
+                candidates = _field_conflict_candidates(
+                    planet,
+                    entity_key,
+                    planned_demolish_floors=planet_dem_floors,
+                )
+                if allow_live_demolition and planet_dem_floors:
+                    safe_dem_cand = next(
+                        (
+                            c
+                            for c in candidates
+                            if c.get("planned_for_demolition")
+                            and _is_planet_demolish_energy_safe(state, planet, int(c["building_id"]))
+                        ),
+                        None,
+                    )
+                    if safe_dem_cand is not None:
+                        q_busy_full = planet_queue_counts.get(pid, 0) >= 1
+                        if q_busy_full:
+                            actions.append(
+                                PlannedAction(
+                                    priority="P1",
+                                    kind="WAIT_RESOURCES",
+                                    planet_id=pid,
+                                    planet_coords=planet.coords,
+                                    target_id=bid,
+                                    target_name=b_name,
+                                    target_level=target_level,
+                                    reason=(
+                                        f"AI-Planner #{seq}: waiting for active building queue on full planet "
+                                        f"({planet.fields_used}/{planet.fields_max} fields) before {b_name} L{target_level}"
+                                    ),
+                                    executable_now=False,
+                                )
+                            )
+                        else:
+                            dem_bid = int(safe_dem_cand["building_id"])
+                            dem_name = str(safe_dem_cand["building_name"])
+                            dem_cur = int(safe_dem_cand["current_level"])
+                            actions.append(
+                                PlannedAction(
+                                    priority="P1",
+                                    kind="DEMOLISH_BUILDING",
+                                    planet_id=pid,
+                                    planet_coords=planet.coords,
+                                    target_id=dem_bid,
+                                    target_name=dem_name,
+                                    target_level=max(0, dem_cur - 1),
+                                    reason=(
+                                        f"AI-Planner: demolish {dem_name} L{dem_cur} -> L{max(0, dem_cur - 1)} "
+                                        f"({planet.fields_used}/{planet.fields_max} fields full, needed for {b_name} L{target_level})"
+                                    ),
+                                    executable_now=True,
+                                )
+                            )
+                        handled_planets.add(pid)
+                        continue
+
                 top_cand = candidates[0] if candidates else None
                 conflict_key = f"p{pid}:{entity_key}:L{target_level}"
                 field_conflicts.append(
@@ -6198,7 +6525,7 @@ def diagnose_ai_colony_idle_states(
 
     building_action_by_pid: dict[int, PlannedAction] = {}
     for act in eff_actions or ():
-        if act.kind not in ("BUILD", "WAIT_RESOURCES"):
+        if act.kind not in ("BUILD", "DEMOLISH_BUILDING", "WAIT_RESOURCES"):
             continue
         pid = int(act.planet_id)
         if pid not in building_action_by_pid:
@@ -6353,11 +6680,18 @@ def diagnose_ai_colony_idle_states(
                 reason = "Build queue active"
         elif b_act is not None and b_act.executable_now:
             col_state = "ready_not_started"
-            next_label = (
-                f"{b_act.target_name} L{b_act.target_level}"
-                if b_act.target_level
-                else str(b_act.target_name)
-            )
+            if b_act.kind == "DEMOLISH_BUILDING":
+                next_label = (
+                    f"Demolish {b_act.target_name} -> L{b_act.target_level}"
+                    if b_act.target_level is not None
+                    else f"Demolish {b_act.target_name}"
+                )
+            else:
+                next_label = (
+                    f"{b_act.target_name} L{b_act.target_level}"
+                    if b_act.target_level
+                    else str(b_act.target_name)
+                )
             reason = str(b_act.reason or f"Ready to start {next_label}")
         elif conflict is not None or first_field_blocked is not None:
             col_state = "field_conflict"
@@ -6912,6 +7246,8 @@ def export_ai_planner_txt(plan_result: Mapping[str, Any]) -> str:
 
         if kind == "BUILD":
             action = f"build {entity_name} level {target_level}"
+        elif kind in ("DEMOLISH", "DEMOLISH_BUILDING"):
+            action = f"tear down {entity_name} to level {target_level}"
         elif kind == "RESEARCH":
             action = f"research {entity_name} level {target_level}"
         elif kind in ("COLONIZE_PREVIEW", "COLONIZE"):

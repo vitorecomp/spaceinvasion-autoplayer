@@ -173,9 +173,16 @@ export const AppHeader: React.FC = () => {
   const unreadCnt = notifications.unread_count || 0;
 
   const captchaBlocked = Boolean(dashboard?.bot_control?.captcha_blocked);
+  const novncUrl =
+    dashboard?.novnc_url ||
+    dashboard?.health?.novnc_url ||
+    dashboard?.bot_control?.novnc_url ||
+    null;
   const captchaMsg =
     dashboard?.bot_control?.captcha_message ||
-    "CAPTCHA / Security verification active in Chrome (:9222). Automation is paused and waiting passively — solve it manually in Chrome, then click Resume.";
+    (novncUrl
+      ? "CAPTCHA / Security verification active in Chrome. Open the Game Browser (:7900), solve the challenge manually, then click Resume."
+      : "CAPTCHA / Security verification active in Chrome (:9222). Automation is paused and waiting passively — solve it manually in Chrome, then click Resume.");
   const helpModalHasCaptchaBtn = Boolean(
     activeHelpNotif &&
       (activeHelpNotif.category === "captcha_gate" || activeHelpNotif.category === "antibot")
@@ -224,11 +231,20 @@ export const AppHeader: React.FC = () => {
               {planets.length === 0 ? (
                 <option value="">Loading...</option>
               ) : (
-                planets.map((p) => (
-                  <option key={p.planet_id} value={String(p.planet_id)}>
-                    {p.coords} {p.name}
-                  </option>
-                ))
+                planets.map((p) => {
+                  const customMap = dashboard?.custom_planet_names;
+                  const resolvedName =
+                    (customMap && typeof customMap === "object"
+                      ? customMap[String(p.planet_id)]
+                      : "") ||
+                    p.custom_name ||
+                    p.name;
+                  return (
+                    <option key={p.planet_id} value={String(p.planet_id)}>
+                      {p.coords} {resolvedName}
+                    </option>
+                  );
+                })
               )}
             </select>
           </div>
@@ -314,14 +330,28 @@ export const AppHeader: React.FC = () => {
           <span className="module-code tabular">GATE</span>
           <span>{captchaMsg}</span>
         </div>
-        <button
-          type="button"
-          className="btn btn-primary btn-sm"
-          id={helpModalHasCaptchaBtn ? "btn-header-captcha-resume" : "btn-captcha-resume"}
-          onClick={onResumeFromCaptcha}
-        >
-          Solved in Chrome — Resume Bot
-        </button>
+        <div className="inline-actions" style={{ gap: "8px" }}>
+          {novncUrl ? (
+            <a
+              href={String(novncUrl)}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="btn btn-secondary btn-sm"
+              id="btn-captcha-open-novnc"
+              style={{ textDecoration: "none" }}
+            >
+              Open Game Browser (:7900)
+            </a>
+          ) : null}
+          <button
+            type="button"
+            className="btn btn-primary btn-sm"
+            id={helpModalHasCaptchaBtn ? "btn-header-captcha-resume" : "btn-captcha-resume"}
+            onClick={onResumeFromCaptcha}
+          >
+            Solved in Chrome — Resume Bot
+          </button>
+        </div>
       </div>
     </>
   );

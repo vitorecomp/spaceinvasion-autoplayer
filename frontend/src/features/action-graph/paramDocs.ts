@@ -84,6 +84,13 @@ export const CONFIG_OPTIMIZER_PARAM_DOCS: Record<string, ActionGraphParamDoc> = 
     description:
       "Minimum hours of net positive hourly output that each planet's warehouses (b11–b14) must hold, and that the central planet must hold for whole-empire net production (converged iteratively via search_in_rounds). Each warehouse is still raised further if needed to store the single most expensive planned upgrade, ship, or research cost. Accepts 0 to 720 hours.",
   },
+  min_warehouse_level: {
+    title: "Minimum Warehouse Level (All Resources)",
+    paramKey: "min_warehouse_level",
+    boundsLabel: "default: 0 · 0–60 lvl",
+    description:
+      "Hard minimum level enforced across all four resource warehouses—Pig iron (b11), Metal (b12), Kryptonite (b13), and Spice (b14)—on every colony in the roster (capacity 100,000 × 2^level per resource). Ensures specialist colonies still hold a baseline buffer of non-specialty resources; automatically raised higher whenever hourly output, upgrade costs, per-warehouse floors, or central_planet_min_warehouse_level require more storage. Accepts integers from 0 to 60.",
+  },
   central_planet_slot: {
     title: "Central Hub Planet Slot",
     paramKey: "central_planet_slot",
@@ -97,6 +104,13 @@ export const CONFIG_OPTIMIZER_PARAM_DOCS: Record<string, ActionGraphParamDoc> = 
     boundsLabel: "default: 15 · 0–50 lvl",
     description:
       "Hard minimum level enforced on all four warehouses (b11–b14) of the designated central_planet_slot, ensuring a safe logistics buffer even before late-game upgrade costs dominate warehouse sizing. Accepts integers from 0 to 50.",
+  },
+  allow_demolition: {
+    title: "Allow Demolishing Off-Role Mines (When Out of Fields)",
+    paramKey: "allow_demolition",
+    boundsLabel: "default: false · boolean",
+    description:
+      "When enabled, Config Optimizer allows target building levels below existing built levels on off-role mines and unreserved structures to reclaim colony fields (while always honoring explicit Reserved Floors). Downstream AI-Planner keeps existing mines running while free fields remain and triggers demolitions strictly when a colony runs out of fields (fields_used >= fields_max) and needs 1 field freed for the next upgrade.",
   },
   preserve_previous_specializations: {
     title: "Preserve Previous Planet Specializations",

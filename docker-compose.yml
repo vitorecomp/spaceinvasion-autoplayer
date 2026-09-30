@@ -1,0 +1,156 @@
+x-podman:
+  in_pod: false
+
+services:
+  postgres:
+    image: docker.io/library/postgres:16-alpine
+    container_name: spaceinvasion_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${SPACEINVASION_PG_DB:-spaceinvasion}
+      POSTGRES_USER: ${SPACEINVASION_PG_USER:-spaceinvasion}
+      POSTGRES_PASSWORD: ${SPACEINVASION_PG_PASSWORD:-spaceinvasion}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    ports:
+      - "127.0.0.1:${SPACEINVASION_PG_PORT:-5433}:5432"
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data:z
+    command:
+      - "postgres"
+      - "-c"
+      - "shared_buffers=256MB"
+      - "-c"
+      - "work_mem=16MB"
+      - "-c"
+      - "synchronous_commit=off"
+      - "-c"
+      - "max_connections=100"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  browser:
+    build:
+      context: .
+      dockerfile: docker/Containerfile.browser
+    container_name: spaceinvasion_browser
+    restart: unless-stopped
+    userns_mode: "keep-id"
+    security_opt:
+      - seccomp=unconfined
+    shm_size: "2gb"
+    environment:
+      SPACEINVASION_ACCOUNT: ${SPACEINVASION_ACCOUNT:-default}
+    ports:
+      - "127.0.0.1:${SPACEINVASION_NOVNC_PORT:-7900}:7900"
+    volumes:
+      - ./data/browser_profile:/data/browser_profile:z
+      - ./data/sessions:/data/sessions:z
+
+  game_api:
+    build:
+      context: .
+      dockerfile: docker/Containerfile.backend
+    container_name: spaceinvasion_api
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      browser:
+        condition: service_started
+    env_file:
+      - .env
+    environment:
+      PYTHONUNBUFFERED: "1"
+      SPACEINVASION_NO_REEXEC: "1"
+      SPACEINVASION_CONTAINER: "1"
+      SPACEINVASION_DB_BACKEND: "postgres"
+      SPACEINVASION_DB_URL: "postgresql://${SPACEINVASION_PG_USER:-spaceinvasion}:${SPACEINVASION_PG_PASSWORD:-spaceinvasion}@postgres:5432/${SPACEINVASION_PG_DB:-spaceinvasion}"
+      SPACEINVASION_CHROME_HOST: "browser"
+      SPACEINVASION_CHROME_PORT: "9222"
+      SPACEINVASION_PROFILE_DIR: "/app/data/browser_profile"
+      SPACEINVASION_SESSIONS_DIR: "/app/data/sessions"
+      SPACEINVASION_NOVNC_URL: "http://127.0.0.1:${SPACEINVASION_NOVNC_PORT:-7900}/vnc.html?autoconnect=true&resize=scale"
+      SPACEINVASION_DISK_LOGS: "0"
+    ports:
+      - "127.0.0.1:${SPACEINVASION_API_PORT:-8787}:8787"
+    volumes:
+      - ./bin:/app/bin:z
+      - ./spaceinvasion:/app/spaceinvasion:z
+      - ./scripts:/app/scripts:z
+      - ./data:/app/data:z
+    command:
+      - "python3"
+      - "bin/game_api.py"
+      - "--host"
+      - "0.0.0.0"
+      - "--port"
+      - "8787"
+      - "--debug-host"
+      - "browser"
+      - "--debug-port"
+      - "9222"
+      - "--db-backend"
+      - "postgres"
+      - "--reload"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8787/ui-version >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 4s
+      retries: 6
+      start_period: 15s
+
+  commander:
+    build:
+      context: .
+      dockerfile: docker/Containerfile.backend
+    container_name: spaceinvasion_commander
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      game_api:
+        condition: service_started
+    environment:
+      PYTHONUNBUFFERED: "1"
+      SPACEINVASION_NO_REEXEC: "1"
+      SPACEINVASION_CONTAINER: "1"
+      SPACEINVASION_DB_BACKEND: "postgres"
+      SPACEINVASION_DB_URL: "postgresql://${SPACEINVASION_PG_USER:-spaceinvasion}:${SPACEINVASION_PG_PASSWORD:-spaceinvasion}@postgres:5432/${SPACEINVASION_PG_DB:-spaceinvasion}"
+      SPACEINVASION_DISK_LOGS: "0"
+    volumes:
+      - ./bin:/app/bin:z
+      - ./spaceinvasion:/app/spaceinvasion:z
+    command:
+      - "python3"
+      - "bin/commander.py"
+      - "--api-url"
+      - "http://game_api:8787"
+      - "--live"
+      - "--loop"
+      - "--reload"
+
+  frontend:
+    build:
+      context: .
+      dockerfile: docker/Containerfile.frontend
+    container_name: spaceinvasion_frontend
+    restart: unless-stopped
+    depends_on:
+      game_api:
+        condition: service_started
+    environment:
+      VITE_API_PROXY_TARGET: "http://game_api:8787"
+    ports:
+      - "127.0.0.1:${SPACEINVASION_FRONTEND_PORT:-5173}:5173"
+    volumes:
+      - ./frontend/src:/app/frontend/src:z
+      - ./frontend/index.html:/app/frontend/index.html:z
+      - ./frontend/vite.config.ts:/app/frontend/vite.config.ts:z
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:5173/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 10s
+      timeout: 4s
+      retries: 6

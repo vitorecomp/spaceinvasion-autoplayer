@@ -5963,7 +5963,9 @@ class TestApiAndCommander(unittest.TestCase):
                     self.assertFalse(atk_free["executed"])
                     self.assertIn("uninhabited", atk_free["message"].lower())
 
-                    # Simulate Step 2 missing ATTACK radio on 02:381:06 -> persists 6h block & fleet_protection notification
+                    # Simulate Step 2 missing ATTACK radio on 02:381:06 -> persists 6h block WITHOUT UI notification spam
+                    unread_prot_before = bridge._db.unread_notification_count()
+
                     def _no_atk_radio(_c, _s, act, **_kw):
                         return ExecutionResult(
                             action=act,
@@ -5987,6 +5989,7 @@ class TestApiAndCommander(unittest.TestCase):
                         ).json()
                         self.assertFalse(atk1["executed"])
                         self.assertEqual(mock_ex.call_count, 1)
+                        self.assertEqual(bridge._db.unread_notification_count(), unread_prot_before)
 
                         # Immediate retry is blocked by persisted cooldown WITHOUT calling executor!
                         atk2 = requests.post(
@@ -6974,10 +6977,8 @@ class TestApiAndCommander(unittest.TestCase):
                 )
                 self.assertEqual(spec_clear["planet_specializations"], {})
 
-                co_exp = bridge.handle_command({"command": "config_optimizer_export"})
-                self.assertEqual(co_exp["filename"], "config_optimizer_result.json")
-                parsed_json = json.loads(co_exp["content"])
-                self.assertEqual(parsed_json["schema_version"], 1)
+                with self.assertRaises(ApiRequestError):
+                    bridge.handle_command({"command": "config_optimizer_export"})
 
                 # 4. ai_planner_run (sync=True) + ai_planner_get pagination/search/graph + export TXT
                 ai_run = bridge.handle_command(
@@ -7016,9 +7017,8 @@ class TestApiAndCommander(unittest.TestCase):
                 self.assertIsInstance(ai_get.get("live_blast_furnace"), dict)
                 self.assertIn("mode", ai_get["live_blast_furnace"])
 
-                ai_exp = bridge.handle_command({"command": "ai_planner_export"})
-                self.assertEqual(ai_exp["filename"], "full_planner_path.txt")
-                self.assertTrue(ai_exp["content"].strip())
+                with self.assertRaises(ApiRequestError):
+                    bridge.handle_command({"command": "ai_planner_export"})
 
                 # 5. fleet_planner_get with isolated config preview override (no mutation of active config)
                 fp_get = bridge.handle_command(
@@ -7617,6 +7617,194 @@ class TestApiAndCommander(unittest.TestCase):
                 self.assertIn((2, 379), fake_client.open_galaxy_calls)
                 self.assertEqual(len(exec_dispatched), 1)
                 self.assertEqual(exec_dispatched[0].target_level, 2)
+            finally:
+                bridge.close()
+
+    def test_spacia_spy_and_attack_pre_dispatch_galaxy_verification(self) -> None:
+        from dataclasses import replace as dc_replace
+        from spaceinvasion.combat.fleet import GalaxySlot
+        from spaceinvasion.session.executor import ExecutionResult
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            cfg_path = tmp_path / "config.yaml"
+            cfg_path.write_text("allow_raids: true\nallow_galaxy_scan: true\n", encoding="utf-8")
+            db_path = tmp_path / "spaceinvasion.db"
+
+            base_st = _sample_state()
+            p0 = dc_replace(base_st.planets[0], ships={"s1": 25, "s10": 5})
+            st = dc_replace(base_st, planets=(p0,), tutorial=None)
+
+            # System 248: Spacia at pos 15 despawned (now uninhabited)
+            despawned_html = """
+            <html><body>
+              <textarea id="json-element">{
+                "position": {"galaxy": 2, "system": 248},
+                "planets": {
+                  "15": {"pla": 15, "uid": 0, "name": "", "uname": ""}
+                }
+              }</textarea>
+            </body></html>
+            """
+            # System 208: Spacia at pos 9 replaced by a protected player
+            settled_player_html = """
+            <html><body>
+              <textarea id="json-element">{
+                "position": {"galaxy": 2, "system": 208},
+                "planets": {
+                  "9": {"pla": 9, "uid": 777, "name": "NewColony", "uname": "RookiePlayer", "noob": 1}
+                }
+              }</textarea>
+            </body></html>
+            """
+            # System 258: Spacia at pos 1 is STILL Spacia
+            still_spacia_html = """
+            <html><body>
+              <textarea id="json-element">{
+                "position": {"galaxy": 2, "system": 258},
+                "planets": {
+                  "1": {"pla": 1, "uid": 2, "name": "Spacia Planet", "uname": "Spacia"}
+                }
+              }</textarea>
+            </body></html>
+            """
+
+            class _FakeClient:
+                def __init__(self) -> None:
+                    self.open_galaxy_calls: list[tuple[int, int]] = []
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *args):
+                    return False
+
+                def open_galaxy(self, *, galaxy=None, system=None, priority="interactive"):
+                    self.open_galaxy_calls.append((int(galaxy), int(system)))
+                    if int(system) == 248:
+                        return despawned_html
+                    if int(system) == 208:
+                        return settled_player_html
+                    if int(system) == 191:
+                        return ""
+                    return still_spacia_html
+
+                def read_full_snapshot(self, *args, **kwargs):
+                    return st
+
+            fake_client = _FakeClient()
+            exec_dispatched: list[PlannedAction] = []
+
+            class _FakeExec:
+                def execute_action(self, client, state, action, active_planet_confirmed=None):
+                    exec_dispatched.append(action)
+                    return ExecutionResult(action=action, executed=True, dry_run=False, message="Dispatched")
+
+            bridge = GameApiBridge(
+                debug_port=9222,
+                config_path=cfg_path,
+                db_path=db_path,
+                log_dir=None,
+                client_factory=lambda _port: fake_client,
+                ensure_session_fn=lambda: None,
+            )
+            try:
+                assert bridge._db is not None
+                bridge._last_state = st
+                bridge._live_executor = _FakeExec()  # type: ignore[assignment]
+                bridge._db.record_galaxy_slots(
+                    [
+                        GalaxySlot(coords="02:248:15", position=15, name="Spacia Planet", owner="Spacia", status_color="yellow", is_spacia=True),
+                        GalaxySlot(coords="02:208:09", position=9, name="Spacia Planet", owner="Spacia", status_color="yellow", is_spacia=True),
+                        GalaxySlot(coords="02:191:06", position=6, name="Spacia Planet", owner="Spacia", status_color="yellow", is_spacia=True),
+                        GalaxySlot(coords="02:258:01", position=1, name="Spacia Planet", owner="Spacia", status_color="yellow", is_spacia=True),
+                    ],
+                    ts=100.0,
+                )
+
+                # 1. Despawned Spacia (02:248:15) -> opens galaxy, aborts SPY before executor, clears is_spacia in DB
+                act_despawn = PlannedAction(
+                    priority="P2",
+                    kind="SPY",
+                    planet_id=p0.planet_id,
+                    planet_coords=p0.coords,
+                    target_id=10,
+                    target_level=1,
+                    target_name="02:248:15",
+                    reason="Refresh Spacia spy intel",
+                    executable_now=True,
+                )
+                res1 = bridge._execute_and_summarize(fake_client, st, "step", act_despawn, dry_run=False)
+                self.assertTrue(res1["ok"])
+                self.assertFalse(res1["executed"])
+                self.assertIn("spacia despawned", res1["message"].lower())
+                self.assertIn((2, 248), fake_client.open_galaxy_calls)
+                self.assertEqual(len(exec_dispatched), 0)
+                st_248 = bridge._db.get_spy_target_by_coords("02:248:15")
+                assert st_248 is not None
+                self.assertFalse(bool(st_248.get("is_spacia")))
+                self.assertEqual(st_248.get("status_color"), "free")
+                self.assertEqual(bridge._db.unread_notification_count(), 0)
+
+                # 2. Settled by real player (02:208:09) -> aborts ATTACK before executor & updates owner
+                act_settled = PlannedAction(
+                    priority="P2",
+                    kind="ATTACK",
+                    planet_id=p0.planet_id,
+                    planet_coords=p0.coords,
+                    target_id=1,
+                    target_level=10,
+                    target_name="Raid -> 02:208:09",
+                    reason="Farm Spacia",
+                    executable_now=True,
+                )
+                res2 = bridge._execute_and_summarize(fake_client, st, "step", act_settled, dry_run=False)
+                self.assertTrue(res2["ok"])
+                self.assertFalse(res2["executed"])
+                self.assertIn("no longer spacia", res2["message"].lower())
+                self.assertIn((2, 208), fake_client.open_galaxy_calls)
+                self.assertEqual(len(exec_dispatched), 0)
+                st_208 = bridge._db.get_spy_target_by_coords("02:208:09")
+                assert st_208 is not None
+                self.assertFalse(bool(st_208.get("is_spacia")))
+                self.assertEqual(st_208.get("owner"), "RookiePlayer")
+
+                # 3. Unverifiable galaxy HTML (02:191:06) -> aborts safely before executor
+                act_empty = PlannedAction(
+                    priority="P2",
+                    kind="SPY",
+                    planet_id=p0.planet_id,
+                    planet_coords=p0.coords,
+                    target_id=10,
+                    target_level=1,
+                    target_name="02:191:06",
+                    reason="Probe Spacia",
+                    executable_now=True,
+                )
+                res3 = bridge._execute_and_summarize(fake_client, st, "step", act_empty, dry_run=False)
+                self.assertTrue(res3["ok"])
+                self.assertFalse(res3["executed"])
+                self.assertIn("could not confirm spacia", res3["message"].lower())
+                self.assertEqual(len(exec_dispatched), 0)
+
+                # 4. Still Spacia (02:258:01) -> confirms live Spacia and dispatches through executor!
+                act_ok = PlannedAction(
+                    priority="P2",
+                    kind="ATTACK",
+                    planet_id=p0.planet_id,
+                    planet_coords=p0.coords,
+                    target_id=1,
+                    target_level=10,
+                    target_name="Raid -> 02:258:01",
+                    reason="Farm Spacia",
+                    executable_now=True,
+                )
+                res4 = bridge._execute_and_summarize(fake_client, st, "step", act_ok, dry_run=False)
+                self.assertTrue(res4["ok"])
+                self.assertTrue(res4["executed"])
+                self.assertIn((2, 258), fake_client.open_galaxy_calls)
+                self.assertEqual(len(exec_dispatched), 1)
+                self.assertEqual(exec_dispatched[0].target_name, "Raid -> 02:258:01")
             finally:
                 bridge.close()
 
@@ -8876,6 +9064,80 @@ class TestApiAndCommander(unittest.TestCase):
                 self.assertEqual(b_origins, {"02:380:01", "02:380:02"})
                 self.assertEqual(len([q for q in rec_b.active_queues if q.category == "building"]), 2)
                 self.assertEqual(bridge._count_active_builders(rec_b, now_ts=now_ts + 5.0), 2)
+
+                # Non-home updates (e.g. galaxy scan) drop expired retained builds and never duplicate (origin, slot)
+                from dataclasses import replace as _dc_replace
+                bridge._last_state = _dc_replace(
+                    rec_b,
+                    active_queues=tuple(
+                        list(rec_b.active_queues)
+                        + [
+                            QueueJob(
+                                category="building",
+                                name="Stale finished mine (Level 5)",
+                                building_id=1,
+                                target_level=5,
+                                origin_coords="02:380:01",
+                                queue_slot=2,
+                                remaining_seconds=0.0,
+                                finish_ts=now_ts - 120.0,
+                            )
+                        ]
+                    ),
+                )
+                st_scan = GameState(
+                    universe_id=31, user_id=77, nickname="cmdr", timestamp=now_ts + 10.0,
+                    planets=(p1, p2), active_planet_id=602, active_queues=(),
+                )
+                rec_scan = bridge._record_state(st_scan, fetched_home=False, fetched_buildings=False, observed_active_planet=True)
+                scan_b_jobs = [q for q in rec_scan.active_queues if q.category == "building"]
+                self.assertEqual(len(scan_b_jobs), 2)
+                self.assertEqual({(q.origin_coords, q.queue_slot) for q in scan_b_jobs}, {("02:380:01", 1), ("02:380:02", 1)})
+
+                # Custom planet names from Config Optimizer propagate to fleet_planner_get, action_graph, buildings_eta, plan, and active_queues
+                bridge._last_state = _dc_replace(
+                    rec_b,
+                    active_queues=tuple(
+                        list(rec_b.active_queues)
+                        + [
+                            QueueJob(
+                                category="fleet",
+                                name="Station → [02:380:02] Colony",
+                                detail="Outbound · 6 Small fighter",
+                                origin_coords="02:380:01",
+                                remaining_seconds=600.0,
+                                finish_ts=now_ts + 600.0,
+                            )
+                        ]
+                    ),
+                )
+                bridge.handle_command({"command": "rename_planet", "planet_id": 601, "name": "#PP Planet"})
+                bridge.handle_command({"command": "rename_planet", "planet_id": 602, "name": "#TB Planet"})
+                dash_after_rename = bridge.dashboard()
+                self.assertTrue(
+                    any("#TB Planet" in str(q.get("name", "")) for q in (dash_after_rename["state"].get("active_queues") or [])),
+                )
+                ag_cmd = bridge.handle_command({"command": "action_graph"})
+                ag_labels = [l.get("label") for l in (ag_cmd["action_graph"].get("lanes") or [])]
+                self.assertIn("#PP Planet [02:380:01]", ag_labels)
+                self.assertIn("#TB Planet [02:380:02]", ag_labels)
+                fp_cmd = bridge.handle_command({"command": "fleet_planner_get"})
+                fp_names = {b.get("planet_name") for b in (fp_cmd.get("slot_budgets") or [])}
+                self.assertIn("#PP Planet", fp_names)
+                self.assertIn("#TB Planet", fp_names)
+                eta_cmd = bridge.handle_command({"command": "buildings_eta", "planet_id": 602})
+                self.assertEqual(eta_cmd["buildings_eta"]["planet"]["name"], "#TB Planet")
+                plan_cmd = bridge.handle_command({"command": "plan", "refresh": False})
+                for act_row in plan_cmd.get("actions") or []:
+                    if act_row.get("planet_id") == 601:
+                        self.assertEqual(act_row.get("planet_name"), "#PP Planet")
+
+                # Default StrategyConfig page_view_limit_per_minute is 60 and live update_config syncs PageViewLimiter
+                self.assertEqual(bridge.strategy_config.page_view_limit_per_minute, 60)
+                self.assertEqual(bridge._page_limiter.max_views_per_minute, 60)
+                bridge.handle_command({"command": "update_config", "config": {"page_view_limit_per_minute": 45}})
+                self.assertEqual(bridge.strategy_config.page_view_limit_per_minute, 45)
+                self.assertEqual(bridge._page_limiter.max_views_per_minute, 45)
 
                 # 2. Hybrid AI-Planner P1 subrank prioritizes emergency THROTTLE -> BUILD -> TRANSPORT -> SPY -> non-emerg THROTTLE (#100)
                 fake_ai_mod = MagicMock()

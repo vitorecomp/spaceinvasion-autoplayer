@@ -73,8 +73,15 @@ export const ResearchView: React.FC<ResearchViewProps> = ({ hidden }) => {
   const econ = etaData?.planet_economy || {};
   const resDiv =
     finiteNum(p.research_time_divisor, null) ?? finiteNum(p.building_time_divisor, 1);
+  const resCustomName = useMemo(() => {
+    const pid = p.planet_id ?? activePlanet?.planet_id;
+    const customMap = dashboard?.custom_planet_names;
+    const fromMap =
+      pid != null && customMap && typeof customMap === "object" ? customMap[String(pid)] : "";
+    return String(fromMap || p.custom_name || activePlanet?.custom_name || "").trim();
+  }, [activePlanet?.custom_name, activePlanet?.planet_id, dashboard?.custom_planet_names, p.custom_name, p.planet_id]);
   const planetMetaText = etaData
-    ? `[${p.coords || "--"}] · Lab L${finiteNum(p.research_lab_level, 0)} · Micro L${finiteNum(p.microsystem_level, 0)} · Div x${resDiv}`
+    ? `${resCustomName ? `${resCustomName} ` : ""}[${p.coords || "--"}] · Lab L${finiteNum(p.research_lab_level, 0)} · Micro L${finiteNum(p.microsystem_level, 0)} · Div x${resDiv}`
     : "[--] · Lab L0 · Micro L0 · Div x1";
 
   const econBfPct = finiteNum(econ.blast_furnace_pct, null);

@@ -3550,10 +3550,9 @@ el("co-param-target_ship_key").value = "s6";
 el("co-param-target_ship_key").dispatchEvent("change");
 el("btn-co-run").click();
 await __waitUntil(() => fetchLog.some((f) => f.body?.command === "config_optimizer_run"));
-el("btn-co-export").click();
-await __waitUntil(() => fetchLog.some((f) => f.body?.command === "config_optimizer_export"));
+if (el("btn-co-export") !== null) throw new Error("Expected btn-co-export to be removed");
 
-// Tab 3: AI-Planner (7/11 locked + Field Conflict Demolish/Keep + Windowed DAG + Export)
+// Tab 3: AI-Planner (7/11 locked + Field Conflict Demolish/Keep + Windowed DAG)
 el("ag-tab-btn-ai-planner").click();
 await __waitUntil(() => el("ai-kpi-reward").textContent.includes("96.00M"));
 const gateLockedTxt = el("ag-ai-colony-gate").textContent;
@@ -3561,9 +3560,7 @@ const activateDisabledAt7 = el("btn-ai-activate").disabled;
 const hasConflictCard = Boolean(el("ag-ai-field-conflicts"));
 el("btn-conflict-demolish-0").click();
 await __waitUntil(() => globalThis.__lastConflictDecision === "demolish" && !el("ag-ai-field-conflicts"));
-
-el("btn-ai-export").click();
-await __waitUntil(() => fetchLog.some((f) => f.body?.command === "ai_planner_export"));
+if (el("btn-ai-export") !== null) throw new Error("Expected btn-ai-export to be removed");
 
 // Simulate founding all 11/11 colonies -> refresh -> Live AI-Planner unlocks
 globalThis.__coloniesOwned = 11;

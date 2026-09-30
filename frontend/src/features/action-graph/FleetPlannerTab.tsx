@@ -53,6 +53,7 @@ const FLEET_BOOL_FIELDS: ReadonlyArray<{
   { key: "allow_transport", def: false },
   { key: "allow_transmitter", def: false },
   { key: "allow_galaxy_scan", def: false },
+  { key: "galaxy_scan_block_other_actions", def: true },
   { key: "galaxy_scan_explore_first", def: true },
   { key: "galaxy_scan_all_galaxies", def: true },
   { key: "spy_reserved_slots_only", def: false },
@@ -164,6 +165,7 @@ function buildConfigPatchFromDraft(draft: FleetDraftState): Record<string, any> 
     allow_transport: Boolean(draft.booleans.allow_transport),
     allow_transmitter: Boolean(draft.booleans.allow_transmitter),
     allow_galaxy_scan: Boolean(draft.booleans.allow_galaxy_scan),
+    galaxy_scan_block_other_actions: Boolean(draft.booleans.galaxy_scan_block_other_actions),
     galaxy_sweep_interval_seconds: intNum("galaxy_sweep_interval_seconds", 10, 86400),
     galaxy_sweep_pages: intNum("galaxy_sweep_pages", 1, 400),
     galaxy_scan_click_delay_seconds: num("galaxy_scan_click_delay_seconds", 0.1, 30),
@@ -569,15 +571,19 @@ export const FleetPlannerTab: React.FC<FleetPlannerTabProps> = ({ hidden = false
   }, [hidden, activePage, fetchFleetPlanner]);
 
   const customPlanetNames = useMemo<Record<string, string>>(() => {
-    const raw = (dashboard as Record<string, any> | null | undefined)?.custom_planet_names;
-    if (!raw || typeof raw !== "object") return {};
     const out: Record<string, string> = {};
-    for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
-      const clean = String(v || "").trim();
-      if (clean) out[String(k)] = clean;
+    for (const src of [
+      (dashboard as Record<string, any> | null | undefined)?.custom_planet_names,
+      (fleetData as Record<string, any> | null | undefined)?.custom_planet_names,
+    ]) {
+      if (!src || typeof src !== "object") continue;
+      for (const [k, v] of Object.entries(src as Record<string, unknown>)) {
+        const clean = String(v || "").trim();
+        if (clean) out[String(k)] = clean;
+      }
     }
     return out;
-  }, [dashboard]);
+  }, [dashboard, fleetData]);
 
   const slotRows: FleetSlotBudgetRow[] = useMemo(() => {
     const rawBudgets = fleetData?.slot_budgets;
@@ -1181,8 +1187,8 @@ export const FleetPlannerTab: React.FC<FleetPlannerTabProps> = ({ hidden = false
                   return (
                     <tr key={`flt-slot-${row.planet_id}-${row.planet_coords}`}>
                       <td>
-                        <strong>{sanitizeMainWindowText(row.planet_coords)}</strong>
-                        <div className="ag-cell-sub">{sanitizeMainWindowText(row.planet_name)}</div>
+                        <strong>{sanitizeMainWindowText(row.planet_name)}</strong>
+                        <div className="ag-cell-sub">{sanitizeMainWindowText(row.planet_coords)}</div>
                       </td>
                       <td className="num tabular">b10 L{row.b10_level}</td>
                       <td className="num tabular">
@@ -1425,6 +1431,7 @@ export const FleetPlannerTab: React.FC<FleetPlannerTabProps> = ({ hidden = false
                 {(
                   [
                     "allow_galaxy_scan",
+                    "galaxy_scan_block_other_actions",
                     "galaxy_scan_explore_first",
                     "galaxy_scan_all_galaxies",
                     "spy_reserved_slots_only",

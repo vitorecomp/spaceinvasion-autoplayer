@@ -2074,7 +2074,7 @@ def backfill_v012_hot_tables(conn: sqlite3.Connection, now_ts: float) -> dict[st
             st_buntil = "blocked_until_ts" if "blocked_until_ts" in spy_cols_set else "0.0"
             st_brsn = "block_reason" if "block_reason" in spy_cols_set else "''"
             st_cmax_or = "OR colonize_max_fields IS NOT NULL" if "colonize_max_fields" in spy_cols_set else ""
-            st_uf_cond = f"(uninhabited_fields IS NOT NULL {st_cmax_or})" if "uninhabited_fields" in spy_cols_set else "0"
+            st_uf_cond = f"(uninhabited_fields IS NOT NULL {st_cmax_or})" if "uninhabited_fields" in spy_cols_set else "FALSE"
             for sr in cur.execute(
                 f"""
                 SELECT coords, {st_uf}, {st_cmin}, {st_cmax}, {st_temp},
@@ -3595,7 +3595,7 @@ class DatabaseMigrationRegistry:
 
 def build_cli_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="SpaceInvasion Autoplayer — Database Versioning & Migration Manager",
+        description="SpaceInvasion Autoplayer — Database Versioning, Backend Control & Migration Manager",
     )
     parser.add_argument(
         "--root",
@@ -3608,6 +3608,17 @@ def build_cli_parser() -> argparse.ArgumentParser:
         type=Path,
         default=None,
         help="Explicit SQLite database file path (defaults to state/spaceinvasion.db or --all).",
+    )
+    parser.add_argument(
+        "--backend",
+        choices=("auto", "postgres", "sqlite"),
+        default="auto",
+        help="Database backend to target ('auto', 'postgres', or 'sqlite').",
+    )
+    parser.add_argument(
+        "--db-url",
+        default=None,
+        help="Explicit PostgreSQL DSN (e.g. postgresql://user:pass@127.0.0.1:5433/spaceinvasion).",
     )
     parser.add_argument(
         "--json",
@@ -3623,18 +3634,67 @@ def build_cli_parser() -> argparse.ArgumentParser:
     p_mig.add_argument("--all", action="store_true", help="Migrate all discovered SQLite & JSON stores.")
     p_mig.add_argument("--target", type=int, default=None, help="Optional target schema version.")
     p_mig.add_argument("--dry-run", action="store_true", help="Preview pending migrations without writing.")
-    p_mig.add_argument("--backup", action="store_true", help="Create online SQLite backup before migrating.")
+    p_mig.add_argument("--backup", action="store_true", help="Create online backup before migrating.")
     p_mig.add_argument("--create", action="store_true", help="Create primary DB if it does not exist yet.")
 
-    p_ver = sub.add_parser("verify", help="Verify SQLite integrity, schema columns, and SHA-256 checksums.")
-    p_ver.add_argument("--full-integrity", action="store_true", help="Run full PRAGMA integrity_check.")
+    p_ver = sub.add_parser("verify", help="Verify database integrity, schema columns, and SHA-256 checksums.")
+    p_ver.add_argument("--full-integrity", action="store_true", help="Run full integrity check.")
 
-    p_bkp = sub.add_parser("backup", help="Create an online WAL-safe snapshot in state/backups/.")
+    p_bkp = sub.add_parser("backup", help="Create an online snapshot in state/backups/.")
     p_bkp.add_argument("--label", default="manual", help="Label embedded in the backup filename.")
 
     p_hist = sub.add_parser("history", help="Show applied migrations and audit events.")
     p_hist.add_argument("--limit", type=int, default=50, help="Max audit events to display.")
+
+    p_use = sub.add_parser("use", help="Persist which database backend ('postgres' or 'sqlite') the stack uses.")
+    p_use.add_argument("target_backend", choices=("postgres", "sqlite"), help="Database engine to activate.")
+    p_use.add_argument(
+        "--sync",
+        action="store_true",
+        help="Non-destructively sync data from the previous database into the newly selected backend.",
+    )
+
+    p_sync = sub.add_parser(
+        "sync",
+        help="Non-destructively sync all 40 tables between SQLite and PostgreSQL (zero deletes).",
+    )
+    p_sync.add_argument("--from", dest="source_backend", choices=("sqlite", "postgres"), default="sqlite")
+    p_sync.add_argument("--to", dest="target_backend", choices=("sqlite", "postgres"), default="postgres")
     return parser
+
+
+def _resolve_cli_postgres_target(args: argparse.Namespace) -> tuple[bool, str]:
+    """Determine whether CLI command should operate on PostgreSQL vs SQLite."""
+    from spaceinvasion.db.backend import (
+        build_default_postgres_url,
+        is_postgres_dsn,
+        load_persisted_db_preference,
+    )
+
+    if args.db is not None:
+        return (False, "")
+    raw_url = str(getattr(args, "db_url", None) or "").strip()
+    if is_postgres_dsn(raw_url):
+        return (True, raw_url)
+    backend_arg = str(getattr(args, "backend", "auto") or "auto").strip().lower()
+    if backend_arg == "postgres":
+        pref = load_persisted_db_preference(args.root) or {}
+        dsn = str(pref.get("postgres_url") or "").strip()
+        return (True, dsn if is_postgres_dsn(dsn) else build_default_postgres_url())
+    if backend_arg == "sqlite":
+        return (False, "")
+    # auto mode: check env var or `state/db_backend.json` inside `--root`
+    env_b = str(os.environ.get("SPACEINVASION_DB_BACKEND") or "").strip().lower()
+    env_u = str(os.environ.get("SPACEINVASION_DB_URL") or "").strip()
+    if env_b == "postgres" or is_postgres_dsn(env_u):
+        return (True, env_u if is_postgres_dsn(env_u) else build_default_postgres_url())
+    if env_b == "sqlite":
+        return (False, "")
+    pref = load_persisted_db_preference(args.root)
+    if pref and str(pref.get("backend") or "").strip().lower() == "postgres":
+        dsn = str(pref.get("postgres_url") or "").strip()
+        return (True, dsn if is_postgres_dsn(dsn) else build_default_postgres_url())
+    return (False, "")
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
@@ -3643,6 +3703,171 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     cmd = args.subcommand or "status"
     reg = DatabaseMigrationRegistry(args.root)
     explicit_db: Optional[Path] = args.db
+
+    if cmd == "use":
+        from spaceinvasion.db.backend import (
+            DEFAULT_SQLITE_REL_PATH,
+            build_default_postgres_url,
+            ensure_postgres_container_ready,
+            redact_db_url,
+            save_persisted_db_preference,
+            sync_database_stores,
+        )
+        from spaceinvasion.db.storage import GameDatabase
+
+        chosen = str(args.target_backend).strip().lower()
+        pg_url = str(args.db_url or "").strip() or build_default_postgres_url()
+        sqlite_p = Path(args.root) / DEFAULT_SQLITE_REL_PATH
+        pref_file = save_persisted_db_preference(
+            chosen,
+            postgres_url=pg_url if args.db_url else None,
+            sqlite_path=DEFAULT_SQLITE_REL_PATH,
+            root_dir=args.root,
+        )
+        sync_res: Optional[dict[str, Any]] = None
+        if chosen == "postgres":
+            ensure_postgres_container_ready(pg_url, root_dir=args.root, auto_start=True)
+        if getattr(args, "sync", False):
+            if chosen == "postgres" and sqlite_p.is_file():
+                src_db = GameDatabase(sqlite_p)
+                dst_db = GameDatabase(pg_url, backend="postgres")
+                try:
+                    sync_res = sync_database_stores(src_db, dst_db)
+                finally:
+                    src_db.close()
+                    dst_db.close()
+            elif chosen == "sqlite":
+                src_db = GameDatabase(pg_url, backend="postgres")
+                dst_db = GameDatabase(sqlite_p)
+                try:
+                    sync_res = sync_database_stores(src_db, dst_db)
+                finally:
+                    src_db.close()
+                    dst_db.close()
+        out_use = {
+            "ok": True,
+            "active_backend": chosen,
+            "preference_file": str(pref_file),
+            "target": redact_db_url(pg_url) if chosen == "postgres" else str(sqlite_p),
+            "sync": sync_res,
+        }
+        print(_safe_json_dumps(out_use, indent=2))
+        return 0
+
+    if cmd == "sync":
+        from spaceinvasion.db.backend import (
+            DEFAULT_SQLITE_REL_PATH,
+            build_default_postgres_url,
+            ensure_postgres_container_ready,
+            sync_database_stores,
+        )
+        from spaceinvasion.db.storage import GameDatabase
+
+        src_b = str(args.source_backend).strip().lower()
+        dst_b = str(args.target_backend).strip().lower()
+        if src_b == dst_b:
+            print(_safe_json_dumps({"ok": False, "error": "Source and target backends must differ."}, indent=2))
+            return 1
+        pg_url = str(args.db_url or "").strip() or build_default_postgres_url()
+        sqlite_p = explicit_db if explicit_db is not None else (Path(args.root) / DEFAULT_SQLITE_REL_PATH)
+        ensure_postgres_container_ready(pg_url, root_dir=args.root, auto_start=True)
+        src_db = GameDatabase(pg_url, backend="postgres") if src_b == "postgres" else GameDatabase(sqlite_p)
+        dst_db = GameDatabase(pg_url, backend="postgres") if dst_b == "postgres" else GameDatabase(sqlite_p)
+        try:
+            res_sync = sync_database_stores(src_db, dst_db)
+        finally:
+            src_db.close()
+            dst_db.close()
+        print(_safe_json_dumps(res_sync, indent=2))
+        return 0
+
+    use_pg, pg_dsn = _resolve_cli_postgres_target(args)
+
+    if use_pg and not getattr(args, "all", False):
+        from spaceinvasion.db.backend import (
+            create_postgres_backup,
+            ensure_postgres_container_ready,
+            redact_db_url,
+        )
+        from spaceinvasion.db.postgres import PostgresPoolBackend
+
+        ready = ensure_postgres_container_ready(pg_dsn, root_dir=args.root, auto_start=True)
+        if not ready.get("ok"):
+            err_obj = {"ok": False, "backend": "postgres", "target": redact_db_url(pg_dsn), "error": ready.get("error")}
+            print(_safe_json_dumps(err_obj, indent=2), file=sys.stderr if not args.json else sys.stdout)
+            return 1
+
+        pg_pool = PostgresPoolBackend(pg_dsn, min_size=1, max_size=4)
+        try:
+            with pg_pool.session_lock:
+                conn = pg_pool.conn_proxy
+                disp = redact_db_url(pg_dsn)
+                if cmd == "status":
+                    payload = DEFAULT_GAME_MIGRATION_RUNNER.inspect(
+                        conn,
+                        db_path=disp,
+                        include_events=bool(getattr(args, "events", False)),
+                    )
+                    payload["backend"] = "postgres"
+                    payload["exists"] = True
+                    if args.json:
+                        print(_safe_json_dumps(payload, indent=2))
+                    else:
+                        state_lbl = "UP-TO-DATE" if payload.get("up_to_date") else f"PENDING ({payload.get('pending_count', 0)})"
+                        print(
+                            f"Active DB Backend: PostgreSQL (Podman) | Schema: {payload.get('version_tag')} / "
+                            f"V{LATEST_SCHEMA_VERSION:03d} [{state_lbl}]\n  [Postgres] {disp}"
+                        )
+                    return 0
+
+                if cmd == "migrate":
+                    res = DEFAULT_GAME_MIGRATION_RUNNER.migrate(
+                        conn,
+                        db_path=None,
+                        is_memory=True,
+                        target_version=args.target,
+                        dry_run=bool(args.dry_run),
+                        backup=False,
+                    )
+                    res["backend"] = "postgres"
+                    res["db_path"] = disp
+                    print(_safe_json_dumps(res, indent=2))
+                    return 0
+
+                if cmd == "verify":
+                    ver_res = DEFAULT_GAME_MIGRATION_RUNNER.verify(
+                        conn,
+                        db_path=disp,
+                        full_integrity=bool(args.full_integrity),
+                    )
+                    ver_res["backend"] = "postgres"
+                    print(_safe_json_dumps(ver_res, indent=2))
+                    return 0 if ver_res.get("ok") else 2
+
+                if cmd == "backup":
+                    from spaceinvasion.db.storage import GameDatabase
+
+                    pg_pool.close()
+                    gdb = GameDatabase(pg_dsn, backend="postgres")
+                    try:
+                        bkp_out = gdb.create_backup(label=str(args.label))
+                    finally:
+                        gdb.close()
+                    print(_safe_json_dumps(bkp_out, indent=2))
+                    return 0
+
+                if cmd == "history":
+                    hist = DEFAULT_GAME_MIGRATION_RUNNER.inspect(
+                        conn,
+                        db_path=disp,
+                        include_events=True,
+                        event_limit=int(args.limit),
+                    )
+                    hist["backend"] = "postgres"
+                    print(_safe_json_dumps(hist, indent=2))
+                    return 0
+        finally:
+            pg_pool.close()
 
     if cmd == "status":
         if explicit_db is not None:

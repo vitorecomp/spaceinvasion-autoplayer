@@ -1,0 +1,33 @@
+FROM docker.io/library/debian:bookworm-slim
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    chromium \
+    curl \
+    fluxbox \
+    fonts-liberation \
+    novnc \
+    procps \
+    socat \
+    websockify \
+    x11-utils \
+    x11vnc \
+    xvfb \
+  && rm -rf /var/lib/apt/lists/* \
+  && useradd -m -s /bin/bash chrome \
+  && mkdir -p /tmp/.X11-unix \
+  && chmod 1777 /tmp /tmp/.X11-unix \
+  && printf '#!/bin/sh\nexit 0\n' > /usr/local/bin/fbsetbg \
+  && chmod +x /usr/local/bin/fbsetbg
+
+COPY docker/browser-entrypoint.sh /usr/local/bin/browser-entrypoint.sh
+RUN chmod 0755 /usr/local/bin/browser-entrypoint.sh /usr/local/bin/fbsetbg
+
+EXPOSE 7900 9222
+
+HEALTHCHECK --interval=10s --timeout=4s --retries=6 --start-period=10s \
+  CMD curl -fsS http://127.0.0.1:9223/json/version >/dev/null && curl -fsSI http://127.0.0.1:7900/vnc.html >/dev/null || exit 1
+
+ENTRYPOINT ["/usr/local/bin/browser-entrypoint.sh"]

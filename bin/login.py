@@ -38,6 +38,7 @@ _maybe_reexec_venv()
 
 from spaceinvasion.core import game_data # noqa: E402
 from spaceinvasion.session.auth import (  # noqa: E402
+    DEFAULT_SESSIONS_DIR,
     SpaceInvasionAuthError,
     UniverseOption,
     load_credentials,
@@ -45,7 +46,9 @@ from spaceinvasion.session.auth import (  # noqa: E402
     verify_saved_session,
 )
 from spaceinvasion.session.browser import (  # noqa: E402
+    DEFAULT_DEBUG_HOST,
     DEFAULT_DEBUG_PORT,
+    DEFAULT_PROFILE_ROOT,
     BrowserConfig,
     login_with_browser,
 )
@@ -76,14 +79,14 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--session-dir",
         type=Path,
-        default=Path(".sessions"),
-        help="Directory to store saved session cookies (default: .sessions).",
+        default=DEFAULT_SESSIONS_DIR,
+        help=f"Directory to store saved session cookies (default: {DEFAULT_SESSIONS_DIR}).",
     )
     parser.add_argument(
         "--profile-dir",
         type=Path,
         default=None,
-        help="Persistent Chrome user-data directory (default: .browser_profile/<account>).",
+        help=f"Persistent Chrome user-data directory (default: {DEFAULT_PROFILE_ROOT}/<account>).",
     )
     parser.add_argument(
         "--headless",
@@ -498,12 +501,13 @@ def main(argv: list[str] | None = None) -> int:
         if (args.attach or args.detach) and debug_port is None:
             debug_port = DEFAULT_DEBUG_PORT
 
-        profile_dir = args.profile_dir or (Path(".browser_profile") / creds.account_name)
+        profile_dir = args.profile_dir or (DEFAULT_PROFILE_ROOT / creds.account_name)
         browser_cfg = BrowserConfig(
             headless=args.headless,
             profile_dir=profile_dir,
             keep_open=args.keep_open,
             debug_port=debug_port,
+            debug_host=DEFAULT_DEBUG_HOST,
             attach=args.attach,
             detach=args.detach,
         )

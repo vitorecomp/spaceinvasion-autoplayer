@@ -29,7 +29,9 @@ import {
   cleanQueueJobTitle,
   dashboardQueueDomainForAction,
   dashboardQueueDomainForJob,
+  execJobBaseKey,
   formatQueueJobCargo,
+  isActiveBuildingJob,
   isPlanetConstructing,
   normalizeCoordKey,
   queueJobMatchesPlanet,
@@ -407,19 +409,47 @@ export const DashboardView: React.FC = () => {
       : `Ready to claim: ${tut.reward_text || "Step reward"}`
     : "Loading tutorial steps...";
 
-  // Active queues 3 domain buckets
+  // Active queues 3 domain buckets (filtering expired cached builds & deduplicating per-planet slots)
   const { execBuildingJobs, execFleetJobs, execResearchJobs } = useMemo(() => {
     const bld: QueueJobData[] = [];
     const flt: QueueJobData[] = [];
     const res: QueueJobData[] = [];
+    const coordsByPid = new Map<number, string>();
+    for (const p of planets) {
+      const ck = normalizeCoordKey(p.coords);
+      if (ck) coordsByPid.set(Number(p.planet_id), ck);
+    }
+    const seenBuildingSlots = new Set<string>();
     for (const job of activeQueues) {
       const dom = dashboardQueueDomainForJob(job);
-      if (dom === "research") res.push(job);
-      else if (dom === "fleet") flt.push(job);
-      else bld.push(job);
+      if (dom === "research") {
+        res.push(job);
+      } else if (dom === "fleet") {
+        flt.push(job);
+      } else {
+        if (!isActiveBuildingJob(job, effNowSec)) continue;
+        const jPid =
+          job.planet_id != null && Number.isFinite(Number(job.planet_id)) && Number(job.planet_id) > 0
+            ? Math.trunc(Number(job.planet_id))
+            : null;
+        const jCoords = normalizeCoordKey(job.origin_coords || job.planet_coords);
+        const canonOrigin =
+          jCoords ||
+          (jPid !== null ? coordsByPid.get(jPid) || `p${jPid}` : "") ||
+          (gs?.active_planet_id != null
+            ? coordsByPid.get(Number(gs.active_planet_id)) || `p${Number(gs.active_planet_id)}`
+            : "");
+        const slot = Math.max(1, Math.trunc(finiteNum(job.queue_slot, 1)));
+        if (canonOrigin) {
+          const slotKey = `${canonOrigin}:s${slot}`;
+          if (seenBuildingSlots.has(slotKey)) continue;
+          seenBuildingSlots.add(slotKey);
+        }
+        bld.push(job);
+      }
     }
     return { execBuildingJobs: bld, execFleetJobs: flt, execResearchJobs: res };
-  }, [activeQueues]);
+  }, [activeQueues, effNowSec, gs?.active_planet_id, planets]);
 
   const allPlanActions = useMemo(() => dashboard?.plan || [], [dashboard?.plan]);
   const manualList = useMemo(() => {
@@ -518,7 +548,7 @@ export const DashboardView: React.FC = () => {
       const destCoords = mCoords ? mCoords[1] : "";
       const destPlanet = destCoords ? planetByCoords.get(normalizeCoordKey(destCoords)) : undefined;
       derived.push({
-        id: `flight-${job.origin_coords || ""}-${destCoords || job.name || derived.length}`,
+        id: `flight-${derived.length}-${job.origin_coords || ""}-${destCoords || job.name || ""}`,
         planet_id: destPlanet?.planet_id ?? null,
         planet_coords: destPlanet?.coords || destCoords,
         planet_name: destPlanet?.name,
@@ -935,40 +965,48 @@ export const DashboardView: React.FC = () => {
                 <span id="matrix-account-line">{matrixAccountLine}</span>
               </div>
               <div id="active-queues-list" className="queue-summary tabular">
-                {activeQueues.length === 0
-                  ? dashboard
-                    ? "No active construction or research jobs."
-                    : "No active construction jobs."
-                  : activeQueues.map((q, idx) => {
-                      const catTag = `[${String(q.category || "JOB").toUpperCase()}]`;
-                      const titleTxt = cleanQueueJobTitle(q);
-                      const cargoInfo = formatQueueJobCargo(q);
-                      const cargoSuffix =
-                        cargoInfo && !cargoInfo.isEmpty
-                          ? ` · ${cargoInfo.label}: ${cargoInfo.inline}`
-                          : "";
-                      const finTs = finiteNum(q.finish_ts, null);
-                      return (
-                        <React.Fragment key={`qstrip-${idx}-${q.name || idx}`}>
-                          {idx > 0 ? " · " : null}
-                          <span>
-                            {finTs !== null && finTs > 0 ? (
-                              <>
-                                {`${catTag} ${titleTxt}${cargoSuffix} (`}
-                                <span data-finish-ts={String(finTs)}>
-                                  {fmtHms(Math.max(0, Math.round(finTs - effNowSec)))}
-                                </span>
-                                {` · ${fmtClockTime(finTs, effNowSec)})`}
-                              </>
-                            ) : q.remaining_text ? (
-                              `${catTag} ${titleTxt}${cargoSuffix} (${q.remaining_text})`
-                            ) : (
-                              `${catTag} ${titleTxt}${cargoSuffix}`
-                            )}
-                          </span>
-                        </React.Fragment>
-                      );
-                    })}
+                {(() => {
+                  const liveStripQueues = activeQueues.filter(
+                    (q) =>
+                      dashboardQueueDomainForJob(q) !== "building" ||
+                      isActiveBuildingJob(q, effNowSec)
+                  );
+                  if (liveStripQueues.length === 0) {
+                    return dashboard
+                      ? "No active construction or research jobs."
+                      : "No active construction jobs.";
+                  }
+                  return liveStripQueues.map((q, idx) => {
+                    const catTag = `[${String(q.category || "JOB").toUpperCase()}]`;
+                    const titleTxt = cleanQueueJobTitle(q);
+                    const cargoInfo = formatQueueJobCargo(q);
+                    const cargoSuffix =
+                      cargoInfo && !cargoInfo.isEmpty
+                        ? ` · ${cargoInfo.label}: ${cargoInfo.inline}`
+                        : "";
+                    const finTs = finiteNum(q.finish_ts, null);
+                    return (
+                      <React.Fragment key={`qstrip-${execJobBaseKey(q)}-${idx}`}>
+                        {idx > 0 ? " · " : null}
+                        <span>
+                          {finTs !== null && finTs > 0 ? (
+                            <>
+                              {`${catTag} ${titleTxt}${cargoSuffix} (`}
+                              <span data-finish-ts={String(finTs)}>
+                                {fmtHms(Math.max(0, Math.round(finTs - effNowSec)))}
+                              </span>
+                              {` · ${fmtClockTime(finTs, effNowSec)})`}
+                            </>
+                          ) : q.remaining_text ? (
+                            `${catTag} ${titleTxt}${cargoSuffix} (${q.remaining_text})`
+                          ) : (
+                            `${catTag} ${titleTxt}${cargoSuffix}`
+                          )}
+                        </span>
+                      </React.Fragment>
+                    );
+                  });
+                })()}
               </div>
             </div>
           </div>
@@ -1058,7 +1096,9 @@ export const DashboardView: React.FC = () => {
           scopeBadge={
             planets.length > 1
               ? scopedDashPlanet
-                ? scopedDashPlanet.coords || scopedDashPlanet.name
+                ? scopedDashPlanet.name && scopedDashPlanet.name.toLowerCase() !== "colony"
+                  ? `${scopedDashPlanet.name} [${scopedDashPlanet.coords || ""}]`
+                  : scopedDashPlanet.coords || scopedDashPlanet.name
                 : `ALL · ${planets.length} PLANETS`
               : undefined
           }
@@ -1074,11 +1114,13 @@ export const DashboardView: React.FC = () => {
           execJobs={scopedExecBuildingJobs}
           plannedActions={buildingActions}
           resourceRequests={scopedBuildingResourceRequests}
+          planets={planets}
+          customPlanetNames={dashboard?.custom_planet_names}
           maxRows={dashQueueMaxRows}
           emptyText={
             dashboard
               ? scopedDashPlanet
-                ? `No queued building actions on ${scopedDashPlanet.coords || scopedDashPlanet.name}.`
+                ? `No queued building actions on ${scopedDashPlanet.name || scopedDashPlanet.coords}.`
                 : "No queued building actions."
               : "Run Sync to populate building actions..."
           }
@@ -1096,7 +1138,9 @@ export const DashboardView: React.FC = () => {
           scopeBadge={
             planets.length > 1
               ? scopedDashPlanet
-                ? scopedDashPlanet.coords || scopedDashPlanet.name
+                ? scopedDashPlanet.name && scopedDashPlanet.name.toLowerCase() !== "colony"
+                  ? `${scopedDashPlanet.name} [${scopedDashPlanet.coords || ""}]`
+                  : scopedDashPlanet.coords || scopedDashPlanet.name
                 : "PER-PLANET"
               : undefined
           }
@@ -1111,10 +1155,12 @@ export const DashboardView: React.FC = () => {
           planTbodyId="dash-plan-fleet-tbody"
           execJobs={scopedExecFleetJobs}
           plannedActions={fleetActions}
+          planets={planets}
+          customPlanetNames={dashboard?.custom_planet_names}
           maxRows={dashQueueMaxRows}
           emptyText={
             scopedDashPlanet
-              ? `No queued fleet or ship actions on ${scopedDashPlanet.coords || scopedDashPlanet.name}.`
+              ? `No queued fleet or ship actions on ${scopedDashPlanet.name || scopedDashPlanet.coords}.`
               : "No queued fleet or ship actions."
           }
           nowEpochSec={effNowSec}
@@ -1141,6 +1187,8 @@ export const DashboardView: React.FC = () => {
           planTbodyId="dash-plan-research-tbody"
           execJobs={execResearchJobs}
           plannedActions={researchActions}
+          planets={planets}
+          customPlanetNames={dashboard?.custom_planet_names}
           maxRows={dashQueueMaxRows}
           emptyText="No queued research actions."
           nowEpochSec={effNowSec}

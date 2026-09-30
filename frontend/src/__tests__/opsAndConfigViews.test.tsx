@@ -2,11 +2,10 @@ import React, { useEffect } from "react";
 import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ConsoleProvider, useConsole } from "../context/ConsoleContext";
-import { DashboardPayload } from "../types/api";
+import { DashboardPayload, QueueJobData } from "../types/api";
 import { DashboardView } from "../features/dashboard";
 import { OperationsView } from "../features/operations";
 import { BuildingsView } from "../features/buildings";
-import { LogsView } from "../features/logs";
 import { ConfigView } from "../features/config";
 import { ActionGraphView } from "../features/action-graph";
 import { HelpAlertModal } from "../components/modals/HelpAlertModal";
@@ -117,10 +116,6 @@ const MOCK_DASHBOARD: DashboardPayload = {
       updated_ts: 1700000000,
     },
   ],
-  logs: {
-    commander: "Commander tick OK",
-    game_api: "API listening on :8787",
-  },
   galaxy_sweep: {
     scan_phase: "exploratory",
     explored_systems: 208,
@@ -382,13 +377,13 @@ describe("Dashboard, Operations, Buildings, Logs, Config & ActionGraph React Vie
     expect(scrollEl.classList.contains("is-dragging")).toBe(false);
   });
 
-  it("renders DashboardView 3 queues, OperationsView, BuildingsView, and LogsView", async () => {
+  it("renders DashboardView 3 queues, OperationsView, and BuildingsView without removed LogsView", async () => {
     const { container } = render(
       <SeedProvider page="dashboard">
+        <AppSidebar />
         <DashboardView />
         <OperationsView />
         <BuildingsView />
-        <LogsView />
       </SeedProvider>
     );
 
@@ -400,7 +395,8 @@ describe("Dashboard, Operations, Buildings, Logs, Config & ActionGraph React Vie
     expect(container.querySelector("#dash-queue-card-research")).not.toBeNull();
     expect(container.querySelector("#plan-tbody")?.textContent).toContain("Pig iron mine");
     expect(container.querySelector("#view-buildings")?.textContent).toContain("Pig iron mine");
-    expect(container.querySelector("#logs-pre")?.textContent).toContain("Commander tick OK");
+    expect(container.querySelector('[data-page="logs"]')).toBeNull();
+    expect(container.querySelector("#view-logs")).toBeNull();
   });
 
   it("renders notification ID badge (NTF-XXXX) and Copy ID buttons in HelpAlertModal and NotificationCenterModal", async () => {
@@ -1433,6 +1429,12 @@ describe("Dashboard, Operations, Buildings, Logs, Config & ActionGraph React Vie
     expect(spyResOnlyCheckbox?.checked).toBe(false);
     fireEvent.click(spyResOnlyCheckbox!);
     expect(spyResOnlyCheckbox?.checked).toBe(true);
+    const pvLimitInput = configView.querySelector(
+      "#cfg-page_view_limit_per_minute"
+    ) as HTMLInputElement | null;
+    expect(pvLimitInput).not.toBeNull();
+    expect(pvLimitInput?.value).toBe("60");
+    fireEvent.change(pvLimitInput!, { target: { value: "48" } });
     const saveCfgBtn = configView.querySelector("#btn-save-config") as HTMLButtonElement;
     fireEvent.click(saveCfgBtn);
     await waitFor(() => {
@@ -1441,9 +1443,181 @@ describe("Dashboard, Operations, Buildings, Logs, Config & ActionGraph React Vie
           (c) =>
             c.command === "update_config" &&
             c.config?.spy_reserved_slots_only === true &&
-            c.config?.ai_adaptive_execution === true
+            c.config?.ai_adaptive_execution === true &&
+            c.config?.page_view_limit_per_minute === 48
         )
       ).toBe(true);
     });
+  });
+
+  it("never duplicates or orphans EXEC building rows across multi-planet Pig iron mine reorders and planet scoping", async () => {
+    const nowSec = Math.floor(Date.now() / 1000);
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const colonies = [
+        { planet_id: 12401, name: "#TC Planet", coords: "02:379:04", planet_type: "normal", temperature: 18, fields_used: 45, fields_max: 300 },
+        { planet_id: 12402, name: "#TB Planet", coords: "02:380:06", planet_type: "normal", temperature: 22, fields_used: 44, fields_max: 300 },
+        { planet_id: 12403, name: "#TT Planet", coords: "02:379:05", planet_type: "normal", temperature: 15, fields_used: 40, fields_max: 300 },
+        { planet_id: 12404, name: "#TD Planet", coords: "02:381:10", planet_type: "normal", temperature: 25, fields_used: 38, fields_max: 300 },
+      ];
+
+      const jobP1: QueueJobData = {
+        category: "building",
+        name: "Pig iron mine",
+        building_id: 1,
+        target_level: 23,
+        queue_slot: 1,
+        detail: "In construction (1%)",
+        origin_coords: "02:379:04",
+        remaining_seconds: 3900,
+        finish_ts: nowSec + 3900,
+      };
+      const jobP2: QueueJobData = {
+        category: "building",
+        name: "Pig iron mine",
+        building_id: 1,
+        target_level: 22,
+        queue_slot: 1,
+        detail: "In construction (1%)",
+        origin_coords: "02:380:06",
+        remaining_seconds: 3180,
+        finish_ts: nowSec + 3180,
+      };
+      const jobP3: QueueJobData = {
+        category: "building",
+        name: "Development center",
+        building_id: 7,
+        target_level: 9,
+        queue_slot: 1,
+        detail: "In construction (55%)",
+        origin_coords: "02:379:05",
+        remaining_seconds: 540,
+        finish_ts: nowSec + 540,
+      };
+      const jobP4: QueueJobData = {
+        category: "building",
+        name: "Pig iron mine",
+        building_id: 1,
+        target_level: 20,
+        queue_slot: 1,
+        detail: "In construction (1%)",
+        origin_coords: "02:381:10",
+        remaining_seconds: 1200,
+        finish_ts: nowSec + 1200,
+      };
+      const expiredStaleJob: QueueJobData = {
+        category: "building",
+        name: "Pig iron mine",
+        building_id: 1,
+        target_level: 19,
+        queue_slot: 1,
+        detail: "In construction (100%)",
+        origin_coords: "02:381:10",
+        remaining_seconds: 0,
+        finish_ts: nowSec - 45,
+      };
+      const duplicateSlotJob: QueueJobData = {
+        category: "building",
+        name: "Pig iron mine",
+        building_id: 1,
+        target_level: 22,
+        queue_slot: 1,
+        detail: "In construction (0%)",
+        origin_coords: "02:379:04",
+        remaining_seconds: 3899,
+        finish_ts: nowSec + 3899,
+      };
+
+      const makeDash = (activePid: number, queues: QueueJobData[]): DashboardPayload => ({
+        ...MOCK_DASHBOARD,
+        state: {
+          ...MOCK_DASHBOARD.state!,
+          active_planet_id: activePid,
+          planets: colonies as any,
+          active_queues: queues,
+        },
+        plan: [
+          {
+            priority: "P1",
+            kind: "BUILD",
+            planet_id: 12401,
+            planet_coords: "02:379:04",
+            target_id: 1,
+            target_name: "Pig iron mine",
+            target_level: 24,
+            cost: { pig_iron: 50000, metal: 25000 },
+            missing: { metal: 5000 },
+            executable_now: false,
+          },
+        ],
+      });
+
+      let pushUpdate!: (dash: DashboardPayload) => void;
+      const Harness: React.FC = () => {
+        const { setDashboard, setActivePage } = useConsole();
+        pushUpdate = setDashboard;
+        useEffect(() => {
+          setDashboard(makeDash(12401, [jobP1, jobP2, jobP3, jobP4, expiredStaleJob, duplicateSlotJob]));
+          setActivePage("dashboard");
+        }, [setActivePage, setDashboard]);
+        return <DashboardView />;
+      };
+
+      const { container } = render(
+        <ConsoleProvider disableInitialFetch>
+          <Harness />
+        </ConsoleProvider>
+      );
+
+      // All Planets: exactly 4 active building jobs (expired & duplicate-slot suppressed), each with custom name + [coords]
+      await waitFor(() => {
+        const execRows = container.querySelectorAll("#dash-exec-building-tbody tr");
+        expect(execRows.length).toBe(4);
+      });
+      expect(container.querySelector("#dash-exec-building-tbody")?.textContent).toContain(
+        "#TC Planet [02:379:04]"
+      );
+      expect(container.querySelector("#dash-exec-building-tbody")?.textContent).toContain(
+        "#TB Planet [02:380:06]"
+      );
+      expect(container.querySelector("#dash-plan-tbody")?.textContent).toContain(
+        "BUILD · #TC Planet [02:379:04]"
+      );
+
+      // Simulate multiple commander planet-switch polls reordering identical "Pig iron mine" jobs
+      pushUpdate(makeDash(12403, [jobP3, jobP2, jobP1, jobP4]));
+      await waitFor(() => {
+        expect(container.querySelectorAll("#dash-exec-building-tbody tr").length).toBe(4);
+      });
+      pushUpdate(makeDash(12402, [jobP2, jobP4, jobP3, jobP1]));
+      await waitFor(() => {
+        expect(container.querySelectorAll("#dash-exec-building-tbody tr").length).toBe(4);
+      });
+      pushUpdate(makeDash(12404, [jobP4, jobP1, jobP2, jobP3]));
+      await waitFor(() => {
+        expect(container.querySelectorAll("#dash-exec-building-tbody tr").length).toBe(4);
+      });
+
+      // Scope to 02:379:04 (#TC Planet): scope badge shows "#TC Planet [02:379:04]", count is 2, and EXEC tbody has ONLY 1 row!
+      fireEvent.click(container.querySelector('[data-dash-planet-scope="12401"]')!);
+      await waitFor(() => {
+        expect(container.querySelector("#dash-bld-q-count")?.textContent).toBe("2");
+        expect(
+          container.querySelector("#dash-queue-card-building .dash-q-scope")?.textContent
+        ).toBe("#TC Planet [02:379:04]");
+        const scopedRows = container.querySelectorAll("#dash-exec-building-tbody tr");
+        expect(scopedRows.length).toBe(1);
+        expect(scopedRows[0].textContent).toContain("Pig iron mine → L23");
+        expect(scopedRows[0].textContent).toContain("#TC Planet [02:379:04]");
+      });
+
+      // Zero React duplicate-key warnings
+      const keyWarnings = consoleErrorSpy.mock.calls
+        .map((args) => args.map(String).join(" "))
+        .filter((msg) => msg.includes("Encountered two children with the same key"));
+      expect(keyWarnings).toEqual([]);
+    } finally {
+      consoleErrorSpy.mockRestore();
+    }
   });
 });

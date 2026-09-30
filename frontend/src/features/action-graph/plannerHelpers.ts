@@ -200,6 +200,7 @@ export interface ConfigOptimizerDraft {
   production_month_days: string;
   research_percent_of_universe_max: string;
   warehouse_hours_of_production: string;
+  min_warehouse_level: string;
   central_planet_slot: string;
   central_planet_min_warehouse_level: string;
   preserve_previous_specializations: boolean;
@@ -208,6 +209,7 @@ export interface ConfigOptimizerDraft {
   min_fleet_per_planet: Record<string, string>;
   misc_building_levels: Record<string, string>;
   optimized_building_max_levels: Record<string, string>;
+  allow_demolition: boolean;
   pad_generic_colonies: boolean;
   ga_population_size: string;
   ga_generations: string;
@@ -219,6 +221,7 @@ export const DEFAULT_CONFIG_OPTIMIZER_DRAFT: ConfigOptimizerDraft = {
   production_month_days: "30",
   research_percent_of_universe_max: "100",
   warehouse_hours_of_production: "24",
+  min_warehouse_level: "0",
   central_planet_slot: "1",
   central_planet_min_warehouse_level: "15",
   preserve_previous_specializations: true,
@@ -254,6 +257,7 @@ export const DEFAULT_CONFIG_OPTIMIZER_DRAFT: ConfigOptimizerDraft = {
     b9: "100",
     b17: "100",
   },
+  allow_demolition: false,
   pad_generic_colonies: false,
   ga_population_size: "200",
   ga_generations: "150",

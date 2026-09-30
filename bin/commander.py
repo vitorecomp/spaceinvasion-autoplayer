@@ -43,6 +43,7 @@ from spaceinvasion.core.config import (  # noqa: E402
     StrategyConfig,
     load_strategy_config,
     normalize_planner_mode,
+    strategy_config_from_dict,
 )
 from spaceinvasion.core.logging_utils import (  # noqa: E402
     append_tick_logs,
@@ -603,8 +604,10 @@ def run_commander_tick(
     cfg = config or StrategyConfig()
     state = api.get_state(include_buildings=include_buildings)
     active_for_econ = state.active_planet()
+    has_hostile_alert = any(bool(getattr(fa, "hostile", False)) for fa in (state.fleet_alerts or ()))
     if (
         live
+        and not has_hostile_alert
         and economy_sync_timestamps is not None
         and active_for_econ is not None
         and normalize_planet_type(active_for_econ) not in ("asteroid", "raid")
@@ -741,7 +744,7 @@ def run_commander_tick(
             candidates = [
                 a
                 for a in candidates
-                if a.kind == "BUILD"
+                if a.kind in ("BUILD", "DEMOLISH_BUILDING")
                 and _safe_cmd_int(a.planet_id, 0) > 0
                 and _safe_cmd_int(a.planet_id, 0) not in built_pids
             ]
@@ -767,7 +770,7 @@ def run_commander_tick(
                     ):
                         return (1, 0, 0, 0)
                     return (1, is_manual, 4, 0)
-                if act.kind == "BUILD":
+                if act.kind in ("BUILD", "DEMOLISH_BUILDING"):
                     pid_v = _safe_cmd_int(act.planet_id, 0)
                     return (1, is_manual, 1, 1 if pid_v in built_pids else 0)
                 if act.kind == "RESEARCH":
@@ -809,7 +812,23 @@ def run_commander_tick(
         attempted_keys.add(act_key)
         actual_action = ready
         payload = _action_to_command_payload(ready, dry_run=not live)
-        res = api.send_command(payload)
+        try:
+            res = api.send_command(payload)
+        except (requests.RequestException, GameApiError) as cmd_exc:
+            if is_galaxy_scan_busy_error(_safe_cmd_str(cmd_exc)):
+                if acted > 0:
+                    outcomes.append(
+                        {
+                            "ok": True,
+                            "executed": False,
+                            "dry_run": not live,
+                            "sweep_blocked": True,
+                            "message": format_clean_error(_safe_cmd_str(cmd_exc)),
+                        }
+                    )
+                    break
+                raise
+            raise
         if not isinstance(res, Mapping):
             raise GameApiError(
                 f"Expected JSON object from send_command, got {type(res).__name__}"
@@ -844,7 +863,7 @@ def run_commander_tick(
                 continue
             continue
         after_live = True
-        if ready.kind == "BUILD":
+        if ready.kind in ("BUILD", "DEMOLISH_BUILDING"):
             pid_built = _safe_cmd_int(ready.planet_id, 0)
             if pid_built > 0:
                 built_planets.add(pid_built)
@@ -853,7 +872,7 @@ def run_commander_tick(
             and acted < parallel_build_cap
             and any(
                 a.executable_now
-                and a.kind == "BUILD"
+                and a.kind in ("BUILD", "DEMOLISH_BUILDING")
                 and _safe_cmd_int(a.planet_id, 0) > 0
                 and _safe_cmd_int(a.planet_id, 0) not in built_planets
                 and _action_dedup_key(a) not in attempted_keys
@@ -1009,6 +1028,22 @@ def is_captcha_error(
     return any(marker in low for marker in _CAPTCHA_STOP_MARKERS)
 
 
+def is_galaxy_scan_busy_error(
+    error_text: Any = "",
+    *,
+    bot_ctrl: Optional[Mapping[str, Any]] = None,
+) -> bool:
+    """Return True when `/bot_status` or an API response indicates an active galaxy scan is blocking actions."""
+    if (
+        isinstance(bot_ctrl, Mapping)
+        and bool(bot_ctrl.get("galaxy_scan_blocking"))
+        and not bool(bot_ctrl.get("p0_escape_flight_ready", False))
+    ):
+        return True
+    low = _safe_cmd_str(error_text).lower()
+    return "galaxy scan in progress" in low or "galaxy sweep in progress" in low
+
+
 _CONNECTION_REFUSED_MARKERS = (
     "connection refused",
     "errno 111",
@@ -1150,6 +1185,32 @@ def main(argv: list[str] | None = None) -> int:
                         )
                         paused_via_ui = True
                         loop_sleep = max(3.0, min(8.0, eff_min_interval_s))
+                    elif (
+                        (
+                            bool(bot_ctrl.get("galaxy_scan_blocking"))
+                            if "galaxy_scan_blocking" in bot_ctrl
+                            else (
+                                bool(
+                                    bot_ctrl.get("galaxy_sweep_in_progress")
+                                    or (
+                                        isinstance(bot_ctrl.get("galaxy_sweep"), Mapping)
+                                        and bot_ctrl["galaxy_sweep"].get("in_progress")
+                                    )
+                                )
+                                and bool(
+                                    getattr(strategy_cfg, "galaxy_scan_block_other_actions", True)
+                                )
+                            )
+                        )
+                        and not bool(bot_ctrl.get("p0_escape_flight_ready", False))
+                        and (run_loop or effective_live)
+                    ):
+                        print(
+                            f"[CMD tick {game_data.fmt_compact_int(tick)}] Galaxy scan in progress; deferring actions until sweep finishes.",
+                            flush=True,
+                        )
+                        paused_via_ui = True
+                        loop_sleep = max(2.0, min(4.0, eff_min_interval_s))
                     else:
                         if captcha_alert_logged and not bot_ctrl.get("paused"):
                             print("[CMD] CAPTCHA gate cleared and automation resumed.", flush=True)
@@ -1216,6 +1277,12 @@ def main(argv: list[str] | None = None) -> int:
                         raw_tm = bot_ctrl.get("transmitter_status")
                         if isinstance(raw_tm, Mapping):
                             transmitter_status = dict(raw_tm)
+                        raw_scfg = bot_ctrl.get("strategy_config")
+                        if args.config is None and isinstance(raw_scfg, Mapping):
+                            try:
+                                strategy_cfg = strategy_config_from_dict(raw_scfg)
+                            except Exception:
+                                pass
                 except (requests.RequestException, GameApiError) as bc_outer_exc:
                     if run_loop and _is_connection_refused_error(bc_outer_exc):
                         raise
@@ -1350,6 +1417,14 @@ def main(argv: list[str] | None = None) -> int:
                     if not run_loop:
                         return 0
                     loop_sleep = min(5.0, eff_min_interval_s)
+                elif is_galaxy_scan_busy_error(exc_txt):
+                    print(
+                        f"[CMD tick {tick_s}] Galaxy scan in progress; deferring actions until sweep finishes.",
+                        flush=True,
+                    )
+                    if not run_loop:
+                        return 0
+                    loop_sleep = max(2.0, min(4.0, eff_min_interval_s))
                 elif run_loop and _is_connection_refused_error(exc, exc_txt):
                     reconnected = _wait_for_api_reconnect(
                         api,

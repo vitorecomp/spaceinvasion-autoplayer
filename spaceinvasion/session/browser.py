@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import ipaddress
 import math
 import os
 from pathlib import Path
 import random
 import shutil
+import socket
 import subprocess
 import time
 from typing import Callable, Optional
@@ -18,6 +20,7 @@ from bs4 import BeautifulSoup
 from spaceinvasion.core import game_data
 from spaceinvasion.session.auth import (
     BASE_URL,
+    DEFAULT_SESSIONS_DIR,
     AntiBotChallengeError,
     ConfigurationError,
     Credentials,
@@ -32,7 +35,9 @@ from spaceinvasion.session.auth import (
     universes_from_portal_data,
 )
 
-DEFAULT_DEBUG_PORT = 9222
+DEFAULT_DEBUG_HOST = os.environ.get("SPACEINVASION_CHROME_HOST", "127.0.0.1").strip() or "127.0.0.1"
+DEFAULT_DEBUG_PORT = int(os.environ.get("SPACEINVASION_CHROME_PORT", "9222"))
+DEFAULT_PROFILE_ROOT = Path(os.environ.get("SPACEINVASION_PROFILE_DIR", "data/browser_profile"))
 
 try:
     from selenium import webdriver
@@ -59,14 +64,14 @@ class BrowserConfig:
     """Configuration for Selenium Chrome browser sessions."""
 
     headless: bool = False
-    profile_dir: Path = Path(".browser_profile/default")
+    profile_dir: Path = DEFAULT_PROFILE_ROOT / "default"
     window_size: tuple[int, int] = (1440, 900)
     timeout: float = 25.0
     chrome_binary: Optional[str] = None
     keep_open: bool = False
     typing_delay_range: tuple[float, float] = (0.03, 0.09)
     debug_port: Optional[int] = None
-    debug_host: str = "127.0.0.1"
+    debug_host: str = DEFAULT_DEBUG_HOST
     attach: bool = False
     detach: bool = False
 
@@ -110,8 +115,33 @@ def find_chrome_binary(explicit: Optional[str] = None) -> Optional[str]:
 def _prepare_profile_dir(profile_dir: Path) -> None:
     profile_dir.mkdir(parents=True, exist_ok=True)
     os.chmod(profile_dir, 0o700)
-    if profile_dir.parent.name == ".browser_profile":
+    if profile_dir.parent.name in (".browser_profile", "browser_profile"):
         os.chmod(profile_dir.parent, 0o700)
+
+
+def _resolve_cdp_host(host: str) -> str:
+    """Resolve non-IP container hostnames (e.g. `browser`) to IPv4 so Chrome CDP accepts the `Host:` header."""
+    raw = str(host or DEFAULT_DEBUG_HOST).strip() or "127.0.0.1"
+    if raw in ("127.0.0.1", "localhost", "::1", "0.0.0.0"):
+        return raw
+    try:
+        ipaddress.ip_address(raw)
+        return raw
+    except ValueError:
+        pass
+    try:
+        return socket.gethostbyname(raw)
+    except OSError:
+        return raw
+
+
+def _build_chrome_service():
+    if ChromeService is None:
+        return None
+    driver_bin = shutil.which("chromedriver")
+    if driver_bin:
+        return ChromeService(executable_path=driver_bin)
+    return ChromeService()
 
 
 def _finite_bounded_timeout(
@@ -141,15 +171,16 @@ def _finite_bounded_timeout(
 
 def is_debug_port_open(
     port: int,
-    host: str = "127.0.0.1",
+    host: str = DEFAULT_DEBUG_HOST,
     timeout: float = 0.8,
 ) -> bool:
     """Return True if a Chrome DevTools debugging endpoint responds on `host:port`."""
     if isinstance(port, bool) or not isinstance(port, int) or port <= 0 or port > 65535:
         return False
     safe_timeout = _finite_bounded_timeout(timeout, default=0.8, min_val=0.05, max_val=60.0)
+    resolved_host = _resolve_cdp_host(host)
     try:
-        with urllib.request.urlopen(f"http://{host}:{port}/json/version", timeout=safe_timeout) as resp:
+        with urllib.request.urlopen(f"http://{resolved_host}:{port}/json/version", timeout=safe_timeout) as resp:
             return resp.status == 200
     except Exception:
         return False
@@ -299,13 +330,14 @@ def _stop_service_process(service) -> None:
 def attach_chrome_driver(
     port: int = DEFAULT_DEBUG_PORT,
     timeout: float = 25.0,
-    host: str = "127.0.0.1",
+    host: str = DEFAULT_DEBUG_HOST,
 ):
     """Attach Selenium WebDriver to a Chrome instance listening on `host:port`."""
     _require_selenium()
+    resolved_host = _resolve_cdp_host(host)
     options = ChromeOptions()
-    options.debugger_address = f"{host}:{port}"
-    service = ChromeService() if ChromeService is not None else None
+    options.debugger_address = f"{resolved_host}:{port}"
+    service = _build_chrome_service()
     try:
         driver = (
             webdriver.Chrome(options=options, service=service)
@@ -346,7 +378,7 @@ def create_chrome_driver(config: BrowserConfig):
     if config.headless:
         options.add_argument("--headless=new")
 
-    service = ChromeService() if ChromeService is not None else None
+    service = _build_chrome_service()
     try:
         driver = (
             webdriver.Chrome(options=options, service=service)
@@ -742,8 +774,11 @@ def _select_spaceinvasion_tab(driver, *, allow_new_tab: bool = True) -> None:
             pass
 
     if allow_new_tab:
-        cur = (getattr(driver, "current_url", "") or "").lower()
-        is_local_ui = "127.0.0.1" in cur or "localhost" in cur
+        try:
+            cur = (getattr(driver, "current_url", "") or "").lower()
+        except Exception:
+            cur = ""
+        is_local_ui = "127.0.0.1" in cur or "localhost" in cur or cur.startswith("chrome://")
         if is_local_ui:
             switch_to = getattr(driver, "switch_to", None)
             new_win = getattr(switch_to, "new_window", None)
@@ -897,7 +932,7 @@ def _wait_for_universe_entry(
 def login_with_browser(
     creds: Credentials,
     config: Optional[BrowserConfig] = None,
-    session_dir: Path = Path(".sessions"),
+    session_dir: Path = DEFAULT_SESSIONS_DIR,
     base_url: str = BASE_URL,
     two_factor_provider: Optional[Callable[[], str]] = None,
     wait_for_manual_gate: Optional[Callable[[str], None]] = None,
@@ -913,7 +948,7 @@ def login_with_browser(
     2FA prompts, CAPTCHA/anti-bot manual handoff, and cookie syncing.
     """
     cfg = config or BrowserConfig(
-        profile_dir=Path(".browser_profile") / creds.account_name
+        profile_dir=DEFAULT_PROFILE_ROOT / creds.account_name
     )
     normalized_base = base_url.rstrip("/")
     landing_url = f"{normalized_base}/?locale={creds.locale}"

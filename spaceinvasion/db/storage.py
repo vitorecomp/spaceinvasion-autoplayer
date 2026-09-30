@@ -36,6 +36,13 @@ from spaceinvasion.core.logging_utils import (
     is_secret_dict_key,
     redact_sensitive,
 )
+from spaceinvasion.db.backend import (
+    build_default_postgres_url,
+    create_postgres_backup,
+    is_postgres_dsn,
+    normalize_backend_name,
+    redact_db_url,
+)
 from spaceinvasion.db.migrations import (
     ATTACK_HISTORY_SCHEMA_VERSION,
     DEFAULT_GAME_MIGRATION_RUNNER,
@@ -1031,53 +1038,100 @@ def _resolve_attack_history_path(
 
 
 class GameDatabase:
-    """Thread-safe SQLite store for empire telemetry, tutorial progress, actions, and intel."""
+    """Thread-safe PostgreSQL (pooled MVCC) or SQLite (WAL) store for empire telemetry, actions, and intel."""
 
     def __init__(
         self,
         db_path: Path | str = DEFAULT_DB_PATH,
         *,
+        backend: Optional[str] = None,
+        postgres_url: Optional[str] = None,
+        pool_min_size: int = 2,
+        pool_max_size: int = 16,
         legacy_rank_json: Optional[Path] = None,
         attack_history_path: Optional[Path | str] = None,
         target_schema_version: Optional[int] = None,
         backup_on_upgrade: Optional[bool] = None,
     ) -> None:
         raw_path = _raw_text(db_path, "")
-        self._is_memory = ":memory:" in raw_path or "mode=memory" in raw_path
-        if self._is_memory:
-            self.db_path = Path(":memory:")
+        want_pg = is_postgres_dsn(raw_path) or (
+            backend is not None and normalize_backend_name(backend, "sqlite") == "postgres"
+        )
+        self._is_postgres = bool(want_pg)
+        self.backend_name = "postgres" if self._is_postgres else "sqlite"
+        self.postgres_url: str = ""
+        self._pg_backend: Any = None
+
+        if self._is_postgres:
+            from spaceinvasion.db.postgres import PostgresPoolBackend
+
+            eff_dsn = (
+                raw_path.strip()
+                if is_postgres_dsn(raw_path)
+                else (
+                    str(postgres_url).strip()
+                    if (postgres_url and is_postgres_dsn(postgres_url))
+                    else build_default_postgres_url()
+                )
+            )
+            self.postgres_url = eff_dsn
+            self._is_memory = False
+            self.db_path = (
+                db_path
+                if (isinstance(db_path, Path) and not is_postgres_dsn(str(db_path)))
+                else DEFAULT_DB_PATH
+            )
             self.attack_history_path: Optional[Path] = _resolve_attack_history_path(
                 attack_history_path,
                 is_memory=True,
                 db_path=self.db_path,
             )
-            conn_target = raw_path
-            use_uri = raw_path.startswith("file:")
-        else:
-            self.db_path = db_path if isinstance(db_path, Path) else Path(raw_path)
-            self.db_path.parent.mkdir(parents=True, exist_ok=True)
-            self.attack_history_path = _resolve_attack_history_path(
-                attack_history_path,
-                is_memory=False,
-                db_path=self.db_path,
+            self._pg_backend = PostgresPoolBackend(
+                eff_dsn,
+                min_size=pool_min_size,
+                max_size=pool_max_size,
             )
-            conn_target = str(self.db_path)
-            use_uri = False
+            self._lock: Any = self._pg_backend.session_lock
+            self._conn: Any = self._pg_backend.conn_proxy
+        else:
+            self._is_memory = ":memory:" in raw_path or "mode=memory" in raw_path
+            if self._is_memory:
+                self.db_path = Path(":memory:")
+                self.attack_history_path = _resolve_attack_history_path(
+                    attack_history_path,
+                    is_memory=True,
+                    db_path=self.db_path,
+                )
+                conn_target = raw_path
+                use_uri = raw_path.startswith("file:")
+            else:
+                self.db_path = db_path if isinstance(db_path, Path) else Path(raw_path)
+                self.db_path.parent.mkdir(parents=True, exist_ok=True)
+                self.attack_history_path = _resolve_attack_history_path(
+                    attack_history_path,
+                    is_memory=False,
+                    db_path=self.db_path,
+                )
+                conn_target = str(self.db_path)
+                use_uri = False
 
-        self._lock = threading.Lock()
-        self._conn = sqlite3.connect(
-            conn_target,
-            uri=use_uri,
-            timeout=10.0,
-            check_same_thread=False,
-        )
+            self._lock = threading.Lock()
+            self._conn = sqlite3.connect(
+                conn_target,
+                uri=use_uri,
+                timeout=10.0,
+                check_same_thread=False,
+            )
+
         try:
-            self._conn.row_factory = sqlite3.Row
+            if not self._is_postgres:
+                self._conn.row_factory = sqlite3.Row
             with self._lock:
-                if not self._is_memory:
-                    self._conn.execute("PRAGMA journal_mode=WAL;")
-                    self._conn.execute("PRAGMA synchronous=NORMAL;")
-                self._conn.execute("PRAGMA foreign_keys=ON;")
+                if not self._is_postgres:
+                    if not self._is_memory:
+                        self._conn.execute("PRAGMA journal_mode=WAL;")
+                        self._conn.execute("PRAGMA synchronous=NORMAL;")
+                    self._conn.execute("PRAGMA foreign_keys=ON;")
                 self._last_slot_history_sig: Optional[tuple[float, tuple[str, ...]]] = None
                 self._summary_cache_ver: Optional[tuple[int, int, int]] = None
                 self._summary_cache_json: Optional[str] = None
@@ -1096,17 +1150,29 @@ class GameDatabase:
                 now_ts = time.time()
                 self._migration_result = DEFAULT_GAME_MIGRATION_RUNNER.migrate(
                     self._conn,
-                    db_path=None if self._is_memory else self.db_path,
-                    is_memory=self._is_memory,
+                    db_path=None if (self._is_memory or self._is_postgres) else self.db_path,
+                    is_memory=(self._is_memory or self._is_postgres),
                     target_version=target_schema_version,
-                    backup=bool(backup_on_upgrade) if backup_on_upgrade is not None else False,
-                    auto_backup_default_db=(True if backup_on_upgrade is None else bool(backup_on_upgrade)),
+                    backup=(
+                        False
+                        if self._is_postgres
+                        else (bool(backup_on_upgrade) if backup_on_upgrade is not None else False)
+                    ),
+                    auto_backup_default_db=(
+                        False
+                        if self._is_postgres
+                        else (True if backup_on_upgrade is None else bool(backup_on_upgrade))
+                    ),
                     now_ts=now_ts,
                 )
                 self._repair_spy_targets_locked()
                 if legacy_rank_json is not None and legacy_rank_json.exists():
                     self._migrate_legacy_rank_json(legacy_rank_json)
-                if not self._is_memory and self.db_path.resolve() == DEFAULT_DB_PATH.resolve():
+                if (
+                    not self._is_postgres
+                    and not self._is_memory
+                    and self.db_path.resolve() == DEFAULT_DB_PATH.resolve()
+                ):
                     if DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "raid_history"):
                         legacy_atk = self.db_path.parent.parent / "data" / "attack_history.json"
                         if legacy_atk.is_file():
@@ -1135,8 +1201,19 @@ class GameDatabase:
                     self._backfill_reports_from_game_messages_locked(now_ts)
                 self._conn.commit()
         except Exception:
-            self._conn.close()
+            if self._pg_backend is not None:
+                self._pg_backend.close()
+            else:
+                self._conn.close()
             raise
+
+    @property
+    def display_target(self) -> str:
+        if self._is_postgres:
+            return redact_db_url(self.postgres_url)
+        if self._is_memory:
+            return ":memory:"
+        return _sanitize_text(self.db_path)
 
     def _backfill_reports_from_game_messages_locked(self, now_ts: float) -> None:
         """Non-destructively re-parse existing `game_messages` rows to populate `battle_reports`, `recycle_reports`, and `spy_reports`."""
@@ -1441,10 +1518,28 @@ class GameDatabase:
         )
 
     def close(self) -> None:
+        if self._pg_backend is not None:
+            self._pg_backend.close()
+        else:
+            with self._lock:
+                self._conn.close()
+
+    def change_token(self) -> tuple[int, int, int]:
+        """Return a fast `(instance_id, local_changes, external_data_version)` cache token."""
+        if self._pg_backend is not None:
+            return (
+                id(self),
+                int(self._pg_backend.total_changes),
+                int(self._pg_backend.get_data_version()),
+            )
         with self._lock:
-            self._conn.close()
+            dv_row = self._conn.execute("PRAGMA data_version").fetchone()
+            dv = int(dv_row[0]) if dv_row is not None else 0
+            return (id(self), int(self._conn.total_changes), dv)
 
     def _db_version_locked(self) -> tuple[int, int]:
+        if self._pg_backend is not None:
+            return (int(self._pg_backend.total_changes), int(self._pg_backend.get_data_version()))
         dv_row = self._conn.execute("PRAGMA data_version").fetchone()
         dv = int(dv_row[0]) if dv_row is not None else 0
         return (int(self._conn.total_changes), dv)
@@ -3595,6 +3690,13 @@ class GameDatabase:
                                         is_inactive = 0,
                                         is_spacia = 0,
                                         has_debris = 0,
+                                        pig_iron = 0,
+                                        metal = 0,
+                                        kryptonite = 0,
+                                        spice = 0,
+                                        fleet_json = '{}',
+                                        defense_json = '{}',
+                                        dug_in = 0,
                                         last_scanned_ts = excluded.last_scanned_ts,
                                         uninhabited_fields = COALESCE(excluded.uninhabited_fields, spy_targets.uninhabited_fields),
                                         colonize_min_fields = COALESCE(excluded.colonize_min_fields, spy_targets.colonize_min_fields),
@@ -3630,6 +3732,13 @@ class GameDatabase:
                                         is_inactive = 0,
                                         is_spacia = 0,
                                         has_debris = 0,
+                                        pig_iron = 0,
+                                        metal = 0,
+                                        kryptonite = 0,
+                                        spice = 0,
+                                        fleet_json = '{}',
+                                        defense_json = '{}',
+                                        dug_in = 0,
                                         last_scanned_ts = excluded.last_scanned_ts,
                                         uninhabited_fields = COALESCE(excluded.uninhabited_fields, spy_targets.uninhabited_fields)
                                     WHERE spy_targets.is_own_planet = 0
@@ -3646,6 +3755,13 @@ class GameDatabase:
                                     is_inactive = 0,
                                     is_spacia = 0,
                                     has_debris = 0,
+                                    pig_iron = 0,
+                                    metal = 0,
+                                    kryptonite = 0,
+                                    spice = 0,
+                                    fleet_json = '{}',
+                                    defense_json = '{}',
+                                    dug_in = 0,
                                     last_scanned_ts = ?
                                 WHERE coords = ? AND is_own_planet = 0
                                 """,
@@ -3669,6 +3785,14 @@ class GameDatabase:
                         is_inactive = excluded.is_inactive,
                         is_spacia = excluded.is_spacia,
                         has_debris = excluded.has_debris,
+                        pig_iron = CASE WHEN excluded.status_color = 'free' OR (spy_targets.is_spacia = 1 AND excluded.is_spacia = 0) THEN 0 ELSE spy_targets.pig_iron END,
+                        metal = CASE WHEN excluded.status_color = 'free' OR (spy_targets.is_spacia = 1 AND excluded.is_spacia = 0) THEN 0 ELSE spy_targets.metal END,
+                        kryptonite = CASE WHEN excluded.status_color = 'free' OR (spy_targets.is_spacia = 1 AND excluded.is_spacia = 0) THEN 0 ELSE spy_targets.kryptonite END,
+                        spice = CASE WHEN excluded.status_color = 'free' OR (spy_targets.is_spacia = 1 AND excluded.is_spacia = 0) THEN 0 ELSE spy_targets.spice END,
+                        fleet_json = CASE WHEN excluded.status_color = 'free' OR (spy_targets.is_spacia = 1 AND excluded.is_spacia = 0) THEN '{}' ELSE spy_targets.fleet_json END,
+                        defense_json = CASE WHEN excluded.status_color = 'free' OR (spy_targets.is_spacia = 1 AND excluded.is_spacia = 0) THEN '{}' ELSE spy_targets.defense_json END,
+                        dug_in = CASE WHEN excluded.status_color = 'free' OR (spy_targets.is_spacia = 1 AND excluded.is_spacia = 0) THEN 0 ELSE spy_targets.dug_in END,
+                        last_spied_ts = CASE WHEN spy_targets.is_spacia = 1 AND excluded.is_spacia = 0 THEN 0.0 ELSE spy_targets.last_spied_ts END,
                         last_scanned_ts = excluded.last_scanned_ts
                     """,
                     (
@@ -8020,10 +8144,11 @@ class GameDatabase:
         with self._lock:
             st = DEFAULT_GAME_MIGRATION_RUNNER.inspect(
                 self._conn,
-                db_path=None if self._is_memory else self.db_path,
+                db_path=self.display_target if self._is_postgres else (None if self._is_memory else self.db_path),
                 include_events=include_events,
                 event_limit=event_limit,
             )
+            st["backend"] = self.backend_name
         return _sanitize_obj(st)
 
     def run_migrations(
@@ -8035,17 +8160,25 @@ class GameDatabase:
         backup_dir: Optional[Path] = None,
     ) -> dict[str, Any]:
         """Run pending forward migrations up to `target_version` (or preview with `dry_run=True`)."""
+        bkp_pg_path: Optional[Path] = None
+        if self._is_postgres and backup and not dry_run:
+            bkp_pg_path = create_postgres_backup(self, label="manual_migrate", backup_dir=backup_dir)
         with self._lock:
             res = DEFAULT_GAME_MIGRATION_RUNNER.migrate(
                 self._conn,
-                db_path=None if self._is_memory else self.db_path,
-                is_memory=self._is_memory,
+                db_path=None if (self._is_memory or self._is_postgres) else self.db_path,
+                is_memory=(self._is_memory or self._is_postgres),
                 target_version=target_version,
                 dry_run=dry_run,
-                backup=backup,
+                backup=False if self._is_postgres else backup,
                 auto_backup_default_db=False,
                 backup_dir=backup_dir,
             )
+            if self._is_postgres:
+                res["backend"] = "postgres"
+                res["db_path"] = self.display_target
+                if bkp_pg_path is not None:
+                    res["backup_path"] = str(bkp_pg_path)
             if not dry_run and DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "game_messages"):
                 self._backfill_reports_from_game_messages_locked(time.time())
                 self._conn.commit()
@@ -8057,9 +8190,41 @@ class GameDatabase:
         label: str = "manual",
         backup_dir: Optional[Path] = None,
     ) -> dict[str, Any]:
-        """Create an online WAL-consistent backup snapshot via `sqlite3.Connection.backup`."""
+        """Create an online backup snapshot (`pg_dump`/JSONL for PostgreSQL, WAL `.backup` for SQLite)."""
         if self._is_memory:
             raise ValueError("Cannot create file backup of an in-memory SQLite database.")
+        if self._is_postgres:
+            with self._lock:
+                st = DEFAULT_GAME_MIGRATION_RUNNER.inspect(
+                    self._conn,
+                    db_path=self.display_target,
+                    include_events=False,
+                )
+                ver = int(st["version"])
+            bkp_path = create_postgres_backup(self, label=label, backup_dir=backup_dir)
+            with self._lock:
+                DEFAULT_GAME_MIGRATION_RUNNER._ensure_ledger_tables(self._conn)
+                DEFAULT_GAME_MIGRATION_RUNNER._record_event(
+                    self._conn,
+                    ts=time.time(),
+                    event_type="backup_created",
+                    from_version=ver,
+                    to_version=ver,
+                    backup_path=str(bkp_path),
+                    details={"label": _sanitize_text(label)[:40], "backend": "postgres"},
+                )
+                self._conn.commit()
+            return _sanitize_obj(
+                {
+                    "ok": True,
+                    "backend": "postgres",
+                    "db_path": self.display_target,
+                    "backup_path": _sanitize_text(bkp_path),
+                    "size_bytes": bkp_path.stat().st_size if bkp_path.exists() else 0,
+                    "version": ver,
+                    "version_tag": f"V{ver:03d}",
+                }
+            )
         with self._lock:
             st = DEFAULT_GAME_MIGRATION_RUNNER.inspect(
                 self._conn,
@@ -8083,12 +8248,13 @@ class GameDatabase:
                 from_version=ver,
                 to_version=ver,
                 backup_path=str(bkp_path),
-                details={"label": _sanitize_text(label)[:40]},
+                details={"label": _sanitize_text(label)[:40], "backend": "sqlite"},
             )
             self._conn.commit()
         return _sanitize_obj(
             {
                 "ok": True,
+                "backend": "sqlite",
                 "db_path": _sanitize_text(self.db_path),
                 "backup_path": _sanitize_text(bkp_path),
                 "size_bytes": bkp_path.stat().st_size if bkp_path.exists() else 0,
@@ -8098,27 +8264,37 @@ class GameDatabase:
         )
 
     def verify_schema(self, *, full_integrity: bool = False) -> dict[str, Any]:
-        """Verify SQLite B-tree integrity, required tables/columns, version sync, and checksums."""
+        """Verify database integrity, required tables/columns, version sync, and checksums."""
         with self._lock:
             res = DEFAULT_GAME_MIGRATION_RUNNER.verify(
                 self._conn,
-                db_path=None if self._is_memory else self.db_path,
+                db_path=self.display_target if self._is_postgres else (None if self._is_memory else self.db_path),
                 full_integrity=full_integrity,
             )
+            res["backend"] = self.backend_name
         return _sanitize_obj(res)
 
     def summary(self) -> dict[str, Any]:
-        size_bytes = (
-            self.db_path.stat().st_size
-            if (not self._is_memory and self.db_path.exists())
-            else 0
-        )
-        with self._lock:
-            data_ver_row = self._conn.execute("PRAGMA data_version").fetchone()
-            data_ver = int(data_ver_row[0]) if data_ver_row is not None else 0
-            cur_ver = (int(self._conn.total_changes), data_ver, int(size_bytes))
-            if self._summary_cache_json is not None and self._summary_cache_ver == cur_ver:
+        if self._pg_backend is not None:
+            tc = int(self._pg_backend.total_changes)
+            dv = int(self._pg_backend.get_data_version())
+            cur_ver_pg = (tc, dv, 0)
+            if self._summary_cache_json is not None and self._summary_cache_ver == cur_ver_pg:
                 return json.loads(self._summary_cache_json)
+            size_bytes = self._pg_backend.database_size_bytes()
+            cur_ver = (tc, dv, 0)
+        else:
+            size_bytes = (
+                self.db_path.stat().st_size
+                if (not self._is_memory and self.db_path.exists())
+                else 0
+            )
+            with self._lock:
+                data_ver_row = self._conn.execute("PRAGMA data_version").fetchone()
+                data_ver = int(data_ver_row[0]) if data_ver_row is not None else 0
+                cur_ver = (int(self._conn.total_changes), data_ver, int(size_bytes))
+                if self._summary_cache_json is not None and self._summary_cache_ver == cur_ver:
+                    return json.loads(self._summary_cache_json)
         tables = (
             "latest_state_hot",
             "empire_planets_hot",
@@ -8166,17 +8342,23 @@ class GameDatabase:
                 str(r[0])
                 for r in self._conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
             }
-            for tbl in tables:
-                counts[tbl] = (
-                    int(self._conn.execute(f"SELECT COUNT(*) FROM {tbl}").fetchone()[0])
-                    if tbl in existing_tables
+            if self._pg_backend is not None:
+                all_cnts = self._pg_backend.fast_table_counts((*tables, "meta"), existing_tables)
+                for tbl in tables:
+                    counts[tbl] = all_cnts.get(tbl, 0)
+                meta_row_cnt = all_cnts.get("meta", 0)
+            else:
+                for tbl in tables:
+                    counts[tbl] = (
+                        int(self._conn.execute(f"SELECT COUNT(*) FROM {tbl}").fetchone()[0])
+                        if tbl in existing_tables
+                        else 0
+                    )
+                meta_row_cnt = (
+                    int(self._conn.execute("SELECT COUNT(*) FROM meta").fetchone()[0])
+                    if "meta" in existing_tables
                     else 0
                 )
-            meta_row_cnt = (
-                int(self._conn.execute("SELECT COUNT(*) FROM meta").fetchone()[0])
-                if "meta" in existing_tables
-                else 0
-            )
             hot_counts = {
                 tbl: (meta_row_cnt if tbl == "meta" else counts.get(tbl, 0))
                 for tbl in HOT_TABLES
@@ -8205,7 +8387,7 @@ class GameDatabase:
             )
             mig_info = DEFAULT_GAME_MIGRATION_RUNNER.inspect(
                 self._conn,
-                db_path=None if self._is_memory else self.db_path,
+                db_path=self.display_target if self._is_postgres else (None if self._is_memory else self.db_path),
                 include_events=False,
             )
         tut_rows = self.get_tutorial_history() if "tutorial_progress" in existing_tables else []
@@ -8213,7 +8395,8 @@ class GameDatabase:
         spy_targets = self.get_spy_targets(limit=25) if "spy_targets" in existing_tables else []
         out_summary = _sanitize_obj(
             {
-                "db_path": ":memory:" if self._is_memory else _sanitize_text(self.db_path),
+                "backend": self.backend_name,
+                "db_path": self.display_target,
                 "size_bytes": size_bytes,
                 "schema": {
                     "version": mig_info["version"],

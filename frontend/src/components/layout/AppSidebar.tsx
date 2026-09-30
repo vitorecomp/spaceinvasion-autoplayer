@@ -28,6 +28,8 @@ export const AppSidebar: React.FC = () => {
 
   const health = dashboard?.health || {};
   const gs = dashboard?.state || {};
+  const novncUrl =
+    dashboard?.novnc_url || health.novnc_url || dashboard?.bot_control?.novnc_url || null;
   const port = health.debug_port ? "8787" : (typeof window !== "undefined" && window.location.port) || "8787";
 
   const apiPipClass = apiOnline ? "status-pip online" : "status-pip offline";
@@ -169,7 +171,15 @@ export const AppSidebar: React.FC = () => {
       const ok = await loadDashboard({ refresh: true, preserveConfig: true, force: true });
       if (ok) {
         const latestDash = (globalThis as any).state?.dashboard || dashboard;
-        if (latestDash?.health?.rate_limited) {
+        if ((latestDash as any)?.sweep_deferred_refresh) {
+          showFeedback(
+            String(
+              (latestDash as any).sweep_message ||
+                "Galaxy scan in progress — live browser refresh deferred until scan finishes."
+            ),
+            "warn"
+          );
+        } else if (latestDash?.health?.rate_limited) {
           const rem = Math.ceil(safeFiniteNumber(latestDash.health.retry_after, 0) ?? 0);
           showFeedback(
             `Synced cached state — SpaceInvasion rate-limit cooldown active (${rem > 0 ? `${rem}s` : "wait"}).`,
@@ -268,7 +278,6 @@ export const AppSidebar: React.FC = () => {
     { page: "action-graph", code: "DAG", title: "Action Graph", badgeId: "nav-graph-badge", badgeText: isAiPlanner ? "AI" : "PRI", badgeExtraCls: isAiPlanner ? " is-ga" : "" },
     { page: "ranking", code: "RNK", title: "Ranking Evolution", badgeId: "nav-rank-badge", badgeText: rankBadgeTxt },
     { page: "config", code: "CFG", title: "Strategy Config" },
-    { page: "logs", code: "LOG", title: "Live Logs" },
   ];
 
   return (
@@ -323,6 +332,19 @@ export const AppSidebar: React.FC = () => {
             >
               Enter Universe
             </button>
+            {novncUrl ? (
+              <a
+                href={String(novncUrl)}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="btn btn-secondary btn-sm"
+                id="btn-open-novnc"
+                style={{ textAlign: "center", textDecoration: "none" }}
+                title="Open live container browser via noVNC (:7900) to log in or solve CAPTCHA"
+              >
+                Open Game Browser (:7900)
+              </a>
+            ) : null}
           </div>
         </section>
 

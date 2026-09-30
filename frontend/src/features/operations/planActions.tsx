@@ -270,6 +270,28 @@ export function cleanQueueJobTitle(job: QueueJobData | null | undefined): string
   return rawName || "Active job";
 }
 
+export function execJobBaseKey(job: QueueJobData | null | undefined): string {
+  const cat = String(job?.category || "job").toLowerCase();
+  const pid =
+    job?.planet_id != null && Number.isFinite(Number(job.planet_id)) && Number(job.planet_id) > 0
+      ? `p${Math.trunc(Number(job.planet_id))}`
+      : "";
+  const coords = normalizeCoordKey(job?.origin_coords || job?.planet_coords);
+  const originKey = pid || coords || "active";
+  const slot = Math.max(1, Math.trunc(finiteNum(job?.queue_slot, 1)));
+  const bid =
+    job?.building_id != null && Number.isFinite(Number(job.building_id))
+      ? `b${Math.trunc(Number(job.building_id))}`
+      : "";
+  const name = String(job?.name || "job").trim();
+  const lvl = job?.target_level != null ? `L${job.target_level}` : "";
+  if (cat === "building" || cat === "research") {
+    return `exec-${cat}-${originKey}-s${slot}-${bid || name}-${lvl}`;
+  }
+  const det = String(job?.detail || "").trim();
+  return `exec-${cat}-${originKey}-s${slot}-${name}-${lvl}-${det}`;
+}
+
 export function actionPayloadFor(
   action: PlannedActionData | null | undefined,
   dryRun: boolean
@@ -421,10 +443,70 @@ export function buildPinPayloadFromAction(
   };
 }
 
+export function formatPlanetTag(
+  planetName?: string | null,
+  coords?: string | null
+): string {
+  const cleanName = String(planetName || "").trim();
+  const cleanCoords = String(coords || "").trim();
+  if (cleanName && cleanName.toLowerCase() !== "colony" && cleanCoords) {
+    return `${cleanName} [${cleanCoords}]`;
+  }
+  if (cleanCoords) {
+    return `[${cleanCoords}]`;
+  }
+  if (cleanName) {
+    return cleanName;
+  }
+  return "[—]";
+}
+
+export function buildPlanetNameMaps(
+  planets?: PlanetData[] | null,
+  customPlanetNames?: Record<string, string> | null
+): {
+  byId: Map<number, string>;
+  byCoords: Map<string, string>;
+} {
+  const byId = new Map<number, string>();
+  const byCoords = new Map<string, string>();
+  if (customPlanetNames && typeof customPlanetNames === "object") {
+    for (const [rawPid, rawName] of Object.entries(customPlanetNames)) {
+      const pid = Math.trunc(Number(rawPid));
+      const nm = String(rawName || "").trim();
+      if (Number.isFinite(pid) && pid > 0 && nm) {
+        byId.set(pid, nm);
+      }
+    }
+  }
+  if (Array.isArray(planets)) {
+    for (const p of planets) {
+      if (!p || typeof p !== "object") continue;
+      const pid = Math.trunc(Number(p.planet_id));
+      const nm = String(
+        (Number.isFinite(pid) && pid > 0 ? byId.get(pid) : "") ||
+          p.custom_name ||
+          p.name ||
+          ""
+      ).trim();
+      if (Number.isFinite(pid) && pid > 0 && nm) {
+        byId.set(pid, nm);
+      }
+      const ck = normalizeCoordKey(p.coords);
+      if (ck && nm) {
+        byCoords.set(ck, nm);
+      }
+    }
+  }
+  return { byId, byCoords };
+}
+
 export interface PlanActionRowProps {
   action: PlannedActionData;
   compact?: boolean;
   nowEpochSec?: number;
+  planetNameById?: ReadonlyMap<number, string>;
+  planetNameByCoords?: ReadonlyMap<string, string>;
   onDispatch: (act: PlannedActionData, dryRun: boolean) => void;
   onUpdateQueue: (queueId: number, patch: Record<string, any>) => void;
   onCancelQueue: (queueId: number) => void;
@@ -435,6 +517,8 @@ export const PlanActionRow: React.FC<PlanActionRowProps> = ({
   action: act,
   compact = false,
   nowEpochSec,
+  planetNameById,
+  planetNameByCoords,
   onDispatch,
   onUpdateQueue,
   onCancelQueue,
@@ -529,6 +613,14 @@ export const PlanActionRow: React.FC<PlanActionRowProps> = ({
   );
   const targetLabel = String(act.target_name || "command").replace(/>/g, "→");
 
+  const actPid = act.planet_id != null ? Math.trunc(Number(act.planet_id)) : 0;
+  const actCoordKey = normalizeCoordKey(act.planet_coords);
+  const resolvedActPlanetName =
+    (actPid > 0 ? planetNameById?.get(actPid) : undefined) ||
+    (actCoordKey ? planetNameByCoords?.get(actCoordKey) : undefined) ||
+    act.planet_name ||
+    "";
+
   return (
     <tr className={isManual ? "is-manual-queued" : undefined}>
       <td>
@@ -545,7 +637,7 @@ export const PlanActionRow: React.FC<PlanActionRowProps> = ({
 
       <td>
         <div className="action-title">{`${act.target_name || "Action"}${lvlStr}`}</div>
-        <div className="action-sub">{`${act.kind || "ACTION"} · [${act.planet_coords || "—"}]`}</div>
+        <div className="action-sub">{`${act.kind || "ACTION"} · ${formatPlanetTag(resolvedActPlanetName, act.planet_coords)}`}</div>
       </td>
 
       <td className="tabular">
@@ -848,9 +940,16 @@ export function formatQueueJobCargo(
 export interface ActiveExecJobRowProps {
   job: QueueJobData;
   nowEpochSec?: number;
+  planetNameById?: ReadonlyMap<number, string>;
+  planetNameByCoords?: ReadonlyMap<string, string>;
 }
 
-export const ActiveExecJobRow: React.FC<ActiveExecJobRowProps> = ({ job, nowEpochSec }) => {
+export const ActiveExecJobRow: React.FC<ActiveExecJobRowProps> = ({
+  job,
+  nowEpochSec,
+  planetNameById,
+  planetNameByCoords,
+}) => {
   const slot = Math.max(1, Math.trunc(finiteNum(job?.queue_slot, 1)));
   const detailText =
     String(job?.detail || "").trim() || (slot > 1 ? `In-game queue #${slot}` : "Executing now");
@@ -881,6 +980,19 @@ export const ActiveExecJobRow: React.FC<ActiveExecJobRowProps> = ({ job, nowEpoc
     liveLabel = "In flight";
   }
 
+  const isBldDomain = dashboardQueueDomainForJob(job) === "building";
+  const bldCoords = isBldDomain ? String(job?.origin_coords || job?.planet_coords || "").trim() : "";
+  const jobPid =
+    job?.planet_id != null && Number.isFinite(Number(job.planet_id))
+      ? Math.trunc(Number(job.planet_id))
+      : 0;
+  const bldCoordKey = bldCoords ? normalizeCoordKey(bldCoords) : "";
+  const bldPlanetName = isBldDomain
+    ? (jobPid > 0 ? planetNameById?.get(jobPid) : undefined) ||
+      (bldCoordKey ? planetNameByCoords?.get(bldCoordKey) : undefined) ||
+      ""
+    : "";
+
   return (
     <tr className={slot > 1 ? "dash-exec-row is-queued-slot" : "dash-exec-row"}>
       <td>
@@ -890,6 +1002,9 @@ export const ActiveExecJobRow: React.FC<ActiveExecJobRowProps> = ({ job, nowEpoc
       </td>
       <td>
         <div className="action-title">{cleanQueueJobTitle(job)}</div>
+        {bldCoords || bldPlanetName ? (
+          <div className="action-sub tabular">{formatPlanetTag(bldPlanetName, bldCoords)}</div>
+        ) : null}
       </td>
       <td>
         <span className="action-sub">{detailText}</span>

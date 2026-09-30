@@ -30,8 +30,10 @@ if [[ -z "$PY_BIN" ]]; then
 fi
 
 STACK_SCRIPT="${STACK_SCRIPT:-$BIN_DIR/run_stack.py}"
-WATCHDOG_LOG="${WATCHDOG_LOG:-$REPO_DIR/logs/watchdog.log}"
+WATCHDOG_LOG="${WATCHDOG_LOG:-}"
 WATCHDOG_PID_FILE="${WATCHDOG_PID_FILE:-$REPO_DIR/state/run_stack_watchdog.pid}"
+export SPACEINVASION_DB_BACKEND="${SPACEINVASION_DB_BACKEND:-sqlite}"
+export SPACEINVASION_DISK_LOGS="${SPACEINVASION_DISK_LOGS:-0}"
 INITIAL_BACKOFF_SEC="${INITIAL_BACKOFF_SEC:-5}"
 MAX_BACKOFF_SEC="${MAX_BACKOFF_SEC:-60}"
 HEALTHY_UPTIME_RESET_SEC="${HEALTHY_UPTIME_RESET_SEC:-60}"
@@ -44,11 +46,19 @@ Usage: ./starter.sh [--dry-run | run_stack.py options...]
 Supervises `bin/run_stack.py` and automatically restarts it if Python crashes or exits unexpectedly.
 
 Defaults & Options:
-  (no arguments)   Starts `bin/run_stack.py --live`
-  --dry-run        Starts `bin/run_stack.py` in dry-run mode (without `--live`)
-  -h, --help       Show this help message and `bin/run_stack.py --help`
+  (no arguments)            Starts `bin/run_stack.py --live` locally using SQLite (`state/spaceinvasion.db`)
+  --dry-run                 Starts `bin/run_stack.py` in dry-run mode (without `--live`)
+  -h, --help                Show this help message and `bin/run_stack.py --help`
+
+Note:
+  - Running via `./starter.sh` runs containerless on the host with SQLite (`state/spaceinvasion.db`).
+  - Running via Docker/Podman (`podman-compose up -d`) uses PostgreSQL (`./data/postgres`) exclusively.
+  - Sync both databases anytime with: `.venv/bin/python3 scripts/sync_db.py`
 
 Environment Overrides:
+  SPACEINVASION_DB_BACKEND  Database engine override (`postgres` or `sqlite`)
+  SPACEINVASION_DB_URL      Explicit PostgreSQL DSN override
+  SPACEINVASION_PG_PORT     Host port bound by Podman PostgreSQL container (default: 5433)
   INITIAL_BACKOFF_SEC       Initial restart delay in seconds (default: 5)
   MAX_BACKOFF_SEC           Maximum restart backoff in seconds (default: 60)
   HEALTHY_UPTIME_RESET_SEC  Uptime seconds that reset consecutive crash count (default: 60)
@@ -94,14 +104,19 @@ else
   done
 fi
 
-mkdir -p "$(dirname "$WATCHDOG_LOG")" "$(dirname "$WATCHDOG_PID_FILE")"
+mkdir -p "$(dirname "$WATCHDOG_PID_FILE")"
+if [[ -n "$WATCHDOG_LOG" ]]; then
+  mkdir -p "$(dirname "$WATCHDOG_LOG")"
+fi
 
 log_msg() {
   local ts
   ts="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
   local line="[$ts] [WATCHDOG] $*"
   echo "$line"
-  echo "$line" >>"$WATCHDOG_LOG" 2>/dev/null || true
+  if [[ -n "$WATCHDOG_LOG" ]]; then
+    echo "$line" >>"$WATCHDOG_LOG" 2>/dev/null || true
+  fi
 }
 
 # Prevent duplicate watchdog supervisors from racing each other.
@@ -177,6 +192,34 @@ trap cleanup_pid_file EXIT
 if [[ -f "$REPO_DIR/frontend/package.json" ]] && command -v npm >/dev/null 2>&1 && [[ ! -f "$REPO_DIR/spaceinvasion/ui/app.js" ]]; then
   log_msg "Building frontend UI bundle into spaceinvasion/ui/..."
   npm --prefix "$REPO_DIR/frontend" run build
+fi
+
+# Ensure Podman PostgreSQL container is running when supervising the real stack in postgres mode.
+if [[ "$STACK_SCRIPT" == "$BIN_DIR/run_stack.py" ]] && [[ -f "$REPO_DIR/docker-compose.yml" ]]; then
+  "$PY_BIN" -c '
+import sys
+from pathlib import Path
+from spaceinvasion.db.backend import ensure_postgres_container_ready, resolve_database_config
+
+argv = sys.argv[1:]
+exp_b = None
+exp_u = None
+for i, a in enumerate(argv):
+    if a == "--db-backend" and i + 1 < len(argv):
+        exp_b = argv[i + 1]
+    elif a.startswith("--db-backend="):
+        exp_b = a.split("=", 1)[1]
+    elif a == "--db-url" and i + 1 < len(argv):
+        exp_u = argv[i + 1]
+    elif a.startswith("--db-url="):
+        exp_u = a.split("=", 1)[1]
+cfg = resolve_database_config(explicit_backend=exp_b, explicit_db_url=exp_u, root_dir=Path("."))
+if cfg.backend == "postgres" and cfg.auto_start_podman:
+    res = ensure_postgres_container_ready(cfg.postgres_url, root_dir=Path("."), auto_start=True)
+    print(f"[DB] Active backend: POSTGRES ({cfg.display_target}) | ready={res.get(\"ok\")}")
+else:
+    print(f"[DB] Active backend: {cfg.backend.upper()} ({cfg.display_target})")
+' "${STACK_ARGS[@]}" || true
 fi
 
 consecutive_crashes=0

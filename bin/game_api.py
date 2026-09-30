@@ -34,8 +34,13 @@ def _maybe_reexec_venv() -> None:
 _maybe_reexec_venv()
 
 from spaceinvasion.core import game_data # noqa: E402
-from spaceinvasion.session.auth import SpaceInvasionAuthError  # noqa: E402
-from spaceinvasion.session.browser import DEFAULT_DEBUG_PORT  # noqa: E402
+from spaceinvasion.db.backend import is_container_runtime  # noqa: E402
+from spaceinvasion.session.auth import AntiBotChallengeError, SpaceInvasionAuthError  # noqa: E402
+from spaceinvasion.session.browser import (  # noqa: E402
+    DEFAULT_DEBUG_HOST,
+    DEFAULT_DEBUG_PORT,
+    is_debug_port_open,
+)
 from spaceinvasion.runtime.api_server import (  # noqa: E402
     GameApiBridge,
     create_api_server,
@@ -56,7 +61,9 @@ WATCH_PATHS = (
     _REPO_ROOT / "spaceinvasion/core/config.py",
     _REPO_ROOT / "spaceinvasion/combat/fleet.py",
     _REPO_ROOT / "spaceinvasion/core/game_data.py",
+    _REPO_ROOT / "spaceinvasion/db/backend.py",
     _REPO_ROOT / "spaceinvasion/db/migrations.py",
+    _REPO_ROOT / "spaceinvasion/db/postgres.py",
     _REPO_ROOT / "spaceinvasion/combat/ranking.py",
     _REPO_ROOT / "spaceinvasion/core/state.py",
     _REPO_ROOT / "spaceinvasion/db/storage.py",
@@ -78,6 +85,11 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--host", default="127.0.0.1", help="Bind host (default: 127.0.0.1).")
     parser.add_argument("--port", type=int, default=8787, help="API HTTP port (default: 8787).")
     parser.add_argument(
+        "--debug-host",
+        default=DEFAULT_DEBUG_HOST,
+        help=f"Chrome DevTools debug host (default: {DEFAULT_DEBUG_HOST}).",
+    )
+    parser.add_argument(
         "--debug-port",
         type=int,
         default=DEFAULT_DEBUG_PORT,
@@ -88,7 +100,18 @@ def _build_parser() -> argparse.ArgumentParser:
         "--config",
         type=Path,
         default=None,
-        help="Optional strategy config path (.db SQLite or legacy .yaml; defaults to state/spaceinvasion.db).",
+        help="Optional strategy config path (.db SQLite or legacy .yaml; defaults to active DB).",
+    )
+    parser.add_argument(
+        "--db-backend",
+        choices=("auto", "postgres", "sqlite"),
+        default=None,
+        help="Database backend to use ('postgres' via Podman, 'sqlite', or 'auto').",
+    )
+    parser.add_argument(
+        "--db-url",
+        default=None,
+        help="Explicit PostgreSQL DSN (e.g. postgresql://user:pass@127.0.0.1:5433/spaceinvasion).",
     )
     parser.add_argument("--account", default="default", help="Account profile in .env.")
     parser.add_argument(
@@ -183,28 +206,58 @@ def main(argv: list[str] | None = None) -> int:
             watch_paths=WATCH_PATHS,
         )
 
+    startup_auth_exc: BaseException | None = None
     try:
-        ensure_debug_browser_ready(
-            debug_port=args.debug_port,
-            env_file=args.env_file,
-            account=args.account,
-        )
-    except SpaceInvasionAuthError as exc:
-        print(
-            f"[API] Browser startup error: {redact_sensitive(_safe_err_text(exc))}",
-            file=sys.stderr,
-            flush=True,
-        )
-        return 1
+        if args.debug_host == "127.0.0.1":
+            ensure_debug_browser_ready(
+                debug_port=args.debug_port,
+                env_file=args.env_file,
+                account=args.account,
+            )
+        else:
+            ensure_debug_browser_ready(
+                debug_port=args.debug_port,
+                debug_host=args.debug_host,
+                env_file=args.env_file,
+                account=args.account,
+            )
+    except Exception as exc:
+        if not isinstance(exc, SpaceInvasionAuthError) and not is_container_runtime():
+            raise
+        if is_container_runtime() and is_debug_port_open(args.debug_port, args.debug_host):
+            startup_auth_exc = exc
+            print(
+                f"[API] Browser requires operator login/CAPTCHA in noVNC (:7900) "
+                f"({redact_sensitive(_safe_err_text(exc))}); starting API in paused state...",
+                file=sys.stderr,
+                flush=True,
+            )
+        else:
+            print(
+                f"[API] Browser startup error: {redact_sensitive(_safe_err_text(exc))}",
+                file=sys.stderr,
+                flush=True,
+            )
+            return 1
 
     bridge = GameApiBridge(
         debug_port=args.debug_port,
+        debug_host=args.debug_host,
         env_file=args.env_file,
         account=args.account,
         config_path=args.config,
         max_actions_per_hour=args.max_per_hour,
         log_dir=args.log_dir,
+        db_backend=args.db_backend,
+        db_url=args.db_url,
     )
+    if startup_auth_exc is not None:
+        if isinstance(startup_auth_exc, AntiBotChallengeError):
+            rec_fn = getattr(bridge, "_record_antibot_pause", None)
+            if callable(rec_fn):
+                rec_fn(startup_auth_exc)
+        else:
+            bridge.handle_command({"command": "bot_control", "paused": True})
     server = None
     is_main = threading.current_thread() is threading.main_thread()
     prev_sigterm = signal.getsignal(signal.SIGTERM) if is_main else None
@@ -219,7 +272,7 @@ def main(argv: list[str] | None = None) -> int:
             signal.signal(signal.SIGTERM, _shutdown_handler)
         print(
             f"[API] Listening on http://{args.host}:{args.port} "
-            f"(Control UI: http://{args.host}:{args.port}/ | Chrome debug port: 127.0.0.1:{args.debug_port})",
+            f"(Control UI: http://{args.host}:{args.port}/ | Chrome debug: {args.debug_host}:{args.debug_port})",
             flush=True,
         )
         server.serve_forever()

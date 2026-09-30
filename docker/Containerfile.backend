@@ -1,0 +1,27 @@
+FROM docker.io/library/python:3.12-slim
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    SPACEINVASION_NO_REEXEC=1 \
+    SPACEINVASION_CONTAINER=1 \
+    SPACEINVASION_DB_BACKEND=postgres \
+    SPACEINVASION_DISK_LOGS=0
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    chromium-driver \
+    curl \
+    libpq5 \
+  && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY requirements.txt /app/requirements.txt
+RUN pip install --no-cache-dir -r /app/requirements.txt
+
+COPY bin /app/bin
+COPY spaceinvasion /app/spaceinvasion
+COPY scripts /app/scripts
+
+EXPOSE 8787
