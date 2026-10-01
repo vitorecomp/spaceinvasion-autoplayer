@@ -4,7 +4,7 @@ This note records why the adaptive execution work was done, what was planned, wh
 
 All times are UTC on 2026-11-19 unless a date is given; everything about plan v4 happened on 2026-11-20 and says so. The operator's local time is UTC-03:00.
 
-## Status on 2026-11-20 at 08:36
+## Status on 2026-11-20 at 09:01
 
 - The switch `ai_adaptive_execution` has been on since 14:36:33 on 2026-11-19. Plan v3 was live from 18:26:36 that day. **Plan v4 has been live since 07:51:42 on 2026-11-20** (commit `17a66a6`; two refinements in `0ae95d1` live since 08:31:51).
 - **Plan v3 did not make builders busier.** Over 11.18 running hours it had 1.76 of 11 builders busy, against 2.10 before any change. Colonies did advance faster: building levels went from 5.1 to 9.3 per hour and Metal made per hour from 50,600 to 245,400. 23 of the 111 levels were cheap Blast furnace levels.
@@ -14,9 +14,11 @@ All times are UTC on 2026-11-19 unless a date is given; everything about plan v4
   - Every colony saved for its own next step. At 06:40 seven colonies sat idle, each 2 to 7 hours from its step, while the empire's stock covered all seven steps at once.
   - 61 of 88 transports were flying raids, so little could be shipped between colonies.
 - Plan v4 changes four rules behind the same switch: furnaces smelt for the empire, a free builder starts a later plan step, colonies lend their savings in plan order, and the transport target leaves out hulls that are away on raids.
-- First half hour of plan v4, which is not evidence: 3.63 of 11 builders busy over 0.50 running hours, furnaces on from 8 to 10 of 11, Metal per hour from 308,500 to 409,800, 10 building levels completed, and 8 Large transports ordered. Loans are in every plan since; whether one has flown cannot be read from the action log. At 08:36, four minutes after the refinements landed and after the plan re-tuned itself, 8 of 11 builders were busy and the furnaces made 419,840 Metal per hour. That is one reading.
+- First hour of plan v4, which is not evidence (read at 09:01, 1.06 running hours): 4.69 of 11 builders busy; 22 building levels completed, 19 per hour, 10 of them Blast furnace levels; furnaces on at 10 of 11 colonies; 411,200 Metal made per hour, 89% of what the furnaces could make at the time. The new furnace levels raised what the furnaces can make from 427,100 to 520,800 Metal per hour. Eight Large transports were ordered in the first ten minutes and none since the fleet ceiling was tightened. Loans are planned; whether one has flown cannot be read from the action log.
+- Mark 1 is computed differently since 09:01 (see [Read the result](#read-the-result)). The first version divided the period's mean by the capacity at the moment of the run. The fill rule's own furnace levels made that read 79% an hour after the landing, a fail, while the furnaces were making 87% to 94% of their capacity at every reading. The script now compares each recorded point with the capacity at its own time and still prints the old figure.
 - **No verdict on plan v4 is possible before 07:52 on 2026-11-21**, and not before 12 running hours.
-- Outside this plan: another work session moved the stack into containers and the database to PostgreSQL between 06:56 and 07:22 on 2026-11-20. Its changes are uncommitted and were not reviewed here. Since that move the recorded series has no points between 04:54 and 06:48 of that day, so the script now reports plan v3 over fewer hours than the figures above, which were taken at 06:15.
+- Outside this plan: another work session moved the stack into containers and the database to PostgreSQL between 06:56 and 07:22 on 2026-11-20. Since that move the recorded series has no points between 04:54 and 06:48 of that day, so the script now reports plan v3 over fewer hours than the figures above, which were taken at 06:15. The operator committed that work at 08:37 as `28df30f`, on top of the plan v4 commits. Plan v4's code is unchanged in it; the rest of that commit was not reviewed here.
+- Four branches named `refactor/p0-*` were created from `28df30f` between 08:38 and 08:49, and two of them had commits by 09:02: the refactor of the whole system that another session planned has started. It will change the files plan v4 lives in during the 24 hours plan v4 is being measured.
 - The operator asked for the review and the changes to be made without being asked for decisions. Every decision taken on their behalf is listed in [Decisions taken for the operator](#decisions-taken-for-the-operator).
 
 ## Status at the plan v3 hand-off (18:40)
@@ -130,6 +132,14 @@ Unchanged on purpose: furnaces are 100% or 0% only, with the Metal-overflow paus
 - Plan v4 on live data, without touching the game: old and new code were run on the same cached snapshot taken at 07:29 on 2026-11-20. Old code: 12 planner actions, 2 shipments, no furnace change. New code: 4 fills, 2 loans that each pay for a whole step, 2 furnaces turned on.
 - Refinements in `0ae95d1`: the full unit suite was run again in a clean worktree, 705 tests, the same 3 failing. `tests/unit/test_adaptive_v4.py` now holds 30 tests. On a live snapshot taken at 08:25 the refinements changed no action.
 - Not run for v4: the end-to-end suite and the frontend tests. No frontend file was changed.
+- Plan v4 inside the operator's commit `28df30f`, which holds it together with the other sessions' work: the unit suite was run in a clean worktree of that commit at 08:43 on 2026-11-20. 720 tests, 14 failing, none of them caused by plan v4:
+  - 8 test `notebooks/optimizer_experimentation.ipynb`, which that commit deletes.
+  - 4 are tests of the API and the console: `test_demolish_building_command_guards_cache_invalidation_and_null_planet_offers`, `test_perf_and_stability_regressions_toctou_plan_fastpath_unknown_cmd_and_cmd_reconnect`, `test_r7_api_rejects_unicode_digits_bad_fleetsave_reserve_and_closes_bridge` and `test_favicon_top_bar_notifications_and_auto_help_popup_persistence`. They fail in the same way with both plan v4 commits reverted in that worktree.
+  - 2 failed before this work: `test_commander_backs_off_at_least_retry_after_on_rate_limit` and `test_notebook_is_saved_without_outputs`. The third old failure, `test_run_stack_and_game_api_main_redaction_reload_sigterm_and_cleanup`, passes on that commit.
+  - One test was left out: `test_postgres_podman_migrations_concurrent_mvcc_sync_and_live_bridge_switch` creates and drops a database on whatever PostgreSQL answers on port 5433, which is the live one.
+  - The console tests that run in Node were run a second time after `frontend/node_modules` was linked into the worktree; without it 20 more of them fail on a missing module.
+  - `git revert --no-commit 0ae95d1 17a66a6` applied cleanly on `28df30f`, so the way back still works.
+- The new arithmetic of mark 1 in the script was checked on made-up series: a constant capacity, a capacity that doubles between two readings, points outside the readings, and a capacity file with unreadable lines.
 
 ### To turn it off
 
@@ -244,6 +254,9 @@ The operator asked on 2026-11-20 for the best result without being asked. These 
 | 2026-11-20 08:21 | A shipment from 02:381:08, a lending colony, to 02:381:07 (step 18). The action log does not record whether it was the planned loan |
 | 2026-11-20 08:31:51 | Refinements live (commit `0ae95d1`): the fleet allowance and the loan guard |
 | 2026-11-20 08:32 to 08:35 | The plan re-tuned itself in the background (its research step moved from number 100 to number 60). Six more steps started in those minutes |
+| 2026-11-20 08:37 | The operator committed the other sessions' work as `28df30f`, on top of the plan v4 commits. No file on disk changed, so nothing restarted |
+| 2026-11-20 08:38 to 08:49 | Four `refactor/p0-*` branches created from `28df30f` by the session that planned the refactor of the whole system |
+| 2026-11-20 09:01 | Mark 1 of the script now compares each point with the furnace capacity at its own time |
 
 ## Baseline, before the change
 
@@ -343,16 +356,35 @@ Not evidence either: half an hour, right after a burst of cheap steps.
 | Blast furnace levels built while a Development center step waited | 02:379:05 from level 17 to 20, 02:380:08 from level 15 to 19 |
 | Large transports | 47, up from 40 |
 | Colony time idle with an affordable step, last 24 hours | 78.25%. The window is still almost all plan v3 |
-| Stops and gates | One stop of the series, the restart of the landing itself. No anti-bot gate |
+| Stops and gates | One stop of the series, from 08:13 to 08:19. Its cause was not established. No anti-bot gate |
+
+### Plan v4, first hour (read at 09:01 on 2026-11-20)
+
+Not evidence: one hour, and it began with a burst of cheap steps.
+
+| Measure | Value |
+|---|---|
+| Builders busy while the bot ran | 4.69 of 11 over 1.06 running hours, 44 points. Median 5, maximum 8 |
+| Building levels completed | 1,264, up 22 in 1.2 hours, which is 19 per hour. 10 of the 22 are Blast furnace levels |
+| What the furnaces can make, Metal per hour | 427,080 at the landing; 466,600 at 08:23; 476,620 at 08:39; 512,440 at 08:53; 520,800 at 09:01 |
+| Metal made per hour | 489,360 at 09:01, with 10 of 11 furnaces on. 411,190 on average over the period: 89% of what the furnaces could make at the time, between 86% and 90%. Against the capacity at 09:01 alone it reads 79% |
+| Transports | 48 Small and 48 Large, all flying. 34 Small and 25 Large on raids; 14 Small, 23 Large and the Transmitter on shipments between colonies. At 07:58 ten Large transports were on shipments |
+| Fleet size | 1,978,000 cargo. The plan's target fell to 783,000 at the 08:32 re-tune, which puts the ceiling at 1,566,000. Nothing was ordered after the first eight |
+| Cargo delivered between colonies, last 24 hours | 191,000 per hour. It was 140,800 after twelve hours of plan v3 |
+| Empire stock against the cost of every colony's next step | Metal 1.3 million against 2.9 million. Pig iron 13.0 million against 0.5 million |
+| Colony time idle with an affordable step, last 24 hours | 77.4%. The window is still almost all plan v3 |
+| Stops and gates | Three stops of the series of 5 to 8 minutes, from 08:13, 08:21 and 08:50. Their causes were not established; no watched file changed after 08:31:51. No anti-bot gate |
 
 ## Known problems
 
-Plan v4, as of 2026-11-20 08:36:
+Plan v4, as of 2026-11-20 09:01:
 
 - **Builders will stay partly idle.** Income decides how many steps can be paid for. Plan v4 uses the income better; it does not create more.
 - **Raids take every transport that is parked.** Loans and other shipments happen only in the minutes a colony's hulls are home. Shipments are planned before raids, so they get the hulls first.
 - **A fill can leave its colony short of Kryptonite or Pig iron for the waiting step.** The rule allows it when the colony earns the amount back before the waiting step could start, or when the empire holds a surplus of it. If a loan then arrives early, the step waits for that resource.
-- **The transport fleet grew again.** Eight Large transports were ordered in the first ten minutes, 64,000 Metal and 48,000 Kryptonite from the 25% allowance, which the buildings did not get. The ceiling was then tightened to 900,000 cargo above the target, which those eight nearly reach: the fleet grows further only if the plan's target rises.
+- **The transport fleet grew again.** Eight Large transports were ordered in the first ten minutes, 64,000 Metal and 48,000 Kryptonite from the 25% allowance, which the buildings did not get. The ceiling was then tightened to 900,000 cargo above the target. At 09:01 the fleet held 1,978,000 cargo against a ceiling of 1,566,000, so it grows further only if the plan's target rises above about 1.1 million.
+- **The measurement overlaps a refactor.** The refactor of the whole system started on branches at about 08:45 on 2026-11-20. When its changes reach `main` they restart the stack and may change what the planner does. Period E is then no longer plan v4 alone. Note what landed and when before judging.
+- **Mark 1 depends on capacity readings.** The series does not record what the furnaces could make. The script knows it at the four moments it was run in the first hour (kept in the script), at every later run on this machine (it keeps them in `~/.cache/spaceinvasion-autoplayer/furnace_capacity_readings.jsonl`), and at the run itself. Between two readings it only knows the capacity lay between them. With few readings the range can cross the mark, and the script then says the mark is not settled.
 - **The Operator Console shows the old count.** Its fleet line compares all hulls with the target, so it can say the target is met while orders continue.
 - **A loan can be small.** One of 938 Metal was planned at 08:24 because it paid for a whole step. The guard only drops a loan the borrower would not need by the time it lands.
 - **Executed fills and loans cannot be counted afterwards.** The action log keeps the result message, not the reason. The script counts the ones in the current plan.
@@ -389,7 +421,7 @@ At least 24 hours after **07:51:42 on 2026-11-20**, with at least 12 running hou
 python3 scripts/validate_adaptive_execution.py
 ```
 
-It reads the cached dashboard, the planner view, the fleet view and the notification list through `http://127.0.0.1:8787`. It makes no browser page views, sends no game actions and writes nothing. The baseline and the readings above came from this script. It reports five periods: A before any code, B code landed with the switch off, C switch on with plan v2 only, D plan v3, E plan v4. Its summary judges period E against the four marks below.
+It reads the cached dashboard, the planner view, the fleet view and the notification list through `http://127.0.0.1:8787`. It makes no browser page views and sends no game actions. It writes one line per run to `~/.cache/spaceinvasion-autoplayer/furnace_capacity_readings.jsonl`, outside the repository: what the furnaces could make at that moment, which mark 1 needs over time. `--no-record` skips that line. Every run between now and the verdict narrows mark 1. The baseline and the readings above came from this script. It reports five periods: A before any code, B code landed with the switch off, C switch on with plan v2 only, D plan v3, E plan v4. Its summary judges period E against the four marks below.
 
 ### Read the result
 
@@ -399,10 +431,12 @@ The four marks for plan v4. The assistant set them on 2026-11-20; the operator h
 
 | # | Question | Measure | Plan v3 | Mark for plan v4 |
 |---|---|---|---|---|
-| 1 | Are the furnaces used? | Metal per hour while running, period E, as a share of what the furnaces can make now | 245,390 per hour | 80% or more |
+| 1 | Are the furnaces used? | Metal made while running in period E, as a share of what the furnaces could make at the time of each recorded point | 245,390 per hour | 80% or more |
 | 2 | Are builders busier? | Builders busy while running, period E | 1.76 of 11 (2.10 before any change) | 3.0 or more: worked. Below 2.3: no effect |
 | 3 | Are colonies advancing? | Building levels per hour since 07:51:42 on 2026-11-20 (1,242 then) | 9.3 per hour | 12 or more |
 | 4 | Do affordable steps still wait? | Colony time idle with an affordable target step, last 24 hours | 78.6% | 50% or less |
+
+Mark 1 was changed at 09:01 on 2026-11-20, after the first version read 79% and failed. That version divided the period's mean by the capacity at the moment of the run. Plan v4 builds furnace levels, 10 in its first 70 minutes, so the capacity at the end of a period is higher than it was during it, and the first version charged the plan for building furnaces. The script now takes the capacity at the time of each point from its readings and gives three figures: an estimate, which draws a straight line between two readings, and the lowest and highest share the readings allow. It prints PASS when the lowest is at or above the mark, FAIL when the highest is below it, and NOT SETTLED otherwise. The old figure is still printed under it. The mark itself, 80%, did not move.
 
 Mark 4 will not reach zero: a step that costs Metal stays affordable on its colony and still waits while the empire is short of Metal.
 
@@ -435,7 +469,8 @@ Decision gates from plan v2:
 - The page-view limit was 24 per minute for the baseline and for period C, and 60 from about 18:35. A higher limit lets more actions through on its own.
 - The colony-idle buckets cover the last 24 hours by the clock, so a reading taken 24 hours after 07:52 on 2026-11-20 holds only plan v4 data. Before that it mixes both.
 - The other work session restarts the stack often. A restart can cost up to about 8 minutes, and its database move removed two hours of recorded points.
-- Furnace capacity grows as Blast furnace levels are built, so mark 1 compares the period's mean with today's capacity and reads slightly low.
+- A refactor of the whole system started on 2026-11-20 at about 08:45 on `refactor/p0-*` branches. Check `git log main` for what reached `main` during the window, and read period E on both sides of each landing.
+- Furnace capacity grows as Blast furnace levels are built. Mark 1 allows for it only as far as the capacity readings go; read its range, not just its estimate. The readings assume furnace levels are never removed.
 - The baseline is 2.10 of 11 colonies. If the number of colonies has changed, compare shares, not counts.
 - A planner run by hand releases a burst of builds. Note any in the window.
 - Check `git log` and `git status`: other changes may be running.

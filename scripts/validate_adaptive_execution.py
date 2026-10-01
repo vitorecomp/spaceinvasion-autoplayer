@@ -4,10 +4,14 @@
 Prints the measurements that `docs/notes/adaptive-execution-plan-v2.md` uses to decide whether the
 plan worked. It talks only to the local HTTP bridge: the cached `GET /dashboard?refresh=false` and
 the `ai_planner_get` / `fleet_planner_get` / `notifications_list` reads, which work on the state the
-bridge already holds. It makes no browser page views, sends no game actions, and writes nothing.
+bridge already holds. It makes no browser page views and sends no game actions.
+
+It writes one thing: a line per run in `~/.cache/spaceinvasion-autoplayer/furnace_capacity_readings.jsonl`,
+outside the repository, holding the Metal per hour the furnaces could make at that moment. The recorded
+series does not hold that figure and mark 1 needs it over time. `--no-record` skips the line.
 
 Usage (stack running):
-    python3 scripts/validate_adaptive_execution.py [--api-url http://127.0.0.1:8787]
+    python3 scripts/validate_adaptive_execution.py [--api-url http://127.0.0.1:8787] [--no-record]
 """
 
 from __future__ import annotations
@@ -63,12 +67,26 @@ PLAN_V3_DELIVERED_CARGO_PER_HOUR = 140_803
 # Pass marks for plan v4, set by the assistant on 2026-11-20 (the operator asked not to be asked).
 # They are judged on period E after at least 24 hours and 12 running hours. The empire is limited by
 # its income, not by its builders, so the marks are about using what it has.
-V4_METAL_SHARE_OF_CAPACITY = 0.80  # Metal made per hour while running / what the furnaces can make
+V4_METAL_SHARE_OF_CAPACITY = 0.80  # Metal made while running / what the furnaces could make at the time
 V4_BUILDERS_WORKED = 3.0  # builders busy of 11, time-weighted while running
 V4_BUILDERS_NO_EFFECT = 2.3
 V4_LEVELS_PER_HOUR = 12.0  # building levels completed per elapsed hour
 V4_IDLE_AFFORDABLE_MAX_PCT = 50.0  # idle with an affordable target step, share of colony time
 MIN_RUNNING_HOURS_TO_JUDGE = 12.0
+
+# Metal per hour all furnaces could make, as this script read it on 2026-11-20. Plan v4 builds furnace
+# levels itself (174 at the landing, 183 an hour later), so the capacity is not one number: a period's
+# mean divided by the capacity at the end understates how much of it was used. Mark 1 compares every
+# recorded point with the capacity at its own time. The series does not record the capacity, so it is
+# read off these points, the lines earlier runs left in `CAPACITY_LOG`, and the reading of the run itself.
+FURNACE_CAPACITY_READINGS: tuple[tuple[float, float], ...] = (
+    (T_V4_LANDED, 427_080.0),  # same 174 furnace levels as at 07:58
+    (dt.datetime(2026, 11, 20, 7, 58, tzinfo=UTC).timestamp(), 427_080.0),
+    (dt.datetime(2026, 11, 20, 8, 23, tzinfo=UTC).timestamp(), 466_600.0),
+    (dt.datetime(2026, 11, 20, 8, 39, tzinfo=UTC).timestamp(), 476_620.0),
+    (dt.datetime(2026, 11, 20, 8, 53, tzinfo=UTC).timestamp(), 512_440.0),
+)
+CAPACITY_LOG = Path.home() / ".cache" / "spaceinvasion-autoplayer" / "furnace_capacity_readings.jsonl"
 
 # Gates plan v2 defined for its optional steps (kept for reference).
 GATE_PREQUEUE_PCT = 5.0  # ready but not started, share of colony time
@@ -140,9 +158,83 @@ def _furnace_capacity_per_hour(planets: list[dict], economies: dict, speedup: fl
     return total
 
 
+def _read_capacity_log(path: Path) -> list[tuple[float, float]]:
+    """Furnace capacity readings earlier runs left in `path` as `(time, Metal per hour)`; none if unreadable."""
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    out: list[tuple[float, float]] = []
+    for line in lines:
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(row, dict):
+            continue
+        ts, cap = _num(row.get("ts")), _num(row.get("capacity"))
+        if ts > 0 and cap > 0:
+            out.append((ts, cap))
+    return out
+
+
+def _append_capacity_log(path: Path, ts: float, capacity: float, furnace_levels: int) -> bool:
+    """Add this run's reading to `path`; `False` when the file cannot be written (the run goes on)."""
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as fh:
+            row = {"ts": round(ts, 1), "capacity": round(capacity, 1), "furnace_levels": furnace_levels}
+            fh.write(json.dumps(row) + "\n")
+        return True
+    except OSError:
+        return False
+
+
+def _capacity_range_at(readings: list[tuple[float, float]], ts: float) -> tuple[float, float, float]:
+    """Return `(lowest, estimate, highest)` furnace capacity at `ts` from `readings` sorted by time.
+
+    Between two readings the capacity is taken to lie between them, since furnace levels are built and
+    not removed, and the estimate is the straight line from one to the other.
+    """
+    if ts <= readings[0][0]:
+        return readings[0][1], readings[0][1], readings[0][1]
+    for (t0, c0), (t1, c1) in zip(readings, readings[1:]):
+        if t0 <= ts <= t1:
+            frac = (ts - t0) / (t1 - t0) if t1 > t0 else 1.0
+            return min(c0, c1), c0 + (c1 - c0) * frac, max(c0, c1)
+    return readings[-1][1], readings[-1][1], readings[-1][1]
+
+
+def _capacity_shares(
+    points: list[tuple[float, float]], readings: list[tuple[float, float]]
+) -> tuple[float, float, float]:
+    """Return `(lowest, estimate, highest)` share of the furnace capacity that `points` used.
+
+    `points` are `(time, Metal per hour)` of one period in time order. The share is the Metal made over
+    the Metal that could have been made, with the capacity taken at the time of each point. A point
+    also shows the capacity was at least what was being made, then and from then on.
+    """
+    made = cap_low = cap_est = cap_high = peak = 0.0
+    for ts, metal in points:
+        low, est, high = _capacity_range_at(readings, ts)
+        peak = max(peak, metal)
+        low = max(low, peak)
+        made += metal
+        cap_low += low
+        cap_est += max(est, low)
+        cap_high += max(high, low)
+    if cap_low <= 0:
+        return float("nan"), float("nan"), float("nan")
+    return made / cap_high, made / cap_est, made / cap_low
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--api-url", default="http://127.0.0.1:8787")
+    parser.add_argument(
+        "--capacity-log", type=Path, default=CAPACITY_LOG, help="file that keeps the furnace capacity read by each run"
+    )
+    parser.add_argument("--no-record", action="store_true", help="do not add this run's furnace capacity to that file")
     args = parser.parse_args()
     base = args.api_url.rstrip("/")
 
@@ -408,6 +500,29 @@ def main() -> int:
         f"Kryptonite {_num(now_prod.get('kryptonite_per_hour')):,.0f}  Spice {_num(now_prod.get('spice_per_hour')):,.0f}"
         f"   (before the switch: Metal {BASELINE_METAL_PER_HOUR:,}; plan v3: {PLAN_V3_METAL_PER_HOUR:,})"
     )
+    # Share of the furnace capacity plan v4 used, with the capacity taken at the time of each point.
+    share_low = share_est = share_high = float("nan")
+    readings: list[tuple[float, float]] = []
+    if capacity:
+        logged = [r for r in _read_capacity_log(args.capacity_log) if T_V4_LANDED <= r[0] <= now]
+        readings = sorted(set(FURNACE_CAPACITY_READINGS) | set(logged) | {(now, float(capacity))})
+        readings = [r for r in readings if r[0] <= now]
+        points_v4 = [(ts, metal) for ts, _busy, metal in series if ts >= T_V4_LANDED]
+        if points_v4:
+            share_low, share_est, share_high = _capacity_shares(points_v4, readings)
+        kept = (not args.no_record) and _append_capacity_log(args.capacity_log, now, float(capacity), furnace_levels)
+        print(
+            f"    furnace capacity: {readings[0][1]:,.0f} Metal per hour at the landing, {capacity:,.0f} now; "
+            f"{len(readings)} readings since the landing ({len(logged)} from earlier runs on this machine)"
+        )
+        print(
+            f"      this run's reading {'was added to' if kept else 'was not added to'} {args.capacity_log}"
+        )
+        if share_est == share_est:
+            print(
+                f"      plan v4 made {100.0 * share_est:.0f}% of what the furnaces could make at the time "
+                f"(between {100.0 * share_low:.0f}% and {100.0 * share_high:.0f}%, depending on when the levels between two readings were built)"
+            )
 
     # ------------------------------------------------------------------ 8. request pressure
     print("\n[8] Page-view limit")
@@ -530,14 +645,26 @@ def main() -> int:
     def _verdict(ok: bool) -> str:
         return "PASS" if ok else "FAIL"
 
-    share = metal_v4 / capacity if capacity and metal_v4 == metal_v4 else float("nan")
-    if share == share:
+    if share_est == share_est and capacity:
+        if share_low >= V4_METAL_SHARE_OF_CAPACITY:
+            verdict_1 = "PASS"
+        elif share_high < V4_METAL_SHARE_OF_CAPACITY:
+            verdict_1 = "FAIL"
+        else:
+            leaning = "pass" if share_est >= V4_METAL_SHARE_OF_CAPACITY else "fail"
+            verdict_1 = f"NOT SETTLED (the estimate would {leaning}; the range crosses the mark)"
         print(
-            f"  1. furnaces used:  {metal_v4:,.0f} Metal per hour = {100.0 * share:.0f}% of today's capacity "
-            f"(mark {100.0 * V4_METAL_SHARE_OF_CAPACITY:.0f}%; plan v3 made {PLAN_V3_METAL_PER_HOUR:,})  {_verdict(share >= V4_METAL_SHARE_OF_CAPACITY)}"
+            f"  1. furnaces used:  {metal_v4:,.0f} Metal per hour = {100.0 * share_est:.0f}% of what the furnaces could make at the time, "
+            f"between {100.0 * share_low:.0f}% and {100.0 * share_high:.0f}% "
+            f"(mark {100.0 * V4_METAL_SHARE_OF_CAPACITY:.0f}%; plan v3 made {PLAN_V3_METAL_PER_HOUR:,})  {verdict_1}"
+        )
+        print(
+            f"     against the capacity now alone: {100.0 * metal_v4 / capacity:.0f}% "
+            f"(capacity went from {readings[0][1]:,.0f} to {capacity:,.0f} since the landing; {len(readings)} readings)"
         )
     else:
-        print(f"  1. furnaces used:  {metal_v4:,.0f} Metal per hour (capacity unknown; plan v3 made {PLAN_V3_METAL_PER_HOUR:,})")
+        why = "no recorded points in period E" if capacity else "capacity unknown"
+        print(f"  1. furnaces used:  {metal_v4:,.0f} Metal per hour ({why}; plan v3 made {PLAN_V3_METAL_PER_HOUR:,})")
     if on_mean != on_mean:
         print("  2. builders busy:  no recorded points yet")
     elif on_mean >= V4_BUILDERS_WORKED:
