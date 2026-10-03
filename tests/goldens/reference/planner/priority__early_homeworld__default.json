@@ -1,0 +1,129 @@
+{
+ "actions": [
+  {
+   "action_href": "indexInternal.es?action=internalBuildItem&buildingID=3&sid=goldensid0001#3",
+   "cost": {
+    "kryptonite": 84,
+    "metal": 0,
+    "pig_iron": 136,
+    "spice": 0
+   },
+   "duration_seconds": 41.4,
+   "duration_text": "41s",
+   "eta_bottleneck": null,
+   "executable_now": true,
+   "kind": "BUILD",
+   "manual_queue_id": null,
+   "manual_sort_rank": null,
+   "missing": {
+    "kryptonite": 0,
+    "metal": 0,
+    "pig_iron": 0,
+    "spice": 0
+   },
+   "planet_coords": "03:120:07",
+   "planet_id": 20001,
+   "priority": "P2",
+   "reason": "Tutorial 2/11: Increase your Kryptonite mine level 1 / 3 (progress 1/3)",
+   "target_id": 3,
+   "target_level": 2,
+   "target_name": "Kryptonite mine",
+   "total_eta": "1m",
+   "total_hours": 0.0115,
+   "total_seconds": 41.4,
+   "wait_eta": "Ready",
+   "wait_hours": 0.0,
+   "wait_seconds": 0.0
+  },
+  {
+   "action_href": "indexInternal.es?action=internalBuildItem&buildingID=1&sid=goldensid0001#1",
+   "cost": {
+    "kryptonite": 58,
+    "metal": 0,
+    "pig_iron": 178,
+    "spice": 0
+   },
+   "duration_seconds": 42.6,
+   "duration_text": "43s",
+   "eta_bottleneck": null,
+   "executable_now": true,
+   "kind": "BUILD",
+   "manual_queue_id": null,
+   "manual_sort_rank": null,
+   "missing": {
+    "kryptonite": 0,
+    "metal": 0,
+    "pig_iron": 0,
+    "spice": 0
+   },
+   "planet_coords": "03:120:07",
+   "planet_id": 20001,
+   "priority": "P2",
+   "reason": "Tutorial 2/11: Increase your Pig iron mine level 2 / 3 (progress 2/3)",
+   "target_id": 1,
+   "target_level": 3,
+   "target_name": "Pig iron mine",
+   "total_eta": "1m",
+   "total_hours": 0.011833,
+   "total_seconds": 42.6,
+   "wait_eta": "Ready",
+   "wait_hours": 0.0,
+   "wait_seconds": 0.0
+  },
+  {
+   "action_href": "indexInternal.es?action=internalBuildItem&buildingID=5&sid=goldensid0001#5",
+   "cost": {
+    "kryptonite": 80,
+    "metal": 0,
+    "pig_iron": 183,
+    "spice": 0
+   },
+   "duration_seconds": 48.2,
+   "duration_text": "48s",
+   "eta_bottleneck": null,
+   "executable_now": true,
+   "kind": "BUILD",
+   "manual_queue_id": null,
+   "manual_sort_rank": null,
+   "missing": {
+    "kryptonite": 0,
+    "metal": 0,
+    "pig_iron": 0,
+    "spice": 0
+   },
+   "planet_coords": "03:120:07",
+   "planet_id": 20001,
+   "priority": "P2",
+   "reason": "Tutorial 2/11: Increase your Fusion plant level 2 / 3 (progress 2/3)",
+   "target_id": 5,
+   "target_level": 3,
+   "target_name": "Fusion plant",
+   "total_eta": "1m",
+   "total_hours": 0.013389,
+   "total_seconds": 48.2,
+   "wait_eta": "Ready",
+   "wait_hours": 0.0,
+   "wait_seconds": 0.0
+  }
+ ],
+ "summary": {
+  "by_kind": {
+   "BUILD": 3
+  },
+  "by_planet_id": {
+   "20001": 3
+  },
+  "by_priority": {
+   "P2": 3
+  },
+  "executable_now": 3,
+  "first_executable": {
+   "kind": "BUILD",
+   "planet_id": 20001,
+   "priority": "P2",
+   "target_level": 2,
+   "target_name": "Kryptonite mine"
+  },
+  "total": 3
+ }
+}

@@ -1,0 +1,13 @@
+{
+ "button_label": "collect daily bonus",
+ "consecutive_day": null,
+ "default_tpid": 20002,
+ "grants_free_transmitter": false,
+ "has_send_daily_login": true,
+ "present": true,
+ "tpid_options": [
+  20001,
+  20002,
+  20003
+ ]
+}

@@ -1,0 +1,20 @@
+{
+ "http_status": 200,
+ "request": {
+  "json": {
+   "command": "discard_colony_candidate",
+   "target_coords": "03:120:02"
+  },
+  "method": "POST",
+  "path": "/command"
+ },
+ "response": {
+  "changed": true,
+  "command": "discard_colony_candidate",
+  "discarded": true,
+  "discarded_count": 1,
+  "message": "Discarded colony candidate 03:120:02.",
+  "ok": true,
+  "target_coords": "03:120:02"
+ }
+}

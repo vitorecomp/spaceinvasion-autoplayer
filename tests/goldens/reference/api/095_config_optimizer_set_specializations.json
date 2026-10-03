@@ -1,0 +1,17 @@
+{
+ "http_status": 200,
+ "request": {
+  "json": {
+   "command": "config_optimizer_set_specializations",
+   "planet_specializations": {}
+  },
+  "method": "POST",
+  "path": "/command"
+ },
+ "response": {
+  "command": "config_optimizer_set_specializations",
+  "locked_planets_count": 0,
+  "ok": true,
+  "planet_specializations": {}
+ }
+}

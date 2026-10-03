@@ -1,0 +1,456 @@
+{
+ "ship_offers": [
+  {
+   "can_build": true,
+   "cost": {
+    "kryptonite": 3000,
+    "metal": 3000,
+    "pig_iron": 0,
+    "spice": 0
+   },
+   "input_name": "ship[1]",
+   "name": "Small transport",
+   "owned": 12,
+   "status_text": "Buildable",
+   "unit_id": 1,
+   "unit_type": "ship"
+  },
+  {
+   "can_build": false,
+   "cost": {
+    "kryptonite": 6000,
+    "metal": 8000,
+    "pig_iron": 0,
+    "spice": 0
+   },
+   "input_name": null,
+   "name": "Large transport",
+   "owned": 4,
+   "status_text": "Locked / insufficient",
+   "unit_id": 2,
+   "unit_type": "ship"
+  },
+  {
+   "can_build": false,
+   "cost": {
+    "kryptonite": 25000,
+    "metal": 25000,
+    "pig_iron": 0,
+    "spice": 0
+   },
+   "input_name": null,
+   "name": "Transmitter",
+   "owned": 0,
+   "status_text": "Locked / insufficient",
+   "unit_id": 3,
+   "unit_type": "ship"
+  },
+  {
+   "can_build": true,
+   "cost": {
+    "kryptonite": 2000,
+    "metal": 4000,
+    "pig_iron": 0,
+    "spice": 100
+   },
+   "input_name": "ship[4]",
+   "name": "Small fighter",
+   "owned": 30,
+   "status_text": "Buildable",
+   "unit_id": 4,
+   "unit_type": "ship"
+  },
+  {
+   "can_build": false,
+   "cost": {
+    "kryptonite": 4000,
+    "metal": 8000,
+    "pig_iron": 0,
+    "spice": 300
+   },
+   "input_name": null,
+   "name": "Warship",
+   "owned": 6,
+   "status_text": "Locked / insufficient",
+   "unit_id": 5,
+   "unit_type": "ship"
+  },
+  {
+   "can_build": false,
+   "cost": {
+    "kryptonite": 10000,
+    "metal": 25000,
+    "pig_iron": 0,
+    "spice": 1500
+   },
+   "input_name": null,
+   "name": "Starcruiser",
+   "owned": 0,
+   "status_text": "Locked / insufficient",
+   "unit_id": 6,
+   "unit_type": "ship"
+  },
+  {
+   "can_build": false,
+   "cost": {
+    "kryptonite": 20000,
+    "metal": 30000,
+    "pig_iron": 0,
+    "spice": 5000
+   },
+   "input_name": null,
+   "name": "Phoenix",
+   "owned": 0,
+   "status_text": "Locked / insufficient",
+   "unit_id": 7,
+   "unit_type": "ship"
+  },
+  {
+   "can_build": false,
+   "cost": {
+    "kryptonite": 15000,
+    "metal": 20000,
+    "pig_iron": 10000,
+    "spice": 8000
+   },
+   "input_name": null,
+   "name": "Colony ship",
+   "owned": 0,
+   "status_text": "Locked / insufficient",
+   "unit_id": 8,
+   "unit_type": "ship"
+  },
+  {
+   "can_build": true,
+   "cost": {
+    "kryptonite": 200,
+    "metal": 2000,
+    "pig_iron": 0,
+    "spice": 400
+   },
+   "input_name": "ship[9]",
+   "name": "Solar cells",
+   "owned": 0,
+   "status_text": "Buildable",
+   "unit_id": 9,
+   "unit_type": "ship"
+  },
+  {
+   "can_build": true,
+   "cost": {
+    "kryptonite": 3000,
+    "metal": 0,
+    "pig_iron": 0,
+    "spice": 200
+   },
+   "input_name": "ship[10]",
+   "name": "Spy probe",
+   "owned": 8,
+   "status_text": "Buildable",
+   "unit_id": 10,
+   "unit_type": "ship"
+  },
+  {
+   "can_build": false,
+   "cost": {
+    "kryptonite": 5000,
+    "metal": 10000,
+    "pig_iron": 2000,
+    "spice": 0
+   },
+   "input_name": null,
+   "name": "Recycler",
+   "owned": 3,
+   "status_text": "Locked / insufficient",
+   "unit_id": 11,
+   "unit_type": "ship"
+  },
+  {
+   "can_build": false,
+   "cost": {
+    "kryptonite": 25000,
+    "metal": 35000,
+    "pig_iron": 0,
+    "spice": 0
+   },
+   "input_name": null,
+   "name": "Battleship",
+   "owned": 0,
+   "status_text": "Locked / insufficient",
+   "unit_id": 13,
+   "unit_type": "ship"
+  },
+  {
+   "can_build": false,
+   "cost": {
+    "kryptonite": 60000,
+    "metal": 40000,
+    "pig_iron": 0,
+    "spice": 10000
+   },
+   "input_name": null,
+   "name": "Stealth bomber",
+   "owned": 0,
+   "status_text": "Locked / insufficient",
+   "unit_id": 14,
+   "unit_type": "ship"
+  },
+  {
+   "can_build": false,
+   "cost": {
+    "kryptonite": 50000,
+    "metal": 60000,
+    "pig_iron": 0,
+    "spice": 2000
+   },
+   "input_name": null,
+   "name": "Destroyer",
+   "owned": 0,
+   "status_text": "Locked / insufficient",
+   "unit_id": 15,
+   "unit_type": "ship"
+  },
+  {
+   "can_build": false,
+   "cost": {
+    "kryptonite": 2000000,
+    "metal": 3000000,
+    "pig_iron": 0,
+    "spice": 500000
+   },
+   "input_name": null,
+   "name": "Imperial starbase",
+   "owned": 0,
+   "status_text": "Locked / insufficient",
+   "unit_id": 16,
+   "unit_type": "ship"
+  }
+ ],
+ "ship_offers_without_counts": [
+  {
+   "can_build": true,
+   "cost": {
+    "kryptonite": 3000,
+    "metal": 3000,
+    "pig_iron": 0,
+    "spice": 0
+   },
+   "input_name": "ship[1]",
+   "name": "Small transport",
+   "owned": 12,
+   "status_text": "Buildable",
+   "unit_id": 1,
+   "unit_type": "ship"
+  },
+  {
+   "can_build": false,
+   "cost": {
+    "kryptonite": 6000,
+    "metal": 8000,
+    "pig_iron": 0,
+    "spice": 0
+   },
+   "input_name": null,
+   "name": "Large transport",
+   "owned": 4,
+   "status_text": "Locked / insufficient",
+   "unit_id": 2,
+   "unit_type": "ship"
+  },
+  {
+   "can_build": false,
+   "cost": {
+    "kryptonite": 25000,
+    "metal": 25000,
+    "pig_iron": 0,
+    "spice": 0
+   },
+   "input_name": null,
+   "name": "Transmitter",
+   "owned": 0,
+   "status_text": "Locked / insufficient",
+   "unit_id": 3,
+   "unit_type": "ship"
+  },
+  {
+   "can_build": true,
+   "cost": {
+    "kryptonite": 2000,
+    "metal": 4000,
+    "pig_iron": 0,
+    "spice": 100
+   },
+   "input_name": "ship[4]",
+   "name": "Small fighter",
+   "owned": 30,
+   "status_text": "Buildable",
+   "unit_id": 4,
+   "unit_type": "ship"
+  },
+  {
+   "can_build": false,
+   "cost": {
+    "kryptonite": 4000,
+    "metal": 8000,
+    "pig_iron": 0,
+    "spice": 300
+   },
+   "input_name": null,
+   "name": "Warship",
+   "owned": 6,
+   "status_text": "Locked / insufficient",
+   "unit_id": 5,
+   "unit_type": "ship"
+  },
+  {
+   "can_build": false,
+   "cost": {
+    "kryptonite": 10000,
+    "metal": 25000,
+    "pig_iron": 0,
+    "spice": 1500
+   },
+   "input_name": null,
+   "name": "Starcruiser",
+   "owned": 0,
+   "status_text": "Locked / insufficient",
+   "unit_id": 6,
+   "unit_type": "ship"
+  },
+  {
+   "can_build": false,
+   "cost": {
+    "kryptonite": 20000,
+    "metal": 30000,
+    "pig_iron": 0,
+    "spice": 5000
+   },
+   "input_name": null,
+   "name": "Phoenix",
+   "owned": 0,
+   "status_text": "Locked / insufficient",
+   "unit_id": 7,
+   "unit_type": "ship"
+  },
+  {
+   "can_build": false,
+   "cost": {
+    "kryptonite": 15000,
+    "metal": 20000,
+    "pig_iron": 10000,
+    "spice": 8000
+   },
+   "input_name": null,
+   "name": "Colony ship",
+   "owned": 0,
+   "status_text": "Locked / insufficient",
+   "unit_id": 8,
+   "unit_type": "ship"
+  },
+  {
+   "can_build": true,
+   "cost": {
+    "kryptonite": 200,
+    "metal": 2000,
+    "pig_iron": 0,
+    "spice": 400
+   },
+   "input_name": "ship[9]",
+   "name": "Solar cells",
+   "owned": 0,
+   "status_text": "Buildable",
+   "unit_id": 9,
+   "unit_type": "ship"
+  },
+  {
+   "can_build": true,
+   "cost": {
+    "kryptonite": 3000,
+    "metal": 0,
+    "pig_iron": 0,
+    "spice": 200
+   },
+   "input_name": "ship[10]",
+   "name": "Spy probe",
+   "owned": 8,
+   "status_text": "Buildable",
+   "unit_id": 10,
+   "unit_type": "ship"
+  },
+  {
+   "can_build": false,
+   "cost": {
+    "kryptonite": 5000,
+    "metal": 10000,
+    "pig_iron": 2000,
+    "spice": 0
+   },
+   "input_name": null,
+   "name": "Recycler",
+   "owned": 3,
+   "status_text": "Locked / insufficient",
+   "unit_id": 11,
+   "unit_type": "ship"
+  },
+  {
+   "can_build": false,
+   "cost": {
+    "kryptonite": 25000,
+    "metal": 35000,
+    "pig_iron": 0,
+    "spice": 0
+   },
+   "input_name": null,
+   "name": "Battleship",
+   "owned": 0,
+   "status_text": "Locked / insufficient",
+   "unit_id": 13,
+   "unit_type": "ship"
+  },
+  {
+   "can_build": false,
+   "cost": {
+    "kryptonite": 60000,
+    "metal": 40000,
+    "pig_iron": 0,
+    "spice": 10000
+   },
+   "input_name": null,
+   "name": "Stealth bomber",
+   "owned": 0,
+   "status_text": "Locked / insufficient",
+   "unit_id": 14,
+   "unit_type": "ship"
+  },
+  {
+   "can_build": false,
+   "cost": {
+    "kryptonite": 50000,
+    "metal": 60000,
+    "pig_iron": 0,
+    "spice": 2000
+   },
+   "input_name": null,
+   "name": "Destroyer",
+   "owned": 0,
+   "status_text": "Locked / insufficient",
+   "unit_id": 15,
+   "unit_type": "ship"
+  },
+  {
+   "can_build": false,
+   "cost": {
+    "kryptonite": 2000000,
+    "metal": 3000000,
+    "pig_iron": 0,
+    "spice": 500000
+   },
+   "input_name": null,
+   "name": "Imperial starbase",
+   "owned": 0,
+   "status_text": "Locked / insufficient",
+   "unit_id": 16,
+   "unit_type": "ship"
+  }
+ ]
+}

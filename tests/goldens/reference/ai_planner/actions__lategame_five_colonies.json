@@ -1,0 +1,282 @@
+{
+ "actions": [
+  {
+   "action_href": "indexInternal.es?action=internalBuildItem&buildingID=3&sid=goldensid0001#3",
+   "cost": {
+    "kryptonite": 26609,
+    "metal": 0,
+    "pig_iron": 43541,
+    "spice": 0
+   },
+   "duration_seconds": 1197.27,
+   "duration_text": "19m 57s",
+   "eta_bottleneck": null,
+   "executable_now": true,
+   "kind": "BUILD",
+   "manual_queue_id": null,
+   "manual_sort_rank": null,
+   "missing": {
+    "kryptonite": 0,
+    "metal": 0,
+    "pig_iron": 0,
+    "spice": 0
+   },
+   "planet_coords": "03:124:09",
+   "planet_id": 20004,
+   "priority": "P1",
+   "reason": "AI-Planner #1: build Kryptonite mine L16",
+   "target_id": 3,
+   "target_level": 16,
+   "target_name": "Kryptonite mine",
+   "total_eta": "20m",
+   "total_hours": 0.332576,
+   "total_seconds": 1197.27,
+   "wait_eta": "Ready",
+   "wait_hours": 0.0,
+   "wait_seconds": 0.0
+  },
+  {
+   "action_href": "indexInternal.es?action=internalBuildItem&buildingID=3&sid=goldensid0001#3",
+   "cost": {
+    "kryptonite": 208883,
+    "metal": 0,
+    "pig_iron": 341808,
+    "spice": 0
+   },
+   "duration_seconds": 6892.43,
+   "duration_text": "1h 54m",
+   "eta_bottleneck": null,
+   "executable_now": true,
+   "kind": "BUILD",
+   "manual_queue_id": null,
+   "manual_sort_rank": null,
+   "missing": {
+    "kryptonite": 0,
+    "metal": 0,
+    "pig_iron": 0,
+    "spice": 0
+   },
+   "planet_coords": "03:120:11",
+   "planet_id": 20002,
+   "priority": "P1",
+   "reason": "AI-Planner #3: build Kryptonite mine L21",
+   "target_id": 3,
+   "target_level": 21,
+   "target_name": "Kryptonite mine",
+   "total_eta": "1.9h",
+   "total_hours": 1.914563,
+   "total_seconds": 6892.43,
+   "wait_eta": "Ready",
+   "wait_hours": 0.0,
+   "wait_seconds": 0.0
+  },
+  {
+   "action_href": "indexInternal.es?action=internalBuildItem&buildingID=3&sid=goldensid0001#3",
+   "cost": {
+    "kryptonite": 719172,
+    "metal": 0,
+    "pig_iron": 1176827,
+    "spice": 0
+   },
+   "duration_seconds": 2617.31,
+   "duration_text": "43m 37s",
+   "eta_bottleneck": null,
+   "executable_now": true,
+   "kind": "BUILD",
+   "manual_queue_id": null,
+   "manual_sort_rank": null,
+   "missing": {
+    "kryptonite": 0,
+    "metal": 0,
+    "pig_iron": 0,
+    "spice": 0
+   },
+   "planet_coords": "03:120:07",
+   "planet_id": 20001,
+   "priority": "P1",
+   "reason": "AI-Planner #4: build Kryptonite mine L24",
+   "target_id": 3,
+   "target_level": 24,
+   "target_name": "Kryptonite mine",
+   "total_eta": "44m",
+   "total_hours": 0.72703,
+   "total_seconds": 2617.31,
+   "wait_eta": "Ready",
+   "wait_hours": 0.0,
+   "wait_seconds": 0.0
+  },
+  {
+   "action_href": "indexInternal.es?action=internalBuildItem&researchID=1&sid=goldensid0001",
+   "cost": {
+    "kryptonite": 1024000,
+    "metal": 0,
+    "pig_iron": 2048000,
+    "spice": 0
+   },
+   "duration_seconds": 56888.89,
+   "duration_text": "15h 48m",
+   "eta_bottleneck": null,
+   "executable_now": true,
+   "kind": "RESEARCH",
+   "manual_queue_id": null,
+   "manual_sort_rank": null,
+   "missing": {
+    "kryptonite": 0,
+    "metal": 0,
+    "pig_iron": 0,
+    "spice": 0
+   },
+   "planet_coords": "03:120:07",
+   "planet_id": 20001,
+   "priority": "P1",
+   "reason": "AI-Planner #22: research Mining technology L12",
+   "target_id": 1,
+   "target_level": 12,
+   "target_name": "Mining technology",
+   "total_eta": "15.8h",
+   "total_hours": 15.80247,
+   "total_seconds": 56888.89,
+   "wait_eta": "Ready",
+   "wait_hours": 0.0,
+   "wait_seconds": 0.0
+  }
+ ],
+ "field_conflicts": [
+  {
+   "blocked_building_key": "b3",
+   "blocked_building_name": "Kryptonite mine",
+   "blocked_target_level": 20,
+   "candidate_building_key": "b7",
+   "candidate_building_name": "Development center",
+   "candidate_level": 12,
+   "candidates": [
+    {
+     "building_id": 7,
+     "building_key": "b7",
+     "building_name": "Development center",
+     "current_level": 12,
+     "is_power_plant": false,
+     "planned_for_demolition": false
+    },
+    {
+     "building_id": 14,
+     "building_key": "b14",
+     "building_name": "Spice warehouse",
+     "current_level": 7,
+     "is_power_plant": false,
+     "planned_for_demolition": false
+    },
+    {
+     "building_id": 9,
+     "building_key": "b9",
+     "building_name": "Weapons factory",
+     "current_level": 6,
+     "is_power_plant": false,
+     "planned_for_demolition": false
+    },
+    {
+     "building_id": 11,
+     "building_key": "b11",
+     "building_name": "Pig iron warehouse",
+     "current_level": 6,
+     "is_power_plant": false,
+     "planned_for_demolition": false
+    },
+    {
+     "building_id": 12,
+     "building_key": "b12",
+     "building_name": "Metal warehouse",
+     "current_level": 6,
+     "is_power_plant": false,
+     "planned_for_demolition": false
+    },
+    {
+     "building_id": 13,
+     "building_key": "b13",
+     "building_name": "Kryptonite warehouse",
+     "current_level": 6,
+     "is_power_plant": false,
+     "planned_for_demolition": false
+    },
+    {
+     "building_id": 10,
+     "building_key": "b10",
+     "building_name": "Fleet base",
+     "current_level": 5,
+     "is_power_plant": false,
+     "planned_for_demolition": false
+    },
+    {
+     "building_id": 1,
+     "building_key": "b1",
+     "building_name": "Pig iron mine",
+     "current_level": 22,
+     "is_power_plant": false,
+     "planned_for_demolition": false
+    },
+    {
+     "building_id": 4,
+     "building_key": "b4",
+     "building_name": "Spice mine",
+     "current_level": 21,
+     "is_power_plant": false,
+     "planned_for_demolition": false
+    },
+    {
+     "building_id": 2,
+     "building_key": "b2",
+     "building_name": "Blast furnace",
+     "current_level": 16,
+     "is_power_plant": false,
+     "planned_for_demolition": false
+    },
+    {
+     "building_id": 3,
+     "building_key": "b3",
+     "building_name": "Kryptonite mine",
+     "current_level": 19,
+     "is_power_plant": false,
+     "planned_for_demolition": false
+    },
+    {
+     "building_id": 5,
+     "building_key": "b5",
+     "building_name": "Fusion plant",
+     "current_level": 24,
+     "is_power_plant": true,
+     "planned_for_demolition": false
+    }
+   ],
+   "conflict_key": "p20003:b3:L20",
+   "fields_max": 188,
+   "fields_used": 188,
+   "planet_coords": "03:121:04",
+   "planet_id": 20003,
+   "planet_name": "Golden Outpost"
+  }
+ ],
+ "fill_actions": [],
+ "summary": {
+  "by_kind": {
+   "BUILD": 3,
+   "RESEARCH": 1
+  },
+  "by_planet_id": {
+   "20001": 2,
+   "20002": 1,
+   "20004": 1
+  },
+  "by_priority": {
+   "P1": 4
+  },
+  "executable_now": 4,
+  "first_executable": {
+   "kind": "BUILD",
+   "planet_id": 20004,
+   "priority": "P1",
+   "target_level": 16,
+   "target_name": "Kryptonite mine"
+  },
+  "total": 4
+ }
+}

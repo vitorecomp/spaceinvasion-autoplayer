@@ -1,0 +1,23 @@
+{
+ "menu_messages": {
+  "spio": 0,
+  "total": 0
+ },
+ "menu_status": {
+  "account_points": 18450,
+  "account_rank": 412,
+  "unread_messages": {
+   "spio": 0,
+   "total": 0
+  }
+ },
+ "message_folder_links": [
+  [
+   "spio",
+   "indexInternal.es?action=internalMessages&type=spio&sid=REDACTED",
+   0,
+   0
+  ]
+ ],
+ "unread_banner_count": 0
+}

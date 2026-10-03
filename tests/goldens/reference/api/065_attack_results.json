@@ -1,0 +1,321 @@
+{
+ "http_status": 200,
+ "request": {
+  "json": {
+   "command": "attack_results"
+  },
+  "method": "POST",
+  "path": "/command"
+ },
+ "response": {
+  "battles": [],
+  "blocked_targets": [],
+  "command": "attack_results",
+  "ok": true,
+  "raid_stats": {
+   "bash_blocks": [],
+   "blocked_targets": {},
+   "history": [],
+   "overall": {
+    "attempts": 0,
+    "avg_loot": {
+     "kryptonite": 0.0,
+     "metal": 0.0,
+     "pig_iron": 0.0,
+     "spice": 0.0
+    },
+    "avg_loot_spice_eq": 0.0,
+    "last_attack": null,
+    "losses": 0,
+    "recency_weighted_loot_spice_eq": 0.0,
+    "success_rate": 0.0,
+    "total_loot": {
+     "kryptonite": 0,
+     "metal": 0,
+     "pig_iron": 0,
+     "spice": 0
+    },
+    "total_loot_spice_eq": 0.0,
+    "wins": 0
+   },
+   "per_target": {},
+   "telemetry_summary": {
+    "action_count": 21,
+    "action_history": {
+     "by_kind": {
+      "ACTIVATE_TRANSMITTER": {
+       "dry_run": 1,
+       "executed": 0,
+       "failed": 0,
+       "total": 1
+      },
+      "ATTACK": {
+       "dry_run": 1,
+       "executed": 0,
+       "failed": 0,
+       "total": 1
+      },
+      "BUILD": {
+       "dry_run": 2,
+       "executed": 1,
+       "failed": 0,
+       "total": 3
+      },
+      "BUILD_SHIP": {
+       "dry_run": 1,
+       "executed": 0,
+       "failed": 0,
+       "total": 1
+      },
+      "COLONIZE": {
+       "dry_run": 1,
+       "executed": 0,
+       "failed": 0,
+       "total": 1
+      },
+      "DEMOLISH_BUILDING": {
+       "dry_run": 1,
+       "executed": 0,
+       "failed": 0,
+       "total": 1
+      },
+      "ESCAPE_FLIGHT": {
+       "dry_run": 1,
+       "executed": 0,
+       "failed": 0,
+       "total": 1
+      },
+      "RECYCLE": {
+       "dry_run": 1,
+       "executed": 0,
+       "failed": 0,
+       "total": 1
+      },
+      "RESEARCH": {
+       "dry_run": 1,
+       "executed": 0,
+       "failed": 0,
+       "total": 1
+      },
+      "SCAN_GALAXY": {
+       "dry_run": 1,
+       "executed": 3,
+       "failed": 0,
+       "total": 4
+      },
+      "SPY": {
+       "dry_run": 1,
+       "executed": 1,
+       "failed": 0,
+       "total": 2
+      },
+      "STATION": {
+       "dry_run": 1,
+       "executed": 0,
+       "failed": 0,
+       "total": 1
+      },
+      "THROTTLE_BUILDING": {
+       "dry_run": 1,
+       "executed": 0,
+       "failed": 0,
+       "total": 1
+      },
+      "TRANSPORT": {
+       "dry_run": 2,
+       "executed": 0,
+       "failed": 0,
+       "total": 2
+      }
+     },
+     "dry_run": 16,
+     "executed": 5,
+     "failed": 0,
+     "success_rate": 1.0,
+     "total": 21
+    },
+    "action_history_count": 21,
+    "action_success_rate": 1.0,
+    "action_successes": 5,
+    "economy_trend": 1.64,
+    "galaxy_scans_count": 3,
+    "planet_snapshots": {
+     "count": 5,
+     "distinct_planets": 3,
+     "first_ts": 1700000000.0,
+     "latest_by_planet": {
+      "20001": {
+       "buildings_total_levels": 77,
+       "coords": "03:120:07",
+       "economy_rates": {
+        "resource1": 100,
+        "resource2": 100,
+        "resource3": 100,
+        "resource4": 100,
+        "resource5": 100
+       },
+       "energy_produced": 2400,
+       "energy_used": 1713,
+       "fields_max": 262,
+       "fields_used": 77,
+       "planet_id": 20001,
+       "planet_type": "normal",
+       "resources": {
+        "kryptonite": 70487,
+        "metal": 96000,
+        "pig_iron": 171039,
+        "spice": 31000
+       },
+       "ships_total": 63
+      },
+      "20002": {
+       "buildings_total_levels": 46,
+       "coords": "03:120:11",
+       "economy_rates": {},
+       "energy_produced": 1300,
+       "energy_used": 900,
+       "fields_max": 301,
+       "fields_used": 46,
+       "planet_id": 20002,
+       "planet_type": "normal",
+       "resources": {
+        "kryptonite": 22000,
+        "metal": 18500,
+        "pig_iron": 54000,
+        "spice": 6400
+       },
+       "ships_total": 5
+      },
+      "20003": {
+       "buildings_total_levels": 19,
+       "coords": "03:121:04",
+       "economy_rates": {},
+       "energy_produced": 420,
+       "energy_used": 260,
+       "fields_max": 188,
+       "fields_used": 19,
+       "planet_id": 20003,
+       "planet_type": "normal",
+       "resources": {
+        "kryptonite": 5100,
+        "metal": 1200,
+        "pig_iron": 9800,
+        "spice": 900
+       },
+       "ships_total": 0
+      }
+     },
+     "latest_ts": 1700000000.0,
+     "trend": {
+      "building_levels_delta": 1,
+      "fields_used_delta": 1,
+      "first_fields_used": 141,
+      "first_resources_spice_eq": 159246.666,
+      "first_total_buildings_levels": 141,
+      "latest_energy_net": 1247,
+      "latest_fields_used": 142,
+      "latest_resources_spice_eq": 156248.833,
+      "latest_total_buildings_levels": 142,
+      "resources_spice_eq_delta": -2997.833
+     }
+    },
+    "planet_snapshots_count": 5,
+    "points_delta": 14.5,
+    "points_trend": 14.5,
+    "pts_per_hr": 15.12,
+    "raid_history": {
+     "attempts": 0,
+     "avg_loot": {
+      "kryptonite": 0.0,
+      "metal": 0.0,
+      "pig_iron": 0.0,
+      "spice": 0.0
+     },
+     "avg_loot_spice_eq": 0.0,
+     "count": 0,
+     "last_attack": null,
+     "losses": 0,
+     "recency_weighted_loot_spice_eq": 0.0,
+     "success_rate": 0.0,
+     "targets_count": 0,
+     "total_loot": {
+      "kryptonite": 0,
+      "metal": 0,
+      "pig_iron": 0,
+      "spice": 0
+     },
+     "total_loot_spice_eq": 0.0,
+     "wins": 0
+    },
+    "rank_snapshots": {
+     "avg_pts_per_hr": 14.3,
+     "best_server_rank": 412,
+     "count": 2,
+     "estimated_points_delta": 14.5,
+     "first_estimated_points": 1531.4,
+     "first_pts_per_hr": 13.48,
+     "first_server_points": 18450,
+     "first_server_rank": 412,
+     "first_ts": 1700000000.0,
+     "latest_estimated_points": 1545.9,
+     "latest_pts_per_hr": 15.12,
+     "latest_server_points": 18450,
+     "latest_server_rank": 412,
+     "latest_spice_value": 803683.6,
+     "latest_ts": 1700000000.0,
+     "max_estimated_points": 1545.9,
+     "max_pts_per_hr": 15.12,
+     "max_server_points": 18450,
+     "min_estimated_points": 1531.4,
+     "min_pts_per_hr": 13.48,
+     "min_server_points": 18450,
+     "pts_per_hr_delta": 1.64,
+     "rank_climbed": 0,
+     "server_points_delta": 0,
+     "spice_value_delta": 0.0,
+     "trajectory": [
+      {
+       "estimated_points": 1531.4,
+       "planets": 3,
+       "pts_per_hr": 13.48,
+       "server_points": 18450,
+       "server_rank": 412,
+       "spice_value": 803683.6,
+       "ts": 1700000000.0
+      },
+      {
+       "estimated_points": 1545.9,
+       "planets": 3,
+       "pts_per_hr": 15.12,
+       "server_points": 18450,
+       "server_rank": 412,
+       "spice_value": 803683.6,
+       "ts": 1700000000.0
+      }
+     ],
+     "worst_server_rank": 412
+    },
+    "rank_snapshots_count": 2,
+    "spy_reports_count": 1,
+    "spy_targets": {
+     "count": 9,
+     "inactive_count": 5,
+     "spacia_count": 2,
+     "spied_count": 1,
+     "total_known_resources_spice_eq": 39400.0
+    },
+    "spy_targets_count": 9
+   },
+   "total_24h": 0
+  },
+  "summary": {
+   "active_blocks_count": 0,
+   "draws": 0,
+   "losses": 0,
+   "total_battles": 0,
+   "total_loot_spice_eq": 0,
+   "total_losses_spice_eq": 0,
+   "wins": 0
+  }
+ }
+}

@@ -1,0 +1,30 @@
+{
+ "http_status": 200,
+ "request": {
+  "json": {
+   "command": "rename_planet",
+   "name": "Outpost Two",
+   "planet_id": 20003
+  },
+  "method": "POST",
+  "path": "/command"
+ },
+ "response": {
+  "command": "rename_planet",
+  "custom_name": "Outpost Two",
+  "custom_planet_names": {
+   "20003": "Outpost Two"
+  },
+  "game_name": "Golden Outpost",
+  "name": "Outpost Two",
+  "ok": true,
+  "planet": {
+   "coords": "03:121:04",
+   "custom_name": "Outpost Two",
+   "game_name": "Golden Outpost",
+   "name": "Outpost Two",
+   "planet_id": 20003
+  },
+  "planet_id": 20003
+ }
+}

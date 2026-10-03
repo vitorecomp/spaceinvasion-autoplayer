@@ -1,0 +1,12 @@
+{
+ "fleet_slot_status": null,
+ "mission_blocks": {
+  "ATTACK": null,
+  "COLONIZE": null,
+  "ESCAPE": null,
+  "RECYCLE": null,
+  "SPY": null,
+  "STATION": null,
+  "TRANSPORT": null
+ }
+}

@@ -1,0 +1,1689 @@
+{
+ "http_status": 200,
+ "request": {
+  "json": {
+   "command": "spy",
+   "target_coords": "03:120:03"
+  },
+  "method": "POST",
+  "path": "/command"
+ },
+ "response": {
+  "action": {
+   "action_href": null,
+   "cost": {
+    "kryptonite": 0,
+    "metal": 0,
+    "pig_iron": 0,
+    "spice": 0
+   },
+   "duration_seconds": 0.0,
+   "duration_text": "Instant",
+   "eta_bottleneck": null,
+   "executable_now": true,
+   "kind": "SPY",
+   "manual_queue_id": null,
+   "manual_sort_rank": null,
+   "missing": {
+    "kryptonite": 0,
+    "metal": 0,
+    "pig_iron": 0,
+    "spice": 0
+   },
+   "planet_coords": "03:120:07",
+   "planet_id": 20001,
+   "planet_name": "Golden Prime",
+   "priority": "P2",
+   "reason": "API spy command",
+   "target_id": 10,
+   "target_level": 1,
+   "target_name": "03:120:03",
+   "total_eta": "Ready",
+   "total_hours": 0.0,
+   "total_seconds": 0.0,
+   "wait_eta": "Ready",
+   "wait_hours": 0.0,
+   "wait_seconds": 0.0
+  },
+  "command": "spy",
+  "dry_run": false,
+  "executed": true,
+  "manual_queue": [],
+  "message": "Dispatched spy probe (1x s10) to [03:120:03] from [03:120:07].",
+  "next_action": {
+   "action_href": null,
+   "cost": {
+    "kryptonite": 0,
+    "metal": 0,
+    "pig_iron": 0,
+    "spice": 0
+   },
+   "duration_seconds": 0.0,
+   "duration_text": "Instant",
+   "eta_bottleneck": null,
+   "executable_now": true,
+   "kind": "SPY",
+   "manual_queue_id": null,
+   "manual_sort_rank": null,
+   "missing": {
+    "kryptonite": 0,
+    "metal": 0,
+    "pig_iron": 0,
+    "spice": 0
+   },
+   "planet_coords": "03:120:07",
+   "planet_id": 20001,
+   "planet_name": "Golden Prime",
+   "priority": "P1",
+   "reason": "Send Spy probe (s10) to scout Spacia 03:120:09 before raiding",
+   "target_id": 10,
+   "target_level": 1,
+   "target_name": "03:120:09 (Spacia)",
+   "total_eta": "Ready",
+   "total_hours": 0.0,
+   "total_seconds": 0.0,
+   "wait_eta": "Ready",
+   "wait_hours": 0.0,
+   "wait_seconds": 0.0
+  },
+  "notifications": {
+   "items": [],
+   "unread_count": 0
+  },
+  "ok": true,
+  "state": {
+   "account_points": 18450,
+   "account_rank": 412,
+   "active_planet_id": 20001,
+   "active_queues": [
+    {
+     "building_id": null,
+     "cargo": null,
+     "category": "fleet",
+     "delivered": false,
+     "delivered_cargo": null,
+     "detail": "Outbound \u00b7 1x s10",
+     "expected_cargo": null,
+     "finish_ts": 1700001800.0,
+     "name": "Spy \u2192 [03:120:03]",
+     "origin_coords": "03:120:07",
+     "queue_slot": 1,
+     "remaining_seconds": 1800.0,
+     "remaining_text": "in transit",
+     "target_level": null
+    }
+   ],
+   "fleet_alerts": [],
+   "newbie_protection": false,
+   "nickname": "GoldenPilot",
+   "planets": [
+    {
+     "building_names": {
+      "b1": "Pig iron mine",
+      "b10": "Fleet base",
+      "b2": "Blast furnace",
+      "b3": "Kryptonite mine",
+      "b4": "Spice mine",
+      "b5": "Fusion plant",
+      "b7": "Development center",
+      "b8": "Research lab",
+      "b9": "Weapons factory"
+     },
+     "building_offers": [
+      {
+       "build_href": "indexInternal.es?action=internalBuildItem&buildingID=1&sid=REDACTED",
+       "building_id": 1,
+       "can_build": true,
+       "cost": {
+        "kryptonite": 3513,
+        "metal": 0,
+        "pig_iron": 10961,
+        "spice": 0
+       },
+       "current_level": 12,
+       "name": "Pig iron mine",
+       "status_text": "Build level 13",
+       "target_level": 13
+      },
+      {
+       "build_href": "indexInternal.es?action=internalBuildItem&buildingID=2&sid=REDACTED",
+       "building_id": 2,
+       "can_build": true,
+       "cost": {
+        "kryptonite": 1021,
+        "metal": 0,
+        "pig_iron": 3061,
+        "spice": 0
+       },
+       "current_level": 9,
+       "name": "Blast furnace",
+       "status_text": "Build level 10",
+       "target_level": 10
+      },
+      {
+       "build_href": "indexInternal.es?action=internalBuildItem&buildingID=3&sid=REDACTED",
+       "building_id": 3,
+       "can_build": true,
+       "cost": {
+        "kryptonite": 3390,
+        "metal": 0,
+        "pig_iron": 5547,
+        "spice": 0
+       },
+       "current_level": 10,
+       "name": "Kryptonite mine",
+       "status_text": "Build level 11",
+       "target_level": 11
+      },
+      {
+       "build_href": "indexInternal.es?action=internalBuildItem&buildingID=4&sid=REDACTED",
+       "building_id": 4,
+       "can_build": true,
+       "cost": {
+        "kryptonite": 2163,
+        "metal": 5947,
+        "pig_iron": 0,
+        "spice": 0
+       },
+       "current_level": 8,
+       "name": "Spice mine",
+       "status_text": "Build level 9",
+       "target_level": 9
+      },
+      {
+       "build_href": "indexInternal.es?action=internalBuildItem&buildingID=5&sid=REDACTED",
+       "building_id": 5,
+       "can_build": true,
+       "cost": {
+        "kryptonite": 7427,
+        "metal": 0,
+        "pig_iron": 16975,
+        "spice": 0
+       },
+       "current_level": 13,
+       "name": "Fusion plant",
+       "status_text": "Build level 14",
+       "target_level": 14
+      },
+      {
+       "build_href": "indexInternal.es?action=internalBuildItem&buildingID=6&sid=REDACTED",
+       "building_id": 6,
+       "can_build": true,
+       "cost": {
+        "kryptonite": 25,
+        "metal": 120,
+        "pig_iron": 0,
+        "spice": 80
+       },
+       "current_level": 0,
+       "name": "Thermosolar plant",
+       "status_text": "Build level 1",
+       "target_level": 1
+      },
+      {
+       "build_href": null,
+       "building_id": 7,
+       "can_build": false,
+       "cost": {
+        "kryptonite": 76800,
+        "metal": 153600,
+        "pig_iron": 0,
+        "spice": 51200
+       },
+       "current_level": 8,
+       "name": "Development center",
+       "status_text": "Not enough resources",
+       "target_level": 9
+      },
+      {
+       "build_href": null,
+       "building_id": 8,
+       "can_build": false,
+       "cost": {
+        "kryptonite": 0,
+        "metal": 102400,
+        "pig_iron": 0,
+        "spice": 38400
+       },
+       "current_level": 7,
+       "name": "Research lab",
+       "status_text": "Not enough resources",
+       "target_level": 8
+      },
+      {
+       "build_href": "indexInternal.es?action=internalBuildItem&buildingID=9&sid=REDACTED",
+       "building_id": 9,
+       "can_build": true,
+       "cost": {
+        "kryptonite": 0,
+        "metal": 6400,
+        "pig_iron": 9600,
+        "spice": 11200
+       },
+       "current_level": 5,
+       "name": "Weapons factory",
+       "status_text": "Build level 6",
+       "target_level": 6
+      },
+      {
+       "build_href": "indexInternal.es?action=internalBuildItem&buildingID=10&sid=REDACTED",
+       "building_id": 10,
+       "can_build": true,
+       "cost": {
+        "kryptonite": 8000,
+        "metal": 32000,
+        "pig_iron": 0,
+        "spice": 12800
+       },
+       "current_level": 4,
+       "name": "Fleet base",
+       "status_text": "Build level 5",
+       "target_level": 5
+      },
+      {
+       "build_href": "indexInternal.es?action=internalBuildItem&buildingID=11&sid=REDACTED",
+       "building_id": 11,
+       "can_build": true,
+       "cost": {
+        "kryptonite": 0,
+        "metal": 800,
+        "pig_iron": 2000,
+        "spice": 0
+       },
+       "current_level": 0,
+       "name": "Pig iron warehouse",
+       "status_text": "Build level 1",
+       "target_level": 1
+      },
+      {
+       "build_href": "indexInternal.es?action=internalBuildItem&buildingID=12&sid=REDACTED",
+       "building_id": 12,
+       "can_build": true,
+       "cost": {
+        "kryptonite": 0,
+        "metal": 800,
+        "pig_iron": 2000,
+        "spice": 0
+       },
+       "current_level": 0,
+       "name": "Metal warehouse",
+       "status_text": "Build level 1",
+       "target_level": 1
+      },
+      {
+       "build_href": "indexInternal.es?action=internalBuildItem&buildingID=13&sid=REDACTED",
+       "building_id": 13,
+       "can_build": true,
+       "cost": {
+        "kryptonite": 0,
+        "metal": 800,
+        "pig_iron": 2000,
+        "spice": 0
+       },
+       "current_level": 0,
+       "name": "Kryptonite warehouse",
+       "status_text": "Build level 1",
+       "target_level": 1
+      },
+      {
+       "build_href": "indexInternal.es?action=internalBuildItem&buildingID=14&sid=REDACTED",
+       "building_id": 14,
+       "can_build": true,
+       "cost": {
+        "kryptonite": 0,
+        "metal": 800,
+        "pig_iron": 2000,
+        "spice": 0
+       },
+       "current_level": 0,
+       "name": "Spice warehouse",
+       "status_text": "Build level 1",
+       "target_level": 1
+      },
+      {
+       "build_href": null,
+       "building_id": 15,
+       "can_build": false,
+       "cost": {
+        "kryptonite": 40000,
+        "metal": 30000,
+        "pig_iron": 50000,
+        "spice": 6000
+       },
+       "current_level": 0,
+       "name": "Particle cannon",
+       "status_text": "Unavailable",
+       "target_level": 1
+      },
+      {
+       "build_href": null,
+       "building_id": 16,
+       "can_build": false,
+       "cost": {
+        "kryptonite": 12000,
+        "metal": 10000,
+        "pig_iron": 15000,
+        "spice": 5000
+       },
+       "current_level": 0,
+       "name": "Particle shield",
+       "status_text": "Unavailable",
+       "target_level": 1
+      },
+      {
+       "build_href": null,
+       "building_id": 17,
+       "can_build": false,
+       "cost": {
+        "kryptonite": 1000000,
+        "metal": 500000,
+        "pig_iron": 0,
+        "spice": 250000
+       },
+       "current_level": 0,
+       "name": "Microsystem accelerator",
+       "status_text": "Unavailable",
+       "target_level": 1
+      },
+      {
+       "build_href": null,
+       "building_id": 18,
+       "can_build": false,
+       "cost": {
+        "kryptonite": 150000,
+        "metal": 140000,
+        "pig_iron": 100000,
+        "spice": 50000
+       },
+       "current_level": 0,
+       "name": "Teleporter",
+       "status_text": "Unavailable",
+       "target_level": 1
+      },
+      {
+       "build_href": "indexInternal.es?action=internalBuildItem&buildingID=19&sid=REDACTED",
+       "building_id": 19,
+       "can_build": true,
+       "cost": {
+        "kryptonite": 20000,
+        "metal": 40000,
+        "pig_iron": 10000,
+        "spice": 8000
+       },
+       "current_level": 0,
+       "name": "Galaxy scanner",
+       "status_text": "Build level 1",
+       "target_level": 1
+      },
+      {
+       "build_href": null,
+       "building_id": 20,
+       "can_build": false,
+       "cost": {
+        "kryptonite": 200000,
+        "metal": 1000000,
+        "pig_iron": 0,
+        "spice": 500000
+       },
+       "current_level": 0,
+       "name": "Tunnel system",
+       "status_text": "Not enough resources",
+       "target_level": 1
+      },
+      {
+       "build_href": null,
+       "building_id": 21,
+       "can_build": false,
+       "cost": {
+        "kryptonite": 0,
+        "metal": 2000000,
+        "pig_iron": 0,
+        "spice": 25000
+       },
+       "current_level": 0,
+       "name": "Quantum Array",
+       "status_text": "Unavailable",
+       "target_level": 1
+      }
+     ],
+     "buildings": {
+      "b1": 12,
+      "b10": 4,
+      "b2": 9,
+      "b3": 10,
+      "b4": 8,
+      "b5": 13,
+      "b7": 8,
+      "b8": 7,
+      "b9": 5
+     },
+     "coords": "03:120:07",
+     "defense": {
+      "d1": 12,
+      "d2": 4
+     },
+     "defense_offers": [],
+     "economy_rates": {
+      "resource1": 100,
+      "resource2": 100,
+      "resource3": 100,
+      "resource4": 100,
+      "resource5": 100
+     },
+     "energy": {
+      "produced": 2400,
+      "used": 1650
+     },
+     "fields_max": 262,
+     "fields_used": 76,
+     "name": "Golden Prime",
+     "planet_id": 20001,
+     "planet_type": "normal",
+     "resources": {
+      "kryptonite": 74000,
+      "metal": 96000,
+      "pig_iron": 182000,
+      "spice": 31000
+     },
+     "ship_offers": [
+      {
+       "can_build": true,
+       "cost": {
+        "kryptonite": 3000,
+        "metal": 3000,
+        "pig_iron": 0,
+        "spice": 0
+       },
+       "input_name": "ship[1]",
+       "name": "Small transport",
+       "owned": 12,
+       "status_text": "Buildable",
+       "unit_id": 1,
+       "unit_type": "ship"
+      },
+      {
+       "can_build": false,
+       "cost": {
+        "kryptonite": 6000,
+        "metal": 8000,
+        "pig_iron": 0,
+        "spice": 0
+       },
+       "input_name": null,
+       "name": "Large transport",
+       "owned": 4,
+       "status_text": "Locked / insufficient",
+       "unit_id": 2,
+       "unit_type": "ship"
+      },
+      {
+       "can_build": false,
+       "cost": {
+        "kryptonite": 25000,
+        "metal": 25000,
+        "pig_iron": 0,
+        "spice": 0
+       },
+       "input_name": null,
+       "name": "Transmitter",
+       "owned": 0,
+       "status_text": "Locked / insufficient",
+       "unit_id": 3,
+       "unit_type": "ship"
+      },
+      {
+       "can_build": true,
+       "cost": {
+        "kryptonite": 2000,
+        "metal": 4000,
+        "pig_iron": 0,
+        "spice": 100
+       },
+       "input_name": "ship[4]",
+       "name": "Small fighter",
+       "owned": 30,
+       "status_text": "Buildable",
+       "unit_id": 4,
+       "unit_type": "ship"
+      },
+      {
+       "can_build": false,
+       "cost": {
+        "kryptonite": 4000,
+        "metal": 8000,
+        "pig_iron": 0,
+        "spice": 300
+       },
+       "input_name": null,
+       "name": "Warship",
+       "owned": 6,
+       "status_text": "Locked / insufficient",
+       "unit_id": 5,
+       "unit_type": "ship"
+      },
+      {
+       "can_build": false,
+       "cost": {
+        "kryptonite": 10000,
+        "metal": 25000,
+        "pig_iron": 0,
+        "spice": 1500
+       },
+       "input_name": null,
+       "name": "Starcruiser",
+       "owned": 0,
+       "status_text": "Locked / insufficient",
+       "unit_id": 6,
+       "unit_type": "ship"
+      },
+      {
+       "can_build": false,
+       "cost": {
+        "kryptonite": 20000,
+        "metal": 30000,
+        "pig_iron": 0,
+        "spice": 5000
+       },
+       "input_name": null,
+       "name": "Phoenix",
+       "owned": 0,
+       "status_text": "Locked / insufficient",
+       "unit_id": 7,
+       "unit_type": "ship"
+      },
+      {
+       "can_build": false,
+       "cost": {
+        "kryptonite": 15000,
+        "metal": 20000,
+        "pig_iron": 10000,
+        "spice": 8000
+       },
+       "input_name": null,
+       "name": "Colony ship",
+       "owned": 0,
+       "status_text": "Locked / insufficient",
+       "unit_id": 8,
+       "unit_type": "ship"
+      },
+      {
+       "can_build": true,
+       "cost": {
+        "kryptonite": 200,
+        "metal": 2000,
+        "pig_iron": 0,
+        "spice": 400
+       },
+       "input_name": "ship[9]",
+       "name": "Solar cells",
+       "owned": 0,
+       "status_text": "Buildable",
+       "unit_id": 9,
+       "unit_type": "ship"
+      },
+      {
+       "can_build": true,
+       "cost": {
+        "kryptonite": 3000,
+        "metal": 0,
+        "pig_iron": 0,
+        "spice": 200
+       },
+       "input_name": "ship[10]",
+       "name": "Spy probe",
+       "owned": 8,
+       "status_text": "Buildable",
+       "unit_id": 10,
+       "unit_type": "ship"
+      },
+      {
+       "can_build": false,
+       "cost": {
+        "kryptonite": 5000,
+        "metal": 10000,
+        "pig_iron": 2000,
+        "spice": 0
+       },
+       "input_name": null,
+       "name": "Recycler",
+       "owned": 3,
+       "status_text": "Locked / insufficient",
+       "unit_id": 11,
+       "unit_type": "ship"
+      },
+      {
+       "can_build": false,
+       "cost": {
+        "kryptonite": 25000,
+        "metal": 35000,
+        "pig_iron": 0,
+        "spice": 0
+       },
+       "input_name": null,
+       "name": "Battleship",
+       "owned": 0,
+       "status_text": "Locked / insufficient",
+       "unit_id": 13,
+       "unit_type": "ship"
+      },
+      {
+       "can_build": false,
+       "cost": {
+        "kryptonite": 60000,
+        "metal": 40000,
+        "pig_iron": 0,
+        "spice": 10000
+       },
+       "input_name": null,
+       "name": "Stealth bomber",
+       "owned": 0,
+       "status_text": "Locked / insufficient",
+       "unit_id": 14,
+       "unit_type": "ship"
+      },
+      {
+       "can_build": false,
+       "cost": {
+        "kryptonite": 50000,
+        "metal": 60000,
+        "pig_iron": 0,
+        "spice": 2000
+       },
+       "input_name": null,
+       "name": "Destroyer",
+       "owned": 0,
+       "status_text": "Locked / insufficient",
+       "unit_id": 15,
+       "unit_type": "ship"
+      },
+      {
+       "can_build": false,
+       "cost": {
+        "kryptonite": 2000000,
+        "metal": 3000000,
+        "pig_iron": 0,
+        "spice": 500000
+       },
+       "input_name": null,
+       "name": "Imperial starbase",
+       "owned": 0,
+       "status_text": "Locked / insufficient",
+       "unit_id": 16,
+       "unit_type": "ship"
+      }
+     ],
+     "ships": {
+      "s1": 12,
+      "s10": 8,
+      "s11": 3,
+      "s2": 4,
+      "s4": 30,
+      "s5": 6
+     },
+     "storage": {
+      "kryptonite": 400000,
+      "metal": 400000,
+      "pig_iron": 400000,
+      "spice": 400000
+     },
+     "temperature": 24
+    },
+    {
+     "building_names": {
+      "b1": "Pig iron mine",
+      "b10": "Fleet base",
+      "b2": "Blast furnace",
+      "b3": "Kryptonite mine",
+      "b4": "Spice mine",
+      "b5": "Fusion plant",
+      "b7": "Development center",
+      "b9": "Weapons factory"
+     },
+     "building_offers": [],
+     "buildings": {
+      "b1": 9,
+      "b10": 2,
+      "b2": 6,
+      "b3": 7,
+      "b4": 5,
+      "b5": 10,
+      "b7": 5,
+      "b9": 2
+     },
+     "coords": "03:120:11",
+     "defense": {},
+     "defense_offers": [],
+     "economy_rates": {},
+     "energy": {
+      "produced": 1300,
+      "used": 900
+     },
+     "fields_max": 301,
+     "fields_used": 46,
+     "name": "Golden Forge",
+     "planet_id": 20002,
+     "planet_type": "normal",
+     "resources": {
+      "kryptonite": 22000,
+      "metal": 18500,
+      "pig_iron": 54000,
+      "spice": 6400
+     },
+     "ship_offers": [],
+     "ships": {
+      "s1": 3,
+      "s10": 2
+     },
+     "storage": {
+      "kryptonite": 400000,
+      "metal": 400000,
+      "pig_iron": 400000,
+      "spice": 400000
+     },
+     "temperature": -18
+    },
+    {
+     "building_names": {
+      "b1": "Pig iron mine",
+      "b3": "Kryptonite mine",
+      "b4": "Spice mine",
+      "b5": "Fusion plant",
+      "b7": "Development center"
+     },
+     "building_offers": [],
+     "buildings": {
+      "b1": 5,
+      "b3": 4,
+      "b4": 2,
+      "b5": 6,
+      "b7": 2
+     },
+     "coords": "03:121:04",
+     "defense": {},
+     "defense_offers": [],
+     "economy_rates": {},
+     "energy": {
+      "produced": 420,
+      "used": 260
+     },
+     "fields_max": 188,
+     "fields_used": 19,
+     "name": "Golden Outpost",
+     "planet_id": 20003,
+     "planet_type": "normal",
+     "resources": {
+      "kryptonite": 5100,
+      "metal": 1200,
+      "pig_iron": 9800,
+      "spice": 900
+     },
+     "ship_offers": [],
+     "ships": {},
+     "storage": {
+      "kryptonite": 150000,
+      "metal": 150000,
+      "pig_iron": 150000,
+      "spice": 150000
+     },
+     "temperature": 61
+    }
+   ],
+   "raid_stats": {
+    "bash_blocks": [],
+    "blocked_targets": {},
+    "history": [],
+    "overall": {
+     "attempts": 0,
+     "avg_loot": {
+      "kryptonite": 0.0,
+      "metal": 0.0,
+      "pig_iron": 0.0,
+      "spice": 0.0
+     },
+     "avg_loot_spice_eq": 0.0,
+     "last_attack": null,
+     "losses": 0,
+     "recency_weighted_loot_spice_eq": 0.0,
+     "success_rate": 0.0,
+     "total_loot": {
+      "kryptonite": 0,
+      "metal": 0,
+      "pig_iron": 0,
+      "spice": 0
+     },
+     "total_loot_spice_eq": 0.0,
+     "wins": 0
+    },
+    "per_target": {},
+    "telemetry_summary": {
+     "action_count": 20,
+     "action_history": {
+      "by_kind": {
+       "ACTIVATE_TRANSMITTER": {
+        "dry_run": 1,
+        "executed": 0,
+        "failed": 0,
+        "total": 1
+       },
+       "ATTACK": {
+        "dry_run": 1,
+        "executed": 0,
+        "failed": 0,
+        "total": 1
+       },
+       "BUILD": {
+        "dry_run": 2,
+        "executed": 0,
+        "failed": 0,
+        "total": 2
+       },
+       "BUILD_SHIP": {
+        "dry_run": 1,
+        "executed": 0,
+        "failed": 0,
+        "total": 1
+       },
+       "COLONIZE": {
+        "dry_run": 1,
+        "executed": 0,
+        "failed": 0,
+        "total": 1
+       },
+       "DEMOLISH_BUILDING": {
+        "dry_run": 1,
+        "executed": 0,
+        "failed": 0,
+        "total": 1
+       },
+       "ESCAPE_FLIGHT": {
+        "dry_run": 1,
+        "executed": 0,
+        "failed": 0,
+        "total": 1
+       },
+       "RECYCLE": {
+        "dry_run": 1,
+        "executed": 0,
+        "failed": 0,
+        "total": 1
+       },
+       "RESEARCH": {
+        "dry_run": 1,
+        "executed": 0,
+        "failed": 0,
+        "total": 1
+       },
+       "SCAN_GALAXY": {
+        "dry_run": 1,
+        "executed": 3,
+        "failed": 0,
+        "total": 4
+       },
+       "SPY": {
+        "dry_run": 1,
+        "executed": 1,
+        "failed": 0,
+        "total": 2
+       },
+       "STATION": {
+        "dry_run": 1,
+        "executed": 0,
+        "failed": 0,
+        "total": 1
+       },
+       "THROTTLE_BUILDING": {
+        "dry_run": 1,
+        "executed": 0,
+        "failed": 0,
+        "total": 1
+       },
+       "TRANSPORT": {
+        "dry_run": 2,
+        "executed": 0,
+        "failed": 0,
+        "total": 2
+       }
+      },
+      "dry_run": 16,
+      "executed": 4,
+      "failed": 0,
+      "success_rate": 1.0,
+      "total": 20
+     },
+     "action_history_count": 20,
+     "action_success_rate": 1.0,
+     "action_successes": 4,
+     "economy_trend": 0.0,
+     "galaxy_scans_count": 3,
+     "planet_snapshots": {
+      "count": 4,
+      "distinct_planets": 3,
+      "first_ts": 1700000000.0,
+      "latest_by_planet": {
+       "20001": {
+        "buildings_total_levels": 76,
+        "coords": "03:120:07",
+        "economy_rates": {
+         "resource1": 100,
+         "resource2": 100,
+         "resource3": 100,
+         "resource4": 100,
+         "resource5": 100
+        },
+        "energy_produced": 2400,
+        "energy_used": 1650,
+        "fields_max": 262,
+        "fields_used": 76,
+        "planet_id": 20001,
+        "planet_type": "normal",
+        "resources": {
+         "kryptonite": 74000,
+         "metal": 96000,
+         "pig_iron": 182000,
+         "spice": 31000
+        },
+        "ships_total": 63
+       },
+       "20002": {
+        "buildings_total_levels": 46,
+        "coords": "03:120:11",
+        "economy_rates": {},
+        "energy_produced": 1300,
+        "energy_used": 900,
+        "fields_max": 301,
+        "fields_used": 46,
+        "planet_id": 20002,
+        "planet_type": "normal",
+        "resources": {
+         "kryptonite": 22000,
+         "metal": 18500,
+         "pig_iron": 54000,
+         "spice": 6400
+        },
+        "ships_total": 5
+       },
+       "20003": {
+        "buildings_total_levels": 19,
+        "coords": "03:121:04",
+        "economy_rates": {},
+        "energy_produced": 420,
+        "energy_used": 260,
+        "fields_max": 188,
+        "fields_used": 19,
+        "planet_id": 20003,
+        "planet_type": "normal",
+        "resources": {
+         "kryptonite": 5100,
+         "metal": 1200,
+         "pig_iron": 9800,
+         "spice": 900
+        },
+        "ships_total": 0
+       }
+      },
+      "latest_ts": 1700000000.0,
+      "trend": {
+       "building_levels_delta": 0,
+       "fields_used_delta": 0,
+       "first_fields_used": 141,
+       "first_resources_spice_eq": 159246.666,
+       "first_total_buildings_levels": 141,
+       "latest_energy_net": 1310,
+       "latest_fields_used": 141,
+       "latest_resources_spice_eq": 159246.666,
+       "latest_total_buildings_levels": 141,
+       "resources_spice_eq_delta": 0.0
+      }
+     },
+     "planet_snapshots_count": 4,
+     "points_delta": 0.0,
+     "points_trend": 0.0,
+     "pts_per_hr": 13.48,
+     "raid_history": {
+      "attempts": 0,
+      "avg_loot": {
+       "kryptonite": 0.0,
+       "metal": 0.0,
+       "pig_iron": 0.0,
+       "spice": 0.0
+      },
+      "avg_loot_spice_eq": 0.0,
+      "count": 0,
+      "last_attack": null,
+      "losses": 0,
+      "recency_weighted_loot_spice_eq": 0.0,
+      "success_rate": 0.0,
+      "targets_count": 0,
+      "total_loot": {
+       "kryptonite": 0,
+       "metal": 0,
+       "pig_iron": 0,
+       "spice": 0
+      },
+      "total_loot_spice_eq": 0.0,
+      "wins": 0
+     },
+     "rank_snapshots": {
+      "avg_pts_per_hr": 13.48,
+      "best_server_rank": 412,
+      "count": 1,
+      "estimated_points_delta": 0.0,
+      "first_estimated_points": 1531.4,
+      "first_pts_per_hr": 13.48,
+      "first_server_points": 18450,
+      "first_server_rank": 412,
+      "first_ts": 1700000000.0,
+      "latest_estimated_points": 1531.4,
+      "latest_pts_per_hr": 13.48,
+      "latest_server_points": 18450,
+      "latest_server_rank": 412,
+      "latest_spice_value": 803683.6,
+      "latest_ts": 1700000000.0,
+      "max_estimated_points": 1531.4,
+      "max_pts_per_hr": 13.48,
+      "max_server_points": 18450,
+      "min_estimated_points": 1531.4,
+      "min_pts_per_hr": 13.48,
+      "min_server_points": 18450,
+      "pts_per_hr_delta": 0.0,
+      "rank_climbed": 0,
+      "server_points_delta": 0,
+      "spice_value_delta": 0.0,
+      "trajectory": [
+       {
+        "estimated_points": 1531.4,
+        "planets": 3,
+        "pts_per_hr": 13.48,
+        "server_points": 18450,
+        "server_rank": 412,
+        "spice_value": 803683.6,
+        "ts": 1700000000.0
+       }
+      ],
+      "worst_server_rank": 412
+     },
+     "rank_snapshots_count": 1,
+     "spy_reports_count": 0,
+     "spy_targets": {
+      "count": 9,
+      "inactive_count": 5,
+      "spacia_count": 2,
+      "spied_count": 0,
+      "total_known_resources_spice_eq": 0.0
+     },
+     "spy_targets_count": 9
+    },
+    "transmitter_status": {
+     "daily_bonus_available": false,
+     "daily_bonus_checked_day": "",
+     "daily_bonus_collected_day": "",
+     "due": true,
+     "free_spins_remaining": null,
+     "last_activated_day": "",
+     "last_activated_ts": 0.0,
+     "last_checked_day": "",
+     "last_checked_ts": 0.0,
+     "last_reward": "",
+     "today_day_key": "2023-11-14",
+     "total_activations": 0
+    }
+   },
+   "raid_targets": [
+    {
+     "attack_attempts": 0,
+     "attack_losses": 0,
+     "attack_success_rate": null,
+     "attack_wins": 0,
+     "avg_attack_loot": null,
+     "avg_attack_loot_spice_eq": null,
+     "bash_hits": 0,
+     "block_reason": "",
+     "blocked_until_ts": 0.0,
+     "colonize_max_fields": null,
+     "colonize_min_fields": null,
+     "coords": "03:120:09",
+     "defense": {},
+     "dug_in": false,
+     "fleet": {},
+     "has_debris": true,
+     "has_spy_intel": false,
+     "is_inactive": true,
+     "is_spacia": true,
+     "last_attack_loot": null,
+     "last_attack_loot_spice_eq": null,
+     "last_attack_outcome": "",
+     "last_attack_ts": 0.0,
+     "last_blocked_ts": 0.0,
+     "last_scanned_ts": 1700000000.0,
+     "last_spied_ts": 0.0,
+     "owner": "Spacia",
+     "planet_name": "Spacia Planet debris",
+     "points": null,
+     "recency_weighted_loot_spice_eq": null,
+     "resources": {
+      "kryptonite": 0,
+      "metal": 0,
+      "pig_iron": 0,
+      "spice": 0
+     },
+     "spy_count": 0,
+     "status_color": "yellow",
+     "temperature": null,
+     "total_attack_loot": null,
+     "total_attack_loot_spice_eq": null,
+     "uninhabited_fields": null
+    },
+    {
+     "attack_attempts": 0,
+     "attack_losses": 0,
+     "attack_success_rate": null,
+     "attack_wins": 0,
+     "avg_attack_loot": null,
+     "avg_attack_loot_spice_eq": null,
+     "bash_hits": 0,
+     "block_reason": "",
+     "blocked_until_ts": 0.0,
+     "colonize_max_fields": null,
+     "colonize_min_fields": null,
+     "coords": "03:121:12",
+     "defense": {},
+     "dug_in": false,
+     "fleet": {},
+     "has_debris": true,
+     "has_spy_intel": false,
+     "is_inactive": true,
+     "is_spacia": true,
+     "last_attack_loot": null,
+     "last_attack_loot_spice_eq": null,
+     "last_attack_outcome": "",
+     "last_attack_ts": 0.0,
+     "last_blocked_ts": 0.0,
+     "last_scanned_ts": 1700000000.0,
+     "last_spied_ts": 0.0,
+     "owner": "Spacia",
+     "planet_name": "Spacia Planet debris",
+     "points": null,
+     "recency_weighted_loot_spice_eq": null,
+     "resources": {
+      "kryptonite": 0,
+      "metal": 0,
+      "pig_iron": 0,
+      "spice": 0
+     },
+     "spy_count": 0,
+     "status_color": "yellow",
+     "temperature": null,
+     "total_attack_loot": null,
+     "total_attack_loot_spice_eq": null,
+     "uninhabited_fields": null
+    },
+    {
+     "attack_attempts": 0,
+     "attack_losses": 0,
+     "attack_success_rate": null,
+     "attack_wins": 0,
+     "avg_attack_loot": null,
+     "avg_attack_loot_spice_eq": null,
+     "bash_hits": 0,
+     "block_reason": "",
+     "blocked_until_ts": 0.0,
+     "colonize_max_fields": null,
+     "colonize_min_fields": null,
+     "coords": "03:122:05",
+     "defense": {},
+     "dug_in": false,
+     "fleet": {},
+     "has_debris": true,
+     "has_spy_intel": false,
+     "is_inactive": true,
+     "is_spacia": false,
+     "last_attack_loot": null,
+     "last_attack_loot_spice_eq": null,
+     "last_attack_outcome": "",
+     "last_attack_ts": 0.0,
+     "last_blocked_ts": 0.0,
+     "last_scanned_ts": 1700000000.0,
+     "last_spied_ts": 0.0,
+     "owner": "SleeperThree",
+     "planet_name": "Far Colony debris",
+     "points": null,
+     "recency_weighted_loot_spice_eq": null,
+     "resources": {
+      "kryptonite": 0,
+      "metal": 0,
+      "pig_iron": 0,
+      "spice": 0
+     },
+     "spy_count": 0,
+     "status_color": "yellow",
+     "temperature": null,
+     "total_attack_loot": null,
+     "total_attack_loot_spice_eq": null,
+     "uninhabited_fields": null
+    },
+    {
+     "attack_attempts": 0,
+     "attack_losses": 0,
+     "attack_success_rate": null,
+     "attack_wins": 0,
+     "avg_attack_loot": null,
+     "avg_attack_loot_spice_eq": null,
+     "bash_hits": 0,
+     "block_reason": "",
+     "blocked_until_ts": 0.0,
+     "colonize_max_fields": null,
+     "colonize_min_fields": null,
+     "coords": "03:120:03",
+     "defense": {},
+     "dug_in": false,
+     "fleet": {},
+     "has_debris": false,
+     "has_spy_intel": false,
+     "is_inactive": true,
+     "is_spacia": false,
+     "last_attack_loot": null,
+     "last_attack_loot_spice_eq": null,
+     "last_attack_outcome": "",
+     "last_attack_ts": 0.0,
+     "last_blocked_ts": 0.0,
+     "last_scanned_ts": 1700000000.0,
+     "last_spied_ts": 0.0,
+     "owner": "DormantOne",
+     "planet_name": "Quiet Rock",
+     "points": null,
+     "recency_weighted_loot_spice_eq": null,
+     "resources": {
+      "kryptonite": 0,
+      "metal": 0,
+      "pig_iron": 0,
+      "spice": 0
+     },
+     "spy_count": 0,
+     "status_color": "yellow",
+     "temperature": null,
+     "total_attack_loot": null,
+     "total_attack_loot_spice_eq": null,
+     "uninhabited_fields": null
+    },
+    {
+     "attack_attempts": 0,
+     "attack_losses": 0,
+     "attack_success_rate": null,
+     "attack_wins": 0,
+     "avg_attack_loot": null,
+     "avg_attack_loot_spice_eq": null,
+     "bash_hits": 0,
+     "block_reason": "",
+     "blocked_until_ts": 0.0,
+     "colonize_max_fields": null,
+     "colonize_min_fields": null,
+     "coords": "03:121:06",
+     "defense": {},
+     "dug_in": false,
+     "fleet": {},
+     "has_debris": false,
+     "has_spy_intel": false,
+     "is_inactive": true,
+     "is_spacia": false,
+     "last_attack_loot": null,
+     "last_attack_loot_spice_eq": null,
+     "last_attack_outcome": "",
+     "last_attack_ts": 0.0,
+     "last_blocked_ts": 0.0,
+     "last_scanned_ts": 1700000000.0,
+     "last_spied_ts": 0.0,
+     "owner": "SleeperTwo",
+     "planet_name": "Dusty Moon",
+     "points": null,
+     "recency_weighted_loot_spice_eq": null,
+     "resources": {
+      "kryptonite": 0,
+      "metal": 0,
+      "pig_iron": 0,
+      "spice": 0
+     },
+     "spy_count": 0,
+     "status_color": "yellow",
+     "temperature": null,
+     "total_attack_loot": null,
+     "total_attack_loot_spice_eq": null,
+     "uninhabited_fields": null
+    },
+    {
+     "attack_attempts": 0,
+     "attack_losses": 0,
+     "attack_success_rate": null,
+     "attack_wins": 0,
+     "avg_attack_loot": null,
+     "avg_attack_loot_spice_eq": null,
+     "bash_hits": 0,
+     "block_reason": "",
+     "blocked_until_ts": 0.0,
+     "colonize_max_fields": null,
+     "colonize_min_fields": null,
+     "coords": "03:120:14",
+     "defense": {},
+     "dug_in": false,
+     "fleet": {},
+     "has_debris": false,
+     "has_spy_intel": false,
+     "is_inactive": false,
+     "is_spacia": false,
+     "last_attack_loot": null,
+     "last_attack_loot_spice_eq": null,
+     "last_attack_outcome": "",
+     "last_attack_ts": 0.0,
+     "last_blocked_ts": 0.0,
+     "last_scanned_ts": 1700000000.0,
+     "last_spied_ts": 0.0,
+     "owner": "WatchfulRival",
+     "planet_name": "Bastion",
+     "points": null,
+     "recency_weighted_loot_spice_eq": null,
+     "resources": {
+      "kryptonite": 0,
+      "metal": 0,
+      "pig_iron": 0,
+      "spice": 0
+     },
+     "spy_count": 0,
+     "status_color": "light_red",
+     "temperature": null,
+     "total_attack_loot": null,
+     "total_attack_loot_spice_eq": null,
+     "uninhabited_fields": null
+    }
+   ],
+   "research_names": {
+    "r1": "Mining technology",
+    "r2": "Energy technology",
+    "r3": "Engine research",
+    "r4": "Rocket engine",
+    "r5": "Diffusion engine",
+    "r6": "Warp engine",
+    "r7": "Spy technology"
+   },
+   "research_offers": [
+    {
+     "active": false,
+     "can_research": false,
+     "cost": {
+      "kryptonite": 1000000,
+      "metal": 500000,
+      "pig_iron": 0,
+      "spice": 250000
+     },
+     "current_level": 0,
+     "name": "Black hole research",
+     "research_href": null,
+     "research_id": 15,
+     "research_key": "r15",
+     "status_text": "Unavailable",
+     "target_level": 1
+    },
+    {
+     "active": false,
+     "can_research": true,
+     "cost": {
+      "kryptonite": 0,
+      "metal": 2500,
+      "pig_iron": 0,
+      "spice": 0
+     },
+     "current_level": 0,
+     "name": "Defense systems",
+     "research_href": "indexInternal.es?action=internalBuildItem&researchID=10&sid=REDACTED",
+     "research_id": 10,
+     "research_key": "r10",
+     "status_text": "Research level 1",
+     "target_level": 1
+    },
+    {
+     "active": false,
+     "can_research": false,
+     "cost": {
+      "kryptonite": 1200,
+      "metal": 1200,
+      "pig_iron": 0,
+      "spice": 800
+     },
+     "current_level": 2,
+     "name": "Diffusion engine",
+     "research_href": null,
+     "research_id": 5,
+     "research_key": "r5",
+     "status_text": "Unavailable",
+     "target_level": 3
+    },
+    {
+     "active": false,
+     "can_research": true,
+     "cost": {
+      "kryptonite": 25600,
+      "metal": 12800,
+      "pig_iron": 0,
+      "spice": 12800
+     },
+     "current_level": 5,
+     "name": "Energy technology",
+     "research_href": "indexInternal.es?action=internalBuildItem&researchID=2&sid=REDACTED",
+     "research_id": 2,
+     "research_key": "r2",
+     "status_text": "Research level 6",
+     "target_level": 6
+    },
+    {
+     "active": false,
+     "can_research": true,
+     "cost": {
+      "kryptonite": 0,
+      "metal": 6400,
+      "pig_iron": 0,
+      "spice": 2000
+     },
+     "current_level": 3,
+     "name": "Engine research",
+     "research_href": "indexInternal.es?action=internalBuildItem&researchID=3&sid=REDACTED",
+     "research_id": 3,
+     "research_key": "r3",
+     "status_text": "Research level 4",
+     "target_level": 4
+    },
+    {
+     "active": false,
+     "can_research": true,
+     "cost": {
+      "kryptonite": 2000,
+      "metal": 300,
+      "pig_iron": 0,
+      "spice": 300
+     },
+     "current_level": 0,
+     "name": "Graviton technology",
+     "research_href": "indexInternal.es?action=internalBuildItem&researchID=13&sid=REDACTED",
+     "research_id": 13,
+     "research_key": "r13",
+     "status_text": "Research level 1",
+     "target_level": 1
+    },
+    {
+     "active": false,
+     "can_research": true,
+     "cost": {
+      "kryptonite": 8000,
+      "metal": 0,
+      "pig_iron": 16000,
+      "spice": 0
+     },
+     "current_level": 4,
+     "name": "Mining technology",
+     "research_href": "indexInternal.es?action=internalBuildItem&researchID=1&sid=REDACTED",
+     "research_id": 1,
+     "research_key": "r1",
+     "status_text": "Research level 5",
+     "target_level": 5
+    },
+    {
+     "active": false,
+     "can_research": false,
+     "cost": {
+      "kryptonite": 8000,
+      "metal": 5000,
+      "pig_iron": 0,
+      "spice": 10000
+     },
+     "current_level": 0,
+     "name": "Particle analyzer",
+     "research_href": null,
+     "research_id": 12,
+     "research_key": "r12",
+     "status_text": "Unavailable",
+     "target_level": 1
+    },
+    {
+     "active": false,
+     "can_research": true,
+     "cost": {
+      "kryptonite": 5600,
+      "metal": 6400,
+      "pig_iron": 0,
+      "spice": 1600
+     },
+     "current_level": 4,
+     "name": "Rocket engine",
+     "research_href": "indexInternal.es?action=internalBuildItem&researchID=4&sid=REDACTED",
+     "research_id": 4,
+     "research_key": "r4",
+     "status_text": "Research level 5",
+     "target_level": 5
+    },
+    {
+     "active": false,
+     "can_research": true,
+     "cost": {
+      "kryptonite": 2000,
+      "metal": 250,
+      "pig_iron": 0,
+      "spice": 0
+     },
+     "current_level": 0,
+     "name": "Shield technology",
+     "research_href": "indexInternal.es?action=internalBuildItem&researchID=9&sid=REDACTED",
+     "research_id": 9,
+     "research_key": "r9",
+     "status_text": "Research level 1",
+     "target_level": 1
+    },
+    {
+     "active": false,
+     "can_research": true,
+     "cost": {
+      "kryptonite": 8000,
+      "metal": 2000,
+      "pig_iron": 0,
+      "spice": 1200
+     },
+     "current_level": 2,
+     "name": "Spy technology",
+     "research_href": "indexInternal.es?action=internalBuildItem&researchID=7&sid=REDACTED",
+     "research_id": 7,
+     "research_key": "r7",
+     "status_text": "Research level 3",
+     "target_level": 3
+    },
+    {
+     "active": false,
+     "can_research": false,
+     "cost": {
+      "kryptonite": 2000,
+      "metal": 1000,
+      "pig_iron": 0,
+      "spice": 500
+     },
+     "current_level": 0,
+     "name": "Targeting systems",
+     "research_href": null,
+     "research_id": 11,
+     "research_key": "r11",
+     "status_text": "Unavailable",
+     "target_level": 1
+    },
+    {
+     "active": false,
+     "can_research": false,
+     "cost": {
+      "kryptonite": 80000,
+      "metal": 100000,
+      "pig_iron": 0,
+      "spice": 20000
+     },
+     "current_level": 0,
+     "name": "Teleportation",
+     "research_href": null,
+     "research_id": 14,
+     "research_key": "r14",
+     "status_text": "Unavailable",
+     "target_level": 1
+    },
+    {
+     "active": false,
+     "can_research": false,
+     "cost": {
+      "kryptonite": 16000,
+      "metal": 40000,
+      "pig_iron": 0,
+      "spice": 8000
+     },
+     "current_level": 3,
+     "name": "Warp engine",
+     "research_href": null,
+     "research_id": 6,
+     "research_key": "r6",
+     "status_text": "Unavailable",
+     "target_level": 4
+    },
+    {
+     "active": false,
+     "can_research": true,
+     "cost": {
+      "kryptonite": 100,
+      "metal": 2000,
+      "pig_iron": 0,
+      "spice": 0
+     },
+     "current_level": 0,
+     "name": "Weapons technology",
+     "research_href": "indexInternal.es?action=internalBuildItem&researchID=8&sid=REDACTED",
+     "research_id": 8,
+     "research_key": "r8",
+     "status_text": "Research level 1",
+     "target_level": 1
+    }
+   ],
+   "researches": {
+    "r1": 4,
+    "r2": 5,
+    "r3": 3,
+    "r4": 4,
+    "r5": 2,
+    "r6": 3,
+    "r7": 2
+   },
+   "specs": {
+    "fleeter": 0,
+    "miner": 0
+   },
+   "speedup_factor": 4.0,
+   "timestamp": 1700000000.0,
+   "tutorial": null,
+   "universe_id": 31,
+   "unread_messages": {
+    "spio": 0,
+    "total": 0
+   },
+   "user_id": 900001
+  },
+  "validated": true,
+  "validation_error": null
+ }
+}

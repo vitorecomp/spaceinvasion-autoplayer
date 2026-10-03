@@ -1,0 +1,97 @@
+{
+ "http_status": 200,
+ "request": {
+  "json": {
+   "command": "escape_flight",
+   "dry_run": true
+  },
+  "method": "POST",
+  "path": "/command"
+ },
+ "response": {
+  "action": {
+   "action_href": null,
+   "cost": {
+    "kryptonite": 0,
+    "metal": 0,
+    "pig_iron": 0,
+    "spice": 0
+   },
+   "duration_seconds": 0.0,
+   "duration_text": "Instant",
+   "eta_bottleneck": null,
+   "executable_now": true,
+   "kind": "ESCAPE_FLIGHT",
+   "manual_queue_id": null,
+   "manual_sort_rank": null,
+   "missing": {
+    "kryptonite": 0,
+    "metal": 0,
+    "pig_iron": 0,
+    "spice": 0
+   },
+   "planet_coords": "03:120:07",
+   "planet_id": 20001,
+   "planet_name": "Golden Prime",
+   "priority": "P2",
+   "reason": "API escape_flight command",
+   "target_id": null,
+   "target_level": null,
+   "target_name": "Save -> 03:120:08",
+   "total_eta": "Ready",
+   "total_hours": 0.0,
+   "total_seconds": 0.0,
+   "wait_eta": "Ready",
+   "wait_hours": 0.0,
+   "wait_seconds": 0.0
+  },
+  "command": "escape_flight",
+  "dry_run": true,
+  "executed": false,
+  "manual_queue": [],
+  "message": "[DRY-RUN] Would execute ESCAPE_FLIGHT: Save -> 03:120:08 on [03:120:07].",
+  "next_action": {
+   "action_href": null,
+   "cost": {
+    "kryptonite": 70487,
+    "metal": 96000,
+    "pig_iron": 71961,
+    "spice": 30500
+   },
+   "duration_seconds": 0.0,
+   "duration_text": "Instant",
+   "eta_bottleneck": null,
+   "executable_now": true,
+   "kind": "ESCAPE_FLIGHT",
+   "manual_queue_id": null,
+   "manual_sort_rank": null,
+   "missing": {
+    "kryptonite": 0,
+    "metal": 0,
+    "pig_iron": 0,
+    "spice": 0
+   },
+   "planet_coords": "03:120:07",
+   "planet_id": 20001,
+   "planet_name": "Golden Prime",
+   "priority": "P0",
+   "reason": "Packed PigIron=71,961, Metal=96,000, Krypt=70,487, Spice=30,500 into 63 ships",
+   "target_id": null,
+   "target_level": null,
+   "target_name": "Save -> 03:120:11",
+   "total_eta": "Ready",
+   "total_hours": 0.0,
+   "total_seconds": 0.0,
+   "wait_eta": "Ready",
+   "wait_hours": 0.0,
+   "wait_seconds": 0.0
+  },
+  "notifications": {
+   "items": [],
+   "unread_count": 0
+  },
+  "ok": true,
+  "validated": true,
+  "validation_error": null
+ }
+}

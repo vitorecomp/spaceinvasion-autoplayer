@@ -1,0 +1,56 @@
+{
+ "http_status": 200,
+ "request": {
+  "json": {
+   "command": "abandon_colony",
+   "dry_run": true,
+   "planet_id": 20003
+  },
+  "method": "POST",
+  "path": "/command"
+ },
+ "response": {
+  "action": {
+   "action_href": null,
+   "cost": {
+    "kryptonite": 0,
+    "metal": 0,
+    "pig_iron": 0,
+    "spice": 0
+   },
+   "duration_seconds": 0.0,
+   "duration_text": "Instant",
+   "eta_bottleneck": null,
+   "executable_now": false,
+   "kind": "ABANDON_COLONY",
+   "manual_queue_id": null,
+   "manual_sort_rank": null,
+   "missing": {
+    "kryptonite": 0,
+    "metal": 0,
+    "pig_iron": 0,
+    "spice": 0
+   },
+   "planet_coords": "03:121:04",
+   "planet_id": 20003,
+   "planet_name": "Golden Outpost",
+   "priority": "P1",
+   "reason": "Safety check blocked deleting 03:121:04 (19/188 fields)",
+   "target_id": null,
+   "target_level": 300,
+   "target_name": "Delete colony 03:121:04 (188/300 fields)",
+   "total_eta": "Ready",
+   "total_hours": 0.0,
+   "total_seconds": 0.0,
+   "wait_eta": "Ready",
+   "wait_hours": 0.0,
+   "wait_seconds": 0.0
+  },
+  "command": "abandon_colony",
+  "dry_run": true,
+  "executed": false,
+  "message": "Aborted safety check: refusing to delete [03:121:04] (19/188 fields) \u2014 Homeworld, developed, stationed fleet/defense, or >= 300 fields.",
+  "next_action": null,
+  "ok": true
+ }
+}

@@ -1,0 +1,14 @@
+{
+ "http_status": 400,
+ "request": {
+  "json": {
+   "command": "no_such_command"
+  },
+  "method": "POST",
+  "path": "/command"
+ },
+ "response": {
+  "error": "Unknown command 'no_such_command'.",
+  "ok": false
+ }
+}

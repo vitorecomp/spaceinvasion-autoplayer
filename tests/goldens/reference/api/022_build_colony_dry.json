@@ -1,0 +1,99 @@
+{
+ "http_status": 200,
+ "request": {
+  "json": {
+   "building_id": 3,
+   "command": "build",
+   "dry_run": true,
+   "planet_id": 20002
+  },
+  "method": "POST",
+  "path": "/command"
+ },
+ "response": {
+  "action": {
+   "action_href": null,
+   "cost": {
+    "kryptonite": 985,
+    "metal": 0,
+    "pig_iron": 1611,
+    "spice": 0
+   },
+   "duration_seconds": 101.54,
+   "duration_text": "1m 42s",
+   "eta_bottleneck": null,
+   "executable_now": true,
+   "kind": "BUILD",
+   "manual_queue_id": null,
+   "manual_sort_rank": null,
+   "missing": {
+    "kryptonite": 0,
+    "metal": 0,
+    "pig_iron": 0,
+    "spice": 0
+   },
+   "planet_coords": "03:120:11",
+   "planet_id": 20002,
+   "planet_name": "Golden Forge",
+   "priority": "P2",
+   "reason": "API build command (cross-planet check)",
+   "target_id": 3,
+   "target_level": 8,
+   "target_name": "Kryptonite mine",
+   "total_eta": "2m",
+   "total_hours": 0.028206,
+   "total_seconds": 101.54,
+   "wait_eta": "Ready",
+   "wait_hours": 0.0,
+   "wait_seconds": 0.0
+  },
+  "command": "build",
+  "dry_run": true,
+  "executed": false,
+  "manual_queue": [],
+  "message": "[DRY-RUN] Would execute BUILD: Kryptonite mine -> L8 on [03:120:11].",
+  "next_action": {
+   "action_href": null,
+   "cost": {
+    "kryptonite": 41098,
+    "metal": 57320,
+    "pig_iron": 71606,
+    "spice": 16216
+   },
+   "duration_seconds": 0.0,
+   "duration_text": "Instant",
+   "eta_bottleneck": null,
+   "executable_now": true,
+   "kind": "TRANSPORT",
+   "manual_queue_id": null,
+   "manual_sort_rank": null,
+   "missing": {
+    "kryptonite": 0,
+    "metal": 0,
+    "pig_iron": 0,
+    "spice": 0
+   },
+   "planet_coords": "03:120:07",
+   "planet_id": 20001,
+   "planet_name": "Golden Prime",
+   "priority": "P1",
+   "reason": "Supply Golden Outpost [03:121:04] (71,606P/57,320M/41,098K/16,216S \u00b7 186,240 res (+171,240 spare fill) / 1-way 22m \u00b7 RT 45m, 249,602 res/h via 4x s2, 12x s1) for colony bootstrap",
+   "target_id": 20003,
+   "target_level": null,
+   "target_name": "Transport -> 03:121:04 (Golden Outpost)",
+   "total_eta": "Ready",
+   "total_hours": 0.0,
+   "total_seconds": 0.0,
+   "wait_eta": "Ready",
+   "wait_hours": 0.0,
+   "wait_seconds": 0.0
+  },
+  "notifications": {
+   "items": [],
+   "unread_count": 0
+  },
+  "ok": true,
+  "validated": true,
+  "validation_error": null
+ }
+}

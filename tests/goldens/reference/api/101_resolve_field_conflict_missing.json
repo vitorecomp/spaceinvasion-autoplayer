@@ -1,0 +1,16 @@
+{
+ "http_status": 400,
+ "request": {
+  "json": {
+   "command": "resolve_field_conflict",
+   "conflict_key": "20001:b1",
+   "decision": "keep_reserve"
+  },
+  "method": "POST",
+  "path": "/command"
+ },
+ "response": {
+  "error": "Unknown field conflict '20001:b1'.",
+  "ok": false
+ }
+}

@@ -1,0 +1,89 @@
+{
+ "http_status": 200,
+ "request": {
+  "json": {
+   "command": "queue_add",
+   "kind": "BUILD_SHIP",
+   "planet_id": 20001,
+   "priority": "P2",
+   "quantity": 4,
+   "target_id": 1
+  },
+  "method": "POST",
+  "path": "/command"
+ },
+ "response": {
+  "command": "queue_add",
+  "item": {
+   "canceled_ts": null,
+   "completed_ts": null,
+   "created_ts": 1700000060.0,
+   "id": 2,
+   "kind": "BUILD_SHIP",
+   "note": "",
+   "planet_coords": "03:120:07",
+   "planet_id": 20001,
+   "priority": "P2",
+   "result_message": "",
+   "sort_rank": 1000,
+   "status": "pending",
+   "target_coords": "Small transport",
+   "target_id": 1,
+   "target_level": 4,
+   "target_name": "Small transport",
+   "updated_ts": 1700000060.0
+  },
+  "manual_queue": [
+   {
+    "canceled_ts": null,
+    "completed_ts": null,
+    "created_ts": 1700000060.0,
+    "id": 1,
+    "kind": "BUILD",
+    "note": "",
+    "planet_coords": "03:120:07",
+    "planet_id": 20001,
+    "priority": "P1",
+    "result_message": "",
+    "sort_rank": 1000,
+    "status": "pending",
+    "target_coords": "Kryptonite mine",
+    "target_id": 3,
+    "target_level": null,
+    "target_name": "Kryptonite mine",
+    "updated_ts": 1700000060.0
+   },
+   {
+    "canceled_ts": null,
+    "completed_ts": null,
+    "created_ts": 1700000060.0,
+    "id": 2,
+    "kind": "BUILD_SHIP",
+    "note": "",
+    "planet_coords": "03:120:07",
+    "planet_id": 20001,
+    "priority": "P2",
+    "result_message": "",
+    "sort_rank": 1000,
+    "status": "pending",
+    "target_coords": "Small transport",
+    "target_id": 1,
+    "target_level": 4,
+    "target_name": "Small transport",
+    "updated_ts": 1700000060.0
+   }
+  ],
+  "message": "Queued BUILD_SHIP (Small transport) at P2.",
+  "metal_production_review": {
+   "blast_furnace_level": 9,
+   "checked": true,
+   "current_blast_furnace_pct": 100,
+   "pinned_needs_metal": false,
+   "planet_coords": "03:120:07",
+   "planet_id": 20001,
+   "scheduled_blast_furnace_pct": null,
+   "summary": ""
+  },
+  "ok": true
+ }
+}

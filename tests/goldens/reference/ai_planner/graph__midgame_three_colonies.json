@@ -1,0 +1,2993 @@
+{
+ "edges": [
+  {
+   "id": "edge_ai_1_ai_3",
+   "label": "Pig iron mine L6 -> L7",
+   "primary_type": "level_chain",
+   "source": "ai_1",
+   "target": "ai_3",
+   "types": [
+    "level_chain",
+    "queue_order"
+   ]
+  },
+  {
+   "id": "edge_ai_2_ai_7",
+   "label": "Boosts Pig iron output for Kryptonite mine",
+   "primary_type": "resource_feed",
+   "source": "ai_2",
+   "target": "ai_7",
+   "types": [
+    "resource_feed",
+    "queue_order"
+   ]
+  },
+  {
+   "id": "edge_ai_2_ai_9",
+   "label": "Boosts Pig iron output for Kryptonite mine",
+   "primary_type": "resource_feed",
+   "source": "ai_2",
+   "target": "ai_9",
+   "types": [
+    "resource_feed"
+   ]
+  },
+  {
+   "id": "edge_ai_2_ai_13",
+   "label": "Boosts Pig iron output for Fusion plant",
+   "primary_type": "resource_feed",
+   "source": "ai_2",
+   "target": "ai_13",
+   "types": [
+    "resource_feed"
+   ]
+  },
+  {
+   "id": "edge_ai_2_ai_16",
+   "label": "Pig iron mine L11 -> L12",
+   "primary_type": "level_chain",
+   "source": "ai_2",
+   "target": "ai_16",
+   "types": [
+    "level_chain"
+   ]
+  },
+  {
+   "id": "edge_ai_3_ai_4",
+   "label": "Boosts Pig iron output for Kryptonite mine",
+   "primary_type": "resource_feed",
+   "source": "ai_3",
+   "target": "ai_4",
+   "types": [
+    "resource_feed",
+    "queue_order"
+   ]
+  },
+  {
+   "id": "edge_ai_3_ai_5",
+   "label": "Supplies 2:1 Pig iron feedstock for Blast furnace",
+   "primary_type": "resource_feed",
+   "source": "ai_3",
+   "target": "ai_5",
+   "types": [
+    "resource_feed"
+   ]
+  },
+  {
+   "id": "edge_ai_3_ai_6",
+   "label": "Boosts Pig iron output for Fusion plant",
+   "primary_type": "resource_feed",
+   "source": "ai_3",
+   "target": "ai_6",
+   "types": [
+    "resource_feed"
+   ]
+  },
+  {
+   "id": "edge_ai_3_ai_8",
+   "label": "Pig iron mine L7 -> L8",
+   "primary_type": "level_chain",
+   "source": "ai_3",
+   "target": "ai_8",
+   "types": [
+    "level_chain"
+   ]
+  },
+  {
+   "id": "edge_ai_4_ai_5",
+   "label": "Colony build queue (03:121:04)",
+   "primary_type": "queue_order",
+   "source": "ai_4",
+   "target": "ai_5",
+   "types": [
+    "queue_order"
+   ]
+  },
+  {
+   "id": "edge_ai_4_ai_10",
+   "label": "Kryptonite mine L5 -> L6",
+   "primary_type": "level_chain",
+   "source": "ai_4",
+   "target": "ai_10",
+   "types": [
+    "level_chain"
+   ]
+  },
+  {
+   "id": "edge_ai_5_ai_6",
+   "label": "Colony build queue (03:121:04)",
+   "primary_type": "queue_order",
+   "source": "ai_5",
+   "target": "ai_6",
+   "types": [
+    "queue_order"
+   ]
+  },
+  {
+   "id": "edge_ai_5_ai_11",
+   "label": "Blast furnace L1 -> L2",
+   "primary_type": "level_chain",
+   "source": "ai_5",
+   "target": "ai_11",
+   "types": [
+    "level_chain"
+   ]
+  },
+  {
+   "id": "edge_ai_6_ai_8",
+   "label": "Supplies energy for Pig iron mine L8",
+   "primary_type": "energy_support",
+   "source": "ai_6",
+   "target": "ai_8",
+   "types": [
+    "energy_support",
+    "queue_order"
+   ]
+  },
+  {
+   "id": "edge_ai_6_ai_10",
+   "label": "Supplies energy for Kryptonite mine L6",
+   "primary_type": "energy_support",
+   "source": "ai_6",
+   "target": "ai_10",
+   "types": [
+    "energy_support"
+   ]
+  },
+  {
+   "id": "edge_ai_6_ai_11",
+   "label": "Supplies energy for Blast furnace L2",
+   "primary_type": "energy_support",
+   "source": "ai_6",
+   "target": "ai_11",
+   "types": [
+    "energy_support"
+   ]
+  },
+  {
+   "id": "edge_ai_6_ai_12",
+   "label": "Fusion plant L7 -> L8",
+   "primary_type": "level_chain",
+   "source": "ai_6",
+   "target": "ai_12",
+   "types": [
+    "level_chain"
+   ]
+  },
+  {
+   "id": "edge_ai_7_ai_9",
+   "label": "Kryptonite mine L9 -> L10",
+   "primary_type": "level_chain",
+   "source": "ai_7",
+   "target": "ai_9",
+   "types": [
+    "level_chain",
+    "queue_order"
+   ]
+  },
+  {
+   "id": "edge_ai_8_ai_10",
+   "label": "Boosts Pig iron output for Kryptonite mine",
+   "primary_type": "resource_feed",
+   "source": "ai_8",
+   "target": "ai_10",
+   "types": [
+    "resource_feed",
+    "queue_order"
+   ]
+  },
+  {
+   "id": "edge_ai_8_ai_11",
+   "label": "Supplies 2:1 Pig iron feedstock for Blast furnace",
+   "primary_type": "resource_feed",
+   "source": "ai_8",
+   "target": "ai_11",
+   "types": [
+    "resource_feed"
+   ]
+  },
+  {
+   "id": "edge_ai_8_ai_12",
+   "label": "Boosts Pig iron output for Fusion plant",
+   "primary_type": "resource_feed",
+   "source": "ai_8",
+   "target": "ai_12",
+   "types": [
+    "resource_feed"
+   ]
+  },
+  {
+   "id": "edge_ai_8_ai_14",
+   "label": "Boosts Pig iron output for Kryptonite mine",
+   "primary_type": "resource_feed",
+   "source": "ai_8",
+   "target": "ai_14",
+   "types": [
+    "resource_feed"
+   ]
+  },
+  {
+   "id": "edge_ai_9_ai_13",
+   "label": "Colony build queue (03:120:11)",
+   "primary_type": "queue_order",
+   "source": "ai_9",
+   "target": "ai_13",
+   "types": [
+    "queue_order"
+   ]
+  },
+  {
+   "id": "edge_ai_9_ai_18",
+   "label": "Kryptonite mine L10 -> L11",
+   "primary_type": "level_chain",
+   "source": "ai_9",
+   "target": "ai_18",
+   "types": [
+    "level_chain"
+   ]
+  },
+  {
+   "id": "edge_ai_10_ai_11",
+   "label": "Colony build queue (03:121:04)",
+   "primary_type": "queue_order",
+   "source": "ai_10",
+   "target": "ai_11",
+   "types": [
+    "queue_order"
+   ]
+  },
+  {
+   "id": "edge_ai_10_ai_14",
+   "label": "Kryptonite mine L6 -> L7",
+   "primary_type": "level_chain",
+   "source": "ai_10",
+   "target": "ai_14",
+   "types": [
+    "level_chain"
+   ]
+  },
+  {
+   "id": "edge_ai_11_ai_12",
+   "label": "Colony build queue (03:121:04)",
+   "primary_type": "queue_order",
+   "source": "ai_11",
+   "target": "ai_12",
+   "types": [
+    "queue_order"
+   ]
+  },
+  {
+   "id": "edge_ai_11_ai_15",
+   "label": "Boosts Metal output for Spice mine",
+   "primary_type": "resource_feed",
+   "source": "ai_11",
+   "target": "ai_15",
+   "types": [
+    "resource_feed"
+   ]
+  },
+  {
+   "id": "edge_ai_11_ai_23",
+   "label": "Boosts Metal output for Spice mine",
+   "primary_type": "resource_feed",
+   "source": "ai_11",
+   "target": "ai_23",
+   "types": [
+    "resource_feed"
+   ]
+  },
+  {
+   "id": "edge_ai_12_ai_14",
+   "label": "Supplies energy for Kryptonite mine L7",
+   "primary_type": "energy_support",
+   "source": "ai_12",
+   "target": "ai_14",
+   "types": [
+    "energy_support",
+    "queue_order"
+   ]
+  },
+  {
+   "id": "edge_ai_12_ai_15",
+   "label": "Supplies energy for Spice mine L3",
+   "primary_type": "energy_support",
+   "source": "ai_12",
+   "target": "ai_15",
+   "types": [
+    "energy_support"
+   ]
+  },
+  {
+   "id": "edge_ai_12_ai_23",
+   "label": "Supplies energy for Spice mine L4",
+   "primary_type": "energy_support",
+   "source": "ai_12",
+   "target": "ai_23",
+   "types": [
+    "energy_support"
+   ]
+  },
+  {
+   "id": "edge_ai_13_ai_16",
+   "label": "Supplies energy for Pig iron mine L12",
+   "primary_type": "energy_support",
+   "source": "ai_13",
+   "target": "ai_16",
+   "types": [
+    "energy_support",
+    "queue_order"
+   ]
+  },
+  {
+   "id": "edge_ai_13_ai_17",
+   "label": "Supplies energy for Spice mine L7",
+   "primary_type": "energy_support",
+   "source": "ai_13",
+   "target": "ai_17",
+   "types": [
+    "energy_support"
+   ]
+  },
+  {
+   "id": "edge_ai_13_ai_18",
+   "label": "Supplies energy for Kryptonite mine L11",
+   "primary_type": "energy_support",
+   "source": "ai_13",
+   "target": "ai_18",
+   "types": [
+    "energy_support"
+   ]
+  },
+  {
+   "id": "edge_ai_13_ai_19",
+   "label": "Fusion plant L12 -> L13",
+   "primary_type": "level_chain",
+   "source": "ai_13",
+   "target": "ai_19",
+   "types": [
+    "level_chain"
+   ]
+  },
+  {
+   "id": "edge_ai_14_ai_15",
+   "label": "Colony build queue (03:121:04)",
+   "primary_type": "queue_order",
+   "source": "ai_14",
+   "target": "ai_15",
+   "types": [
+    "queue_order"
+   ]
+  },
+  {
+   "id": "edge_ai_15_ai_23",
+   "label": "Spice mine L3 -> L4",
+   "primary_type": "level_chain",
+   "source": "ai_15",
+   "target": "ai_23",
+   "types": [
+    "level_chain",
+    "queue_order"
+   ]
+  },
+  {
+   "id": "edge_ai_16_ai_17",
+   "label": "Colony build queue (03:120:11)",
+   "primary_type": "queue_order",
+   "source": "ai_16",
+   "target": "ai_17",
+   "types": [
+    "queue_order"
+   ]
+  },
+  {
+   "id": "edge_ai_16_ai_18",
+   "label": "Boosts Pig iron output for Kryptonite mine",
+   "primary_type": "resource_feed",
+   "source": "ai_16",
+   "target": "ai_18",
+   "types": [
+    "resource_feed"
+   ]
+  },
+  {
+   "id": "edge_ai_16_ai_19",
+   "label": "Boosts Pig iron output for Fusion plant",
+   "primary_type": "resource_feed",
+   "source": "ai_16",
+   "target": "ai_19",
+   "types": [
+    "resource_feed"
+   ]
+  },
+  {
+   "id": "edge_ai_16_ai_21",
+   "label": "Supplies 2:1 Pig iron feedstock for Blast furnace",
+   "primary_type": "resource_feed",
+   "source": "ai_16",
+   "target": "ai_21",
+   "types": [
+    "resource_feed"
+   ]
+  },
+  {
+   "id": "edge_ai_16_ai_22",
+   "label": "Supplies 2:1 Pig iron feedstock for Blast furnace",
+   "primary_type": "resource_feed",
+   "source": "ai_16",
+   "target": "ai_22",
+   "types": [
+    "resource_feed"
+   ]
+  },
+  {
+   "id": "edge_ai_16_ai_30",
+   "label": "Pig iron mine L12 -> L13",
+   "primary_type": "level_chain",
+   "source": "ai_16",
+   "target": "ai_30",
+   "types": [
+    "level_chain"
+   ]
+  },
+  {
+   "id": "edge_ai_17_ai_18",
+   "label": "Colony build queue (03:120:11)",
+   "primary_type": "queue_order",
+   "source": "ai_17",
+   "target": "ai_18",
+   "types": [
+    "queue_order"
+   ]
+  },
+  {
+   "id": "edge_ai_17_ai_20",
+   "label": "Spice mine L7 -> L8",
+   "primary_type": "level_chain",
+   "source": "ai_17",
+   "target": "ai_20",
+   "types": [
+    "level_chain"
+   ]
+  },
+  {
+   "id": "edge_ai_18_ai_19",
+   "label": "Colony build queue (03:120:11)",
+   "primary_type": "queue_order",
+   "source": "ai_18",
+   "target": "ai_19",
+   "types": [
+    "queue_order"
+   ]
+  },
+  {
+   "id": "edge_ai_19_ai_20",
+   "label": "Supplies energy for Spice mine L8",
+   "primary_type": "energy_support",
+   "source": "ai_19",
+   "target": "ai_20",
+   "types": [
+    "energy_support",
+    "queue_order"
+   ]
+  },
+  {
+   "id": "edge_ai_19_ai_21",
+   "label": "Supplies energy for Blast furnace L8",
+   "primary_type": "energy_support",
+   "source": "ai_19",
+   "target": "ai_21",
+   "types": [
+    "energy_support"
+   ]
+  },
+  {
+   "id": "edge_ai_19_ai_22",
+   "label": "Supplies energy for Blast furnace L9",
+   "primary_type": "energy_support",
+   "source": "ai_19",
+   "target": "ai_22",
+   "types": [
+    "energy_support"
+   ]
+  },
+  {
+   "id": "edge_ai_19_ai_30",
+   "label": "Supplies energy for Pig iron mine L13",
+   "primary_type": "energy_support",
+   "source": "ai_19",
+   "target": "ai_30",
+   "types": [
+    "energy_support"
+   ]
+  },
+  {
+   "id": "edge_ai_20_ai_21",
+   "label": "Colony build queue (03:120:11)",
+   "primary_type": "queue_order",
+   "source": "ai_20",
+   "target": "ai_21",
+   "types": [
+    "queue_order"
+   ]
+  },
+  {
+   "id": "edge_ai_21_ai_22",
+   "label": "Blast furnace L8 -> L9",
+   "primary_type": "level_chain",
+   "source": "ai_21",
+   "target": "ai_22",
+   "types": [
+    "level_chain",
+    "queue_order"
+   ]
+  },
+  {
+   "id": "edge_ai_22_ai_30",
+   "label": "Colony build queue (03:120:11)",
+   "primary_type": "queue_order",
+   "source": "ai_22",
+   "target": "ai_30",
+   "types": [
+    "queue_order"
+   ]
+  },
+  {
+   "id": "edge_ai_24_ai_25",
+   "label": "Colony build queue (03:120:07)",
+   "primary_type": "queue_order",
+   "source": "ai_24",
+   "target": "ai_25",
+   "types": [
+    "queue_order"
+   ]
+  },
+  {
+   "id": "edge_ai_24_ai_26",
+   "label": "Kryptonite mine L13 -> L14",
+   "primary_type": "level_chain",
+   "source": "ai_24",
+   "target": "ai_26",
+   "types": [
+    "level_chain"
+   ]
+  },
+  {
+   "id": "edge_ai_25_ai_26",
+   "label": "Boosts Pig iron output for Kryptonite mine",
+   "primary_type": "resource_feed",
+   "source": "ai_25",
+   "target": "ai_26",
+   "types": [
+    "resource_feed",
+    "queue_order"
+   ]
+  },
+  {
+   "id": "edge_ai_25_ai_29",
+   "label": "Pig iron mine L15 -> L16",
+   "primary_type": "level_chain",
+   "source": "ai_25",
+   "target": "ai_29",
+   "types": [
+    "level_chain"
+   ]
+  },
+  {
+   "id": "edge_ai_26_ai_28",
+   "label": "Colony build queue (03:120:07)",
+   "primary_type": "queue_order",
+   "source": "ai_26",
+   "target": "ai_28",
+   "types": [
+    "queue_order"
+   ]
+  },
+  {
+   "id": "edge_ai_26_ai_31",
+   "label": "Kryptonite mine L14 -> L15",
+   "primary_type": "level_chain",
+   "source": "ai_26",
+   "target": "ai_31",
+   "types": [
+    "level_chain"
+   ]
+  },
+  {
+   "id": "edge_ai_27_ai_29",
+   "label": "Mining technology (+2%/lvl) boosts Pig iron for Pig iron mine",
+   "primary_type": "resource_feed",
+   "source": "ai_27",
+   "target": "ai_29",
+   "types": [
+    "resource_feed"
+   ]
+  },
+  {
+   "id": "edge_ai_27_ai_30",
+   "label": "Mining technology (+2%/lvl) boosts Pig iron for Pig iron mine",
+   "primary_type": "resource_feed",
+   "source": "ai_27",
+   "target": "ai_30",
+   "types": [
+    "resource_feed"
+   ]
+  },
+  {
+   "id": "edge_ai_27_ai_34",
+   "label": "Mining technology (+2%/lvl) boosts Pig iron for Pig iron mine",
+   "primary_type": "resource_feed",
+   "source": "ai_27",
+   "target": "ai_34",
+   "types": [
+    "resource_feed"
+   ]
+  },
+  {
+   "id": "edge_ai_28_ai_29",
+   "label": "Colony build queue (03:120:07)",
+   "primary_type": "queue_order",
+   "source": "ai_28",
+   "target": "ai_29",
+   "types": [
+    "queue_order"
+   ]
+  },
+  {
+   "id": "edge_ai_28_ai_33",
+   "label": "Spice mine L10 -> L11",
+   "primary_type": "level_chain",
+   "source": "ai_28",
+   "target": "ai_33",
+   "types": [
+    "level_chain"
+   ]
+  },
+  {
+   "id": "edge_ai_29_ai_31",
+   "label": "Boosts Pig iron output for Kryptonite mine",
+   "primary_type": "resource_feed",
+   "source": "ai_29",
+   "target": "ai_31",
+   "types": [
+    "resource_feed",
+    "queue_order"
+   ]
+  },
+  {
+   "id": "edge_ai_29_ai_32",
+   "label": "Boosts Pig iron output for Fusion plant",
+   "primary_type": "resource_feed",
+   "source": "ai_29",
+   "target": "ai_32",
+   "types": [
+    "resource_feed"
+   ]
+  },
+  {
+   "id": "edge_ai_29_ai_34",
+   "label": "Pig iron mine L16 -> L17",
+   "primary_type": "level_chain",
+   "source": "ai_29",
+   "target": "ai_34",
+   "types": [
+    "level_chain"
+   ]
+  },
+  {
+   "id": "edge_ai_30_ai_38",
+   "label": "Boosts Pig iron output for Pig iron warehouse",
+   "primary_type": "resource_feed",
+   "source": "ai_30",
+   "target": "ai_38",
+   "types": [
+    "resource_feed",
+    "queue_order"
+   ]
+  },
+  {
+   "id": "edge_ai_30_ai_40",
+   "label": "Boosts Pig iron output for Metal warehouse",
+   "primary_type": "resource_feed",
+   "source": "ai_30",
+   "target": "ai_40",
+   "types": [
+    "resource_feed"
+   ]
+  },
+  {
+   "id": "edge_ai_31_ai_32",
+   "label": "Colony build queue (03:120:07)",
+   "primary_type": "queue_order",
+   "source": "ai_31",
+   "target": "ai_32",
+   "types": [
+    "queue_order"
+   ]
+  },
+  {
+   "id": "edge_ai_32_ai_33",
+   "label": "Supplies energy for Spice mine L11",
+   "primary_type": "energy_support",
+   "source": "ai_32",
+   "target": "ai_33",
+   "types": [
+    "energy_support",
+    "queue_order"
+   ]
+  },
+  {
+   "id": "edge_ai_32_ai_34",
+   "label": "Supplies energy for Pig iron mine L17",
+   "primary_type": "energy_support",
+   "source": "ai_32",
+   "target": "ai_34",
+   "types": [
+    "energy_support"
+   ]
+  },
+  {
+   "id": "edge_ai_32_ai_35",
+   "label": "Supplies energy for Blast furnace L11",
+   "primary_type": "energy_support",
+   "source": "ai_32",
+   "target": "ai_35",
+   "types": [
+    "energy_support"
+   ]
+  },
+  {
+   "id": "edge_ai_32_ai_36",
+   "label": "Supplies energy for Blast furnace L12",
+   "primary_type": "energy_support",
+   "source": "ai_32",
+   "target": "ai_36",
+   "types": [
+    "energy_support"
+   ]
+  },
+  {
+   "id": "edge_ai_33_ai_34",
+   "label": "Colony build queue (03:120:07)",
+   "primary_type": "queue_order",
+   "source": "ai_33",
+   "target": "ai_34",
+   "types": [
+    "queue_order"
+   ]
+  },
+  {
+   "id": "edge_ai_34_ai_35",
+   "label": "Supplies 2:1 Pig iron feedstock for Blast furnace",
+   "primary_type": "resource_feed",
+   "source": "ai_34",
+   "target": "ai_35",
+   "types": [
+    "resource_feed",
+    "queue_order"
+   ]
+  },
+  {
+   "id": "edge_ai_34_ai_36",
+   "label": "Supplies 2:1 Pig iron feedstock for Blast furnace",
+   "primary_type": "resource_feed",
+   "source": "ai_34",
+   "target": "ai_36",
+   "types": [
+    "resource_feed"
+   ]
+  },
+  {
+   "id": "edge_ai_34_ai_37",
+   "label": "Boosts Pig iron output for Pig iron warehouse",
+   "primary_type": "resource_feed",
+   "source": "ai_34",
+   "target": "ai_37",
+   "types": [
+    "resource_feed"
+   ]
+  },
+  {
+   "id": "edge_ai_34_ai_39",
+   "label": "Boosts Pig iron output for Metal warehouse",
+   "primary_type": "resource_feed",
+   "source": "ai_34",
+   "target": "ai_39",
+   "types": [
+    "resource_feed"
+   ]
+  },
+  {
+   "id": "edge_ai_35_ai_36",
+   "label": "Blast furnace L11 -> L12",
+   "primary_type": "level_chain",
+   "source": "ai_35",
+   "target": "ai_36",
+   "types": [
+    "level_chain",
+    "queue_order"
+   ]
+  },
+  {
+   "id": "edge_ai_36_ai_37",
+   "label": "Colony build queue (03:120:07)",
+   "primary_type": "queue_order",
+   "source": "ai_36",
+   "target": "ai_37",
+   "types": [
+    "queue_order"
+   ]
+  },
+  {
+   "id": "edge_ai_37_ai_39",
+   "label": "Colony build queue (03:120:07)",
+   "primary_type": "queue_order",
+   "source": "ai_37",
+   "target": "ai_39",
+   "types": [
+    "queue_order"
+   ]
+  },
+  {
+   "id": "edge_ai_38_ai_40",
+   "label": "Colony build queue (03:120:11)",
+   "primary_type": "queue_order",
+   "source": "ai_38",
+   "target": "ai_40",
+   "types": [
+    "queue_order"
+   ]
+  }
+ ],
+ "lanes": [
+  {
+   "coords": "",
+   "energy": 0,
+   "fields_max": 0,
+   "fields_used": 0,
+   "id": "lane:global",
+   "label": "Empire & Global Research",
+   "node_count": 1,
+   "planet_id": 0,
+   "planet_type": "global",
+   "scope": "global"
+  },
+  {
+   "coords": "03:120:07",
+   "energy": 203,
+   "fields_max": 262,
+   "fields_used": 84,
+   "id": "lane:planet:20001",
+   "label": "Golden Prime [03:120:07]",
+   "node_count": 13,
+   "planet_id": 20001,
+   "planet_type": "normal",
+   "scope": "planet"
+  },
+  {
+   "coords": "03:120:11",
+   "energy": 92,
+   "fields_max": 301,
+   "fields_used": 51,
+   "id": "lane:planet:20002",
+   "label": "Golden Forge [03:120:11]",
+   "node_count": 14,
+   "planet_id": 20002,
+   "planet_type": "normal",
+   "scope": "planet"
+  },
+  {
+   "coords": "03:121:04",
+   "energy": 46,
+   "fields_max": 188,
+   "fields_used": 19,
+   "id": "lane:planet:20003",
+   "label": "Golden Outpost [03:121:04]",
+   "node_count": 12,
+   "planet_id": 20003,
+   "planet_type": "normal",
+   "scope": "planet"
+  }
+ ],
+ "nodes": [
+  {
+   "category": "economy",
+   "completed": false,
+   "cost": {
+    "kryptonite": 197,
+    "metal": 0,
+    "pig_iron": 613,
+    "spice": 0
+   },
+   "duration_seconds": 48.67,
+   "duration_text": "49s",
+   "entity_key": "b1",
+   "eta_bottleneck": null,
+   "exec_rank": 0,
+   "executable_now": true,
+   "id": "ai_1",
+   "in_degree": 0,
+   "kind": "BUILD",
+   "lane_id": "lane:planet:20003",
+   "missing": {
+    "kryptonite": 0,
+    "metal": 0,
+    "pig_iron": 0,
+    "spice": 0
+   },
+   "needs_transport": false,
+   "order_index": 0,
+   "out_degree": 1,
+   "planet_coords": "03:121:04",
+   "planet_id": 20003,
+   "planet_name": "Golden Outpost",
+   "priority": "P1",
+   "reason": "Week 1 \u00b7 Step #1 \u00b7 Start Ready \u00b7 Build 49s",
+   "status": "ready",
+   "step_seq": 1,
+   "target_id": 1,
+   "target_level": 6,
+   "target_name": "Pig iron mine",
+   "topological_layer": 0,
+   "total_eta": "49s",
+   "total_seconds": 48.67,
+   "transport_dispatch_delay_sec": 0.0,
+   "transport_lead_sec": 0.0,
+   "transport_request_at_sec": null,
+   "transport_request_text": "",
+   "transport_sources": [],
+   "transport_travel_sec": 0.0,
+   "wait_eta": "Ready",
+   "wait_seconds": 0.0,
+   "week": 1
+  },
+  {
+   "category": "economy",
+   "completed": false,
+   "cost": {
+    "kryptonite": 1541,
+    "metal": 0,
+    "pig_iron": 4807,
+    "spice": 0
+   },
+   "duration_seconds": 190.6,
+   "duration_text": "3m 11s",
+   "entity_key": "b1",
+   "eta_bottleneck": null,
+   "exec_rank": 1,
+   "executable_now": true,
+   "id": "ai_2",
+   "in_degree": 0,
+   "kind": "BUILD",
+   "lane_id": "lane:planet:20002",
+   "missing": {
+    "kryptonite": 0,
+    "metal": 0,
+    "pig_iron": 0,
+    "spice": 0
+   },
+   "needs_transport": false,
+   "order_index": 1,
+   "out_degree": 4,
+   "planet_coords": "03:120:11",
+   "planet_id": 20002,
+   "planet_name": "Golden Forge",
+   "priority": "P1",
+   "reason": "Week 1 \u00b7 Step #2 \u00b7 Start Ready \u00b7 Build 3m 11s",
+   "status": "ready",
+   "step_seq": 2,
+   "target_id": 1,
+   "target_level": 11,
+   "target_name": "Pig iron mine",
+   "topological_layer": 0,
+   "total_eta": "3m 11s",
+   "total_seconds": 190.6,
+   "transport_dispatch_delay_sec": 0.0,
+   "transport_lead_sec": 0.0,
+   "transport_request_at_sec": null,
+   "transport_request_text": "",
+   "transport_sources": [],
+   "transport_travel_sec": 0.0,
+   "wait_eta": "Ready",
+   "wait_seconds": 0.0,
+   "week": 1
+  },
+  {
+   "category": "economy",
+   "completed": false,
+   "cost": {
+    "kryptonite": 297,
+    "metal": 0,
+    "pig_iron": 925,
+    "spice": 0
+   },
+   "duration_seconds": 73.4,
+   "duration_text": "1m 13s",
+   "entity_key": "b1",
+   "eta_bottleneck": null,
+   "exec_rank": null,
+   "executable_now": false,
+   "id": "ai_3",
+   "in_degree": 1,
+   "kind": "BUILD",
+   "lane_id": "lane:planet:20003",
+   "missing": {
+    "kryptonite": 0,
+    "metal": 0,
+    "pig_iron": 0,
+    "spice": 0
+   },
+   "needs_transport": false,
+   "order_index": 2,
+   "out_degree": 4,
+   "planet_coords": "03:121:04",
+   "planet_id": 20003,
+   "planet_name": "Golden Outpost",
+   "priority": "P2",
+   "reason": "Week 1 \u00b7 Step #3 \u00b7 Start 49s \u00b7 Build 1m 13s",
+   "status": "queued",
+   "step_seq": 3,
+   "target_id": 1,
+   "target_level": 7,
+   "target_name": "Pig iron mine",
+   "topological_layer": 1,
+   "total_eta": "2m 2s",
+   "total_seconds": 122.07,
+   "transport_dispatch_delay_sec": 0.0,
+   "transport_lead_sec": 0.0,
+   "transport_request_at_sec": null,
+   "transport_request_text": "",
+   "transport_sources": [],
+   "transport_travel_sec": 0.0,
+   "wait_eta": "49s",
+   "wait_seconds": 48.67,
+   "week": 1
+  },
+  {
+   "category": "economy",
+   "completed": false,
+   "cost": {
+    "kryptonite": 286,
+    "metal": 0,
+    "pig_iron": 468,
+    "spice": 0
+   },
+   "duration_seconds": 47.2,
+   "duration_text": "47s",
+   "entity_key": "b3",
+   "eta_bottleneck": null,
+   "exec_rank": null,
+   "executable_now": false,
+   "id": "ai_4",
+   "in_degree": 1,
+   "kind": "BUILD",
+   "lane_id": "lane:planet:20003",
+   "missing": {
+    "kryptonite": 0,
+    "metal": 0,
+    "pig_iron": 0,
+    "spice": 0
+   },
+   "needs_transport": false,
+   "order_index": 3,
+   "out_degree": 2,
+   "planet_coords": "03:121:04",
+   "planet_id": 20003,
+   "planet_name": "Golden Outpost",
+   "priority": "P2",
+   "reason": "Week 1 \u00b7 Step #4 \u00b7 Start 2m 2s \u00b7 Build 47s",
+   "status": "queued",
+   "step_seq": 4,
+   "target_id": 3,
+   "target_level": 5,
+   "target_name": "Kryptonite mine",
+   "topological_layer": 2,
+   "total_eta": "2m 49s",
+   "total_seconds": 169.27,
+   "transport_dispatch_delay_sec": 0.0,
+   "transport_lead_sec": 0.0,
+   "transport_request_at_sec": null,
+   "transport_request_text": "",
+   "transport_sources": [],
+   "transport_travel_sec": 0.0,
+   "wait_eta": "2m 2s",
+   "wait_seconds": 122.07,
+   "week": 1
+  },
+  {
+   "category": "economy",
+   "completed": false,
+   "cost": {
+    "kryptonite": 25,
+    "metal": 0,
+    "pig_iron": 75,
+    "spice": 0
+   },
+   "duration_seconds": 6.0,
+   "duration_text": "6s",
+   "entity_key": "b2",
+   "eta_bottleneck": null,
+   "exec_rank": null,
+   "executable_now": false,
+   "id": "ai_5",
+   "in_degree": 2,
+   "kind": "BUILD",
+   "lane_id": "lane:planet:20003",
+   "missing": {
+    "kryptonite": 0,
+    "metal": 0,
+    "pig_iron": 0,
+    "spice": 0
+   },
+   "needs_transport": false,
+   "order_index": 4,
+   "out_degree": 2,
+   "planet_coords": "03:121:04",
+   "planet_id": 20003,
+   "planet_name": "Golden Outpost",
+   "priority": "P2",
+   "reason": "Week 1 \u00b7 Step #5 \u00b7 Start 2m 49s \u00b7 Build 6s",
+   "status": "queued",
+   "step_seq": 5,
+   "target_id": 2,
+   "target_level": 1,
+   "target_name": "Blast furnace",
+   "topological_layer": 3,
+   "total_eta": "2m 55s",
+   "total_seconds": 175.27,
+   "transport_dispatch_delay_sec": 0.0,
+   "transport_lead_sec": 0.0,
+   "transport_request_at_sec": null,
+   "transport_request_text": "",
+   "transport_sources": [],
+   "transport_travel_sec": 0.0,
+   "wait_eta": "2m 49s",
+   "wait_seconds": 169.27,
+   "week": 1
+  },
+  {
+   "category": "energy",
+   "completed": false,
+   "cost": {
+    "kryptonite": 415,
+    "metal": 0,
+    "pig_iron": 949,
+    "spice": 0
+   },
+   "duration_seconds": 83.47,
+   "duration_text": "1m 23s",
+   "entity_key": "b5",
+   "eta_bottleneck": null,
+   "exec_rank": null,
+   "executable_now": false,
+   "id": "ai_6",
+   "in_degree": 2,
+   "kind": "BUILD",
+   "lane_id": "lane:planet:20003",
+   "missing": {
+    "kryptonite": 0,
+    "metal": 0,
+    "pig_iron": 0,
+    "spice": 0
+   },
+   "needs_transport": false,
+   "order_index": 5,
+   "out_degree": 4,
+   "planet_coords": "03:121:04",
+   "planet_id": 20003,
+   "planet_name": "Golden Outpost",
+   "priority": "P2",
+   "reason": "Week 1 \u00b7 Step #6 \u00b7 Start 2m 55s \u00b7 Build 1m 23s",
+   "status": "queued",
+   "step_seq": 6,
+   "target_id": 5,
+   "target_level": 7,
+   "target_name": "Fusion plant",
+   "topological_layer": 4,
+   "total_eta": "4m 19s",
+   "total_seconds": 258.74,
+   "transport_dispatch_delay_sec": 0.0,
+   "transport_lead_sec": 0.0,
+   "transport_request_at_sec": null,
+   "transport_request_text": "",
+   "transport_sources": [],
+   "transport_travel_sec": 0.0,
+   "wait_eta": "2m 55s",
+   "wait_seconds": 175.27,
+   "week": 1
+  },
+  {
+   "category": "economy",
+   "completed": false,
+   "cost": {
+    "kryptonite": 1487,
+    "metal": 0,
+    "pig_iron": 2433,
+    "spice": 0
+   },
+   "duration_seconds": 122.67,
+   "duration_text": "2m 3s",
+   "entity_key": "b3",
+   "eta_bottleneck": null,
+   "exec_rank": null,
+   "executable_now": false,
+   "id": "ai_7",
+   "in_degree": 1,
+   "kind": "BUILD",
+   "lane_id": "lane:planet:20002",
+   "missing": {
+    "kryptonite": 0,
+    "metal": 0,
+    "pig_iron": 0,
+    "spice": 0
+   },
+   "needs_transport": false,
+   "order_index": 6,
+   "out_degree": 1,
+   "planet_coords": "03:120:11",
+   "planet_id": 20002,
+   "planet_name": "Golden Forge",
+   "priority": "P2",
+   "reason": "Week 1 \u00b7 Step #7 \u00b7 Start 3m 11s \u00b7 Build 2m 3s",
+   "status": "queued",
+   "step_seq": 7,
+   "target_id": 3,
+   "target_level": 9,
+   "target_name": "Kryptonite mine",
+   "topological_layer": 1,
+   "total_eta": "5m 13s",
+   "total_seconds": 313.27,
+   "transport_dispatch_delay_sec": 0.0,
+   "transport_lead_sec": 0.0,
+   "transport_request_at_sec": null,
+   "transport_request_text": "",
+   "transport_sources": [],
+   "transport_travel_sec": 0.0,
+   "wait_eta": "3m 11s",
+   "wait_seconds": 190.6,
+   "week": 1
+  },
+  {
+   "category": "economy",
+   "completed": false,
+   "cost": {
+    "kryptonite": 448,
+    "metal": 0,
+    "pig_iron": 1397,
+    "spice": 0
+   },
+   "duration_seconds": 110.8,
+   "duration_text": "1m 51s",
+   "entity_key": "b1",
+   "eta_bottleneck": null,
+   "exec_rank": null,
+   "executable_now": false,
+   "id": "ai_8",
+   "in_degree": 2,
+   "kind": "BUILD",
+   "lane_id": "lane:planet:20003",
+   "missing": {
+    "kryptonite": 0,
+    "metal": 0,
+    "pig_iron": 0,
+    "spice": 0
+   },
+   "needs_transport": false,
+   "order_index": 7,
+   "out_degree": 4,
+   "planet_coords": "03:121:04",
+   "planet_id": 20003,
+   "planet_name": "Golden Outpost",
+   "priority": "P2",
+   "reason": "Week 1 \u00b7 Step #8 \u00b7 Start 4m 19s \u00b7 Build 1m 51s",
+   "status": "queued",
+   "step_seq": 8,
+   "target_id": 1,
+   "target_level": 8,
+   "target_name": "Pig iron mine",
+   "topological_layer": 5,
+   "total_eta": "6m 10s",
+   "total_seconds": 369.53,
+   "transport_dispatch_delay_sec": 0.0,
+   "transport_lead_sec": 0.0,
+   "transport_request_at_sec": null,
+   "transport_request_text": "",
+   "transport_sources": [],
+   "transport_travel_sec": 0.0,
+   "wait_eta": "4m 19s",
+   "wait_seconds": 258.73,
+   "week": 1
+  },
+  {
+   "category": "economy",
+   "completed": false,
+   "cost": {
+    "kryptonite": 2245,
+    "metal": 0,
+    "pig_iron": 3674,
+    "spice": 0
+   },
+   "duration_seconds": 185.2,
+   "duration_text": "3m 5s",
+   "entity_key": "b3",
+   "eta_bottleneck": null,
+   "exec_rank": null,
+   "executable_now": false,
+   "id": "ai_9",
+   "in_degree": 2,
+   "kind": "BUILD",
+   "lane_id": "lane:planet:20002",
+   "missing": {
+    "kryptonite": 0,
+    "metal": 0,
+    "pig_iron": 0,
+    "spice": 0
+   },
+   "needs_transport": false,
+   "order_index": 8,
+   "out_degree": 2,
+   "planet_coords": "03:120:11",
+   "planet_id": 20002,
+   "planet_name": "Golden Forge",
+   "priority": "P2",
+   "reason": "Week 1 \u00b7 Step #9 \u00b7 Start 5m 13s \u00b7 Build 3m 5s",
+   "status": "queued",
+   "step_seq": 9,
+   "target_id": 3,
+   "target_level": 10,
+   "target_name": "Kryptonite mine",
+   "topological_layer": 2,
+   "total_eta": "8m 18s",
+   "total_seconds": 498.47,
+   "transport_dispatch_delay_sec": 0.0,
+   "transport_lead_sec": 0.0,
+   "transport_request_at_sec": null,
+   "transport_request_text": "",
+   "transport_sources": [],
+   "transport_travel_sec": 0.0,
+   "wait_eta": "5m 13s",
+   "wait_seconds": 313.27,
+   "week": 1
+  },
+  {
+   "category": "economy",
+   "completed": false,
+   "cost": {
+    "kryptonite": 432,
+    "metal": 0,
+    "pig_iron": 707,
+    "spice": 0
+   },
+   "duration_seconds": 71.27,
+   "duration_text": "1m 11s",
+   "entity_key": "b3",
+   "eta_bottleneck": null,
+   "exec_rank": null,
+   "executable_now": false,
+   "id": "ai_10",
+   "in_degree": 3,
+   "kind": "BUILD",
+   "lane_id": "lane:planet:20003",
+   "missing": {
+    "kryptonite": 0,
+    "metal": 0,
+    "pig_iron": 0,
+    "spice": 0
+   },
+   "needs_transport": false,
+   "order_index": 9,
+   "out_degree": 2,
+   "planet_coords": "03:121:04",
+   "planet_id": 20003,
+   "planet_name": "Golden Outpost",
+   "priority": "P2",
+   "reason": "Week 1 \u00b7 Step #10 \u00b7 Start 6m 10s \u00b7 Build 1m 11s",
+   "status": "queued",
+   "step_seq": 10,
+   "target_id": 3,
+   "target_level": 6,
+   "target_name": "Kryptonite mine",
+   "topological_layer": 6,
+   "total_eta": "7m 21s",
+   "total_seconds": 440.8,
+   "transport_dispatch_delay_sec": 0.0,
+   "transport_lead_sec": 0.0,
+   "transport_request_at_sec": null,
+   "transport_request_text": "",
+   "transport_sources": [],
+   "transport_travel_sec": 0.0,
+   "wait_eta": "6m 10s",
+   "wait_seconds": 369.53,
+   "week": 1
+  },
+  {
+   "category": "economy",
+   "completed": false,
+   "cost": {
+    "kryptonite": 38,
+    "metal": 0,
+    "pig_iron": 114,
+    "spice": 0
+   },
+   "duration_seconds": 9.13,
+   "duration_text": "9s",
+   "entity_key": "b2",
+   "eta_bottleneck": null,
+   "exec_rank": null,
+   "executable_now": false,
+   "id": "ai_11",
+   "in_degree": 4,
+   "kind": "BUILD",
+   "lane_id": "lane:planet:20003",
+   "missing": {
+    "kryptonite": 0,
+    "metal": 0,
+    "pig_iron": 0,
+    "spice": 0
+   },
+   "needs_transport": false,
+   "order_index": 10,
+   "out_degree": 3,
+   "planet_coords": "03:121:04",
+   "planet_id": 20003,
+   "planet_name": "Golden Outpost",
+   "priority": "P2",
+   "reason": "Week 1 \u00b7 Step #11 \u00b7 Start 7m 21s \u00b7 Build 9s",
+   "status": "queued",
+   "step_seq": 11,
+   "target_id": 2,
+   "target_level": 2,
+   "target_name": "Blast furnace",
+   "topological_layer": 7,
+   "total_eta": "7m 30s",
+   "total_seconds": 449.93,
+   "transport_dispatch_delay_sec": 0.0,
+   "transport_lead_sec": 0.0,
+   "transport_request_at_sec": null,
+   "transport_request_text": "",
+   "transport_sources": [],
+   "transport_travel_sec": 0.0,
+   "wait_eta": "7m 21s",
+   "wait_seconds": 440.8,
+   "week": 1
+  },
+  {
+   "category": "energy",
+   "completed": false,
+   "cost": {
+    "kryptonite": 627,
+    "metal": 0,
+    "pig_iron": 1432,
+    "spice": 0
+   },
+   "duration_seconds": 126.0,
+   "duration_text": "2m 6s",
+   "entity_key": "b5",
+   "eta_bottleneck": null,
+   "exec_rank": null,
+   "executable_now": false,
+   "id": "ai_12",
+   "in_degree": 3,
+   "kind": "BUILD",
+   "lane_id": "lane:planet:20003",
+   "missing": {
+    "kryptonite": 0,
+    "metal": 0,
+    "pig_iron": 0,
+    "spice": 0
+   },
+   "needs_transport": false,
+   "order_index": 11,
+   "out_degree": 3,
+   "planet_coords": "03:121:04",
+   "planet_id": 20003,
+   "planet_name": "Golden Outpost",
+   "priority": "P2",
+   "reason": "Week 1 \u00b7 Step #12 \u00b7 Start 7m 30s \u00b7 Build 2m 6s",
+   "status": "queued",
+   "step_seq": 12,
+   "target_id": 5,
+   "target_level": 8,
+   "target_name": "Fusion plant",
+   "topological_layer": 8,
+   "total_eta": "9m 36s",
+   "total_seconds": 575.93,
+   "transport_dispatch_delay_sec": 0.0,
+   "transport_lead_sec": 0.0,
+   "transport_request_at_sec": null,
+   "transport_request_text": "",
+   "transport_sources": [],
+   "transport_travel_sec": 0.0,
+   "wait_eta": "7m 30s",
+   "wait_seconds": 449.93,
+   "week": 1
+  },
+  {
+   "category": "energy",
+   "completed": false,
+   "cost": {
+    "kryptonite": 3257,
+    "metal": 0,
+    "pig_iron": 7445,
+    "spice": 0
+   },
+   "duration_seconds": 327.43,
+   "duration_text": "5m 27s",
+   "entity_key": "b5",
+   "eta_bottleneck": null,
+   "exec_rank": null,
+   "executable_now": false,
+   "id": "ai_13",
+   "in_degree": 2,
+   "kind": "BUILD",
+   "lane_id": "lane:planet:20002",
+   "missing": {
+    "kryptonite": 0,
+    "metal": 0,
+    "pig_iron": 0,
+    "spice": 0
+   },
+   "needs_transport": false,
+   "order_index": 12,
+   "out_degree": 4,
+   "planet_coords": "03:120:11",
+   "planet_id": 20002,
+   "planet_name": "Golden Forge",
+   "priority": "P2",
+   "reason": "Week 1 \u00b7 Step #13 \u00b7 Start 8m 18s \u00b7 Build 5m 27s",
+   "status": "queued",
+   "step_seq": 13,
+   "target_id": 5,
+   "target_level": 12,
+   "target_name": "Fusion plant",
+   "topological_layer": 3,
+   "total_eta": "13m 46s",
+   "total_seconds": 825.9,
+   "transport_dispatch_delay_sec": 0.0,
+   "transport_lead_sec": 0.0,
+   "transport_request_at_sec": null,
+   "transport_request_text": "",
+   "transport_sources": [],
+   "transport_travel_sec": 0.0,
+   "wait_eta": "8m 18s",
+   "wait_seconds": 498.47,
+   "week": 1
+  },
+  {
+   "category": "economy",
+   "completed": false,
+   "cost": {
+    "kryptonite": 652,
+    "metal": 0,
+    "pig_iron": 1067,
+    "spice": 0
+   },
+   "duration_seconds": 107.6,
+   "duration_text": "1m 48s",
+   "entity_key": "b3",
+   "eta_bottleneck": null,
+   "exec_rank": null,
+   "executable_now": false,
+   "id": "ai_14",
+   "in_degree": 3,
+   "kind": "BUILD",
+   "lane_id": "lane:planet:20003",
+   "missing": {
+    "kryptonite": 0,
+    "metal": 0,
+    "pig_iron": 0,
+    "spice": 0
+   },
+   "needs_transport": false,
+   "order_index": 13,
+   "out_degree": 1,
+   "planet_coords": "03:121:04",
+   "planet_id": 20003,
+   "planet_name": "Golden Outpost",
+   "priority": "P2",
+   "reason": "Week 1 \u00b7 Step #14 \u00b7 Start 9m 36s \u00b7 Build 1m 48s",
+   "status": "queued",
+   "step_seq": 14,
+   "target_id": 3,
+   "target_level": 7,
+   "target_name": "Kryptonite mine",
+   "topological_layer": 9,
+   "total_eta": "11m 24s",
+   "total_seconds": 683.53,
+   "transport_dispatch_delay_sec": 0.0,
+   "transport_lead_sec": 0.0,
+   "transport_request_at_sec": null,
+   "transport_request_text": "",
+   "transport_sources": [],
+   "transport_travel_sec": 0.0,
+   "wait_eta": "9m 36s",
+   "wait_seconds": 575.93,
+   "week": 1
+  },
+  {
+   "category": "economy",
+   "completed": false,
+   "cost": {
+    "kryptonite": 183,
+    "metal": 502,
+    "pig_iron": 0,
+    "spice": 0
+   },
+   "duration_seconds": 41.47,
+   "duration_text": "41s",
+   "entity_key": "b4",
+   "eta_bottleneck": null,
+   "exec_rank": null,
+   "executable_now": false,
+   "id": "ai_15",
+   "in_degree": 3,
+   "kind": "BUILD",
+   "lane_id": "lane:planet:20003",
+   "missing": {
+    "kryptonite": 0,
+    "metal": 0,
+    "pig_iron": 0,
+    "spice": 0
+   },
+   "needs_transport": false,
+   "order_index": 14,
+   "out_degree": 1,
+   "planet_coords": "03:121:04",
+   "planet_id": 20003,
+   "planet_name": "Golden Outpost",
+   "priority": "P2",
+   "reason": "Week 1 \u00b7 Step #15 \u00b7 Start 11m 24s \u00b7 Build 41s",
+   "status": "queued",
+   "step_seq": 15,
+   "target_id": 4,
+   "target_level": 3,
+   "target_name": "Spice mine",
+   "topological_layer": 10,
+   "total_eta": "12m 5s",
+   "total_seconds": 725.0,
+   "transport_dispatch_delay_sec": 0.0,
+   "transport_lead_sec": 0.0,
+   "transport_request_at_sec": null,
+   "transport_request_text": "",
+   "transport_sources": [],
+   "transport_travel_sec": 0.0,
+   "wait_eta": "11m 24s",
+   "wait_seconds": 683.53,
+   "week": 1
+  },
+  {
+   "category": "economy",
+   "completed": false,
+   "cost": {
+    "kryptonite": 2327,
+    "metal": 0,
+    "pig_iron": 7259,
+    "spice": 0
+   },
+   "duration_seconds": 287.83,
+   "duration_text": "4m 48s",
+   "entity_key": "b1",
+   "eta_bottleneck": null,
+   "exec_rank": null,
+   "executable_now": false,
+   "id": "ai_16",
+   "in_degree": 2,
+   "kind": "BUILD",
+   "lane_id": "lane:planet:20002",
+   "missing": {
+    "kryptonite": 0,
+    "metal": 0,
+    "pig_iron": 0,
+    "spice": 0
+   },
+   "needs_transport": false,
+   "order_index": 15,
+   "out_degree": 6,
+   "planet_coords": "03:120:11",
+   "planet_id": 20002,
+   "planet_name": "Golden Forge",
+   "priority": "P2",
+   "reason": "Week 1 \u00b7 Step #16 \u00b7 Start 13m 46s \u00b7 Build 4m 48s",
+   "status": "queued",
+   "step_seq": 16,
+   "target_id": 1,
+   "target_level": 12,
+   "target_name": "Pig iron mine",
+   "topological_layer": 4,
+   "total_eta": "18m 34s",
+   "total_seconds": 1113.73,
+   "transport_dispatch_delay_sec": 0.0,
+   "transport_lead_sec": 0.0,
+   "transport_request_at_sec": null,
+   "transport_request_text": "",
+   "transport_sources": [],
+   "transport_travel_sec": 0.0,
+   "wait_eta": "13m 46s",
+   "wait_seconds": 825.9,
+   "week": 1
+  },
+  {
+   "category": "economy",
+   "completed": false,
+   "cost": {
+    "kryptonite": 949,
+    "metal": 2608,
+    "pig_iron": 0,
+    "spice": 0
+   },
+   "duration_seconds": 107.6,
+   "duration_text": "1m 48s",
+   "entity_key": "b4",
+   "eta_bottleneck": null,
+   "exec_rank": null,
+   "executable_now": false,
+   "id": "ai_17",
+   "in_degree": 2,
+   "kind": "BUILD",
+   "lane_id": "lane:planet:20002",
+   "missing": {
+    "kryptonite": 0,
+    "metal": 0,
+    "pig_iron": 0,
+    "spice": 0
+   },
+   "needs_transport": false,
+   "order_index": 16,
+   "out_degree": 2,
+   "planet_coords": "03:120:11",
+   "planet_id": 20002,
+   "planet_name": "Golden Forge",
+   "priority": "P2",
+   "reason": "Week 1 \u00b7 Step #17 \u00b7 Start 18m 34s \u00b7 Build 1m 48s",
+   "status": "queued",
+   "step_seq": 17,
+   "target_id": 4,
+   "target_level": 7,
+   "target_name": "Spice mine",
+   "topological_layer": 5,
+   "total_eta": "20m 21s",
+   "total_seconds": 1221.33,
+   "transport_dispatch_delay_sec": 0.0,
+   "transport_lead_sec": 0.0,
+   "transport_request_at_sec": null,
+   "transport_request_text": "",
+   "transport_sources": [],
+   "transport_travel_sec": 0.0,
+   "wait_eta": "18m 34s",
+   "wait_seconds": 1113.73,
+   "week": 1
+  },
+  {
+   "category": "economy",
+   "completed": false,
+   "cost": {
+    "kryptonite": 3390,
+    "metal": 0,
+    "pig_iron": 5547,
+    "spice": 0
+   },
+   "duration_seconds": 279.63,
+   "duration_text": "4m 40s",
+   "entity_key": "b3",
+   "eta_bottleneck": null,
+   "exec_rank": null,
+   "executable_now": false,
+   "id": "ai_18",
+   "in_degree": 4,
+   "kind": "BUILD",
+   "lane_id": "lane:planet:20002",
+   "missing": {
+    "kryptonite": 0,
+    "metal": 0,
+    "pig_iron": 0,
+    "spice": 0
+   },
+   "needs_transport": false,
+   "order_index": 17,
+   "out_degree": 1,
+   "planet_coords": "03:120:11",
+   "planet_id": 20002,
+   "planet_name": "Golden Forge",
+   "priority": "P2",
+   "reason": "Week 1 \u00b7 Step #18 \u00b7 Start 20m 21s \u00b7 Build 4m 40s",
+   "status": "queued",
+   "step_seq": 18,
+   "target_id": 3,
+   "target_level": 11,
+   "target_name": "Kryptonite mine",
+   "topological_layer": 6,
+   "total_eta": "25m 1s",
+   "total_seconds": 1500.97,
+   "transport_dispatch_delay_sec": 0.0,
+   "transport_lead_sec": 0.0,
+   "transport_request_at_sec": null,
+   "transport_request_text": "",
+   "transport_sources": [],
+   "transport_travel_sec": 0.0,
+   "wait_eta": "20m 21s",
+   "wait_seconds": 1221.33,
+   "week": 1
+  },
+  {
+   "category": "energy",
+   "completed": false,
+   "cost": {
+    "kryptonite": 4919,
+    "metal": 0,
+    "pig_iron": 11242,
+    "spice": 0
+   },
+   "duration_seconds": 494.47,
+   "duration_text": "8m 14s",
+   "entity_key": "b5",
+   "eta_bottleneck": null,
+   "exec_rank": null,
+   "executable_now": false,
+   "id": "ai_19",
+   "in_degree": 3,
+   "kind": "BUILD",
+   "lane_id": "lane:planet:20002",
+   "missing": {
+    "kryptonite": 0,
+    "metal": 0,
+    "pig_iron": 0,
+    "spice": 0
+   },
+   "needs_transport": false,
+   "order_index": 18,
+   "out_degree": 4,
+   "planet_coords": "03:120:11",
+   "planet_id": 20002,
+   "planet_name": "Golden Forge",
+   "priority": "P2",
+   "reason": "Week 1 \u00b7 Step #19 \u00b7 Start 25m 1s \u00b7 Build 8m 14s",
+   "status": "queued",
+   "step_seq": 19,
+   "target_id": 5,
+   "target_level": 13,
+   "target_name": "Fusion plant",
+   "topological_layer": 7,
+   "total_eta": "33m 15s",
+   "total_seconds": 1995.44,
+   "transport_dispatch_delay_sec": 0.0,
+   "transport_lead_sec": 0.0,
+   "transport_request_at_sec": null,
+   "transport_request_text": "",
+   "transport_sources": [],
+   "transport_travel_sec": 0.0,
+   "wait_eta": "25m 1s",
+   "wait_seconds": 1500.97,
+   "week": 1
+  },
+  {
+   "category": "economy",
+   "completed": false,
+   "cost": {
+    "kryptonite": 1432,
+    "metal": 3938,
+    "pig_iron": 0,
+    "spice": 0
+   },
+   "duration_seconds": 162.43,
+   "duration_text": "2m 42s",
+   "entity_key": "b4",
+   "eta_bottleneck": null,
+   "exec_rank": null,
+   "executable_now": false,
+   "id": "ai_20",
+   "in_degree": 2,
+   "kind": "BUILD",
+   "lane_id": "lane:planet:20002",
+   "missing": {
+    "kryptonite": 0,
+    "metal": 0,
+    "pig_iron": 0,
+    "spice": 0
+   },
+   "needs_transport": false,
+   "order_index": 19,
+   "out_degree": 1,
+   "planet_coords": "03:120:11",
+   "planet_id": 20002,
+   "planet_name": "Golden Forge",
+   "priority": "P2",
+   "reason": "Week 1 \u00b7 Step #20 \u00b7 Start 33m 15s \u00b7 Build 2m 42s",
+   "status": "queued",
+   "step_seq": 20,
+   "target_id": 4,
+   "target_level": 8,
+   "target_name": "Spice mine",
+   "topological_layer": 8,
+   "total_eta": "35m 58s",
+   "total_seconds": 2157.87,
+   "transport_dispatch_delay_sec": 0.0,
+   "transport_lead_sec": 0.0,
+   "transport_request_at_sec": null,
+   "transport_request_text": "",
+   "transport_sources": [],
+   "transport_travel_sec": 0.0,
+   "wait_eta": "33m 15s",
+   "wait_seconds": 1995.43,
+   "week": 1
+  },
+  {
+   "category": "economy",
+   "completed": false,
+   "cost": {
+    "kryptonite": 448,
+    "metal": 0,
+    "pig_iron": 1343,
+    "spice": 0
+   },
+   "duration_seconds": 53.9,
+   "duration_text": "54s",
+   "entity_key": "b2",
+   "eta_bottleneck": null,
+   "exec_rank": null,
+   "executable_now": false,
+   "id": "ai_21",
+   "in_degree": 3,
+   "kind": "BUILD",
+   "lane_id": "lane:planet:20002",
+   "missing": {
+    "kryptonite": 0,
+    "metal": 0,
+    "pig_iron": 0,
+    "spice": 0
+   },
+   "needs_transport": false,
+   "order_index": 20,
+   "out_degree": 1,
+   "planet_coords": "03:120:11",
+   "planet_id": 20002,
+   "planet_name": "Golden Forge",
+   "priority": "P2",
+   "reason": "Week 1 \u00b7 Step #21 \u00b7 Start 35m 58s \u00b7 Build 54s",
+   "status": "queued",
+   "step_seq": 21,
+   "target_id": 2,
+   "target_level": 8,
+   "target_name": "Blast furnace",
+   "topological_layer": 9,
+   "total_eta": "36m 52s",
+   "total_seconds": 2211.77,
+   "transport_dispatch_delay_sec": 0.0,
+   "transport_lead_sec": 0.0,
+   "transport_request_at_sec": null,
+   "transport_request_text": "",
+   "transport_sources": [],
+   "transport_travel_sec": 0.0,
+   "wait_eta": "35m 58s",
+   "wait_seconds": 2157.87,
+   "week": 1
+  },
+  {
+   "category": "economy",
+   "completed": false,
+   "cost": {
+    "kryptonite": 676,
+    "metal": 0,
+    "pig_iron": 2028,
+    "spice": 0
+   },
+   "duration_seconds": 81.37,
+   "duration_text": "1m 21s",
+   "entity_key": "b2",
+   "eta_bottleneck": null,
+   "exec_rank": null,
+   "executable_now": false,
+   "id": "ai_22",
+   "in_degree": 3,
+   "kind": "BUILD",
+   "lane_id": "lane:planet:20002",
+   "missing": {
+    "kryptonite": 0,
+    "metal": 0,
+    "pig_iron": 0,
+    "spice": 0
+   },
+   "needs_transport": false,
+   "order_index": 21,
+   "out_degree": 1,
+   "planet_coords": "03:120:11",
+   "planet_id": 20002,
+   "planet_name": "Golden Forge",
+   "priority": "P2",
+   "reason": "Week 1 \u00b7 Step #22 \u00b7 Start 36m 52s \u00b7 Build 1m 21s",
+   "status": "queued",
+   "step_seq": 22,
+   "target_id": 2,
+   "target_level": 9,
+   "target_name": "Blast furnace",
+   "topological_layer": 10,
+   "total_eta": "38m 13s",
+   "total_seconds": 2293.14,
+   "transport_dispatch_delay_sec": 0.0,
+   "transport_lead_sec": 0.0,
+   "transport_request_at_sec": null,
+   "transport_request_text": "",
+   "transport_sources": [],
+   "transport_travel_sec": 0.0,
+   "wait_eta": "36m 52s",
+   "wait_seconds": 2211.77,
+   "week": 1
+  },
+  {
+   "category": "economy",
+   "completed": false,
+   "cost": {
+    "kryptonite": 276,
+    "metal": 758,
+    "pig_iron": 0,
+    "spice": 0
+   },
+   "duration_seconds": 62.53,
+   "duration_text": "1m 3s",
+   "entity_key": "b4",
+   "eta_bottleneck": null,
+   "exec_rank": null,
+   "executable_now": false,
+   "id": "ai_23",
+   "in_degree": 3,
+   "kind": "BUILD",
+   "lane_id": "lane:planet:20003",
+   "missing": {
+    "kryptonite": 0,
+    "metal": 0,
+    "pig_iron": 0,
+    "spice": 0
+   },
+   "needs_transport": false,
+   "order_index": 22,
+   "out_degree": 0,
+   "planet_coords": "03:121:04",
+   "planet_id": 20003,
+   "planet_name": "Golden Outpost",
+   "priority": "P2",
+   "reason": "Week 1 \u00b7 Step #23 \u00b7 Start 41m 43s \u00b7 Build 1m 3s",
+   "status": "queued",
+   "step_seq": 23,
+   "target_id": 4,
+   "target_level": 4,
+   "target_name": "Spice mine",
+   "topological_layer": 11,
+   "total_eta": "42m 45s",
+   "total_seconds": 2565.31,
+   "transport_dispatch_delay_sec": 0.0,
+   "transport_lead_sec": 0.0,
+   "transport_request_at_sec": null,
+   "transport_request_text": "",
+   "transport_sources": [],
+   "transport_travel_sec": 0.0,
+   "wait_eta": "41m 43s",
+   "wait_seconds": 2502.78,
+   "week": 1
+  },
+  {
+   "category": "economy",
+   "completed": false,
+   "cost": {
+    "kryptonite": 7729,
+    "metal": 0,
+    "pig_iron": 12647,
+    "spice": 0
+   },
+   "duration_seconds": 425.04,
+   "duration_text": "7m 5s",
+   "entity_key": "b3",
+   "eta_bottleneck": null,
+   "exec_rank": 2,
+   "executable_now": true,
+   "id": "ai_24",
+   "in_degree": 0,
+   "kind": "BUILD",
+   "lane_id": "lane:planet:20001",
+   "missing": {
+    "kryptonite": 0,
+    "metal": 0,
+    "pig_iron": 0,
+    "spice": 0
+   },
+   "needs_transport": false,
+   "order_index": 23,
+   "out_degree": 2,
+   "planet_coords": "03:120:07",
+   "planet_id": 20001,
+   "planet_name": "Golden Prime",
+   "priority": "P1",
+   "reason": "Week 1 \u00b7 Step #24 \u00b7 Start 42m 10s \u00b7 Build 7m 5s",
+   "status": "ready",
+   "step_seq": 24,
+   "target_id": 3,
+   "target_level": 13,
+   "target_name": "Kryptonite mine",
+   "topological_layer": 0,
+   "total_eta": "49m 15s",
+   "total_seconds": 2955.04,
+   "transport_dispatch_delay_sec": 0.0,
+   "transport_lead_sec": 0.0,
+   "transport_request_at_sec": null,
+   "transport_request_text": "",
+   "transport_sources": [],
+   "transport_travel_sec": 0.0,
+   "wait_eta": "42m 10s",
+   "wait_seconds": 2530.0,
+   "week": 1
+  },
+  {
+   "category": "economy",
+   "completed": false,
+   "cost": {
+    "kryptonite": 8010,
+    "metal": 0,
+    "pig_iron": 24991,
+    "spice": 0
+   },
+   "duration_seconds": 660.58,
+   "duration_text": "11m 1s",
+   "entity_key": "b1",
+   "eta_bottleneck": null,
+   "exec_rank": null,
+   "executable_now": false,
+   "id": "ai_25",
+   "in_degree": 1,
+   "kind": "BUILD",
+   "lane_id": "lane:planet:20001",
+   "missing": {
+    "kryptonite": 0,
+    "metal": 0,
+    "pig_iron": 0,
+    "spice": 0
+   },
+   "needs_transport": false,
+   "order_index": 24,
+   "out_degree": 2,
+   "planet_coords": "03:120:07",
+   "planet_id": 20001,
+   "planet_name": "Golden Prime",
+   "priority": "P2",
+   "reason": "Week 1 \u00b7 Step #25 \u00b7 Start 49m 15s \u00b7 Build 11m 1s",
+   "status": "queued",
+   "step_seq": 25,
+   "target_id": 1,
+   "target_level": 15,
+   "target_name": "Pig iron mine",
+   "topological_layer": 1,
+   "total_eta": "1h 0m",
+   "total_seconds": 3615.62,
+   "transport_dispatch_delay_sec": 0.0,
+   "transport_lead_sec": 0.0,
+   "transport_request_at_sec": null,
+   "transport_request_text": "",
+   "transport_sources": [],
+   "transport_travel_sec": 0.0,
+   "wait_eta": "49m 15s",
+   "wait_seconds": 2955.04,
+   "week": 1
+  },
+  {
+   "category": "economy",
+   "completed": false,
+   "cost": {
+    "kryptonite": 11670,
+    "metal": 0,
+    "pig_iron": 19097,
+    "spice": 0
+   },
+   "duration_seconds": 641.8,
+   "duration_text": "10m 42s",
+   "entity_key": "b3",
+   "eta_bottleneck": null,
+   "exec_rank": null,
+   "executable_now": false,
+   "id": "ai_26",
+   "in_degree": 2,
+   "kind": "BUILD",
+   "lane_id": "lane:planet:20001",
+   "missing": {
+    "kryptonite": 0,
+    "metal": 0,
+    "pig_iron": 0,
+    "spice": 0
+   },
+   "needs_transport": false,
+   "order_index": 25,
+   "out_degree": 2,
+   "planet_coords": "03:120:07",
+   "planet_id": 20001,
+   "planet_name": "Golden Prime",
+   "priority": "P2",
+   "reason": "Week 1 \u00b7 Step #26 \u00b7 Start 1h 0m \u00b7 Build 10m 42s",
+   "status": "queued",
+   "step_seq": 26,
+   "target_id": 3,
+   "target_level": 14,
+   "target_name": "Kryptonite mine",
+   "topological_layer": 2,
+   "total_eta": "1h 10m",
+   "total_seconds": 4257.42,
+   "transport_dispatch_delay_sec": 0.0,
+   "transport_lead_sec": 0.0,
+   "transport_request_at_sec": null,
+   "transport_request_text": "",
+   "transport_sources": [],
+   "transport_travel_sec": 0.0,
+   "wait_eta": "1h 0m",
+   "wait_seconds": 3615.62,
+   "week": 1
+  },
+  {
+   "category": "research",
+   "completed": false,
+   "cost": {
+    "kryptonite": 8000,
+    "metal": 0,
+    "pig_iron": 16000,
+    "spice": 0
+   },
+   "duration_seconds": 833.33,
+   "duration_text": "13m 53s",
+   "entity_key": "r1",
+   "eta_bottleneck": null,
+   "exec_rank": 3,
+   "executable_now": true,
+   "id": "ai_27",
+   "in_degree": 0,
+   "kind": "RESEARCH",
+   "lane_id": "lane:global",
+   "missing": {
+    "kryptonite": 0,
+    "metal": 0,
+    "pig_iron": 0,
+    "spice": 0
+   },
+   "needs_transport": false,
+   "order_index": 26,
+   "out_degree": 3,
+   "planet_coords": "account",
+   "planet_id": 0,
+   "planet_name": "Account",
+   "priority": "P1",
+   "reason": "Week 1 \u00b7 Step #27 \u00b7 Start 1h 10m \u00b7 Build 13m 53s",
+   "status": "ready",
+   "step_seq": 27,
+   "target_id": 1,
+   "target_level": 5,
+   "target_name": "Mining technology",
+   "topological_layer": 0,
+   "total_eta": "1h 23m",
+   "total_seconds": 5033.33,
+   "transport_dispatch_delay_sec": 0.0,
+   "transport_lead_sec": 0.0,
+   "transport_request_at_sec": null,
+   "transport_request_text": "",
+   "transport_sources": [],
+   "transport_travel_sec": 0.0,
+   "wait_eta": "1h 10m",
+   "wait_seconds": 4200.0,
+   "week": 1
+  },
+  {
+   "category": "economy",
+   "completed": false,
+   "cost": {
+    "kryptonite": 3265,
+    "metal": 8979,
+    "pig_iron": 0,
+    "spice": 0
+   },
+   "duration_seconds": 246.89,
+   "duration_text": "4m 7s",
+   "entity_key": "b4",
+   "eta_bottleneck": null,
+   "exec_rank": null,
+   "executable_now": false,
+   "id": "ai_28",
+   "in_degree": 1,
+   "kind": "BUILD",
+   "lane_id": "lane:planet:20001",
+   "missing": {
+    "kryptonite": 0,
+    "metal": 0,
+    "pig_iron": 0,
+    "spice": 0
+   },
+   "needs_transport": false,
+   "order_index": 27,
+   "out_degree": 2,
+   "planet_coords": "03:120:07",
+   "planet_id": 20001,
+   "planet_name": "Golden Prime",
+   "priority": "P2",
+   "reason": "Week 1 \u00b7 Step #28 \u00b7 Start 1h 10m \u00b7 Build 4m 7s",
+   "status": "queued",
+   "step_seq": 28,
+   "target_id": 4,
+   "target_level": 10,
+   "target_name": "Spice mine",
+   "topological_layer": 3,
+   "total_eta": "1h 15m",
+   "total_seconds": 4504.31,
+   "transport_dispatch_delay_sec": 0.0,
+   "transport_lead_sec": 0.0,
+   "transport_request_at_sec": null,
+   "transport_request_text": "",
+   "transport_sources": [],
+   "transport_travel_sec": 0.0,
+   "wait_eta": "1h 10m",
+   "wait_seconds": 4257.42,
+   "week": 1
+  },
+  {
+   "category": "economy",
+   "completed": false,
+   "cost": {
+    "kryptonite": 12095,
+    "metal": 0,
+    "pig_iron": 37736,
+    "spice": 0
+   },
+   "duration_seconds": 997.47,
+   "duration_text": "16m 37s",
+   "entity_key": "b1",
+   "eta_bottleneck": null,
+   "exec_rank": null,
+   "executable_now": false,
+   "id": "ai_29",
+   "in_degree": 3,
+   "kind": "BUILD",
+   "lane_id": "lane:planet:20001",
+   "missing": {
+    "kryptonite": 0,
+    "metal": 0,
+    "pig_iron": 0,
+    "spice": 0
+   },
+   "needs_transport": false,
+   "order_index": 28,
+   "out_degree": 3,
+   "planet_coords": "03:120:07",
+   "planet_id": 20001,
+   "planet_name": "Golden Prime",
+   "priority": "P2",
+   "reason": "Week 1 \u00b7 Step #29 \u00b7 Start 1h 15m \u00b7 Build 16m 37s",
+   "status": "queued",
+   "step_seq": 29,
+   "target_id": 1,
+   "target_level": 16,
+   "target_name": "Pig iron mine",
+   "topological_layer": 4,
+   "total_eta": "1h 31m",
+   "total_seconds": 5501.78,
+   "transport_dispatch_delay_sec": 0.0,
+   "transport_lead_sec": 0.0,
+   "transport_request_at_sec": null,
+   "transport_request_text": "",
+   "transport_sources": [],
+   "transport_travel_sec": 0.0,
+   "wait_eta": "1h 15m",
+   "wait_seconds": 4504.31,
+   "week": 1
+  },
+  {
+   "category": "economy",
+   "completed": false,
+   "cost": {
+    "kryptonite": 3513,
+    "metal": 0,
+    "pig_iron": 10961,
+    "spice": 0
+   },
+   "duration_seconds": 434.6,
+   "duration_text": "7m 15s",
+   "entity_key": "b1",
+   "eta_bottleneck": null,
+   "exec_rank": null,
+   "executable_now": false,
+   "id": "ai_30",
+   "in_degree": 4,
+   "kind": "BUILD",
+   "lane_id": "lane:planet:20002",
+   "missing": {
+    "kryptonite": 0,
+    "metal": 0,
+    "pig_iron": 0,
+    "spice": 0
+   },
+   "needs_transport": false,
+   "order_index": 29,
+   "out_degree": 2,
+   "planet_coords": "03:120:11",
+   "planet_id": 20002,
+   "planet_name": "Golden Forge",
+   "priority": "P2",
+   "reason": "Week 1 \u00b7 Step #30 \u00b7 Start 1h 29m \u00b7 Build 7m 15s",
+   "status": "queued",
+   "step_seq": 30,
+   "target_id": 1,
+   "target_level": 13,
+   "target_name": "Pig iron mine",
+   "topological_layer": 11,
+   "total_eta": "1h 37m",
+   "total_seconds": 5823.05,
+   "transport_dispatch_delay_sec": 0.0,
+   "transport_lead_sec": 0.0,
+   "transport_request_at_sec": null,
+   "transport_request_text": "",
+   "transport_sources": [],
+   "transport_travel_sec": 0.0,
+   "wait_eta": "1h 29m",
+   "wait_seconds": 5388.45,
+   "week": 1
+  },
+  {
+   "category": "economy",
+   "completed": false,
+   "cost": {
+    "kryptonite": 17622,
+    "metal": 0,
+    "pig_iron": 28835,
+    "spice": 0
+   },
+   "duration_seconds": 969.09,
+   "duration_text": "16m 9s",
+   "entity_key": "b3",
+   "eta_bottleneck": null,
+   "exec_rank": null,
+   "executable_now": false,
+   "id": "ai_31",
+   "in_degree": 2,
+   "kind": "BUILD",
+   "lane_id": "lane:planet:20001",
+   "missing": {
+    "kryptonite": 0,
+    "metal": 0,
+    "pig_iron": 0,
+    "spice": 0
+   },
+   "needs_transport": false,
+   "order_index": 30,
+   "out_degree": 1,
+   "planet_coords": "03:120:07",
+   "planet_id": 20001,
+   "planet_name": "Golden Prime",
+   "priority": "P2",
+   "reason": "Week 1 \u00b7 Step #31 \u00b7 Start 1h 31m \u00b7 Build 16m 9s",
+   "status": "queued",
+   "step_seq": 31,
+   "target_id": 3,
+   "target_level": 15,
+   "target_name": "Kryptonite mine",
+   "topological_layer": 5,
+   "total_eta": "1h 47m",
+   "total_seconds": 6470.87,
+   "transport_dispatch_delay_sec": 0.0,
+   "transport_lead_sec": 0.0,
+   "transport_request_at_sec": null,
+   "transport_request_text": "",
+   "transport_sources": [],
+   "transport_travel_sec": 0.0,
+   "wait_eta": "1h 31m",
+   "wait_seconds": 5501.78,
+   "week": 1
+  },
+  {
+   "category": "energy",
+   "completed": false,
+   "cost": {
+    "kryptonite": 25569,
+    "metal": 0,
+    "pig_iron": 58442,
+    "spice": 0
+   },
+   "duration_seconds": 1713.6,
+   "duration_text": "28m 34s",
+   "entity_key": "b5",
+   "eta_bottleneck": null,
+   "exec_rank": null,
+   "executable_now": false,
+   "id": "ai_32",
+   "in_degree": 2,
+   "kind": "BUILD",
+   "lane_id": "lane:planet:20001",
+   "missing": {
+    "kryptonite": 0,
+    "metal": 0,
+    "pig_iron": 0,
+    "spice": 0
+   },
+   "needs_transport": false,
+   "order_index": 31,
+   "out_degree": 4,
+   "planet_coords": "03:120:07",
+   "planet_id": 20001,
+   "planet_name": "Golden Prime",
+   "priority": "P2",
+   "reason": "Week 1 \u00b7 Step #32 \u00b7 Start 3h 20m \u00b7 Build 28m 34s",
+   "status": "queued",
+   "step_seq": 32,
+   "target_id": 5,
+   "target_level": 17,
+   "target_name": "Fusion plant",
+   "topological_layer": 6,
+   "total_eta": "3h 49m",
+   "total_seconds": 13747.2,
+   "transport_dispatch_delay_sec": 0.0,
+   "transport_lead_sec": 0.0,
+   "transport_request_at_sec": null,
+   "transport_request_text": "",
+   "transport_sources": [],
+   "transport_travel_sec": 0.0,
+   "wait_eta": "3h 20m",
+   "wait_seconds": 12033.6,
+   "week": 1
+  },
+  {
+   "category": "economy",
+   "completed": false,
+   "cost": {
+    "kryptonite": 4931,
+    "metal": 13558,
+    "pig_iron": 0,
+    "spice": 0
+   },
+   "duration_seconds": 372.82,
+   "duration_text": "6m 13s",
+   "entity_key": "b4",
+   "eta_bottleneck": null,
+   "exec_rank": null,
+   "executable_now": false,
+   "id": "ai_33",
+   "in_degree": 2,
+   "kind": "BUILD",
+   "lane_id": "lane:planet:20001",
+   "missing": {
+    "kryptonite": 0,
+    "metal": 0,
+    "pig_iron": 0,
+    "spice": 0
+   },
+   "needs_transport": false,
+   "order_index": 32,
+   "out_degree": 1,
+   "planet_coords": "03:120:07",
+   "planet_id": 20001,
+   "planet_name": "Golden Prime",
+   "priority": "P2",
+   "reason": "Week 1 \u00b7 Step #33 \u00b7 Start 4h 0m \u00b7 Build 6m 13s",
+   "status": "queued",
+   "step_seq": 33,
+   "target_id": 4,
+   "target_level": 11,
+   "target_name": "Spice mine",
+   "topological_layer": 7,
+   "total_eta": "4h 6m",
+   "total_seconds": 14805.21,
+   "transport_dispatch_delay_sec": 0.0,
+   "transport_lead_sec": 0.0,
+   "transport_request_at_sec": null,
+   "transport_request_text": "",
+   "transport_sources": [],
+   "transport_travel_sec": 0.0,
+   "wait_eta": "4h 0m",
+   "wait_seconds": 14432.38,
+   "week": 1
+  },
+  {
+   "category": "economy",
+   "completed": false,
+   "cost": {
+    "kryptonite": 18263,
+    "metal": 0,
+    "pig_iron": 56981,
+    "spice": 0
+   },
+   "duration_seconds": 1506.13,
+   "duration_text": "25m 6s",
+   "entity_key": "b1",
+   "eta_bottleneck": null,
+   "exec_rank": null,
+   "executable_now": false,
+   "id": "ai_34",
+   "in_degree": 4,
+   "kind": "BUILD",
+   "lane_id": "lane:planet:20001",
+   "missing": {
+    "kryptonite": 0,
+    "metal": 0,
+    "pig_iron": 0,
+    "spice": 0
+   },
+   "needs_transport": true,
+   "order_index": 33,
+   "out_degree": 4,
+   "planet_coords": "03:120:07",
+   "planet_id": 20001,
+   "planet_name": "Golden Prime",
+   "priority": "P2",
+   "reason": "Week 1 \u00b7 Step #34 \u00b7 Start 6h 20m \u00b7 Build 25m 6s \u00b7 Ship at 4h 00m",
+   "status": "queued",
+   "step_seq": 34,
+   "target_id": 1,
+   "target_level": 17,
+   "target_name": "Pig iron mine",
+   "topological_layer": 8,
+   "total_eta": "6h 45m",
+   "total_seconds": 24305.73,
+   "transport_dispatch_delay_sec": 7200.0,
+   "transport_lead_sec": 8367.21,
+   "transport_request_at_sec": 14432.38,
+   "transport_request_text": "4h 00m",
+   "transport_sources": [],
+   "transport_travel_sec": 1167.21,
+   "wait_eta": "6h 20m",
+   "wait_seconds": 22799.59,
+   "week": 1
+  },
+  {
+   "category": "economy",
+   "completed": false,
+   "cost": {
+    "kryptonite": 1541,
+    "metal": 0,
+    "pig_iron": 4623,
+    "spice": 0
+   },
+   "duration_seconds": 123.67,
+   "duration_text": "2m 4s",
+   "entity_key": "b2",
+   "eta_bottleneck": null,
+   "exec_rank": null,
+   "executable_now": false,
+   "id": "ai_35",
+   "in_degree": 2,
+   "kind": "BUILD",
+   "lane_id": "lane:planet:20001",
+   "missing": {
+    "kryptonite": 0,
+    "metal": 0,
+    "pig_iron": 0,
+    "spice": 0
+   },
+   "needs_transport": false,
+   "order_index": 34,
+   "out_degree": 1,
+   "planet_coords": "03:120:07",
+   "planet_id": 20001,
+   "planet_name": "Golden Prime",
+   "priority": "P2",
+   "reason": "Week 1 \u00b7 Step #35 \u00b7 Start 6h 45m \u00b7 Build 2m 4s",
+   "status": "queued",
+   "step_seq": 35,
+   "target_id": 2,
+   "target_level": 11,
+   "target_name": "Blast furnace",
+   "topological_layer": 9,
+   "total_eta": "6h 47m",
+   "total_seconds": 24429.4,
+   "transport_dispatch_delay_sec": 0.0,
+   "transport_lead_sec": 0.0,
+   "transport_request_at_sec": null,
+   "transport_request_text": "",
+   "transport_sources": [],
+   "transport_travel_sec": 0.0,
+   "wait_eta": "6h 45m",
+   "wait_seconds": 24305.73,
+   "week": 1
+  },
+  {
+   "category": "economy",
+   "completed": false,
+   "cost": {
+    "kryptonite": 2327,
+    "metal": 0,
+    "pig_iron": 6980,
+    "spice": 0
+   },
+   "duration_seconds": 186.71,
+   "duration_text": "3m 7s",
+   "entity_key": "b2",
+   "eta_bottleneck": null,
+   "exec_rank": null,
+   "executable_now": false,
+   "id": "ai_36",
+   "in_degree": 3,
+   "kind": "BUILD",
+   "lane_id": "lane:planet:20001",
+   "missing": {
+    "kryptonite": 0,
+    "metal": 0,
+    "pig_iron": 0,
+    "spice": 0
+   },
+   "needs_transport": false,
+   "order_index": 35,
+   "out_degree": 1,
+   "planet_coords": "03:120:07",
+   "planet_id": 20001,
+   "planet_name": "Golden Prime",
+   "priority": "P2",
+   "reason": "Week 1 \u00b7 Step #36 \u00b7 Start 6h 51m \u00b7 Build 3m 7s",
+   "status": "queued",
+   "step_seq": 36,
+   "target_id": 2,
+   "target_level": 12,
+   "target_name": "Blast furnace",
+   "topological_layer": 10,
+   "total_eta": "6h 54m",
+   "total_seconds": 24867.97,
+   "transport_dispatch_delay_sec": 0.0,
+   "transport_lead_sec": 0.0,
+   "transport_request_at_sec": null,
+   "transport_request_text": "",
+   "transport_sources": [],
+   "transport_travel_sec": 0.0,
+   "wait_eta": "6h 51m",
+   "wait_seconds": 24681.26,
+   "week": 1
+  },
+  {
+   "category": "storage",
+   "completed": false,
+   "cost": {
+    "kryptonite": 0,
+    "metal": 800,
+    "pig_iron": 2000,
+    "spice": 0
+   },
+   "duration_seconds": 51.84,
+   "duration_text": "52s",
+   "entity_key": "b11",
+   "eta_bottleneck": null,
+   "exec_rank": null,
+   "executable_now": false,
+   "id": "ai_37",
+   "in_degree": 2,
+   "kind": "BUILD",
+   "lane_id": "lane:planet:20001",
+   "missing": {
+    "kryptonite": 0,
+    "metal": 0,
+    "pig_iron": 0,
+    "spice": 0
+   },
+   "needs_transport": false,
+   "order_index": 36,
+   "out_degree": 1,
+   "planet_coords": "03:120:07",
+   "planet_id": 20001,
+   "planet_name": "Golden Prime",
+   "priority": "P2",
+   "reason": "Week 1 \u00b7 Step #37 \u00b7 Start 6h 54m \u00b7 Build 52s",
+   "status": "queued",
+   "step_seq": 37,
+   "target_id": 11,
+   "target_level": 1,
+   "target_name": "Pig iron warehouse",
+   "topological_layer": 11,
+   "total_eta": "6h 55m",
+   "total_seconds": 24919.82,
+   "transport_dispatch_delay_sec": 0.0,
+   "transport_lead_sec": 0.0,
+   "transport_request_at_sec": null,
+   "transport_request_text": "",
+   "transport_sources": [],
+   "transport_travel_sec": 0.0,
+   "wait_eta": "6h 54m",
+   "wait_seconds": 24867.97,
+   "week": 1
+  },
+  {
+   "category": "storage",
+   "completed": false,
+   "cost": {
+    "kryptonite": 0,
+    "metal": 800,
+    "pig_iron": 2000,
+    "spice": 0
+   },
+   "duration_seconds": 77.77,
+   "duration_text": "1m 18s",
+   "entity_key": "b11",
+   "eta_bottleneck": null,
+   "exec_rank": null,
+   "executable_now": false,
+   "id": "ai_38",
+   "in_degree": 1,
+   "kind": "BUILD",
+   "lane_id": "lane:planet:20002",
+   "missing": {
+    "kryptonite": 0,
+    "metal": 0,
+    "pig_iron": 0,
+    "spice": 0
+   },
+   "needs_transport": false,
+   "order_index": 37,
+   "out_degree": 1,
+   "planet_coords": "03:120:11",
+   "planet_id": 20002,
+   "planet_name": "Golden Forge",
+   "priority": "P2",
+   "reason": "Week 1 \u00b7 Step #38 \u00b7 Start 6h 54m \u00b7 Build 1m 18s",
+   "status": "queued",
+   "step_seq": 38,
+   "target_id": 11,
+   "target_level": 1,
+   "target_name": "Pig iron warehouse",
+   "topological_layer": 12,
+   "total_eta": "6h 55m",
+   "total_seconds": 24945.74,
+   "transport_dispatch_delay_sec": 0.0,
+   "transport_lead_sec": 0.0,
+   "transport_request_at_sec": null,
+   "transport_request_text": "",
+   "transport_sources": [],
+   "transport_travel_sec": 0.0,
+   "wait_eta": "6h 54m",
+   "wait_seconds": 24867.97,
+   "week": 1
+  },
+  {
+   "category": "storage",
+   "completed": false,
+   "cost": {
+    "kryptonite": 0,
+    "metal": 800,
+    "pig_iron": 2000,
+    "spice": 0
+   },
+   "duration_seconds": 51.84,
+   "duration_text": "52s",
+   "entity_key": "b12",
+   "eta_bottleneck": null,
+   "exec_rank": null,
+   "executable_now": false,
+   "id": "ai_39",
+   "in_degree": 2,
+   "kind": "BUILD",
+   "lane_id": "lane:planet:20001",
+   "missing": {
+    "kryptonite": 0,
+    "metal": 0,
+    "pig_iron": 0,
+    "spice": 0
+   },
+   "needs_transport": false,
+   "order_index": 38,
+   "out_degree": 0,
+   "planet_coords": "03:120:07",
+   "planet_id": 20001,
+   "planet_name": "Golden Prime",
+   "priority": "P2",
+   "reason": "Week 1 \u00b7 Step #39 \u00b7 Start 9h 16m \u00b7 Build 52s",
+   "status": "queued",
+   "step_seq": 39,
+   "target_id": 12,
+   "target_level": 1,
+   "target_name": "Metal warehouse",
+   "topological_layer": 12,
+   "total_eta": "9h 17m",
+   "total_seconds": 33462.89,
+   "transport_dispatch_delay_sec": 0.0,
+   "transport_lead_sec": 0.0,
+   "transport_request_at_sec": null,
+   "transport_request_text": "",
+   "transport_sources": [],
+   "transport_travel_sec": 0.0,
+   "wait_eta": "9h 16m",
+   "wait_seconds": 33411.04,
+   "week": 1
+  },
+  {
+   "category": "storage",
+   "completed": false,
+   "cost": {
+    "kryptonite": 0,
+    "metal": 800,
+    "pig_iron": 2000,
+    "spice": 0
+   },
+   "duration_seconds": 77.77,
+   "duration_text": "1m 18s",
+   "entity_key": "b12",
+   "eta_bottleneck": null,
+   "exec_rank": null,
+   "executable_now": false,
+   "id": "ai_40",
+   "in_degree": 2,
+   "kind": "BUILD",
+   "lane_id": "lane:planet:20002",
+   "missing": {
+    "kryptonite": 0,
+    "metal": 0,
+    "pig_iron": 0,
+    "spice": 0
+   },
+   "needs_transport": false,
+   "order_index": 39,
+   "out_degree": 0,
+   "planet_coords": "03:120:11",
+   "planet_id": 20002,
+   "planet_name": "Golden Forge",
+   "priority": "P2",
+   "reason": "Week 1 \u00b7 Step #40 \u00b7 Start 9h 16m \u00b7 Build 1m 18s",
+   "status": "queued",
+   "step_seq": 40,
+   "target_id": 12,
+   "target_level": 1,
+   "target_name": "Metal warehouse",
+   "topological_layer": 13,
+   "total_eta": "9h 18m",
+   "total_seconds": 33488.81,
+   "transport_dispatch_delay_sec": 0.0,
+   "transport_lead_sec": 0.0,
+   "transport_request_at_sec": null,
+   "transport_request_text": "",
+   "transport_sources": [],
+   "transport_travel_sec": 0.0,
+   "wait_eta": "9h 16m",
+   "wait_seconds": 33411.04,
+   "week": 1
+  }
+ ],
+ "planner_mode": "ai_planner",
+ "summary": {
+  "active_lane_count": 4,
+  "available_weeks": [
+   1,
+   2
+  ],
+  "blocked_count": 0,
+  "by_edge_type": {
+   "energy_support": 17,
+   "level_chain": 20,
+   "queue_order": 19,
+   "resource_feed": 28
+  },
+  "by_priority": {
+   "P0": 0,
+   "P1": 4,
+   "P2": 36,
+   "P3": 0
+  },
+  "completed_in_window": 0,
+  "completed_steps": 0,
+  "critical_path_eta": "9h 18m",
+  "critical_path_seconds": 33488.81,
+  "filtered_steps": 115,
+  "lane_count": 4,
+  "max_layer": 13,
+  "planet_filter": null,
+  "queued_count": 36,
+  "ready_count": 4,
+  "remaining_steps": 115,
+  "total_edges": 84,
+  "total_nodes": 40,
+  "total_plan_steps": 115,
+  "waiting_count": 0,
+  "week_filter": null,
+  "window_size": 40,
+  "window_span_eta": "9h 18m",
+  "window_span_seconds": 33488.81
+ }
+}

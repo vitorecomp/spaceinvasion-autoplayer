@@ -1,0 +1,15 @@
+{
+ "auto_add_spin": false,
+ "button_label": "FREE activate imediately",
+ "can_activate_free": true,
+ "charges": 2,
+ "free_spins": 2,
+ "free_src_href": "indexInternal.es?action=internalTransmitter&idtSrc=1",
+ "has_form": true,
+ "has_urplasma_cost": false,
+ "idt_src": 1,
+ "latest_date": "2026-11-17 04:05:00",
+ "latest_reward": "25.000 Kryptonite",
+ "needs_src_switch_to_free": false,
+ "play_count": 1
+}

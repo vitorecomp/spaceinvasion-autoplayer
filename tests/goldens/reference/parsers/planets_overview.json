@@ -1,0 +1,204 @@
+{
+ "account_points": null,
+ "account_rank": null,
+ "active_planet_id": 20001,
+ "active_queues": [],
+ "fleet_alerts": [],
+ "newbie_protection": false,
+ "nickname": "GoldenPilot",
+ "planets": [
+  {
+   "building_names": {
+    "b1": "Pig iron mine",
+    "b10": "Fleet base",
+    "b2": "Blast furnace",
+    "b3": "Kryptonite mine",
+    "b4": "Spice mine",
+    "b5": "Fusion plant",
+    "b7": "Development center",
+    "b8": "Research lab",
+    "b9": "Weapons factory"
+   },
+   "building_offers": [],
+   "buildings": {
+    "b1": 12,
+    "b10": 4,
+    "b2": 9,
+    "b3": 10,
+    "b4": 8,
+    "b5": 13,
+    "b7": 8,
+    "b8": 7,
+    "b9": 5
+   },
+   "coords": "03:120:07",
+   "defense": {
+    "d1": 12,
+    "d2": 4
+   },
+   "defense_offers": [],
+   "economy_rates": {},
+   "energy": {
+    "produced": 2400,
+    "used": 1650
+   },
+   "fields_max": 262,
+   "fields_used": 76,
+   "name": "Golden Prime",
+   "planet_id": 20001,
+   "planet_type": "normal",
+   "resources": {
+    "kryptonite": 74000,
+    "metal": 96000,
+    "pig_iron": 182000,
+    "spice": 31000
+   },
+   "ship_offers": [],
+   "ships": {
+    "s1": 12,
+    "s10": 8,
+    "s11": 3,
+    "s2": 4,
+    "s4": 30,
+    "s5": 6
+   },
+   "storage": {
+    "kryptonite": 400000,
+    "metal": 400000,
+    "pig_iron": 400000,
+    "spice": 400000
+   },
+   "temperature": 24
+  },
+  {
+   "building_names": {
+    "b1": "Pig iron mine",
+    "b10": "Fleet base",
+    "b2": "Blast furnace",
+    "b3": "Kryptonite mine",
+    "b4": "Spice mine",
+    "b5": "Fusion plant",
+    "b7": "Development center",
+    "b9": "Weapons factory"
+   },
+   "building_offers": [],
+   "buildings": {
+    "b1": 9,
+    "b10": 2,
+    "b2": 6,
+    "b3": 7,
+    "b4": 5,
+    "b5": 10,
+    "b7": 5,
+    "b9": 2
+   },
+   "coords": "03:120:11",
+   "defense": {},
+   "defense_offers": [],
+   "economy_rates": {},
+   "energy": {
+    "produced": 1300,
+    "used": 900
+   },
+   "fields_max": 301,
+   "fields_used": 46,
+   "name": "Golden Forge",
+   "planet_id": 20002,
+   "planet_type": "normal",
+   "resources": {
+    "kryptonite": 22000,
+    "metal": 18500,
+    "pig_iron": 54000,
+    "spice": 6400
+   },
+   "ship_offers": [],
+   "ships": {
+    "s1": 3,
+    "s10": 2
+   },
+   "storage": {
+    "kryptonite": 400000,
+    "metal": 400000,
+    "pig_iron": 400000,
+    "spice": 400000
+   },
+   "temperature": -18
+  },
+  {
+   "building_names": {
+    "b1": "Pig iron mine",
+    "b3": "Kryptonite mine",
+    "b4": "Spice mine",
+    "b5": "Fusion plant",
+    "b7": "Development center"
+   },
+   "building_offers": [],
+   "buildings": {
+    "b1": 5,
+    "b3": 4,
+    "b4": 2,
+    "b5": 6,
+    "b7": 2
+   },
+   "coords": "03:121:04",
+   "defense": {},
+   "defense_offers": [],
+   "economy_rates": {},
+   "energy": {
+    "produced": 420,
+    "used": 260
+   },
+   "fields_max": 188,
+   "fields_used": 19,
+   "name": "Golden Outpost",
+   "planet_id": 20003,
+   "planet_type": "normal",
+   "resources": {
+    "kryptonite": 5100,
+    "metal": 1200,
+    "pig_iron": 9800,
+    "spice": 900
+   },
+   "ship_offers": [],
+   "ships": {},
+   "storage": {
+    "kryptonite": 150000,
+    "metal": 150000,
+    "pig_iron": 150000,
+    "spice": 150000
+   },
+   "temperature": 61
+  }
+ ],
+ "raid_stats": {},
+ "raid_targets": [],
+ "research_names": {
+  "r1": "Mining technology",
+  "r2": "Energy technology",
+  "r3": "Engine research",
+  "r4": "Rocket engine",
+  "r5": "Diffusion engine",
+  "r6": "Warp engine",
+  "r7": "Spy technology"
+ },
+ "research_offers": [],
+ "researches": {
+  "r1": 4,
+  "r2": 5,
+  "r3": 3,
+  "r4": 4,
+  "r5": 2,
+  "r6": 3,
+  "r7": 2
+ },
+ "specs": {
+  "fleeter": 0,
+  "miner": 0
+ },
+ "speedup_factor": null,
+ "timestamp": 1700000000.0,
+ "tutorial": null,
+ "universe_id": 31,
+ "unread_messages": {},
+ "user_id": 900001
+}

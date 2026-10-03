@@ -1,0 +1,266 @@
+{
+ "info": {
+  "si": "classic",
+  "v": 1,
+  "user": {
+   "userID": 900001,
+   "nickname": "GoldenPilot"
+  },
+  "type": "planet-overview",
+  "universe": {
+   "id": 31
+  },
+  "ts": 1700000000.0
+ },
+ "planets": [
+  {
+   "id": 20001,
+   "type": "normal",
+   "name": "Golden Prime",
+   "coords": "03:120:07",
+   "temperature": 24,
+   "fields": 262,
+   "resources": [
+    182000,
+    96000,
+    74000,
+    31000
+   ],
+   "storage": [
+    400000,
+    400000,
+    400000,
+    400000
+   ],
+   "energy": {
+    "produced": 2400,
+    "used": 1650
+   },
+   "buildings": {
+    "b1": {
+     "name": "Pig iron mine",
+     "level": 12
+    },
+    "b2": {
+     "name": "Blast furnace",
+     "level": 9
+    },
+    "b3": {
+     "name": "Kryptonite mine",
+     "level": 10
+    },
+    "b4": {
+     "name": "Spice mine",
+     "level": 8
+    },
+    "b5": {
+     "name": "Fusion plant",
+     "level": 13
+    },
+    "b7": {
+     "name": "Development center",
+     "level": 8
+    },
+    "b8": {
+     "name": "Research lab",
+     "level": 7
+    },
+    "b9": {
+     "name": "Weapons factory",
+     "level": 5
+    },
+    "b10": {
+     "name": "Fleet base",
+     "level": 4
+    }
+   },
+   "ships": {
+    "s1": {
+     "name": "Small transport",
+     "level": 12
+    },
+    "s2": {
+     "name": "Large transport",
+     "level": 4
+    },
+    "s4": {
+     "name": "Small fighter",
+     "level": 30
+    },
+    "s5": {
+     "name": "Warship",
+     "level": 6
+    },
+    "s10": {
+     "name": "Spy probe",
+     "level": 8
+    },
+    "s11": {
+     "name": "Recycler",
+     "level": 3
+    }
+   },
+   "defense": {
+    "d1": {
+     "name": "Mortar",
+     "level": 12
+    },
+    "d2": {
+     "name": "Laser cannon battery",
+     "level": 4
+    }
+   }
+  },
+  {
+   "id": 20002,
+   "type": "normal",
+   "name": "Golden Forge",
+   "coords": "03:120:11",
+   "temperature": -18,
+   "fields": 301,
+   "resources": [
+    54000,
+    18500,
+    22000,
+    6400
+   ],
+   "storage": [
+    400000,
+    400000,
+    400000,
+    400000
+   ],
+   "energy": {
+    "produced": 1300,
+    "used": 900
+   },
+   "buildings": {
+    "b1": {
+     "name": "Pig iron mine",
+     "level": 9
+    },
+    "b2": {
+     "name": "Blast furnace",
+     "level": 6
+    },
+    "b3": {
+     "name": "Kryptonite mine",
+     "level": 7
+    },
+    "b4": {
+     "name": "Spice mine",
+     "level": 5
+    },
+    "b5": {
+     "name": "Fusion plant",
+     "level": 10
+    },
+    "b7": {
+     "name": "Development center",
+     "level": 5
+    },
+    "b9": {
+     "name": "Weapons factory",
+     "level": 2
+    },
+    "b10": {
+     "name": "Fleet base",
+     "level": 2
+    }
+   },
+   "ships": {
+    "s1": {
+     "name": "Small transport",
+     "level": 3
+    },
+    "s10": {
+     "name": "Spy probe",
+     "level": 2
+    }
+   },
+   "defense": {}
+  },
+  {
+   "id": 20003,
+   "type": "normal",
+   "name": "Golden Outpost",
+   "coords": "03:121:04",
+   "temperature": 61,
+   "fields": 188,
+   "resources": [
+    9800,
+    1200,
+    5100,
+    900
+   ],
+   "storage": [
+    150000,
+    150000,
+    150000,
+    150000
+   ],
+   "energy": {
+    "produced": 420,
+    "used": 260
+   },
+   "buildings": {
+    "b1": {
+     "name": "Pig iron mine",
+     "level": 5
+    },
+    "b3": {
+     "name": "Kryptonite mine",
+     "level": 4
+    },
+    "b4": {
+     "name": "Spice mine",
+     "level": 2
+    },
+    "b5": {
+     "name": "Fusion plant",
+     "level": 6
+    },
+    "b7": {
+     "name": "Development center",
+     "level": 2
+    }
+   },
+   "ships": {},
+   "defense": {}
+  }
+ ],
+ "researches": {
+  "r1": {
+   "name": "Mining technology",
+   "level": 4
+  },
+  "r2": {
+   "name": "Energy technology",
+   "level": 5
+  },
+  "r3": {
+   "name": "Engine research",
+   "level": 3
+  },
+  "r4": {
+   "name": "Rocket engine",
+   "level": 4
+  },
+  "r5": {
+   "name": "Diffusion engine",
+   "level": 2
+  },
+  "r6": {
+   "name": "Warp engine",
+   "level": 3
+  },
+  "r7": {
+   "name": "Spy technology",
+   "level": 2
+  }
+ },
+ "specs": {
+  "miner": 0,
+  "fleeter": 0
+ }
+}

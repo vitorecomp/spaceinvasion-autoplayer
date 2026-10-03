@@ -1,0 +1,15 @@
+{
+ "http_status": 400,
+ "request": {
+  "json": {
+   "command": "build",
+   "dry_run": true
+  },
+  "method": "POST",
+  "path": "/command"
+ },
+ "response": {
+  "error": "'build' command requires 'building_id'.",
+  "ok": false
+ }
+}

@@ -1,0 +1,737 @@
+{
+ "http_status": 200,
+ "request": {
+  "json": {
+   "command": "combat_overview",
+   "refresh": true
+  },
+  "method": "POST",
+  "path": "/command"
+ },
+ "response": {
+  "combat": {
+   "attack_zone": {
+    "label": "AZ 3",
+    "max_pts": 25000,
+    "min_pts": 5000,
+    "next_zone": "AZ 4",
+    "next_zone_pts": 25000,
+    "pts_to_next_zone": 6550.0,
+    "range_text": "5,000 \u2013 25,000",
+    "zone": 3
+   },
+   "az_rule": "Eligible targets within AZ \u00b12 (Top 50 bypass AZ outside Newbie Shield)",
+   "bash_rule": "Max 3 attacks / 24h on active planets (exempt: yellow inactives & Spacia)",
+   "combat_model": "1:1 zero-rapidfire combat; attacker retreats unless ratio >= safety margin",
+   "combat_techs": {
+    "defense": 0,
+    "diffusion": 2,
+    "particle": 0,
+    "rocket": 4,
+    "shield": 0,
+    "spy": 2,
+    "targeting": 0,
+    "warp": 3,
+    "weapons": 0
+   },
+   "defenses": [
+    {
+     "attack": 35,
+     "base_cost": {
+      "kryptonite": 0,
+      "metal": 2000,
+      "pig_iron": 0,
+      "spice": 0
+     },
+     "hull": 2000,
+     "key": "d1",
+     "name": "Mortar",
+     "owned": 12,
+     "shield": 15,
+     "slug": "mortar",
+     "unit_id": 1
+    },
+    {
+     "attack": 1000,
+     "base_cost": {
+      "kryptonite": 20000,
+      "metal": 20000,
+      "pig_iron": 0,
+      "spice": 500
+     },
+     "hull": 40000,
+     "key": "d2",
+     "name": "Laser cannon battery",
+     "owned": 4,
+     "shield": 400,
+     "slug": "laser-cannon-battery",
+     "unit_id": 2
+    },
+    {
+     "attack": 125,
+     "base_cost": {
+      "kryptonite": 8000,
+      "metal": 2000,
+      "pig_iron": 0,
+      "spice": 0
+     },
+     "hull": 10000,
+     "key": "d3",
+     "name": "Ion cannon",
+     "owned": 0,
+     "shield": 125,
+     "slug": "ion-cannon",
+     "unit_id": 3
+    },
+    {
+     "attack": 700,
+     "base_cost": {
+      "kryptonite": 30000,
+      "metal": 10000,
+      "pig_iron": 0,
+      "spice": 100
+     },
+     "hull": 40000,
+     "key": "d4",
+     "name": "Positron lighter",
+     "owned": 0,
+     "shield": 200,
+     "slug": "positron-lighter",
+     "unit_id": 4
+    },
+    {
+     "attack": 220,
+     "base_cost": {
+      "kryptonite": 2000,
+      "metal": 10000,
+      "pig_iron": 0,
+      "spice": 0
+     },
+     "hull": 12000,
+     "key": "d5",
+     "name": "Turboflak",
+     "owned": 0,
+     "shield": 80,
+     "slug": "turboflak",
+     "unit_id": 5
+    },
+    {
+     "attack": 900,
+     "base_cost": {
+      "kryptonite": 15000,
+      "metal": 15000,
+      "pig_iron": 0,
+      "spice": 1500
+     },
+     "hull": 30000,
+     "key": "d6",
+     "name": "Interval cannon",
+     "owned": 0,
+     "shield": 100,
+     "slug": "interval-cannon",
+     "unit_id": 6
+    },
+    {
+     "attack": 2000,
+     "base_cost": {
+      "kryptonite": 80000,
+      "metal": 40000,
+      "pig_iron": 0,
+      "spice": 8000
+     },
+     "hull": 120000,
+     "key": "d7",
+     "name": "Solar cannon",
+     "owned": 0,
+     "shield": 1000,
+     "slug": "solar-cannon",
+     "unit_id": 7
+    },
+    {
+     "attack": 50,
+     "base_cost": {
+      "kryptonite": 1000,
+      "metal": 2000,
+      "pig_iron": 0,
+      "spice": 0
+     },
+     "hull": 3000,
+     "key": "d8",
+     "name": "Light graviton cannon",
+     "owned": 0,
+     "shield": 25,
+     "slug": "light-graviton-cannon",
+     "unit_id": 8
+    },
+    {
+     "attack": 115,
+     "base_cost": {
+      "kryptonite": 2000,
+      "metal": 5000,
+      "pig_iron": 0,
+      "spice": 0
+     },
+     "hull": 7000,
+     "key": "d9",
+     "name": "Heavy graviton cannon",
+     "owned": 0,
+     "shield": 60,
+     "slug": "heavy-graviton-cannon",
+     "unit_id": 9
+    },
+    {
+     "attack": 0,
+     "base_cost": {
+      "kryptonite": 5000,
+      "metal": 8000,
+      "pig_iron": 0,
+      "spice": 3000
+     },
+     "hull": 13000,
+     "key": "d10",
+     "name": "Small shield dome",
+     "owned": 0,
+     "shield": 3000,
+     "slug": "small-shield-dome",
+     "unit_id": 10
+    },
+    {
+     "attack": 0,
+     "base_cost": {
+      "kryptonite": 15000,
+      "metal": 25000,
+      "pig_iron": 0,
+      "spice": 8000
+     },
+     "hull": 40000,
+     "key": "d11",
+     "name": "Large shield dome",
+     "owned": 0,
+     "shield": 30000,
+     "slug": "large-shield-dome",
+     "unit_id": 11
+    }
+   ],
+   "escape_plan": {
+    "cargo": {
+     "kryptonite": 70487,
+     "metal": 96000,
+     "pig_iron": 71961,
+     "spice": 30500
+    },
+    "duration_hint": "next_login",
+    "feasible": true,
+    "fuel_reserved_spice": 500,
+    "reason": "Packed PigIron=71,961, Metal=96,000, Krypt=70,487, Spice=30,500 into 63 ships",
+    "ships": {
+     "s1": 12,
+     "s10": 8,
+     "s11": 3,
+     "s2": 4,
+     "s4": 30,
+     "s5": 6
+    },
+    "spice_saved": 30500,
+    "target_coords": "03:120:11",
+    "total_capacity": 269448,
+    "total_cargo": 268948
+   },
+   "fleet_base_level": 4,
+   "galaxy_scanner_level": 0,
+   "newbie_protected": false,
+   "planet_coords": "03:120:07",
+   "planet_id": 20001,
+   "safety_margin": 1.4,
+   "ship_offers": [
+    {
+     "can_build": true,
+     "cost": {
+      "kryptonite": 3000,
+      "metal": 3000,
+      "pig_iron": 0,
+      "spice": 0
+     },
+     "name": "Small transport",
+     "owned": 12,
+     "status_text": "Buildable",
+     "unit_id": 1,
+     "unit_type": "ship"
+    },
+    {
+     "can_build": false,
+     "cost": {
+      "kryptonite": 6000,
+      "metal": 8000,
+      "pig_iron": 0,
+      "spice": 0
+     },
+     "name": "Large transport",
+     "owned": 4,
+     "status_text": "Locked / insufficient",
+     "unit_id": 2,
+     "unit_type": "ship"
+    },
+    {
+     "can_build": false,
+     "cost": {
+      "kryptonite": 25000,
+      "metal": 25000,
+      "pig_iron": 0,
+      "spice": 0
+     },
+     "name": "Transmitter",
+     "owned": 0,
+     "status_text": "Locked / insufficient",
+     "unit_id": 3,
+     "unit_type": "ship"
+    },
+    {
+     "can_build": true,
+     "cost": {
+      "kryptonite": 2000,
+      "metal": 4000,
+      "pig_iron": 0,
+      "spice": 100
+     },
+     "name": "Small fighter",
+     "owned": 30,
+     "status_text": "Buildable",
+     "unit_id": 4,
+     "unit_type": "ship"
+    },
+    {
+     "can_build": false,
+     "cost": {
+      "kryptonite": 4000,
+      "metal": 8000,
+      "pig_iron": 0,
+      "spice": 300
+     },
+     "name": "Warship",
+     "owned": 6,
+     "status_text": "Locked / insufficient",
+     "unit_id": 5,
+     "unit_type": "ship"
+    },
+    {
+     "can_build": false,
+     "cost": {
+      "kryptonite": 10000,
+      "metal": 25000,
+      "pig_iron": 0,
+      "spice": 1500
+     },
+     "name": "Starcruiser",
+     "owned": 0,
+     "status_text": "Locked / insufficient",
+     "unit_id": 6,
+     "unit_type": "ship"
+    },
+    {
+     "can_build": false,
+     "cost": {
+      "kryptonite": 20000,
+      "metal": 30000,
+      "pig_iron": 0,
+      "spice": 5000
+     },
+     "name": "Phoenix",
+     "owned": 0,
+     "status_text": "Locked / insufficient",
+     "unit_id": 7,
+     "unit_type": "ship"
+    },
+    {
+     "can_build": false,
+     "cost": {
+      "kryptonite": 15000,
+      "metal": 20000,
+      "pig_iron": 10000,
+      "spice": 8000
+     },
+     "name": "Colony ship",
+     "owned": 0,
+     "status_text": "Locked / insufficient",
+     "unit_id": 8,
+     "unit_type": "ship"
+    },
+    {
+     "can_build": true,
+     "cost": {
+      "kryptonite": 200,
+      "metal": 2000,
+      "pig_iron": 0,
+      "spice": 400
+     },
+     "name": "Solar cells",
+     "owned": 0,
+     "status_text": "Buildable",
+     "unit_id": 9,
+     "unit_type": "ship"
+    },
+    {
+     "can_build": true,
+     "cost": {
+      "kryptonite": 3000,
+      "metal": 0,
+      "pig_iron": 0,
+      "spice": 200
+     },
+     "name": "Spy probe",
+     "owned": 8,
+     "status_text": "Buildable",
+     "unit_id": 10,
+     "unit_type": "ship"
+    },
+    {
+     "can_build": false,
+     "cost": {
+      "kryptonite": 5000,
+      "metal": 10000,
+      "pig_iron": 2000,
+      "spice": 0
+     },
+     "name": "Recycler",
+     "owned": 3,
+     "status_text": "Locked / insufficient",
+     "unit_id": 11,
+     "unit_type": "ship"
+    },
+    {
+     "can_build": false,
+     "cost": {
+      "kryptonite": 25000,
+      "metal": 35000,
+      "pig_iron": 0,
+      "spice": 0
+     },
+     "name": "Battleship",
+     "owned": 0,
+     "status_text": "Locked / insufficient",
+     "unit_id": 13,
+     "unit_type": "ship"
+    },
+    {
+     "can_build": false,
+     "cost": {
+      "kryptonite": 60000,
+      "metal": 40000,
+      "pig_iron": 0,
+      "spice": 10000
+     },
+     "name": "Stealth bomber",
+     "owned": 0,
+     "status_text": "Locked / insufficient",
+     "unit_id": 14,
+     "unit_type": "ship"
+    },
+    {
+     "can_build": false,
+     "cost": {
+      "kryptonite": 50000,
+      "metal": 60000,
+      "pig_iron": 0,
+      "spice": 2000
+     },
+     "name": "Destroyer",
+     "owned": 0,
+     "status_text": "Locked / insufficient",
+     "unit_id": 15,
+     "unit_type": "ship"
+    },
+    {
+     "can_build": false,
+     "cost": {
+      "kryptonite": 2000000,
+      "metal": 3000000,
+      "pig_iron": 0,
+      "spice": 500000
+     },
+     "name": "Imperial starbase",
+     "owned": 0,
+     "status_text": "Locked / insufficient",
+     "unit_id": 16,
+     "unit_type": "ship"
+    }
+   ],
+   "ships": [
+    {
+     "attack": 2,
+     "base_cost": {
+      "kryptonite": 3000,
+      "metal": 3000,
+      "pig_iron": 0,
+      "spice": 0
+     },
+     "cargo": 6000,
+     "hull": 6000,
+     "key": "s1",
+     "name": "Small transport",
+     "owned": 12,
+     "shield": 10,
+     "slug": "small-transport",
+     "speed": 3000,
+     "unit_id": 1
+    },
+    {
+     "attack": 5,
+     "base_cost": {
+      "kryptonite": 6000,
+      "metal": 8000,
+      "pig_iron": 0,
+      "spice": 0
+     },
+     "cargo": 30000,
+     "hull": 14000,
+     "key": "s2",
+     "name": "Large transport",
+     "owned": 4,
+     "shield": 25,
+     "slug": "large-transport",
+     "speed": 5000,
+     "unit_id": 2
+    },
+    {
+     "attack": 130,
+     "base_cost": {
+      "kryptonite": 25000,
+      "metal": 25000,
+      "pig_iron": 0,
+      "spice": 0
+     },
+     "cargo": 250000,
+     "hull": 50000,
+     "key": "s3",
+     "name": "Transmitter",
+     "owned": 0,
+     "shield": 70,
+     "slug": "transmitter",
+     "speed": 7000,
+     "unit_id": 3
+    },
+    {
+     "attack": 50,
+     "base_cost": {
+      "kryptonite": 2000,
+      "metal": 4000,
+      "pig_iron": 0,
+      "spice": 100
+     },
+     "cargo": 60,
+     "hull": 6000,
+     "key": "s4",
+     "name": "Small fighter",
+     "owned": 30,
+     "shield": 10,
+     "slug": "small-fighter",
+     "speed": 9000,
+     "unit_id": 4
+    },
+    {
+     "attack": 90,
+     "base_cost": {
+      "kryptonite": 4000,
+      "metal": 8000,
+      "pig_iron": 0,
+      "spice": 300
+     },
+     "cargo": 100,
+     "hull": 12000,
+     "key": "s5",
+     "name": "Warship",
+     "owned": 6,
+     "shield": 30,
+     "slug": "warship",
+     "speed": 6500,
+     "unit_id": 5
+    },
+    {
+     "attack": 250,
+     "base_cost": {
+      "kryptonite": 10000,
+      "metal": 25000,
+      "pig_iron": 0,
+      "spice": 1500
+     },
+     "cargo": 200,
+     "hull": 35000,
+     "key": "s6",
+     "name": "Starcruiser",
+     "owned": 0,
+     "shield": 100,
+     "slug": "starcruiser",
+     "speed": 4800,
+     "unit_id": 6
+    },
+    {
+     "attack": 320,
+     "base_cost": {
+      "kryptonite": 20000,
+      "metal": 30000,
+      "pig_iron": 0,
+      "spice": 5000
+     },
+     "cargo": 500,
+     "hull": 50000,
+     "key": "s7",
+     "name": "Phoenix",
+     "owned": 0,
+     "shield": 180,
+     "slug": "phoenix",
+     "speed": 8000,
+     "unit_id": 7
+    },
+    {
+     "attack": 10,
+     "base_cost": {
+      "kryptonite": 15000,
+      "metal": 20000,
+      "pig_iron": 10000,
+      "spice": 8000
+     },
+     "cargo": 5000,
+     "hull": 45000,
+     "key": "s8",
+     "name": "Colony ship",
+     "owned": 0,
+     "shield": 80,
+     "slug": "colony-ship",
+     "speed": 1500,
+     "unit_id": 8
+    },
+    {
+     "attack": 0,
+     "base_cost": {
+      "kryptonite": 200,
+      "metal": 2000,
+      "pig_iron": 0,
+      "spice": 400
+     },
+     "cargo": 0,
+     "hull": 2200,
+     "key": "s9",
+     "name": "Solar cells",
+     "owned": 0,
+     "shield": 5,
+     "slug": "solar-cells",
+     "speed": 0,
+     "unit_id": 9
+    },
+    {
+     "attack": 0,
+     "base_cost": {
+      "kryptonite": 3000,
+      "metal": 0,
+      "pig_iron": 0,
+      "spice": 200
+     },
+     "cargo": 6,
+     "hull": 3000,
+     "key": "s10",
+     "name": "Spy probe",
+     "owned": 8,
+     "shield": 6,
+     "slug": "spy-probe",
+     "speed": 15000000,
+     "unit_id": 10
+    },
+    {
+     "attack": 8,
+     "base_cost": {
+      "kryptonite": 5000,
+      "metal": 10000,
+      "pig_iron": 2000,
+      "spice": 0
+     },
+     "cargo": 25000,
+     "hull": 17000,
+     "key": "s11",
+     "name": "Recycler",
+     "owned": 3,
+     "shield": 30,
+     "slug": "recycler",
+     "speed": 2000,
+     "unit_id": 11
+    },
+    {
+     "attack": 300,
+     "base_cost": {
+      "kryptonite": 25000,
+      "metal": 35000,
+      "pig_iron": 0,
+      "spice": 0
+     },
+     "cargo": 1000,
+     "hull": 60000,
+     "key": "s13",
+     "name": "Battleship",
+     "owned": 0,
+     "shield": 300,
+     "slug": "battleship",
+     "speed": 6800,
+     "unit_id": 13
+    },
+    {
+     "attack": 300,
+     "base_cost": {
+      "kryptonite": 60000,
+      "metal": 40000,
+      "pig_iron": 0,
+      "spice": 10000
+     },
+     "cargo": 1400,
+     "hull": 100000,
+     "key": "s14",
+     "name": "Stealth bomber",
+     "owned": 0,
+     "shield": 100,
+     "slug": "stealth-bomber",
+     "speed": 5200,
+     "unit_id": 14
+    },
+    {
+     "attack": 700,
+     "base_cost": {
+      "kryptonite": 50000,
+      "metal": 60000,
+      "pig_iron": 0,
+      "spice": 2000
+     },
+     "cargo": 3000,
+     "hull": 110000,
+     "key": "s15",
+     "name": "Destroyer",
+     "owned": 0,
+     "shield": 400,
+     "slug": "destroyer",
+     "speed": 4000,
+     "unit_id": 15
+    },
+    {
+     "attack": 35000,
+     "base_cost": {
+      "kryptonite": 2000000,
+      "metal": 3000000,
+      "pig_iron": 0,
+      "spice": 500000
+     },
+     "cargo": 3500000,
+     "hull": 5000000,
+     "key": "s16",
+     "name": "Imperial starbase",
+     "owned": 0,
+     "shield": 15000,
+     "slug": "imperial-starbase",
+     "speed": 300,
+     "unit_id": 16
+    }
+   ],
+   "stationed_defense_power": 52200.0,
+   "stationed_fleet_power": 116696.0,
+   "total_cargo_capacity": 269448,
+   "weapons_factory_level": 5
+  },
+  "command": "combat_overview",
+  "ok": true
+ }
+}

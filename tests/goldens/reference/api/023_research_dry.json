@@ -1,0 +1,98 @@
+{
+ "http_status": 200,
+ "request": {
+  "json": {
+   "command": "research",
+   "dry_run": true,
+   "research_id": 1
+  },
+  "method": "POST",
+  "path": "/command"
+ },
+ "response": {
+  "action": {
+   "action_href": "indexInternal.es?action=internalBuildItem&researchID=1&sid=REDACTED",
+   "cost": {
+    "kryptonite": 8000,
+    "metal": 0,
+    "pig_iron": 16000,
+    "spice": 0
+   },
+   "duration_seconds": 1041.66,
+   "duration_text": "17m 22s",
+   "eta_bottleneck": null,
+   "executable_now": true,
+   "kind": "RESEARCH",
+   "manual_queue_id": null,
+   "manual_sort_rank": null,
+   "missing": {
+    "kryptonite": 0,
+    "metal": 0,
+    "pig_iron": 0,
+    "spice": 0
+   },
+   "planet_coords": "03:120:07",
+   "planet_id": 20001,
+   "planet_name": "Golden Prime",
+   "priority": "P2",
+   "reason": "API research command",
+   "target_id": 1,
+   "target_level": 5,
+   "target_name": "Mining technology",
+   "total_eta": "17m",
+   "total_hours": 0.289349,
+   "total_seconds": 1041.66,
+   "wait_eta": "Ready",
+   "wait_hours": 0.0,
+   "wait_seconds": 0.0
+  },
+  "command": "research",
+  "dry_run": true,
+  "executed": false,
+  "manual_queue": [],
+  "message": "[DRY-RUN] Would execute RESEARCH: Mining technology -> L5 on [03:120:07].",
+  "next_action": {
+   "action_href": null,
+   "cost": {
+    "kryptonite": 41098,
+    "metal": 57320,
+    "pig_iron": 71606,
+    "spice": 16216
+   },
+   "duration_seconds": 0.0,
+   "duration_text": "Instant",
+   "eta_bottleneck": null,
+   "executable_now": true,
+   "kind": "TRANSPORT",
+   "manual_queue_id": null,
+   "manual_sort_rank": null,
+   "missing": {
+    "kryptonite": 0,
+    "metal": 0,
+    "pig_iron": 0,
+    "spice": 0
+   },
+   "planet_coords": "03:120:07",
+   "planet_id": 20001,
+   "planet_name": "Golden Prime",
+   "priority": "P1",
+   "reason": "Supply Golden Outpost [03:121:04] (71,606P/57,320M/41,098K/16,216S \u00b7 186,240 res (+171,240 spare fill) / 1-way 22m \u00b7 RT 45m, 249,602 res/h via 4x s2, 12x s1) for colony bootstrap",
+   "target_id": 20003,
+   "target_level": null,
+   "target_name": "Transport -> 03:121:04 (Golden Outpost)",
+   "total_eta": "Ready",
+   "total_hours": 0.0,
+   "total_seconds": 0.0,
+   "wait_eta": "Ready",
+   "wait_hours": 0.0,
+   "wait_seconds": 0.0
+  },
+  "notifications": {
+   "items": [],
+   "unread_count": 0
+  },
+  "ok": true,
+  "validated": true,
+  "validation_error": null
+ }
+}

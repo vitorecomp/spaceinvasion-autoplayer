@@ -1,0 +1,30 @@
+{
+ "http_status": 200,
+ "request": {
+  "method": "GET",
+  "path": "/health"
+ },
+ "response": {
+  "action_batch_interval_seconds": 120,
+  "bot_control": {
+   "captcha_blocked": false,
+   "captcha_message": null,
+   "mode_override": null,
+   "paused": false
+  },
+  "debug_host": "127.0.0.1",
+  "debug_port": 0,
+  "debug_port_open": true,
+  "galaxy_sweep_in_progress": false,
+  "in_game": true,
+  "novnc_url": null,
+  "ok": true,
+  "page_view_limit_per_minute": 24,
+  "page_views_last_60s": 5,
+  "rate_limit_hits": 0,
+  "rate_limited": false,
+  "remaining_hourly_actions": 58,
+  "retry_after": 0.0,
+  "url": "https://spaceinvasion.bitmeup.com/indexGame.es?sid=REDACTED"
+ }
+}

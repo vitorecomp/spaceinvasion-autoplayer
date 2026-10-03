@@ -1,0 +1,14 @@
+{
+ "http_status": 200,
+ "request": {
+  "json": {
+   "command": "db_verify"
+  },
+  "method": "POST",
+  "path": "/command"
+ },
+ "response": {
+  "command": "db_verify",
+  "ok": true
+ }
+}
