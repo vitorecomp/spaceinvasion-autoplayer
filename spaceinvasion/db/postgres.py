@@ -85,6 +85,7 @@ _WRITE_VERB_RE = re.compile(
     r"^\s*(?:WITH\b.*?\b)?(INSERT|UPDATE|DELETE|CREATE|ALTER|DROP|TRUNCATE)\b",
     re.IGNORECASE | re.DOTALL,
 )
+_DDL_VERB_RE = re.compile(r"^\s*(CREATE|ALTER|DROP|TRUNCATE)\b", re.IGNORECASE)
 _PLAIN_INSERT_INTO_RE = re.compile(
     r'^\s*INSERT\s+INTO\s+"?([A-Za-z_][A-Za-z0-9_]*)"?\b',
     re.IGNORECASE,
@@ -659,8 +660,7 @@ class PostgresSession:
                 elif m_sp_rb is not None:
                     pass
                 elif _WRITE_VERB_RE.match(pg_sql):
-                    self._dirty_writes += max(1, rc)
-                    self._backend.bump_local_changes(max(1, rc))
+                    self._record_write_delta(pg_sql, rc)
 
                 return PostgresCursorResult(
                     self._build_rows(fetched, col_names, use_row_factory=want_rows),
@@ -679,6 +679,12 @@ class PostgresSession:
                     self._raw.rollback()
             raise _wrap_pg_error(exc) from exc
 
+    def _record_write_delta(self, pg_sql: str, rowcount: int) -> None:
+        delta = max(1, rowcount) if _DDL_VERB_RE.match(pg_sql) else rowcount
+        if delta > 0:
+            self._dirty_writes += delta
+            self._backend.bump_local_changes(delta)
+
     def executemany(self, sql: str, seq_of_params: Iterable[Sequence[Any]]) -> PostgresCursorResult:
         param_list = [_adapt_params(p) or () for p in seq_of_params]
         if not param_list:
@@ -688,8 +694,7 @@ class PostgresSession:
             with self._raw.cursor() as cur:
                 cur.executemany(pg_sql, param_list)
                 rc = int(cur.rowcount) if cur.rowcount is not None and cur.rowcount >= 0 else len(param_list)
-            self._dirty_writes += max(1, rc)
-            self._backend.bump_local_changes(max(1, rc))
+            self._record_write_delta(pg_sql, rc)
             return PostgresCursorResult([], rowcount=rc, row_factory=self.row_factory, session=self)
         except Exception as exc:
             if (
@@ -954,8 +959,6 @@ class PostgresPoolBackend:
         self._closed = False
         self._meta_lock = threading.Lock()
         self._total_changes = 0
-        self._cached_data_ver: int = 0
-        self._cached_data_ver_mono: float = 0.0
         self._tls = threading.local()
 
         def _configure_conn(conn: psycopg.Connection[Any]) -> None:
@@ -985,39 +988,28 @@ class PostgresPoolBackend:
     def bump_local_changes(self, delta: int = 1) -> None:
         with self._meta_lock:
             self._total_changes += max(1, int(delta))
-            self._cached_data_ver_mono = 0.0
 
     def notify_committed(self) -> None:
-        with self._meta_lock:
-            self._cached_data_ver_mono = 0.0
+        return None
 
     def get_data_version(self, raw_conn: Optional[psycopg.Connection[Any]] = None) -> int:
-        now_m = time.monotonic()
-        with self._meta_lock:
-            if (now_m - self._cached_data_ver_mono) < 0.25 and self._cached_data_ver > 0:
-                return self._cached_data_ver
-
-        val = 0
         try:
-            if raw_conn is not None and raw_conn.info.transaction_status != pq.TransactionStatus.INERROR:
-                with raw_conn.cursor() as cur:
+            cur_sess = self._current_session() if raw_conn is None else None
+            conn_to_use = raw_conn or (cur_sess._raw if cur_sess is not None else None)
+            if conn_to_use is not None and conn_to_use.info.transaction_status != pq.TransactionStatus.INERROR:
+                with conn_to_use.cursor() as cur:
+                    cur.execute("SELECT pg_snapshot_xmax(pg_current_snapshot())::text")
+                    r = cur.fetchone()
+                    return int(str(r[0])) if r and r[0] is not None else 0
+            with self._pool.connection() as c:
+                with c.cursor() as cur:
                     cur.execute("SELECT pg_snapshot_xmax(pg_current_snapshot())::text")
                     r = cur.fetchone()
                     val = int(str(r[0])) if r and r[0] is not None else 0
-            else:
-                with self._pool.connection() as c:
-                    with c.cursor() as cur:
-                        cur.execute("SELECT pg_snapshot_xmax(pg_current_snapshot())::text")
-                        r = cur.fetchone()
-                        val = int(str(r[0])) if r and r[0] is not None else 0
-                    c.rollback()
+                c.rollback()
+                return val
         except Exception:
-            val = self._total_changes
-
-        with self._meta_lock:
-            self._cached_data_ver = val
-            self._cached_data_ver_mono = now_m
-        return val
+            return self._total_changes
 
     def database_size_bytes(self) -> int:
         try:

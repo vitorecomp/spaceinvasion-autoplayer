@@ -24,7 +24,7 @@ import tempfile
 import threading
 import time
 from typing import TYPE_CHECKING, Any, Mapping, Optional, Sequence
-from urllib.parse import quote, urlparse, urlunparse
+from urllib.parse import parse_qs, quote, urlparse, urlunparse
 
 from spaceinvasion.core.logging_utils import redact_sensitive
 
@@ -100,6 +100,21 @@ def is_postgres_dsn(value: Any) -> bool:
     return low.startswith("postgresql://") or low.startswith("postgres://")
 
 
+def get_unix_socket_host(dsn: Any) -> Optional[str]:
+    """Return the Unix-socket directory from a PostgreSQL DSN (`?host=/path/...`), or None."""
+    if not is_postgres_dsn(dsn):
+        return None
+    try:
+        hosts = parse_qs(urlparse(str(dsn).strip()).query).get("host", ())
+    except ValueError:
+        return None
+    return next((s for h in hosts if (s := str(h).strip()).startswith("/")), None)
+
+
+def is_unix_socket_dsn(dsn: Any) -> bool:
+    return get_unix_socket_host(dsn) is not None
+
+
 def normalize_backend_name(raw: Any, default: str = DEFAULT_DB_BACKEND) -> str:
     if raw is None:
         return default
@@ -139,7 +154,7 @@ def redact_db_url(url_or_path: Any) -> str:
         parsed = urlparse(txt)
         if parsed.password:
             user_part = f"{parsed.username}:***" if parsed.username else "***"
-            host_part = parsed.hostname or "127.0.0.1"
+            host_part = parsed.hostname if parsed.hostname is not None else ("" if is_unix_socket_dsn(txt) else "127.0.0.1")
             if parsed.port:
                 host_part = f"{host_part}:{parsed.port}"
             netloc = f"{user_part}@{host_part}"
@@ -217,7 +232,7 @@ def save_persisted_db_preference(
     os.close(tmp_fd)
     tmp_path = Path(tmp_raw)
     try:
-        tmp_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        tmp_path.write_text(json.dumps(payload, indent=2, sort_keys=True, allow_nan=False) + "\n", encoding="utf-8")
         os.replace(tmp_path, pref_path)
     except Exception:
         tmp_path.unlink(missing_ok=True)
@@ -452,7 +467,7 @@ def ensure_postgres_container_ready(
 
     parsed = urlparse(dsn)
     host = (parsed.hostname or "127.0.0.1").lower()
-    is_local = host in ("127.0.0.1", "localhost", "::1")
+    is_local = (not is_unix_socket_dsn(dsn)) and host in ("127.0.0.1", "localhost", "::1")
     if not auto_start or not is_local:
         return {
             "ok": False,
@@ -712,16 +727,18 @@ def create_postgres_backup(
     backup_dir: Optional[Path] = None,
 ) -> Path:
     """Create a non-destructive PostgreSQL snapshot in `data/backups/` (`pg_dump` or gzipped JSONL)."""
-    out_dir = backup_dir if backup_dir is not None else (Path("data") / "backups")
+    dsn = getattr(db, "postgres_url", "") or ""
+    sock_host = get_unix_socket_host(dsn)
+    default_dir = (Path(sock_host).parent / "backups") if sock_host is not None else (Path("data") / "backups")
+    out_dir = backup_dir if backup_dir is not None else default_dir
     out_dir.mkdir(parents=True, exist_ok=True)
     safe_label = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(label or "backup").strip())[:40] or "backup"
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     ns_tail = time.time_ns() % 1_000_000
 
-    dsn = getattr(db, "postgres_url", "") or ""
     parsed = urlparse(dsn)
     podman_bin = shutil.which("podman")
-    is_local = (parsed.hostname or "127.0.0.1").lower() in ("127.0.0.1", "localhost", "::1")
+    is_local = (sock_host is None) and ((parsed.hostname or "127.0.0.1").lower() in ("127.0.0.1", "localhost", "::1"))
 
     if podman_bin and is_local:
         dump_dest = out_dir / f"spaceinvasion_pg.{safe_label}.{stamp}_{ns_tail:06d}.dump"
@@ -775,7 +792,7 @@ def create_postgres_backup(
                     rows = cur.execute(f'SELECT {col_sql} FROM "{tbl}"').fetchall()
                 for r in rows:
                     rec = {"table": tbl, "row": dict(zip(cols, r))}
-                    gz.write(json.dumps(rec, sort_keys=True) + "\n")
+                    gz.write(json.dumps(rec, sort_keys=True, allow_nan=False) + "\n")
         os.replace(tmp_path, jsonl_dest)
         return jsonl_dest
     except Exception:
