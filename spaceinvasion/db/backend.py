@@ -105,12 +105,10 @@ def get_unix_socket_host(dsn: Any) -> Optional[str]:
     if not is_postgres_dsn(dsn):
         return None
     try:
-        for h in parse_qs(urlparse(str(dsn).strip()).query).get("host", ()):
-            if str(h).strip().startswith("/"):
-                return str(h).strip()
+        hosts = parse_qs(urlparse(str(dsn).strip()).query).get("host", ())
     except ValueError:
         return None
-    return None
+    return next((s for h in hosts if (s := str(h).strip()).startswith("/")), None)
 
 
 def is_unix_socket_dsn(dsn: Any) -> bool:
@@ -731,13 +729,8 @@ def create_postgres_backup(
     """Create a non-destructive PostgreSQL snapshot in `data/backups/` (`pg_dump` or gzipped JSONL)."""
     dsn = getattr(db, "postgres_url", "") or ""
     sock_host = get_unix_socket_host(dsn)
-    db_p = getattr(db, "db_path", None)
-    sock_bkp = (
-        db_p.parent / "backups"
-        if isinstance(db_p, Path) and db_p.resolve() != DEFAULT_SQLITE_REL_PATH.resolve()
-        else (Path(sock_host).parent / "backups" if sock_host is not None else Path("data") / "backups")
-    )
-    out_dir = backup_dir if backup_dir is not None else sock_bkp
+    default_dir = (Path(sock_host).parent / "backups") if sock_host is not None else (Path("data") / "backups")
+    out_dir = backup_dir if backup_dir is not None else default_dir
     out_dir.mkdir(parents=True, exist_ok=True)
     safe_label = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(label or "backup").strip())[:40] or "backup"
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -757,7 +750,17 @@ def create_postgres_backup(
             pg_db = (parsed.path or "").strip("/") or DEFAULT_PG_DB
             with tmp_path.open("wb") as fh:
                 proc = subprocess.run(
-                    [podman_bin, "exec", DEFAULT_PODMAN_CONTAINER_NAME, "pg_dump", "-U", pg_user, "-d", pg_db, "-Fc"],
+                    [
+                        podman_bin,
+                        "exec",
+                        DEFAULT_PODMAN_CONTAINER_NAME,
+                        "pg_dump",
+                        "-U",
+                        pg_user,
+                        "-d",
+                        pg_db,
+                        "-Fc",
+                    ],
                     stdout=fh,
                     stderr=subprocess.PIPE,
                     timeout=60.0,

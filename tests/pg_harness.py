@@ -36,11 +36,30 @@ import uuid
 import weakref
 
 import psycopg
+from psycopg.conninfo import conninfo_to_dict
+import psycopg_pool
 
 REPO_ROOT: Path = Path(__file__).resolve().parents[1]
 FORBIDDEN_LIVE_PORTS: frozenset[int] = frozenset({8787, 5433, 9222, 7900, 5173})
-_LOCAL_LOOPBACK_HOSTS: frozenset[str] = frozenset(
-    {"", "127.0.0.1", "localhost", "::1", "0.0.0.0", "::", "::ffff:127.0.0.1"}
+_HERMETIC_SCRUB_ENV_KEYS: tuple[str, ...] = (
+    "SPACEINVASION_DB_URL",
+    "SPACEINVASION_DB_BACKEND",
+    "SPACEINVASION_PG_HOST",
+    "SPACEINVASION_PG_PORT",
+    "SPACEINVASION_PG_DB",
+    "SPACEINVASION_PG_USER",
+    "SPACEINVASION_PG_PASSWORD",
+    "SPACEINVASION_CONTAINER",
+    "SPACEINVASION_AUTO_PODMAN",
+    "DATABASE_URL",
+    "PGHOST",
+    "PGHOSTADDR",
+    "PGPORT",
+    "PGDATABASE",
+    "PGUSER",
+    "PGPASSWORD",
+    "PGSERVICE",
+    "PGPASSFILE",
 )
 _ALLOWED_TOOL_ROOT_ENTRIES: frozenset[str] = frozenset(
     {".pytest_cache", "__pycache__", ".coverage", ".mypy_cache", ".ruff_cache"}
@@ -50,36 +69,124 @@ _SAFE_DB_PREFIX_RE = re.compile(r"[^a-z0-9_]+")
 
 _GUARD_LOCK = threading.Lock()
 _SOCKET_GUARD_INSTALLED = False
+_LIBPQ_GUARD_INSTALLED = False
 _LOG_GUARD_INSTALLED = False
+_PREF_GUARD_INSTALLED = False
 _HERMETIC_TMP_DIR: Optional[Path] = None
 
 _ORIG_SOCK_CONNECT = socket.socket.connect
 _ORIG_SOCK_CONNECT_EX = socket.socket.connect_ex
 _ORIG_CREATE_CONNECTION = socket.create_connection
 _ORIG_SQLITE_CONNECT = sqlite3.connect
+_ORIG_PSYCOPG_CONNECT = psycopg.connect
+_ORIG_PSYCOPG_CONN_CONNECT = psycopg.Connection.connect.__func__  # type: ignore[attr-defined]
+_ORIG_PSYCOPG_ASYNC_CONNECT = psycopg.AsyncConnection.connect.__func__  # type: ignore[attr-defined]
+_ORIG_POOL_INIT = psycopg_pool.ConnectionPool.__init__
+_ORIG_ASYNC_POOL_INIT = psycopg_pool.AsyncConnectionPool.__init__
+
+
+def _ensure_hermetic_tmp_dir() -> Path:
+    """Create (once per process) a temporary directory for redirected test artifacts."""
+    global _HERMETIC_TMP_DIR
+    if _HERMETIC_TMP_DIR is None:
+        _HERMETIC_TMP_DIR = Path(tempfile.mkdtemp(prefix="si_hermetic_logs_"))
+        atexit.register(_cleanup_hermetic_tmp)
+    return _HERMETIC_TMP_DIR
 
 
 def _is_forbidden_tcp_target(family: int, address: Any) -> bool:
-    """Return True if `(family, address)` targets a forbidden live TCP port on loopback/wildcard."""
+    """Return True if `(family, address)` targets a forbidden live TCP port on any host."""
     if family == getattr(socket, "AF_UNIX", -1):
         return False
     if family not in (socket.AF_INET, socket.AF_INET6, socket.AF_UNSPEC):
         return False
     if not isinstance(address, tuple) or len(address) < 2:
         return False
-    host_raw, port_raw = address[0], address[1]
+    port_raw = address[1]
     if isinstance(port_raw, bool):
         return False
     try:
         port = int(port_raw)
     except (TypeError, ValueError):
         return False
-    if port not in FORBIDDEN_LIVE_PORTS:
-        return False
-    host = str(host_raw or "").strip().lower()
-    if host.startswith("[") and host.endswith("]"):
-        host = host[1:-1]
-    return host in _LOCAL_LOOPBACK_HOSTS or host.startswith("127.")
+    return port in FORBIDDEN_LIVE_PORTS
+
+
+def _assert_hermetic_libpq_dsn(conninfo: Any = "", extra_kwargs: Optional[dict[str, Any]] = None) -> None:
+    """Reject any `psycopg`/`libpq` connection not targeting a temp-dir Unix domain socket."""
+    raw_ci = "" if conninfo is None else str(conninfo)
+    try:
+        parsed: dict[str, Any] = dict(conninfo_to_dict(raw_ci))
+    except Exception as exc:
+        raise RuntimeError(f"Hermetic test guard blocked unparseable libpq conninfo: {exc}") from exc
+
+    if extra_kwargs:
+        for key in ("host", "hostaddr", "port", "service"):
+            if key in extra_kwargs and extra_kwargs[key] is not None:
+                parsed[key] = extra_kwargs[key]
+
+    service = str(parsed.get("service") or os.environ.get("PGSERVICE") or "").strip()
+    hostaddr = str(parsed.get("hostaddr") or os.environ.get("PGHOSTADDR") or "").strip()
+    host = str(parsed.get("host") or os.environ.get("PGHOST") or "").strip()
+    port = str(parsed.get("port") or os.environ.get("PGPORT") or "5432").strip()
+
+    tmp_roots = {
+        os.path.realpath(tempfile.gettempdir()).rstrip("/"),
+        os.path.normpath(tempfile.gettempdir()).rstrip("/"),
+        "/tmp",
+    }
+    host_norm = os.path.normpath(host) if host else ""
+    host_real = os.path.realpath(host) if host else ""
+    in_tmp = bool(
+        host
+        and host.startswith("/")
+        and "," not in host
+        and any(host_norm.startswith(r + "/") for r in tmp_roots)
+        and any(host_real.startswith(r + "/") for r in tmp_roots)
+    )
+    if service or hostaddr or not in_tmp:
+        raise RuntimeError(
+            "Hermetic test guard blocked libpq PostgreSQL connection "
+            f"(host={host!r}, hostaddr={hostaddr!r}, port={port!r}, service={service!r}); "
+            "only Unix-socket DSNs under a temp directory are allowed in tests."
+        )
+
+
+def install_libpq_guard() -> None:
+    """Wrap `psycopg` and `psycopg_pool` entrypoints so C-level libpq cannot reach TCP/live Postgres."""
+    global _LIBPQ_GUARD_INSTALLED
+    with _GUARD_LOCK:
+        if _LIBPQ_GUARD_INSTALLED:
+            return
+
+        def _guarded_psycopg_connect(conninfo: Any = "", *args: Any, **kwargs: Any) -> Any:
+            _assert_hermetic_libpq_dsn(conninfo, kwargs)
+            return _ORIG_PSYCOPG_CONNECT(conninfo, *args, **kwargs)
+
+        def _guarded_conn_connect(cls: Any, conninfo: Any = "", *args: Any, **kwargs: Any) -> Any:
+            _assert_hermetic_libpq_dsn(conninfo, kwargs)
+            return _ORIG_PSYCOPG_CONN_CONNECT(cls, conninfo, *args, **kwargs)
+
+        async def _guarded_async_connect(cls: Any, conninfo: Any = "", *args: Any, **kwargs: Any) -> Any:
+            _assert_hermetic_libpq_dsn(conninfo, kwargs)
+            return await _ORIG_PSYCOPG_ASYNC_CONNECT(cls, conninfo, *args, **kwargs)
+
+        def _guarded_pool_init(self: Any, conninfo: Any = "", *args: Any, **kwargs: Any) -> None:
+            pool_kw = kwargs.get("kwargs")
+            _assert_hermetic_libpq_dsn(conninfo, pool_kw if isinstance(pool_kw, dict) else None)
+            _ORIG_POOL_INIT(self, conninfo, *args, **kwargs)
+
+        def _guarded_async_pool_init(self: Any, conninfo: Any = "", *args: Any, **kwargs: Any) -> None:
+            pool_kw = kwargs.get("kwargs")
+            _assert_hermetic_libpq_dsn(conninfo, pool_kw if isinstance(pool_kw, dict) else None)
+            _ORIG_ASYNC_POOL_INIT(self, conninfo, *args, **kwargs)
+
+        psycopg.connect = _guarded_psycopg_connect  # type: ignore[assignment]
+        psycopg.Connection.connect = classmethod(_guarded_conn_connect)  # type: ignore[assignment,method-assign]
+        psycopg.AsyncConnection.connect = classmethod(_guarded_async_connect)  # type: ignore[assignment,method-assign]
+        psycopg_pool.ConnectionPool.__init__ = _guarded_pool_init  # type: ignore[assignment,method-assign]
+        psycopg_pool.AsyncConnectionPool.__init__ = _guarded_async_pool_init  # type: ignore[assignment,method-assign]
+        _LIBPQ_GUARD_INSTALLED = True
 
 
 def install_socket_guard() -> None:
@@ -129,15 +236,13 @@ def _cleanup_hermetic_tmp() -> None:
 
 def install_log_artifact_guard() -> None:
     """Prevent tests from writing `commander.jsonl`, `commander.log`, or crash logs into repo root."""
-    global _LOG_GUARD_INSTALLED, _HERMETIC_TMP_DIR
+    global _LOG_GUARD_INSTALLED
     with _GUARD_LOCK:
         if _LOG_GUARD_INSTALLED:
             return
         from spaceinvasion.core import logging_utils
 
-        _HERMETIC_TMP_DIR = Path(tempfile.mkdtemp(prefix="si_hermetic_logs_"))
-        atexit.register(_cleanup_hermetic_tmp)
-
+        hermetic_tmp = _ensure_hermetic_tmp_dir()
         repo_root_resolved = REPO_ROOT.resolve()
         repo_logs_resolved = (REPO_ROOT / "logs").resolve()
         repo_state_resolved = (REPO_ROOT / "state").resolve()
@@ -161,14 +266,48 @@ def install_log_artifact_guard() -> None:
             return orig_skip(target_dir)
 
         logging_utils._should_skip_disk_log = _hermetic_should_skip_disk_log
-        logging_utils.DEFAULT_CRASH_LOG_DIR = (_HERMETIC_TMP_DIR / "crash_logs").resolve()
+        logging_utils.DEFAULT_CRASH_LOG_DIR = (hermetic_tmp / "crash_logs").resolve()
         _LOG_GUARD_INSTALLED = True
 
 
+def scrub_live_db_env() -> None:
+    """Remove inherited live DB / libpq environment variables from `os.environ`."""
+    for key in _HERMETIC_SCRUB_ENV_KEYS:
+        os.environ.pop(key, None)
+
+
+def install_backend_pref_guard() -> None:
+    """Redirect repo-root `state/db_backend.json` lookups into the hermetic temp directory."""
+    global _PREF_GUARD_INSTALLED
+    with _GUARD_LOCK:
+        if _PREF_GUARD_INSTALLED:
+            return
+        from spaceinvasion.db import backend as backend_mod
+
+        hermetic_tmp = _ensure_hermetic_tmp_dir()
+        repo_root_resolved = REPO_ROOT.resolve()
+        orig_pref_path = backend_mod._pref_file_path
+
+        def _hermetic_pref_file_path(root_dir: Path | str = Path(".")) -> Path:
+            try:
+                resolved = Path(root_dir).resolve()
+            except OSError:
+                return hermetic_tmp / backend_mod.DEFAULT_BACKEND_PREF_REL_PATH
+            if resolved == repo_root_resolved:
+                return hermetic_tmp / backend_mod.DEFAULT_BACKEND_PREF_REL_PATH
+            return orig_pref_path(root_dir)
+
+        backend_mod._pref_file_path = _hermetic_pref_file_path
+        _PREF_GUARD_INSTALLED = True
+
+
 def install_hermetic_guards() -> None:
-    """Install both socket and log-artifact hermetic guards (idempotent)."""
+    """Install socket, libpq, env-scrub, backend-pref, and log-artifact hermetic guards."""
+    scrub_live_db_env()
     install_socket_guard()
+    install_libpq_guard()
     install_log_artifact_guard()
+    install_backend_pref_guard()
 
 
 def snapshot_repo_root() -> frozenset[str]:

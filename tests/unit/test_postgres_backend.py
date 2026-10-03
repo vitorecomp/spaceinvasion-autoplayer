@@ -2,19 +2,22 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 import socket
 import tempfile
 import threading
 import time
 import unittest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import psycopg
+import psycopg_pool
 
 from spaceinvasion.combat.fleet import GalaxySlot, SpyReport
 from spaceinvasion.core.logging_utils import append_tick_logs
 from spaceinvasion.core.state import EnergyBalance, GameState, PlanetState, Resources
+from spaceinvasion.db import backend as backend_mod
 from spaceinvasion.db.backend import (
     ensure_postgres_container_ready,
     is_unix_socket_dsn,
@@ -161,7 +164,7 @@ class TestPostgresDialectAndBackendControl(unittest.TestCase):
         install_hermetic_guards()
 
         for port in sorted(FORBIDDEN_LIVE_PORTS):
-            for host in ("127.0.0.1", "localhost", "0.0.0.0"):
+            for host in ("127.0.0.1", "localhost", "0.0.0.0", "192.0.2.1", "10.0.0.1"):
                 with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                     with self.assertRaises(RuntimeError):
                         s.connect((host, port))
@@ -170,6 +173,58 @@ class TestPostgresDialectAndBackendControl(unittest.TestCase):
                         s.connect_ex((host, port))
                 with self.assertRaises(RuntimeError):
                     socket.create_connection((host, port), timeout=0.1)
+
+        # C-level libpq (psycopg / psycopg_pool) must also block TCP & non-tmp Unix sockets
+        for bad_dsn in (
+            "postgresql://postgres:x@127.0.0.1:5433/postgres",
+            "postgresql://postgres:x@localhost/postgres",
+            "host=127.0.0.1 port=5433 dbname=postgres",
+            "host=192.0.2.1 port=5432 dbname=postgres",
+            "postgresql:///postgres?host=/var/run/postgresql",
+            "",
+        ):
+            with self.assertRaises(RuntimeError, msg=f"psycopg.connect allowed {bad_dsn!r}"):
+                psycopg.connect(bad_dsn)
+            with self.assertRaises(RuntimeError, msg=f"Connection.connect allowed {bad_dsn!r}"):
+                psycopg.Connection.connect(bad_dsn)
+            with self.assertRaises(RuntimeError, msg=f"ConnectionPool allowed {bad_dsn!r}"):
+                psycopg_pool.ConnectionPool(bad_dsn, open=False)
+        with self.assertRaises(RuntimeError):
+            psycopg.connect(hostaddr="127.0.0.1", port=5433)
+        with self.assertRaises(RuntimeError):
+            psycopg_pool.ConnectionPool("postgresql:///db", kwargs={"host": "127.0.0.1", "port": 5433}, open=False)
+
+        # Env scrub removes inherited live DB / PG* variables and isolates repo-root preference path
+        with patch.dict(
+            os.environ,
+            {
+                "SPACEINVASION_DB_URL": "postgresql://u:p@127.0.0.1:5433/spaceinvasion",
+                "SPACEINVASION_DB_BACKEND": "postgres",
+                "DATABASE_URL": "postgresql://u:p@127.0.0.1:5433/spaceinvasion",
+                "PGHOST": "127.0.0.1",
+                "PGPORT": "5433",
+                "PGDATABASE": "spaceinvasion",
+                "PGUSER": "spaceinvasion",
+                "PGPASSWORD": "secret",
+            },
+            clear=False,
+        ):
+            install_hermetic_guards()
+            for var in (
+                "SPACEINVASION_DB_URL",
+                "SPACEINVASION_DB_BACKEND",
+                "DATABASE_URL",
+                "PGHOST",
+                "PGPORT",
+                "PGDATABASE",
+                "PGUSER",
+                "PGPASSWORD",
+            ):
+                self.assertNotIn(var, os.environ)
+
+        repo_pref = (REPO_ROOT / backend_mod.DEFAULT_BACKEND_PREF_REL_PATH).resolve()
+        self.assertNotEqual(backend_mod._pref_file_path(Path(".")).resolve(), repo_pref)
+        self.assertNotEqual(backend_mod._pref_file_path(REPO_ROOT).resolve(), repo_pref)
 
         # Ephemeral loopback port connections remain allowed
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as srv:

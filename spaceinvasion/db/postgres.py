@@ -85,10 +85,7 @@ _WRITE_VERB_RE = re.compile(
     r"^\s*(?:WITH\b.*?\b)?(INSERT|UPDATE|DELETE|CREATE|ALTER|DROP|TRUNCATE)\b",
     re.IGNORECASE | re.DOTALL,
 )
-_DDL_VERB_RE = re.compile(
-    r"^\s*(CREATE|ALTER|DROP|TRUNCATE)\b",
-    re.IGNORECASE,
-)
+_DDL_VERB_RE = re.compile(r"^\s*(CREATE|ALTER|DROP|TRUNCATE)\b", re.IGNORECASE)
 _PLAIN_INSERT_INTO_RE = re.compile(
     r'^\s*INSERT\s+INTO\s+"?([A-Za-z_][A-Za-z0-9_]*)"?\b',
     re.IGNORECASE,
@@ -661,24 +658,32 @@ class PostgresSession:
                         idx = len(self._savepoints) - 1 - self._savepoints[::-1].index(sp_nm)
                         del self._savepoints[idx:]
                 elif m_sp_rb is not None:
-                    self._backend.invalidate_catalog_caches()
-                elif _DDL_VERB_RE.match(pg_sql):
-                    self._dirty_writes += max(1, rc)
-                    self._backend.bump_local_changes(max(1, rc))
-                    self._backend.invalidate_catalog_caches()
-                elif _WRITE_VERB_RE.match(pg_sql) and rc > 0:
-                    self._dirty_writes += rc
-                    self._backend.bump_local_changes(rc)
+                    pass
+                elif _WRITE_VERB_RE.match(pg_sql):
+                    self._record_write_delta(pg_sql, rc)
 
                 return PostgresCursorResult(
                     self._build_rows(fetched, col_names, use_row_factory=want_rows),
-                    rowcount=rc, lastrowid=last_id, row_factory=self.row_factory, session=self,
+                    rowcount=rc,
+                    lastrowid=last_id,
+                    row_factory=self.row_factory,
+                    session=self,
                 )
         except Exception as exc:
-            if self._raw.info.transaction_status == pq.TransactionStatus.INERROR and not self._savepoints and self._dirty_writes == 0:
+            if (
+                self._raw.info.transaction_status == pq.TransactionStatus.INERROR
+                and not self._savepoints
+                and self._dirty_writes == 0
+            ):
                 with contextlib.suppress(Exception):
                     self._raw.rollback()
             raise _wrap_pg_error(exc) from exc
+
+    def _record_write_delta(self, pg_sql: str, rowcount: int) -> None:
+        delta = max(1, rowcount) if _DDL_VERB_RE.match(pg_sql) else rowcount
+        if delta > 0:
+            self._dirty_writes += delta
+            self._backend.bump_local_changes(delta)
 
     def executemany(self, sql: str, seq_of_params: Iterable[Sequence[Any]]) -> PostgresCursorResult:
         param_list = [_adapt_params(p) or () for p in seq_of_params]
@@ -689,9 +694,7 @@ class PostgresSession:
             with self._raw.cursor() as cur:
                 cur.executemany(pg_sql, param_list)
                 rc = int(cur.rowcount) if cur.rowcount is not None and cur.rowcount >= 0 else len(param_list)
-            if rc > 0:
-                self._dirty_writes += rc
-                self._backend.bump_local_changes(rc)
+            self._record_write_delta(pg_sql, rc)
             return PostgresCursorResult([], rowcount=rc, row_factory=self.row_factory, session=self)
         except Exception as exc:
             if (
@@ -726,7 +729,6 @@ class PostgresSession:
             self._raw.rollback()
             self._dirty_writes = 0
             self._savepoints.clear()
-            self._backend.invalidate_catalog_caches()
         except Exception as exc:
             raise _wrap_pg_error(exc) from exc
 
@@ -736,50 +738,63 @@ class PostgresSession:
     # --- Catalog & PRAGMA Helpers ---
 
     def _table_exists(self, table_name: str) -> bool:
-        low = table_name.lower()
-        if not self._dirty_writes:
-            with self._backend._meta_lock:
-                if low in self._backend._existing_tables_cache:
-                    return True
         with self._raw.cursor() as cur:
-            cur.execute("SELECT 1 FROM pg_catalog.pg_tables WHERE schemaname = 'public' AND tablename = %s LIMIT 1", (low,))
-            exists = cur.fetchone() is not None
-        if exists and not self._dirty_writes and not self._savepoints:
-            with self._backend._meta_lock:
-                self._backend._existing_tables_cache.add(low)
-        return exists
+            cur.execute(
+                """
+                SELECT 1
+                FROM pg_catalog.pg_tables
+                WHERE schemaname = 'public' AND tablename = %s
+                LIMIT 1
+                """,
+                (table_name.lower(),),
+            )
+            return cur.fetchone() is not None
 
     def _list_tables(self) -> list[str]:
         with self._raw.cursor() as cur:
-            cur.execute("SELECT tablename FROM pg_catalog.pg_tables WHERE schemaname = 'public' AND tablename != '_pg_pragma_meta' ORDER BY tablename ASC")
+            cur.execute(
+                """
+                SELECT tablename
+                FROM pg_catalog.pg_tables
+                WHERE schemaname = 'public' AND tablename != '_pg_pragma_meta'
+                ORDER BY tablename ASC
+                """
+            )
             return [str(r[0]) for r in cur.fetchall()]
 
     def _read_table_info(self, table_name: str) -> list[tuple[int, str, str, int, Any, int]]:
-        low = table_name.lower()
-        if not self._dirty_writes and not self._savepoints:
-            with self._backend._meta_lock:
-                cached = self._backend._table_info_cache.get(low)
-                if cached is not None:
-                    return list(cached)
         with self._raw.cursor() as cur:
             cur.execute(
-                "SELECT c.ordinal_position - 1 AS cid, c.column_name AS name, UPPER(c.data_type) AS type, "
-                "CASE WHEN c.is_nullable = 'NO' THEN 1 ELSE 0 END AS notnull, c.column_default AS dflt_value, "
-                "CASE WHEN pk.column_name IS NOT NULL THEN 1 ELSE 0 END AS pk "
-                "FROM information_schema.columns c LEFT JOIN ("
-                "SELECT kcu.column_name FROM information_schema.table_constraints tc "
-                "JOIN information_schema.key_column_usage kcu ON tc.constraint_name = kcu.constraint_name "
-                "AND tc.table_schema = kcu.table_schema AND tc.table_name = kcu.table_name "
-                "WHERE tc.table_schema = 'public' AND tc.table_name = %s AND tc.constraint_type = 'PRIMARY KEY'"
-                ") pk ON pk.column_name = c.column_name "
-                "WHERE c.table_schema = 'public' AND c.table_name = %s ORDER BY c.ordinal_position ASC",
-                (low, low),
+                """
+                SELECT
+                    c.ordinal_position - 1 AS cid,
+                    c.column_name AS name,
+                    UPPER(c.data_type) AS type,
+                    CASE WHEN c.is_nullable = 'NO' THEN 1 ELSE 0 END AS notnull,
+                    c.column_default AS dflt_value,
+                    CASE WHEN pk.column_name IS NOT NULL THEN 1 ELSE 0 END AS pk
+                FROM information_schema.columns c
+                LEFT JOIN (
+                    SELECT kcu.column_name
+                    FROM information_schema.table_constraints tc
+                    JOIN information_schema.key_column_usage kcu
+                      ON tc.constraint_name = kcu.constraint_name
+                     AND tc.table_schema = kcu.table_schema
+                     AND tc.table_name = kcu.table_name
+                    WHERE tc.table_schema = 'public'
+                      AND tc.table_name = %s
+                      AND tc.constraint_type = 'PRIMARY KEY'
+                ) pk ON pk.column_name = c.column_name
+                WHERE c.table_schema = 'public'
+                  AND c.table_name = %s
+                ORDER BY c.ordinal_position ASC
+                """,
+                (table_name.lower(), table_name.lower()),
             )
-            rows = [(int(r[0]), str(r[1]), str(r[2]), int(r[3]), r[4], int(r[5])) for r in cur.fetchall()]
-        if rows and not self._dirty_writes and not self._savepoints:
-            with self._backend._meta_lock:
-                self._backend._table_info_cache[low] = list(rows)
-        return rows
+            return [
+                (int(r[0]), str(r[1]), str(r[2]), int(r[3]), r[4], int(r[5]))
+                for r in cur.fetchall()
+            ]
 
     def _ensure_pragma_table(self) -> None:
         with self._raw.cursor() as cur:
@@ -944,10 +959,6 @@ class PostgresPoolBackend:
         self._closed = False
         self._meta_lock = threading.Lock()
         self._total_changes = 0
-        self._cached_data_ver: int = 0
-        self._cached_data_ver_mono: float = 0.0
-        self._existing_tables_cache: set[str] = set()
-        self._table_info_cache: dict[str, list[tuple[int, str, str, int, Any, int]]] = {}
         self._tls = threading.local()
 
         def _configure_conn(conn: psycopg.Connection[Any]) -> None:
@@ -977,19 +988,11 @@ class PostgresPoolBackend:
     def bump_local_changes(self, delta: int = 1) -> None:
         with self._meta_lock:
             self._total_changes += max(1, int(delta))
-            self._cached_data_ver_mono = 0.0
 
     def notify_committed(self) -> None:
-        with self._meta_lock:
-            self._cached_data_ver_mono = 0.0
-
-    def invalidate_catalog_caches(self) -> None:
-        with self._meta_lock:
-            self._existing_tables_cache.clear()
-            self._table_info_cache.clear()
+        return None
 
     def get_data_version(self, raw_conn: Optional[psycopg.Connection[Any]] = None) -> int:
-        val = 0
         try:
             cur_sess = self._current_session() if raw_conn is None else None
             conn_to_use = raw_conn or (cur_sess._raw if cur_sess is not None else None)
@@ -997,20 +1000,16 @@ class PostgresPoolBackend:
                 with conn_to_use.cursor() as cur:
                     cur.execute("SELECT pg_snapshot_xmax(pg_current_snapshot())::text")
                     r = cur.fetchone()
+                    return int(str(r[0])) if r and r[0] is not None else 0
+            with self._pool.connection() as c:
+                with c.cursor() as cur:
+                    cur.execute("SELECT pg_snapshot_xmax(pg_current_snapshot())::text")
+                    r = cur.fetchone()
                     val = int(str(r[0])) if r and r[0] is not None else 0
-            else:
-                with self._pool.connection() as c:
-                    with c.cursor() as cur:
-                        cur.execute("SELECT pg_snapshot_xmax(pg_current_snapshot())::text")
-                        r = cur.fetchone()
-                        val = int(str(r[0])) if r and r[0] is not None else 0
-                    c.rollback()
+                c.rollback()
+                return val
         except Exception:
-            val = self._total_changes
-        with self._meta_lock:
-            self._cached_data_ver = val
-            self._cached_data_ver_mono = time.monotonic()
-        return val
+            return self._total_changes
 
     def database_size_bytes(self) -> int:
         try:
