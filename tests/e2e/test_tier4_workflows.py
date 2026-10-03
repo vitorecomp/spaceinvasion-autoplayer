@@ -338,7 +338,7 @@ class TestTier4Workflows(unittest.TestCase):
             ui2 = run_ui_in_node(
                 h.base_url,
                 """
-                await __waitUntil(() => (document.getElementById('hud-bf-pill') || {}).textContent.includes('0%'), 4000);
+                await __waitUntil(() => ((document.getElementById('hud-bf-pill') || {}).textContent || '').includes('0% PAUSED'), 4000);
                 return { bfPill: __snapshotElement('hud-bf-pill') };
                 """,
             )
