@@ -484,6 +484,7 @@ class TestTier2R2(unittest.TestCase):
             "02:380:09": {"owner": "Spacia", "resources": {"pig_iron": 20000, "metal": 15000, "kryptonite": 8000, "spice": 2000}, "fleet": {}, "defense": {}, "is_spacia": True},
         }
         srv = FakeSpaceInvasionServer(clock=clock, spy_reports=spy_reports)
+        srv.planets[12476]["buildings"]["b10"] = 20
         cfg = StrategyConfig(allow_raids=True, allow_pvp_in_az=True)
         with E2ETestHarness(
             server=srv,

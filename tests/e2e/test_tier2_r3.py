@@ -516,7 +516,7 @@ class TestTier2R3(unittest.TestCase):
                 if (!simBtn) throw new Error("No Sim button found in #dash-plan-tbody");
                 simBtn.click();
                 await __waitUntil(() => fetchLog.some((f) => f.url === "/command" && f.body && f.body.dry_run === true));
-                await __sleep(80);
+                await __waitUntil(() => String((__snapshotElement("feedback-banner") || {}).textContent || "").includes("[DRY-RUN]"), 4000);
                 return {
                   banner: __snapshotElement("feedback-banner"),
                   postBodies: fetchLog.filter((f) => f.url === "/command").map((f) => f.body)
