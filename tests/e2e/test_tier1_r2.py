@@ -364,7 +364,9 @@ class TestTier1R2(unittest.TestCase):
                 "is_spacia": False,
             }
         }
-        srv = FakeSpaceInvasionServer(spy_reports=spy_reports)
+        planets = _r2_default_planets()
+        planets[12476]["buildings"]["b10"] = 2
+        srv = FakeSpaceInvasionServer(planets=planets, spy_reports=spy_reports)
         cfg = StrategyConfig(allow_galaxy_scan=True, allow_raids=True)
         with E2ETestHarness(server=srv, config=cfg) as h:
             h.api.get_state(include_buildings=True)

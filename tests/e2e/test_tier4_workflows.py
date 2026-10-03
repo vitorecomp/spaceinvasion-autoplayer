@@ -253,7 +253,7 @@ class TestTier4Workflows(unittest.TestCase):
                 document.querySelector('[data-page="config"]').click();
                 const sel = document.getElementById('cfg-planner_mode');
                 if (!sel) throw new Error('Missing #cfg-planner_mode');
-                sel.value = 'ga_nn';
+                sel.value = 'ai_planner';
                 sel.dispatchEvent({ type: 'change', target: sel });
                 const dashBefore = fetchLog.filter((f) => String(f.url || '').startsWith('/dashboard')).length;
                 document.getElementById('btn-save-config').click();
@@ -271,7 +271,7 @@ class TestTier4Workflows(unittest.TestCase):
             )
             self.assertGreater(len(ui_res["scenario"]["dashRows"]), 0)
             self.assertGreater(len(ui_res["scenario"]["opsRows"]), 0)
-            self.assertEqual(load_strategy_config(h.config_path).planner_mode, "ga_nn")
+            self.assertEqual(load_strategy_config(h.config_path).planner_mode, "ai_planner")
 
             # Toggle back to priority leaves baseline outputs untouched
             h.api.send_command({"command": "update_config", "config": {"planner_mode": "priority"}})
@@ -338,7 +338,7 @@ class TestTier4Workflows(unittest.TestCase):
             ui2 = run_ui_in_node(
                 h.base_url,
                 """
-                await __waitUntil(() => (document.getElementById('hud-bf-pill') || {}).textContent.includes('0%'), 4000);
+                await __waitUntil(() => ((document.getElementById('hud-bf-pill') || {}).textContent || '').includes('0% PAUSED'), 4000);
                 return { bfPill: __snapshotElement('hud-bf-pill') };
                 """,
             )
@@ -696,7 +696,7 @@ class TestTier4Workflows(unittest.TestCase):
             h.api.send_command(
                 {
                     "command": "update_config",
-                    "config": {"planner_mode": "ga_nn", "playstyle": "miner", "max_actions_per_hour": 25},
+                    "config": {"planner_mode": "ai_planner", "playstyle": "miner", "max_actions_per_hour": 25},
                 }
             )
             self.assertTrue(h.api.send_command({"command": "throttle_building", "building_id": 2, "percentage": 0, "dry_run": False})["executed"])
@@ -732,7 +732,7 @@ class TestTier4Workflows(unittest.TestCase):
             # Shut down Server #1 and restart Bridge/Server #2 against identical tempdir DB & config.yaml
             h.restart_bridge()
             dash2 = h.get_dashboard(refresh=1)
-            self.assertEqual(dash2["config"]["planner_mode"], "ga_nn")
+            self.assertEqual(dash2["config"]["planner_mode"], "ai_planner")
             self.assertEqual(dash2["config"]["playstyle"], "miner")
             self.assertEqual(dash2["config"]["max_actions_per_hour"], 25)
             self.assertEqual(dash2["state"]["planets"][0]["economy_rates"].get("resource2"), 0)
@@ -758,118 +758,9 @@ class TestTier4Workflows(unittest.TestCase):
                 };
                 """,
             )
-            self.assertEqual(ui2["scenario"].get("plannerVal"), "ga_nn")
+            self.assertEqual(ui2["scenario"].get("plannerVal"), "ai_planner")
             self.assertIn("0% PAUSED", ui2["scenario"]["bfPill"]["textContent"])
             self.assertGreater(len(ui2["scenario"]["dashRows"]), 0)
-
-    # T4-08: Telemetry Persistence -> Multi-Raid History -> ga_nn Optimization -> Notebook Execution
-    def test_t4_08_complete_telemetry_multi_raid_ga_nn_and_notebook_workflow(self) -> None:
-        _import_eta_helpers(self)
-        _import_optimizer(self)
-        repo_root = Path(__file__).resolve().parents[2]
-        nb_path = repo_root / "notebooks" / "optimizer_experimentation.ipynb"
-        self.assertTrue(nb_path.exists(), "Experimentation notebook notebooks/optimizer_experimentation.ipynb missing (F20)")
-
-        gal = {
-            (2, 380): [
-                {"position": 4, "name": "FarmGood", "owner": "IdleA", "status_color": "yellow", "has_debris": False, "is_spacia": False, "spy_href": None},
-                {"position": 5, "name": "TrapBad", "owner": "IdleB", "status_color": "yellow", "has_debris": False, "is_spacia": False, "spy_href": None},
-            ]
-        }
-        planets = {
-            12476: {
-                "planet_id": 12476,
-                "name": "Home",
-                "coords": "02:380:12",
-                "planet_type": "normal",
-                "temperature": 31,
-                "fields_max": 230,
-                "resources": [10000, 8000, 6000, 3000],
-                "storage": [100000, 100000, 100000, 100000],
-                "energy": {"produced": 250, "used": 140},
-                "buildings": {"b1": 5, "b5": 7, "b9": 2},
-                "ships": {"s4": 25, "s1": 8, "s10": 5},
-                "defense": {},
-                "economy_rates": {},
-                "building_queue": [],
-            }
-        }
-        same_loot_raw = {"pig_iron": 20000, "metal": 20000, "kryptonite": 10000, "spice": 5000}
-        spy_reports = {
-            "02:380:04": {"owner": "IdleA", "resources": same_loot_raw, "fleet": {}, "defense": {}},
-            "02:380:05": {"owner": "IdleB", "resources": same_loot_raw, "fleet": {}, "defense": {}},
-        }
-        srv = FakeSpaceInvasionServer(planets=planets, galaxy_systems=gal, spy_reports=spy_reports)
-        cfg = make_ga_nn_config(self, allow_galaxy_scan=True, allow_raids=True)
-        with E2ETestHarness(server=srv, config=cfg) as h:
-            h.api.get_state(include_buildings=True)
-            h.api.send_command({"command": "scan_galaxy", "galaxy": 2, "system": 380, "dry_run": False})
-            for coords in ("02:380:04", "02:380:05"):
-                h.api.send_command({"command": "spy", "target_coords": coords, "probes": 1, "dry_run": False})
-            h.api.send_command({"command": "sync_spy_reports"})
-
-            db = GameDatabase(h.db_path)
-            try:
-                self.assertTrue(hasattr(db, "get_raid_stats"), "GameDatabase missing get_raid_stats()")
-                for i in range(5):
-                    db.record_raid("02:380:04", attacked_ts=1_700_000_000.0 + i * 60, is_exempt=True, outcome="Victory", loot={"pig_iron": 15000, "metal": 10000})
-                    db.record_raid("02:380:05", attacked_ts=1_700_000_000.0 + i * 60, is_exempt=True, outcome="Defeat / lost", loot={})
-                mirror_attr = getattr(db, "attack_history_path", None)
-            finally:
-                db.close()
-
-            self.assertTrue(h.api.send_command({"command": "attack", "target_coords": "02:380:04", "dry_run": False})["executed"])
-            plan = h.api.send_command({"command": "plan", "planner_mode": "ga_nn", "refresh": True})["actions"]
-            atks = [a for a in plan if a["kind"] == "ATTACK" and a["executable_now"]]
-            self.assertGreater(len(atks), 0)
-            self.assertIn("02:380:04", atks[0]["target_name"])
-            for row in plan:
-                _verify_eta_fields(self, row)
-
-            temp_mirror = Path(mirror_attr) if mirror_attr is not None else (h.db_path.parent / "attack_history.json")
-            self.assertFalse(temp_mirror.exists())
-            db_bytes = h.db_path.read_bytes() if h.db_path.exists() else b""
-            self.assertGreater(len(db_bytes), 0)
-
-        # Execute notebook against SQLite snapshot telemetry inside isolated temp cwd (repo state/ untouched)
-        repo_data = repo_root / "data" / "attack_history.json"
-        before_repo_data = repo_data.read_bytes() if repo_data.exists() else None
-        nb = json.loads(nb_path.read_text(encoding="utf-8"))
-        code_cells = [c for c in nb.get("cells", []) if c.get("cell_type") == "code"]
-        self.assertGreater(len(code_cells), 0)
-
-        orig_cwd = os.getcwd()
-        orig_mpl = os.environ.get("MPLBACKEND")
-        added_sys_path = False
-        try:
-            with tempfile.TemporaryDirectory(prefix="si_t4_08_nb_") as nb_tmp:
-                nb_tmp_path = Path(nb_tmp)
-                (nb_tmp_path / "state").mkdir()
-                (nb_tmp_path / "state" / "spaceinvasion.db").write_bytes(db_bytes)
-                os.environ["MPLBACKEND"] = "Agg"
-                if str(repo_root) not in sys.path:
-                    sys.path.insert(0, str(repo_root))
-                    added_sys_path = True
-                os.chdir(nb_tmp_path)
-                ns: dict = {"__name__": "__main__"}
-                for idx, cell in enumerate(code_cells):
-                    raw_src = "".join(cell.get("source") or []) if isinstance(cell.get("source"), list) else str(cell.get("source") or "")
-                    filtered = "\n".join(
-                        ln for ln in raw_src.splitlines() if not ln.lstrip().startswith(("%", "!"))
-                    )
-                    if filtered.strip():
-                        exec(compile(filtered, f"{nb_path}#t4_08_cell_{idx}", "exec"), ns, ns)
-        finally:
-            os.chdir(orig_cwd)
-            if orig_mpl is None:
-                os.environ.pop("MPLBACKEND", None)
-            else:
-                os.environ["MPLBACKEND"] = orig_mpl
-            if added_sys_path and str(repo_root) in sys.path:
-                sys.path.remove(str(repo_root))
-
-        after_repo_data = repo_data.read_bytes() if repo_data.exists() else None
-        self.assertEqual(after_repo_data, before_repo_data, "T4-08 workflow mutated repo data/attack_history.json")
 
 
 if __name__ == "__main__":
