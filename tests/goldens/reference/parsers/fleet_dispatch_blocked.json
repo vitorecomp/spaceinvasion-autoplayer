@@ -1,0 +1,24 @@
+{
+ "fleet_slot_status": null,
+ "mission_blocks": {
+  "ATTACK": {
+   "cooldown_seconds": 59540.0,
+   "is_bash_block": true,
+   "reason": "Attack (forbidden): Player was attacked too often by you (bash protection) (Reset in 16:31:50)"
+  },
+  "COLONIZE": null,
+  "ESCAPE": null,
+  "RECYCLE": null,
+  "SPY": {
+   "cooldown_seconds": 59540.0,
+   "is_bash_block": false,
+   "reason": "Spy (forbidden): out of your attackzone range (Reset in 16:31:50)"
+  },
+  "STATION": null,
+  "TRANSPORT": {
+   "cooldown_seconds": 59540.0,
+   "is_bash_block": false,
+   "reason": "Transport (forbidden): the target is inactive (Reset in 16:31:50)"
+  }
+ }
+}

@@ -1,0 +1,334 @@
+{
+ "inbox": [
+  {
+   "body_complete": true,
+   "body_text": "Golden Outpost [03:121:04] station One of your fleets (6 Recycler) was re-stationed from Golden Forge [03:120:11] to Golden Outpost [03:121:04]. It delivers 0 Pig iron, 0 Metal, 0 Kryptonite, 0 Spice.",
+   "category": "fleet_transport",
+   "coords": "03:121:04",
+   "folder_type": "inbox",
+   "msg_date_text": "2026-11-17 13:55:00",
+   "msg_uid": "id:9001",
+   "parsed_data": {
+    "coords": "03:121:04",
+    "resources": {
+     "kryptonite": 0,
+     "metal": 0,
+     "pig_iron": 0,
+     "spice": 0
+    }
+   },
+   "raw_html": "<tr id=\"msg_9001\">\n<td><input name=\"check_9001\" type=\"checkbox\" value=\"9001\"/></td>\n<td>2026-11-17 13:55:00</td>\n<td>System</td>\n<td>\n        Golden Outpost [03:121:04] station\n        <div class=\"si-expanded-body\" data-si-expanded=\"1\">\n          Message from System: Golden Outpost [03:121:04] station One of your fleets (6 Recycler) was re-stationed\n          from Golden Forge [03:120:11] to Golden Outpost [03:121:04]. It delivers 0 Pig iron, 0 Metal, 0 Kryptonite, 0 Spice.\n        </div>\n</td>\n</tr>",
+   "sender": "System",
+   "server_msg_id": "9001",
+   "spy_report": null,
+   "subject": "Golden Outpost [03:121:04] station"
+  },
+  {
+   "body_complete": true,
+   "body_text": "Space rubble [03:120:09] recycling report Your fleet (46 Recycler) from planet Golden Prime [03:120:07] reached its goal Spacia Planet [03:120:09]. Too bad for them that they couldn't find any more resources there.",
+   "category": "recycle_report",
+   "coords": "03:120:09",
+   "folder_type": "inbox",
+   "msg_date_text": "2026-11-17 13:56:00",
+   "msg_uid": "id:9002",
+   "parsed_data": {
+    "cargo_capacity": 0,
+    "coords": "03:120:09",
+    "debris_available": {
+     "metal": 0,
+     "pig_iron": 0
+    },
+    "harvested": {
+     "kryptonite": 0,
+     "metal": 0,
+     "pig_iron": 0,
+     "spice": 0
+    },
+    "harvested_spice_eq": 0.0,
+    "recycler_count": 46
+   },
+   "raw_html": "<tr id=\"msg_9002\">\n<td><input name=\"check_9002\" type=\"checkbox\" value=\"9002\"/></td>\n<td>2026-11-17 13:56:00</td>\n<td>System</td>\n<td>\n        Space rubble [03:120:09] recycling report\n        <div class=\"si-expanded-body\" data-si-expanded=\"1\">\n          Message from System: Space rubble [03:120:09] recycling report Your fleet (46 Recycler) from planet\n          Golden Prime [03:120:07] reached its goal Spacia Planet [03:120:09]. Too bad for them that they couldn't\n          find any more resources there.\n        </div>\n</td>\n</tr>",
+   "sender": "System",
+   "server_msg_id": "9002",
+   "spy_report": null,
+   "subject": "Space rubble [03:120:09] recycling report"
+  },
+  {
+   "body_complete": true,
+   "body_text": "Golden Forge [03:120:11] transport One of your fleets (4 Small transport) from Golden Prime [03:120:07] reached Golden Forge [03:120:11]. It delivers 20.000 Pig iron, 5.000 Metal, 0 Kryptonite, 0 Spice.",
+   "category": "fleet_transport",
+   "coords": "03:120:11",
+   "folder_type": "inbox",
+   "msg_date_text": "2026-11-17 14:02:10",
+   "msg_uid": "id:9003",
+   "parsed_data": {
+    "coords": "03:120:11",
+    "resources": {
+     "kryptonite": 0,
+     "metal": 5000,
+     "pig_iron": 20000,
+     "spice": 0
+    }
+   },
+   "raw_html": "<tr id=\"msg_9003\">\n<td><input name=\"check_9003\" type=\"checkbox\" value=\"9003\"/></td>\n<td>2026-11-17 14:02:10</td>\n<td>System</td>\n<td>\n        Golden Forge [03:120:11] transport\n        <div class=\"si-expanded-body\" data-si-expanded=\"1\">\n          Message from System: Golden Forge [03:120:11] transport One of your fleets (4 Small transport) from\n          Golden Prime [03:120:07] reached Golden Forge [03:120:11]. It delivers 20.000 Pig iron, 5.000 Metal,\n          0 Kryptonite, 0 Spice.\n        </div>\n</td>\n</tr>",
+   "sender": "System",
+   "server_msg_id": "9003",
+   "spy_report": null,
+   "subject": "Golden Forge [03:120:11] transport"
+  },
+  {
+   "body_complete": true,
+   "body_text": "2026-11-17 14:10:44 Fleet Command Battle report [03:122:05] Attacker GoldenPilot [03:120:07] against Defender SleeperThree [03:122:05]. Attacker won the battle! Plundered Pig iron: 3.075 Metal: 3.075 Kryptonite: 3.075 Spice: 3.075. Debris field created: Pig iron: 1.200 Metal: 600",
+   "category": "battle_report",
+   "coords": "03:122:05",
+   "folder_type": "inbox",
+   "msg_date_text": "2026-11-17 14:10:44",
+   "msg_uid": "id:9004",
+   "parsed_data": {
+    "attacker": "",
+    "attacker_lost_spice": 0,
+    "battle_id": "",
+    "coords": "03:122:05",
+    "debris": {
+     "metal": 600,
+     "pig_iron": 1200
+    },
+    "debris_spice_eq": 440.0,
+    "defender": "",
+    "defender_lost_spice": 0,
+    "has_debris": true,
+    "loot": {
+     "kryptonite": 3075,
+     "metal": 3075,
+     "pig_iron": 3075,
+     "spice": 3075
+    },
+    "loot_spice_eq": 5842.5,
+    "outcome": "win",
+    "resources_mentioned": {
+     "kryptonite": 3075,
+     "metal": 3075,
+     "pig_iron": 3075,
+     "spice": 3075
+    },
+    "rounds": 0
+   },
+   "raw_html": "<tr id=\"msg_9004\">\n<td><input name=\"check_9004\" type=\"checkbox\" value=\"9004\"/></td>\n<td>2026-11-17 14:10:44</td>\n<td>Fleet Command</td>\n<td>\n        Battle report [03:122:05]\n        <div class=\"si-expanded-body\" data-si-expanded=\"1\">\n          Attacker GoldenPilot [03:120:07] against Defender SleeperThree [03:122:05].\n          Attacker won the battle! Plundered Pig iron: 3.075 Metal: 3.075 Kryptonite: 3.075 Spice: 3.075.\n          Debris field created: Pig iron: 1.200 Metal: 600\n        </div>\n</td>\n</tr>",
+   "sender": "Fleet Command",
+   "server_msg_id": "9004",
+   "spy_report": null,
+   "subject": "Battle report [03:122:05]"
+  }
+ ],
+ "inbox_fleet_folder": [
+  {
+   "body_complete": true,
+   "body_text": "Golden Outpost [03:121:04] station One of your fleets (6 Recycler) was re-stationed from Golden Forge [03:120:11] to Golden Outpost [03:121:04]. It delivers 0 Pig iron, 0 Metal, 0 Kryptonite, 0 Spice.",
+   "category": "fleet_transport",
+   "coords": "03:121:04",
+   "folder_type": "fleet",
+   "msg_date_text": "2026-11-17 13:55:00",
+   "msg_uid": "id:9001",
+   "parsed_data": {
+    "coords": "03:121:04",
+    "resources": {
+     "kryptonite": 0,
+     "metal": 0,
+     "pig_iron": 0,
+     "spice": 0
+    }
+   },
+   "raw_html": "<tr id=\"msg_9001\">\n<td><input name=\"check_9001\" type=\"checkbox\" value=\"9001\"/></td>\n<td>2026-11-17 13:55:00</td>\n<td>System</td>\n<td>\n        Golden Outpost [03:121:04] station\n        <div class=\"si-expanded-body\" data-si-expanded=\"1\">\n          Message from System: Golden Outpost [03:121:04] station One of your fleets (6 Recycler) was re-stationed\n          from Golden Forge [03:120:11] to Golden Outpost [03:121:04]. It delivers 0 Pig iron, 0 Metal, 0 Kryptonite, 0 Spice.\n        </div>\n</td>\n</tr>",
+   "sender": "System",
+   "server_msg_id": "9001",
+   "spy_report": null,
+   "subject": "Golden Outpost [03:121:04] station"
+  },
+  {
+   "body_complete": true,
+   "body_text": "Space rubble [03:120:09] recycling report Your fleet (46 Recycler) from planet Golden Prime [03:120:07] reached its goal Spacia Planet [03:120:09]. Too bad for them that they couldn't find any more resources there.",
+   "category": "recycle_report",
+   "coords": "03:120:09",
+   "folder_type": "fleet",
+   "msg_date_text": "2026-11-17 13:56:00",
+   "msg_uid": "id:9002",
+   "parsed_data": {
+    "cargo_capacity": 0,
+    "coords": "03:120:09",
+    "debris_available": {
+     "metal": 0,
+     "pig_iron": 0
+    },
+    "harvested": {
+     "kryptonite": 0,
+     "metal": 0,
+     "pig_iron": 0,
+     "spice": 0
+    },
+    "harvested_spice_eq": 0.0,
+    "recycler_count": 46
+   },
+   "raw_html": "<tr id=\"msg_9002\">\n<td><input name=\"check_9002\" type=\"checkbox\" value=\"9002\"/></td>\n<td>2026-11-17 13:56:00</td>\n<td>System</td>\n<td>\n        Space rubble [03:120:09] recycling report\n        <div class=\"si-expanded-body\" data-si-expanded=\"1\">\n          Message from System: Space rubble [03:120:09] recycling report Your fleet (46 Recycler) from planet\n          Golden Prime [03:120:07] reached its goal Spacia Planet [03:120:09]. Too bad for them that they couldn't\n          find any more resources there.\n        </div>\n</td>\n</tr>",
+   "sender": "System",
+   "server_msg_id": "9002",
+   "spy_report": null,
+   "subject": "Space rubble [03:120:09] recycling report"
+  },
+  {
+   "body_complete": true,
+   "body_text": "Golden Forge [03:120:11] transport One of your fleets (4 Small transport) from Golden Prime [03:120:07] reached Golden Forge [03:120:11]. It delivers 20.000 Pig iron, 5.000 Metal, 0 Kryptonite, 0 Spice.",
+   "category": "fleet_transport",
+   "coords": "03:120:11",
+   "folder_type": "fleet",
+   "msg_date_text": "2026-11-17 14:02:10",
+   "msg_uid": "id:9003",
+   "parsed_data": {
+    "coords": "03:120:11",
+    "resources": {
+     "kryptonite": 0,
+     "metal": 5000,
+     "pig_iron": 20000,
+     "spice": 0
+    }
+   },
+   "raw_html": "<tr id=\"msg_9003\">\n<td><input name=\"check_9003\" type=\"checkbox\" value=\"9003\"/></td>\n<td>2026-11-17 14:02:10</td>\n<td>System</td>\n<td>\n        Golden Forge [03:120:11] transport\n        <div class=\"si-expanded-body\" data-si-expanded=\"1\">\n          Message from System: Golden Forge [03:120:11] transport One of your fleets (4 Small transport) from\n          Golden Prime [03:120:07] reached Golden Forge [03:120:11]. It delivers 20.000 Pig iron, 5.000 Metal,\n          0 Kryptonite, 0 Spice.\n        </div>\n</td>\n</tr>",
+   "sender": "System",
+   "server_msg_id": "9003",
+   "spy_report": null,
+   "subject": "Golden Forge [03:120:11] transport"
+  },
+  {
+   "body_complete": true,
+   "body_text": "2026-11-17 14:10:44 Fleet Command Battle report [03:122:05] Attacker GoldenPilot [03:120:07] against Defender SleeperThree [03:122:05]. Attacker won the battle! Plundered Pig iron: 3.075 Metal: 3.075 Kryptonite: 3.075 Spice: 3.075. Debris field created: Pig iron: 1.200 Metal: 600",
+   "category": "battle_report",
+   "coords": "03:122:05",
+   "folder_type": "fleet",
+   "msg_date_text": "2026-11-17 14:10:44",
+   "msg_uid": "id:9004",
+   "parsed_data": {
+    "attacker": "",
+    "attacker_lost_spice": 0,
+    "battle_id": "",
+    "coords": "03:122:05",
+    "debris": {
+     "metal": 600,
+     "pig_iron": 1200
+    },
+    "debris_spice_eq": 440.0,
+    "defender": "",
+    "defender_lost_spice": 0,
+    "has_debris": true,
+    "loot": {
+     "kryptonite": 3075,
+     "metal": 3075,
+     "pig_iron": 3075,
+     "spice": 3075
+    },
+    "loot_spice_eq": 5842.5,
+    "outcome": "win",
+    "resources_mentioned": {
+     "kryptonite": 3075,
+     "metal": 3075,
+     "pig_iron": 3075,
+     "spice": 3075
+    },
+    "rounds": 0
+   },
+   "raw_html": "<tr id=\"msg_9004\">\n<td><input name=\"check_9004\" type=\"checkbox\" value=\"9004\"/></td>\n<td>2026-11-17 14:10:44</td>\n<td>Fleet Command</td>\n<td>\n        Battle report [03:122:05]\n        <div class=\"si-expanded-body\" data-si-expanded=\"1\">\n          Attacker GoldenPilot [03:120:07] against Defender SleeperThree [03:122:05].\n          Attacker won the battle! Plundered Pig iron: 3.075 Metal: 3.075 Kryptonite: 3.075 Spice: 3.075.\n          Debris field created: Pig iron: 1.200 Metal: 600\n        </div>\n</td>\n</tr>",
+   "sender": "Fleet Command",
+   "server_msg_id": "9004",
+   "spy_report": null,
+   "subject": "Battle report [03:122:05]"
+  }
+ ],
+ "message_folder_links": [],
+ "spy_messages": [
+  {
+   "buildings": {},
+   "defense": {},
+   "dug_in": null,
+   "fleet": {},
+   "is_spacia": false,
+   "msg_date_text": "",
+   "owner": "",
+   "planet_name": "",
+   "raw_text": "Golden Outpost [03:121:04] station One of your fleets (6 Recycler) was re-stationed from Golden Forge [03:120:11] to Golden Outpost [03:121:04]. It delivers 0 Pig iron, 0 Metal, 0 Kryptonite, 0 Spice.",
+   "researches": {},
+   "resources": {
+    "kryptonite": 0,
+    "metal": 0,
+    "pig_iron": 0,
+    "spice": 0
+   },
+   "server_msg_id": "9001",
+   "target_coords": "03:121:04",
+   "uninhabited_fields": null
+  },
+  {
+   "buildings": {},
+   "defense": {},
+   "dug_in": null,
+   "fleet": {},
+   "is_spacia": false,
+   "msg_date_text": "",
+   "owner": "",
+   "planet_name": "",
+   "raw_text": "Golden Forge [03:120:11] transport One of your fleets (4 Small transport) from Golden Prime [03:120:07] reached Golden Forge [03:120:11]. It delivers 20.000 Pig iron, 5.000 Metal, 0 Kryptonite, 0 Spice.",
+   "researches": {},
+   "resources": {
+    "kryptonite": 0,
+    "metal": 0,
+    "pig_iron": 0,
+    "spice": 0
+   },
+   "server_msg_id": "9003",
+   "target_coords": "03:120:11",
+   "uninhabited_fields": null
+  }
+ ],
+ "spy_messages_no_exclusion": [
+  {
+   "buildings": {},
+   "defense": {},
+   "dug_in": null,
+   "fleet": {},
+   "is_spacia": false,
+   "msg_date_text": "",
+   "owner": "",
+   "planet_name": "",
+   "raw_text": "Golden Outpost [03:121:04] station One of your fleets (6 Recycler) was re-stationed from Golden Forge [03:120:11] to Golden Outpost [03:121:04]. It delivers 0 Pig iron, 0 Metal, 0 Kryptonite, 0 Spice.",
+   "researches": {},
+   "resources": {
+    "kryptonite": 0,
+    "metal": 0,
+    "pig_iron": 0,
+    "spice": 0
+   },
+   "server_msg_id": "9001",
+   "target_coords": "03:121:04",
+   "uninhabited_fields": null
+  },
+  {
+   "buildings": {},
+   "defense": {},
+   "dug_in": null,
+   "fleet": {},
+   "is_spacia": false,
+   "msg_date_text": "",
+   "owner": "",
+   "planet_name": "",
+   "raw_text": "Golden Forge [03:120:11] transport One of your fleets (4 Small transport) from Golden Prime [03:120:07] reached Golden Forge [03:120:11]. It delivers 20.000 Pig iron, 5.000 Metal, 0 Kryptonite, 0 Spice.",
+   "researches": {},
+   "resources": {
+    "kryptonite": 0,
+    "metal": 0,
+    "pig_iron": 0,
+    "spice": 0
+   },
+   "server_msg_id": "9003",
+   "target_coords": "03:120:11",
+   "uninhabited_fields": null
+  }
+ ],
+ "unread_banner_count": 0
+}

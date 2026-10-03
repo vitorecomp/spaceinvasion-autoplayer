@@ -1,0 +1,575 @@
+{
+ "http_status": 200,
+ "request": {
+  "json": {
+   "command": "config_optimizer_yearly_projection",
+   "horizon_years": 1
+  },
+  "method": "POST",
+  "path": "/command"
+ },
+ "response": {
+  "command": "config_optimizer_yearly_projection",
+  "ok": true,
+  "projection": {
+   "current_ships_per_week": 0.0,
+   "horizon_years": 1,
+   "target_ship": "Imperial starbase",
+   "target_ship_key": "s16",
+   "target_ships_per_month": 654.74,
+   "target_ships_per_week": 152.77,
+   "total_upgrade_levels": 642,
+   "total_weeks": 52,
+   "weeks": [
+    {
+     "bottleneck": "shipyards",
+     "completion_pct": 0.0,
+     "resource_cap_per_week": 0.11,
+     "ships_per_week": 0.0,
+     "shipyard_cap_per_week": 0.0,
+     "week": 0,
+     "week_in_year": 0,
+     "year": 1
+    },
+    {
+     "bottleneck": "shipyards",
+     "completion_pct": 28.2,
+     "resource_cap_per_week": 1.57,
+     "ships_per_week": 0.0,
+     "shipyard_cap_per_week": 0.0,
+     "week": 1,
+     "week_in_year": 1,
+     "year": 1
+    },
+    {
+     "bottleneck": "shipyards",
+     "completion_pct": 35.2,
+     "resource_cap_per_week": 2.38,
+     "ships_per_week": 0.0,
+     "shipyard_cap_per_week": 0.0,
+     "week": 2,
+     "week_in_year": 2,
+     "year": 1
+    },
+    {
+     "bottleneck": "shipyards",
+     "completion_pct": 43.6,
+     "resource_cap_per_week": 3.49,
+     "ships_per_week": 0.0,
+     "shipyard_cap_per_week": 0.0,
+     "week": 3,
+     "week_in_year": 3,
+     "year": 1
+    },
+    {
+     "bottleneck": "metal",
+     "completion_pct": 51.7,
+     "resource_cap_per_week": 4.39,
+     "ships_per_week": 4.39,
+     "shipyard_cap_per_week": 19.25,
+     "week": 4,
+     "week_in_year": 4,
+     "year": 1
+    },
+    {
+     "bottleneck": "metal",
+     "completion_pct": 57.6,
+     "resource_cap_per_week": 6.05,
+     "ships_per_week": 6.05,
+     "shipyard_cap_per_week": 19.25,
+     "week": 5,
+     "week_in_year": 5,
+     "year": 1
+    },
+    {
+     "bottleneck": "metal",
+     "completion_pct": 63.9,
+     "resource_cap_per_week": 6.59,
+     "ships_per_week": 6.59,
+     "shipyard_cap_per_week": 77.02,
+     "week": 6,
+     "week_in_year": 6,
+     "year": 1
+    },
+    {
+     "bottleneck": "metal",
+     "completion_pct": 66.4,
+     "resource_cap_per_week": 7.13,
+     "ships_per_week": 7.13,
+     "shipyard_cap_per_week": 154.04,
+     "week": 7,
+     "week_in_year": 7,
+     "year": 1
+    },
+    {
+     "bottleneck": "metal",
+     "completion_pct": 68.2,
+     "resource_cap_per_week": 7.22,
+     "ships_per_week": 7.22,
+     "shipyard_cap_per_week": 154.04,
+     "week": 8,
+     "week_in_year": 8,
+     "year": 1
+    },
+    {
+     "bottleneck": "metal",
+     "completion_pct": 70.1,
+     "resource_cap_per_week": 7.92,
+     "ships_per_week": 7.92,
+     "shipyard_cap_per_week": 154.04,
+     "week": 9,
+     "week_in_year": 9,
+     "year": 1
+    },
+    {
+     "bottleneck": "metal",
+     "completion_pct": 70.9,
+     "resource_cap_per_week": 7.96,
+     "ships_per_week": 7.96,
+     "shipyard_cap_per_week": 154.04,
+     "week": 10,
+     "week_in_year": 10,
+     "year": 1
+    },
+    {
+     "bottleneck": "metal",
+     "completion_pct": 72.0,
+     "resource_cap_per_week": 8.84,
+     "ships_per_week": 8.84,
+     "shipyard_cap_per_week": 154.04,
+     "week": 11,
+     "week_in_year": 11,
+     "year": 1
+    },
+    {
+     "bottleneck": "metal",
+     "completion_pct": 72.9,
+     "resource_cap_per_week": 8.84,
+     "ships_per_week": 8.84,
+     "shipyard_cap_per_week": 154.04,
+     "week": 12,
+     "week_in_year": 12,
+     "year": 1
+    },
+    {
+     "bottleneck": "metal",
+     "completion_pct": 73.4,
+     "resource_cap_per_week": 8.81,
+     "ships_per_week": 8.81,
+     "shipyard_cap_per_week": 154.04,
+     "week": 13,
+     "week_in_year": 13,
+     "year": 1
+    },
+    {
+     "bottleneck": "metal",
+     "completion_pct": 73.7,
+     "resource_cap_per_week": 9.69,
+     "ships_per_week": 9.69,
+     "shipyard_cap_per_week": 154.04,
+     "week": 14,
+     "week_in_year": 14,
+     "year": 1
+    },
+    {
+     "bottleneck": "metal",
+     "completion_pct": 74.6,
+     "resource_cap_per_week": 9.88,
+     "ships_per_week": 9.88,
+     "shipyard_cap_per_week": 154.04,
+     "week": 15,
+     "week_in_year": 15,
+     "year": 1
+    },
+    {
+     "bottleneck": "metal",
+     "completion_pct": 74.9,
+     "resource_cap_per_week": 9.86,
+     "ships_per_week": 9.86,
+     "shipyard_cap_per_week": 154.04,
+     "week": 16,
+     "week_in_year": 16,
+     "year": 1
+    },
+    {
+     "bottleneck": "metal",
+     "completion_pct": 75.1,
+     "resource_cap_per_week": 9.86,
+     "ships_per_week": 9.86,
+     "shipyard_cap_per_week": 154.04,
+     "week": 17,
+     "week_in_year": 17,
+     "year": 1
+    },
+    {
+     "bottleneck": "metal",
+     "completion_pct": 75.5,
+     "resource_cap_per_week": 10.86,
+     "ships_per_week": 10.86,
+     "shipyard_cap_per_week": 154.04,
+     "week": 18,
+     "week_in_year": 18,
+     "year": 1
+    },
+    {
+     "bottleneck": "metal",
+     "completion_pct": 75.7,
+     "resource_cap_per_week": 10.86,
+     "ships_per_week": 10.86,
+     "shipyard_cap_per_week": 154.04,
+     "week": 19,
+     "week_in_year": 19,
+     "year": 1
+    },
+    {
+     "bottleneck": "metal",
+     "completion_pct": 76.3,
+     "resource_cap_per_week": 11.1,
+     "ships_per_week": 11.1,
+     "shipyard_cap_per_week": 154.04,
+     "week": 20,
+     "week_in_year": 20,
+     "year": 1
+    },
+    {
+     "bottleneck": "metal",
+     "completion_pct": 76.5,
+     "resource_cap_per_week": 11.08,
+     "ships_per_week": 11.08,
+     "shipyard_cap_per_week": 154.04,
+     "week": 21,
+     "week_in_year": 21,
+     "year": 1
+    },
+    {
+     "bottleneck": "metal",
+     "completion_pct": 76.5,
+     "resource_cap_per_week": 11.08,
+     "ships_per_week": 11.08,
+     "shipyard_cap_per_week": 154.04,
+     "week": 22,
+     "week_in_year": 22,
+     "year": 1
+    },
+    {
+     "bottleneck": "metal",
+     "completion_pct": 76.8,
+     "resource_cap_per_week": 11.1,
+     "ships_per_week": 11.1,
+     "shipyard_cap_per_week": 154.04,
+     "week": 23,
+     "week_in_year": 23,
+     "year": 1
+    },
+    {
+     "bottleneck": "metal",
+     "completion_pct": 76.8,
+     "resource_cap_per_week": 11.1,
+     "ships_per_week": 11.1,
+     "shipyard_cap_per_week": 154.04,
+     "week": 24,
+     "week_in_year": 24,
+     "year": 1
+    },
+    {
+     "bottleneck": "metal",
+     "completion_pct": 77.7,
+     "resource_cap_per_week": 12.24,
+     "ships_per_week": 12.24,
+     "shipyard_cap_per_week": 154.04,
+     "week": 25,
+     "week_in_year": 25,
+     "year": 1
+    },
+    {
+     "bottleneck": "metal",
+     "completion_pct": 78.0,
+     "resource_cap_per_week": 12.24,
+     "ships_per_week": 12.24,
+     "shipyard_cap_per_week": 154.04,
+     "week": 26,
+     "week_in_year": 26,
+     "year": 1
+    },
+    {
+     "bottleneck": "metal",
+     "completion_pct": 78.0,
+     "resource_cap_per_week": 12.24,
+     "ships_per_week": 12.24,
+     "shipyard_cap_per_week": 154.04,
+     "week": 27,
+     "week_in_year": 27,
+     "year": 1
+    },
+    {
+     "bottleneck": "metal",
+     "completion_pct": 78.2,
+     "resource_cap_per_week": 12.55,
+     "ships_per_week": 12.55,
+     "shipyard_cap_per_week": 154.04,
+     "week": 28,
+     "week_in_year": 28,
+     "year": 1
+    },
+    {
+     "bottleneck": "metal",
+     "completion_pct": 78.3,
+     "resource_cap_per_week": 12.53,
+     "ships_per_week": 12.53,
+     "shipyard_cap_per_week": 154.04,
+     "week": 29,
+     "week_in_year": 29,
+     "year": 1
+    },
+    {
+     "bottleneck": "metal",
+     "completion_pct": 78.3,
+     "resource_cap_per_week": 12.53,
+     "ships_per_week": 12.53,
+     "shipyard_cap_per_week": 154.04,
+     "week": 30,
+     "week_in_year": 30,
+     "year": 1
+    },
+    {
+     "bottleneck": "metal",
+     "completion_pct": 78.3,
+     "resource_cap_per_week": 12.53,
+     "ships_per_week": 12.53,
+     "shipyard_cap_per_week": 154.04,
+     "week": 31,
+     "week_in_year": 31,
+     "year": 1
+    },
+    {
+     "bottleneck": "metal",
+     "completion_pct": 79.1,
+     "resource_cap_per_week": 12.55,
+     "ships_per_week": 12.55,
+     "shipyard_cap_per_week": 154.04,
+     "week": 32,
+     "week_in_year": 32,
+     "year": 1
+    },
+    {
+     "bottleneck": "metal",
+     "completion_pct": 79.1,
+     "resource_cap_per_week": 12.55,
+     "ships_per_week": 12.55,
+     "shipyard_cap_per_week": 154.04,
+     "week": 33,
+     "week_in_year": 33,
+     "year": 1
+    },
+    {
+     "bottleneck": "metal",
+     "completion_pct": 79.1,
+     "resource_cap_per_week": 12.55,
+     "ships_per_week": 12.55,
+     "shipyard_cap_per_week": 154.04,
+     "week": 34,
+     "week_in_year": 34,
+     "year": 1
+    },
+    {
+     "bottleneck": "metal",
+     "completion_pct": 79.6,
+     "resource_cap_per_week": 14.25,
+     "ships_per_week": 14.25,
+     "shipyard_cap_per_week": 154.04,
+     "week": 35,
+     "week_in_year": 35,
+     "year": 1
+    },
+    {
+     "bottleneck": "metal",
+     "completion_pct": 80.2,
+     "resource_cap_per_week": 14.24,
+     "ships_per_week": 14.24,
+     "shipyard_cap_per_week": 154.04,
+     "week": 36,
+     "week_in_year": 36,
+     "year": 1
+    },
+    {
+     "bottleneck": "metal",
+     "completion_pct": 80.2,
+     "resource_cap_per_week": 14.24,
+     "ships_per_week": 14.24,
+     "shipyard_cap_per_week": 154.04,
+     "week": 37,
+     "week_in_year": 37,
+     "year": 1
+    },
+    {
+     "bottleneck": "metal",
+     "completion_pct": 80.2,
+     "resource_cap_per_week": 14.24,
+     "ships_per_week": 14.24,
+     "shipyard_cap_per_week": 154.04,
+     "week": 38,
+     "week_in_year": 38,
+     "year": 1
+    },
+    {
+     "bottleneck": "metal",
+     "completion_pct": 80.2,
+     "resource_cap_per_week": 14.24,
+     "ships_per_week": 14.24,
+     "shipyard_cap_per_week": 154.04,
+     "week": 39,
+     "week_in_year": 39,
+     "year": 1
+    },
+    {
+     "bottleneck": "metal",
+     "completion_pct": 80.5,
+     "resource_cap_per_week": 14.25,
+     "ships_per_week": 14.25,
+     "shipyard_cap_per_week": 154.04,
+     "week": 40,
+     "week_in_year": 40,
+     "year": 1
+    },
+    {
+     "bottleneck": "metal",
+     "completion_pct": 80.7,
+     "resource_cap_per_week": 14.23,
+     "ships_per_week": 14.23,
+     "shipyard_cap_per_week": 154.04,
+     "week": 41,
+     "week_in_year": 41,
+     "year": 1
+    },
+    {
+     "bottleneck": "metal",
+     "completion_pct": 80.7,
+     "resource_cap_per_week": 14.23,
+     "ships_per_week": 14.23,
+     "shipyard_cap_per_week": 154.04,
+     "week": 42,
+     "week_in_year": 42,
+     "year": 1
+    },
+    {
+     "bottleneck": "metal",
+     "completion_pct": 80.7,
+     "resource_cap_per_week": 14.23,
+     "ships_per_week": 14.23,
+     "shipyard_cap_per_week": 154.04,
+     "week": 43,
+     "week_in_year": 43,
+     "year": 1
+    },
+    {
+     "bottleneck": "metal",
+     "completion_pct": 80.7,
+     "resource_cap_per_week": 14.23,
+     "ships_per_week": 14.23,
+     "shipyard_cap_per_week": 154.04,
+     "week": 44,
+     "week_in_year": 44,
+     "year": 1
+    },
+    {
+     "bottleneck": "metal",
+     "completion_pct": 80.8,
+     "resource_cap_per_week": 14.25,
+     "ships_per_week": 14.25,
+     "shipyard_cap_per_week": 154.04,
+     "week": 45,
+     "week_in_year": 45,
+     "year": 1
+    },
+    {
+     "bottleneck": "metal",
+     "completion_pct": 81.0,
+     "resource_cap_per_week": 14.25,
+     "ships_per_week": 14.25,
+     "shipyard_cap_per_week": 154.04,
+     "week": 46,
+     "week_in_year": 46,
+     "year": 1
+    },
+    {
+     "bottleneck": "metal",
+     "completion_pct": 81.0,
+     "resource_cap_per_week": 14.25,
+     "ships_per_week": 14.25,
+     "shipyard_cap_per_week": 154.04,
+     "week": 47,
+     "week_in_year": 47,
+     "year": 1
+    },
+    {
+     "bottleneck": "metal",
+     "completion_pct": 81.0,
+     "resource_cap_per_week": 14.25,
+     "ships_per_week": 14.25,
+     "shipyard_cap_per_week": 154.04,
+     "week": 48,
+     "week_in_year": 48,
+     "year": 1
+    },
+    {
+     "bottleneck": "metal",
+     "completion_pct": 81.0,
+     "resource_cap_per_week": 14.25,
+     "ships_per_week": 14.25,
+     "shipyard_cap_per_week": 154.04,
+     "week": 49,
+     "week_in_year": 49,
+     "year": 1
+    },
+    {
+     "bottleneck": "metal",
+     "completion_pct": 81.2,
+     "resource_cap_per_week": 14.25,
+     "ships_per_week": 14.25,
+     "shipyard_cap_per_week": 154.04,
+     "week": 50,
+     "week_in_year": 50,
+     "year": 1
+    },
+    {
+     "bottleneck": "metal",
+     "completion_pct": 81.3,
+     "resource_cap_per_week": 16.26,
+     "ships_per_week": 16.26,
+     "shipyard_cap_per_week": 154.04,
+     "week": 51,
+     "week_in_year": 51,
+     "year": 1
+    },
+    {
+     "bottleneck": "metal",
+     "completion_pct": 81.5,
+     "resource_cap_per_week": 16.22,
+     "ships_per_week": 16.22,
+     "shipyard_cap_per_week": 154.04,
+     "week": 52,
+     "week_in_year": 52,
+     "year": 1
+    }
+   ],
+   "weeks_to_90_pct": null,
+   "weeks_to_full_target": null,
+   "years": [
+    {
+     "avg_ships_per_week": 11.06,
+     "bottleneck": "metal",
+     "completion_pct": 81.5,
+     "cumulative_ships_produced": 575.1,
+     "delta_ships_per_week": 16.22,
+     "end_ships_per_week": 16.22,
+     "label": "Year 1",
+     "peak_ships_per_week": 16.26,
+     "start_ships_per_week": 0.0,
+     "total_ships_produced": 575.1,
+     "year": 1
+    }
+   ],
+   "years_to_full_target": null
+  }
+ }
+}

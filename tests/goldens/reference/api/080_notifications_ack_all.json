@@ -1,0 +1,19 @@
+{
+ "http_status": 200,
+ "request": {
+  "json": {
+   "command": "notifications_ack_all"
+  },
+  "method": "POST",
+  "path": "/command"
+ },
+ "response": {
+  "command": "notifications_ack_all",
+  "notifications": {
+   "items": [],
+   "unread_count": 0
+  },
+  "ok": true,
+  "updated_count": 0
+ }
+}

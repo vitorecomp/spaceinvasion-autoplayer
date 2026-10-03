@@ -1,0 +1,22 @@
+<html>
+<body>
+<form id="fav_form" action="indexInternal.es?action=internalFleet&sid=goldensid0001" method="POST">
+<input type="submit" value="Save Fav"/>
+</form>
+<form id="send_fleet_form" action="indexInternal.es?action=internalSendFleet&step=launch&sid=goldensid0001" method="POST">
+<label>
+<input type="radio" name="speed" value="1"/> 10%</label>
+<label>
+<input type="radio" name="speed" value="10" checked="checked"/> 100%</label>
+<label>
+<input type="radio" id="mission_1" name="mission" value="1"/> Attack</label>
+<label>
+<input type="radio" id="mission_3" name="mission" value="3"/> Transport</label>
+<label>
+<input type="radio" id="mission_5" name="mission" value="5"/> Escape flight</label>
+<label>
+<input type="radio" id="mission_6" name="mission" value="6"/> Spying</label>
+<input type="submit" value="Launch Fleet"/>
+</form>
+</body>
+</html>

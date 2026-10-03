@@ -1,0 +1,17 @@
+{
+ "http_status": 200,
+ "request": {
+  "json": {
+   "command": "queue_clear"
+  },
+  "method": "POST",
+  "path": "/command"
+ },
+ "response": {
+  "cleared_count": 1,
+  "command": "queue_clear",
+  "manual_queue": [],
+  "message": "Cleared 1 pending command(s) from queue.",
+  "ok": true
+ }
+}

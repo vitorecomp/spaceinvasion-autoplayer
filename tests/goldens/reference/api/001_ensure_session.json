@@ -1,0 +1,15 @@
+{
+ "http_status": 200,
+ "request": {
+  "json": {
+   "command": "ensure_session"
+  },
+  "method": "POST",
+  "path": "/command"
+ },
+ "response": {
+  "command": "ensure_session",
+  "message": "Session verified.",
+  "ok": true
+ }
+}

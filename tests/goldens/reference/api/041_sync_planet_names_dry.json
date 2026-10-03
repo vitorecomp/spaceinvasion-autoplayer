@@ -1,0 +1,20 @@
+{
+ "http_status": 200,
+ "request": {
+  "json": {
+   "command": "sync_planet_names",
+   "dry_run": true
+  },
+  "method": "POST",
+  "path": "/command"
+ },
+ "response": {
+  "command": "sync_planet_names",
+  "custom_planet_names": {},
+  "message": "All planet names in Config Optimizer already match in-game names.",
+  "ok": true,
+  "skipped": [],
+  "synced": [],
+  "synced_count": 0
+ }
+}

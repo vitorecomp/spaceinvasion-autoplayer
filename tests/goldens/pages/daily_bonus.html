@@ -1,0 +1,21 @@
+<html><body>
+<script>SI_TPL.headerLoad={planetID:20001};</script>
+<div id="dailyLoginPopup" style="display:block;">
+  <div>Daily login bonus: choose the planet that receives it</div>
+  <select id="tpid" style="font-size:12px;">
+    <option value="20001">03:120:07 Golden Prime</option>
+    <option value="20002" selected="selected">03:120:11 Golden Forge</option>
+    <option value="20003">03:121:04 Golden Outpost</option>
+  </select>
+</div>
+<script>
+  sendDailyLogin=function(){
+    var e=document.getElementById("tpid");
+    var tpid=e[e.selectedIndex].value;
+    location.href='indexInternal.es?action=internalHome&getLoginBonus=1&tpid=' + tpid + '&sid=goldensid0001';
+  };
+</script>
+<div onclick="sendDailyLogin();" style="display:inline-block;cursor:pointer;">
+  <table><tbody><tr><td align="center"><span> collect daily bonus </span></td></tr></tbody></table>
+</div>
+</body></html>

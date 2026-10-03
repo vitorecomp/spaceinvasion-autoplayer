@@ -1,0 +1,50 @@
+{
+ "report": {
+  "buildings": {
+   "b1": 31,
+   "b4": 28
+  },
+  "defense": {},
+  "dug_in": null,
+  "fleet": {},
+  "is_spacia": true,
+  "msg_date_text": "",
+  "owner": "Spacia",
+  "planet_name": "Spacia Planet",
+  "raw_text": "Spaceinvasion { \"info\": { \"si\": \"classic\", \"v\": 1, \"type\": \"spy-report\" }, \"reportID\": 70000123, \"planet\": { \"id\": 30002, \"coords\": \"03:121:02\", \"type\": \"PLANET\", \"name\": \"Spacia Planet\", \"resources\": [ 17020, 65030, 76151, 40501 ], \"energy\": 2630399, \"buildings\": { \"b1\": { \"name\": \"Pig iron mine\", \"level\": 31 }, \"b4\": { \"name\": \"Spice mine\", \"level\": 28 } }, \"ships\": false, \"defense\": false, \"researches\": false } } Pig ironMetalKryptoniteSpiceEnergy17.02065.03076.15140.5012.630.399",
+  "researches": {},
+  "resources": {
+   "kryptonite": 76151,
+   "metal": 65030,
+   "pig_iron": 17020,
+   "spice": 40501
+  },
+  "server_msg_id": "",
+  "target_coords": "03:121:02",
+  "uninhabited_fields": null
+ },
+ "report_with_target_coords": {
+  "buildings": {
+   "b1": 31,
+   "b4": 28
+  },
+  "defense": {},
+  "dug_in": null,
+  "fleet": {},
+  "is_spacia": true,
+  "msg_date_text": "",
+  "owner": "Spacia",
+  "planet_name": "Spacia Planet",
+  "raw_text": "Spaceinvasion { \"info\": { \"si\": \"classic\", \"v\": 1, \"type\": \"spy-report\" }, \"reportID\": 70000123, \"planet\": { \"id\": 30002, \"coords\": \"03:121:02\", \"type\": \"PLANET\", \"name\": \"Spacia Planet\", \"resources\": [ 17020, 65030, 76151, 40501 ], \"energy\": 2630399, \"buildings\": { \"b1\": { \"name\": \"Pig iron mine\", \"level\": 31 }, \"b4\": { \"name\": \"Spice mine\", \"level\": 28 } }, \"ships\": false, \"defense\": false, \"researches\": false } } Pig ironMetalKryptoniteSpiceEnergy17.02065.03076.15140.5012.630.399",
+  "researches": {},
+  "resources": {
+   "kryptonite": 76151,
+   "metal": 65030,
+   "pig_iron": 17020,
+   "spice": 40501
+  },
+  "server_msg_id": "",
+  "target_coords": "03:121:02",
+  "uninhabited_fields": null
+ }
+}

@@ -1,0 +1,409 @@
+{
+ "http_status": 200,
+ "request": {
+  "json": {
+   "command": "ai_planner_get"
+  },
+  "method": "POST",
+  "path": "/command"
+ },
+ "response": {
+  "active_planner_mode": "priority",
+  "active_summary": null,
+  "adaptive_status": {
+   "active_builders": 0,
+   "auto_replan": {
+    "cooldown_seconds": 1800,
+    "drift_ready": true,
+    "last_auto_replan_ts": null,
+    "last_trigger_reason": ""
+   },
+   "colonies": [
+    {
+     "b2_energy_margin_at_100": 687,
+     "b2_level": 9,
+     "b2_pct": 100,
+     "coords": "03:120:07",
+     "energy_net": 687,
+     "idle_with_affordable_target_step": false,
+     "name": "Golden Prime",
+     "next_label": null,
+     "planet_id": 20001,
+     "reason": "All planned steps complete",
+     "state": "idle_complete"
+    },
+    {
+     "b2_energy_margin_at_100": 400,
+     "b2_level": 6,
+     "b2_pct": 100,
+     "coords": "03:120:11",
+     "energy_net": 400,
+     "idle_with_affordable_target_step": false,
+     "name": "Golden Forge",
+     "next_label": null,
+     "planet_id": 20002,
+     "reason": "All planned steps complete",
+     "state": "idle_complete"
+    },
+    {
+     "b2_energy_margin_at_100": 160,
+     "b2_level": 0,
+     "b2_pct": 0,
+     "coords": "03:121:04",
+     "energy_net": 160,
+     "idle_with_affordable_target_step": false,
+     "name": "Outpost Two",
+     "next_label": null,
+     "planet_id": 20003,
+     "reason": "All planned steps complete",
+     "state": "idle_complete"
+    }
+   ],
+   "counts": {
+    "building": 0,
+    "field_conflict": 0,
+    "idle_complete": 3,
+    "ready_not_started": 0,
+    "storage_blocked": 0,
+    "transport_inbound": 0,
+    "waiting_kryptonite": 0,
+    "waiting_metal": 0,
+    "waiting_pig_iron": 0,
+    "waiting_spice": 0
+   },
+   "enabled": false,
+   "idle_with_affordable_count": 0,
+   "ready_not_started_count": 0,
+   "total_colonies": 3,
+   "transport_fleet": {
+    "delivered_cargo_24h": 0,
+    "delivered_cargo_per_hour": 0.0,
+    "delivered_cargo_per_hour_24h": 0.0,
+    "delivered_flights_24h": 0,
+    "delivered_vs_planned_pct": null,
+    "in_flight_cargo": 0,
+    "ordered_cargo_last_hour": 0,
+    "owned_parked_cargo": 210000,
+    "planned_cargo_per_hour_24h": 0.0,
+    "realized_utilization": 0.5,
+    "sizing_utilization": 0.5,
+    "target_fleet_cargo": 0,
+    "total_fleet_cargo": 210000
+   },
+   "window_24h": {
+    "bucket_count": 0,
+    "colony_samples": 0,
+    "idle_with_affordable_share_pct": 0.0,
+    "ready_not_started_share_pct": 0.0,
+    "state_shares_pct": {
+     "building": 0.0,
+     "field_conflict": 0.0,
+     "idle_complete": 0.0,
+     "ready_not_started": 0.0,
+     "storage_blocked": 0.0,
+     "transport_inbound": 0.0,
+     "waiting_kryptonite": 0.0,
+     "waiting_metal": 0.0,
+     "waiting_pig_iron": 0.0,
+     "waiting_spice": 0.0
+    }
+   }
+  },
+  "attack_telemetry": {
+   "attacks_per_slot_per_hour": 0.0,
+   "current_fleet_slots": 9,
+   "estimated_attacks_per_hour": 0.0,
+   "hourly_loot": {
+    "kryptonite": 0.0,
+    "metal": 0.0,
+    "pig_iron": 0.0,
+    "spice": 0.0,
+    "spice_eq": 0.0
+   },
+   "income_per_slot_per_hour": {
+    "kryptonite": 0.0,
+    "metal": 0.0,
+    "pig_iron": 0.0,
+    "spice": 0.0
+   },
+   "losses": 0,
+   "mean_loot": {
+    "kryptonite": 0.0,
+    "metal": 0.0,
+    "pig_iron": 0.0,
+    "spice": 0.0,
+    "spice_eq": 0.0
+   },
+   "median_loot": {
+    "kryptonite": 0.0,
+    "metal": 0.0,
+    "pig_iron": 0.0,
+    "spice": 0.0,
+    "spice_eq": 0.0
+   },
+   "median_round_trip_seconds": 1800.0,
+   "sample_count": 0,
+   "source": "cold_start",
+   "success_rate": 0.0,
+   "wins": 0
+  },
+  "colonies_owned": 3,
+  "command": "ai_planner_get",
+  "custom_planet_names": {
+   "20003": "Outpost Two"
+  },
+  "default_params": {
+   "attacks_per_day": null,
+   "critical_queue_share": 0.9,
+   "fleet_command_center_level": null,
+   "ga_crossover_rate": 0.9,
+   "ga_elite_count": 2,
+   "ga_generations": 6,
+   "ga_mutation_rate": 0.3,
+   "ga_population_size": 10,
+   "ga_random_seed": 20261117,
+   "ga_tournament_size": 3,
+   "pad_generic_colonies": false,
+   "patience": 0.25,
+   "resource_spare_percent": {
+    "kryptonite": 10.0,
+    "metal": 10.0,
+    "pig_iron": 10.0,
+    "spice": 10.0
+   },
+   "revalue_every_steps": 25,
+   "reward_weeks": 26,
+   "scarcity_focus": 1.0,
+   "search_tolerance": 0.01,
+   "speed_weight": 1.5,
+   "transport_dispatch_delay_minutes": 120.0,
+   "weekly_discount": 0.9
+  },
+  "effective_planner_mode": "priority",
+  "fallback_reason": "",
+  "graph": {
+   "edges": [],
+   "lanes": [
+    {
+     "coords": "",
+     "energy": 0,
+     "fields_max": 0,
+     "fields_used": 0,
+     "id": "lane:global",
+     "label": "Empire & Global Research",
+     "node_count": 0,
+     "planet_id": 0,
+     "planet_type": "global",
+     "scope": "global"
+    },
+    {
+     "coords": "03:120:07",
+     "energy": 687,
+     "fields_max": 262,
+     "fields_used": 77,
+     "id": "lane:planet:20001",
+     "label": "Golden Prime [03:120:07]",
+     "node_count": 0,
+     "planet_id": 20001,
+     "planet_type": "normal",
+     "scope": "planet"
+    },
+    {
+     "coords": "03:120:11",
+     "energy": 400,
+     "fields_max": 301,
+     "fields_used": 46,
+     "id": "lane:planet:20002",
+     "label": "Golden Forge [03:120:11]",
+     "node_count": 0,
+     "planet_id": 20002,
+     "planet_type": "normal",
+     "scope": "planet"
+    },
+    {
+     "coords": "03:121:04",
+     "energy": 160,
+     "fields_max": 188,
+     "fields_used": 19,
+     "id": "lane:planet:20003",
+     "label": "Outpost Two [03:121:04]",
+     "node_count": 0,
+     "planet_id": 20003,
+     "planet_type": "normal",
+     "scope": "planet"
+    }
+   ],
+   "nodes": [],
+   "planner_mode": "ai_planner",
+   "summary": {
+    "active_lane_count": 0,
+    "available_weeks": [],
+    "blocked_count": 0,
+    "by_edge_type": {},
+    "by_priority": {
+     "P0": 0,
+     "P1": 0,
+     "P2": 0,
+     "P3": 0
+    },
+    "completed_in_window": 0,
+    "completed_steps": 0,
+    "critical_path_eta": "Ready",
+    "critical_path_seconds": 0.0,
+    "filtered_steps": 0,
+    "lane_count": 4,
+    "max_layer": 0,
+    "planet_filter": null,
+    "queued_count": 0,
+    "ready_count": 0,
+    "remaining_steps": 0,
+    "total_edges": 0,
+    "total_nodes": 0,
+    "total_plan_steps": 0,
+    "waiting_count": 0,
+    "week_filter": null,
+    "window_size": 40,
+    "window_span_eta": "Ready",
+    "window_span_seconds": 0.0
+   }
+  },
+  "has_plan": false,
+  "in_progress": null,
+  "job": {
+   "auto_replan_ai": false,
+   "elapsed_ms": "<volatile>",
+   "error": null,
+   "finished_ts": null,
+   "job_id": null,
+   "kind": "ai_planner",
+   "phase": "idle",
+   "progress": 0.0,
+   "progress_pct": 0.0,
+   "run_id": null,
+   "started_ts": null,
+   "status": "idle",
+   "trigger_source": ""
+  },
+  "live_ai_unlocked": true,
+  "live_attack_telemetry": {
+   "attacks_per_slot_per_hour": 0.0,
+   "current_fleet_slots": 9,
+   "estimated_attacks_per_hour": 0.0,
+   "hourly_loot": {
+    "kryptonite": 0.0,
+    "metal": 0.0,
+    "pig_iron": 0.0,
+    "spice": 0.0,
+    "spice_eq": 0.0
+   },
+   "income_per_slot_per_hour": {
+    "kryptonite": 0.0,
+    "metal": 0.0,
+    "pig_iron": 0.0,
+    "spice": 0.0
+   },
+   "losses": 0,
+   "mean_loot": {
+    "kryptonite": 0.0,
+    "metal": 0.0,
+    "pig_iron": 0.0,
+    "spice": 0.0,
+    "spice_eq": 0.0
+   },
+   "median_loot": {
+    "kryptonite": 0.0,
+    "metal": 0.0,
+    "pig_iron": 0.0,
+    "spice": 0.0,
+    "spice_eq": 0.0
+   },
+   "median_round_trip_seconds": 1800.0,
+   "sample_count": 0,
+   "source": "cold_start",
+   "success_rate": 0.0,
+   "wins": 0
+  },
+  "live_blast_furnace": {
+   "all_enabled": true,
+   "any_enabled": true,
+   "disabled_count": 0,
+   "enabled_count": 2,
+   "mode": "on",
+   "planets": [
+    {
+     "b2_level": 9,
+     "coords": "03:120:07",
+     "initial_enabled": true,
+     "initial_pct": 100,
+     "name": "Golden Prime",
+     "planet_id": 20001,
+     "planet_index": 0,
+     "rate_known": true
+    },
+    {
+     "b2_level": 6,
+     "coords": "03:120:11",
+     "initial_enabled": true,
+     "initial_pct": 100,
+     "name": "Golden Forge",
+     "planet_id": 20002,
+     "planet_index": 1,
+     "rate_known": false
+    },
+    {
+     "b2_level": 0,
+     "coords": "03:121:04",
+     "initial_enabled": false,
+     "initial_pct": 0,
+     "name": "Outpost Two",
+     "planet_id": 20003,
+     "planet_index": 2,
+     "rate_known": false
+    }
+   ],
+   "total_b2_planets": 2
+  },
+  "max_planets": 3,
+  "meta_parameters": {
+   "attacks_per_day": null,
+   "critical_queue_share": 0.9,
+   "fleet_command_center_level": null,
+   "ga_crossover_rate": 0.9,
+   "ga_elite_count": 2,
+   "ga_generations": 6,
+   "ga_mutation_rate": 0.3,
+   "ga_population_size": 10,
+   "ga_random_seed": 20261117,
+   "ga_tournament_size": 3,
+   "pad_generic_colonies": false,
+   "patience": 0.25,
+   "resource_spare_percent": {
+    "kryptonite": 10.0,
+    "metal": 10.0,
+    "pig_iron": 10.0,
+    "spice": 10.0
+   },
+   "revalue_every_steps": 25,
+   "reward_weeks": 26,
+   "scarcity_focus": 1.0,
+   "search_tolerance": 0.01,
+   "speed_weight": 1.5,
+   "transport_dispatch_delay_minutes": 120.0,
+   "weekly_discount": 0.9
+  },
+  "ok": true,
+  "pending_field_conflicts": [],
+  "runs": [],
+  "search": null,
+  "smelting": null,
+  "steps_page": {
+   "items": [],
+   "page": 1,
+   "page_size": 50,
+   "total": 0
+  },
+  "transport_demand": null,
+  "transport_matrix": null,
+  "weekly_breakdown": []
+ }
+}

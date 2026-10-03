@@ -1,0 +1,20 @@
+{
+ "http_status": 200,
+ "request": {
+  "json": {
+   "command": "sync_messages",
+   "dry_run": true
+  },
+  "method": "POST",
+  "path": "/command"
+ },
+ "response": {
+  "archived_messages": 0,
+  "command": "sync_messages",
+  "deleted_in_game": false,
+  "folder_counts": {},
+  "ok": true,
+  "reports": [],
+  "synced_reports": 0
+ }
+}

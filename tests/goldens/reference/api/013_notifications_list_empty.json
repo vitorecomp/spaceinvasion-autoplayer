@@ -1,0 +1,16 @@
+{
+ "http_status": 200,
+ "request": {
+  "json": {
+   "command": "notifications_list"
+  },
+  "method": "POST",
+  "path": "/command"
+ },
+ "response": {
+  "command": "notifications_list",
+  "items": [],
+  "ok": true,
+  "unread_count": 0
+ }
+}

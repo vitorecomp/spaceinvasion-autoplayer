@@ -1,0 +1,38 @@
+{
+ "http_status": 200,
+ "request": {
+  "json": {
+   "command": "queue_cancel",
+   "queue_id": 1
+  },
+  "method": "POST",
+  "path": "/command"
+ },
+ "response": {
+  "canceled": true,
+  "command": "queue_cancel",
+  "manual_queue": [
+   {
+    "canceled_ts": null,
+    "completed_ts": null,
+    "created_ts": 1700000060.0,
+    "id": 2,
+    "kind": "BUILD_SHIP",
+    "note": "golden",
+    "planet_coords": "03:120:07",
+    "planet_id": 20001,
+    "priority": "P1",
+    "result_message": "",
+    "sort_rank": 1000,
+    "status": "pending",
+    "target_coords": "Small transport",
+    "target_id": 1,
+    "target_level": 4,
+    "target_name": "Small transport",
+    "updated_ts": 1700000060.0
+   }
+  ],
+  "message": "Canceled queue item #1.",
+  "ok": true
+ }
+}

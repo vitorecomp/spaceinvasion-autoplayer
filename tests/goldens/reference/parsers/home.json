@@ -1,0 +1,112 @@
+{
+ "daily_login_bonus": {
+  "button_label": "",
+  "consecutive_day": null,
+  "default_tpid": null,
+  "grants_free_transmitter": false,
+  "has_send_daily_login": false,
+  "present": false,
+  "tpid_options": []
+ },
+ "home_metadata": {
+  "active_planet_id": 20001,
+  "fleet_alerts": [
+   {
+    "hostile": true,
+    "mission": "ATTACK",
+    "summary": "Hostile attack fleet approaching [03:120:07]"
+   }
+  ],
+  "newbie_protection": true,
+  "queues": [
+   {
+    "building_id": 5,
+    "cargo": null,
+    "category": "building",
+    "delivered": false,
+    "delivered_cargo": null,
+    "detail": "In construction",
+    "expected_cargo": null,
+    "finish_ts": null,
+    "name": "Fusion plant (Level 14) 00:42:10",
+    "origin_coords": "03:120:07",
+    "queue_slot": 1,
+    "remaining_seconds": null,
+    "remaining_text": "",
+    "target_level": 14
+   },
+   {
+    "building_id": null,
+    "cargo": null,
+    "category": "fleet",
+    "delivered": false,
+    "delivered_cargo": null,
+    "detail": "Returning",
+    "expected_cargo": null,
+    "finish_ts": 1700000095.0,
+    "name": "Recycle \u21a9 [03:120:09] Debris",
+    "origin_coords": "03:120:11",
+    "queue_slot": 1,
+    "remaining_seconds": 95.0,
+    "remaining_text": "00:01:35",
+    "target_level": null
+   },
+   {
+    "building_id": null,
+    "cargo": null,
+    "category": "fleet",
+    "delivered": false,
+    "delivered_cargo": null,
+    "detail": "Outbound",
+    "expected_cargo": null,
+    "finish_ts": 1700000120.0,
+    "name": "Transport \u2192 [03:120:11] Golden Forge",
+    "origin_coords": "03:120:07",
+    "queue_slot": 1,
+    "remaining_seconds": 120.0,
+    "remaining_text": "00:02:00",
+    "target_level": null
+   },
+   {
+    "building_id": null,
+    "cargo": null,
+    "category": "fleet",
+    "delivered": false,
+    "delivered_cargo": null,
+    "detail": "Outbound",
+    "expected_cargo": null,
+    "finish_ts": 1700000240.0,
+    "name": "Station \u2192 [03:121:04] Golden Outpost",
+    "origin_coords": "03:120:07",
+    "queue_slot": 1,
+    "remaining_seconds": 240.0,
+    "remaining_text": "00:04:00",
+    "target_level": null
+   }
+  ],
+  "speedup_factor": 4.0
+ },
+ "ticker_rates": {
+  "kryptonite": 11.02,
+  "metal": 4.5,
+  "pig_iron": 29.13,
+  "spice": 6.75
+ },
+ "tutorial": {
+  "can_complete": true,
+  "reward_text": "5232 Pig iron, 900 Metal, 2758 Kryptonite, 200 Spice",
+  "step": 3,
+  "tasks": [
+   {
+    "building_id": 1,
+    "building_name": "Pig iron mine",
+    "category": "building",
+    "current": 12,
+    "description": "Increase your Pig iron mine level 12 / 12",
+    "research_id": null,
+    "target": 12
+   }
+  ],
+  "total_steps": 11
+ }
+}

@@ -1,0 +1,58 @@
+{
+ "report": {
+  "buildings": {
+   "b1": 14,
+   "b5": 12
+  },
+  "defense": {
+   "d1": 2
+  },
+  "dug_in": true,
+  "fleet": {},
+  "is_spacia": false,
+  "msg_date_text": "",
+  "owner": "DormantOne",
+  "planet_name": "Quiet Rock",
+  "raw_text": "Espionage report on Quiet Rock [03:120:03] Player: DormantOne Pig iron: 64.000 Metal: 31.000 Kryptonite: 22.000 Spice: 9.000 Pig iron mine: 14 Fusion plant: 12 Energy technology: 5 Small transporter: 6 Mortar: 2 Defenses are not dug-in approx. 212 fields",
+  "researches": {
+   "r2": 5
+  },
+  "resources": {
+   "kryptonite": 22000,
+   "metal": 31000,
+   "pig_iron": 64000,
+   "spice": 9000
+  },
+  "server_msg_id": "",
+  "target_coords": "03:120:03",
+  "uninhabited_fields": null
+ },
+ "report_with_target_coords": {
+  "buildings": {
+   "b1": 14,
+   "b5": 12
+  },
+  "defense": {
+   "d1": 2
+  },
+  "dug_in": true,
+  "fleet": {},
+  "is_spacia": false,
+  "msg_date_text": "",
+  "owner": "DormantOne",
+  "planet_name": "Quiet Rock",
+  "raw_text": "Espionage report on Quiet Rock [03:120:03] Player: DormantOne Pig iron: 64.000 Metal: 31.000 Kryptonite: 22.000 Spice: 9.000 Pig iron mine: 14 Fusion plant: 12 Energy technology: 5 Small transporter: 6 Mortar: 2 Defenses are not dug-in approx. 212 fields",
+  "researches": {
+   "r2": 5
+  },
+  "resources": {
+   "kryptonite": 22000,
+   "metal": 31000,
+   "pig_iron": 64000,
+   "spice": 9000
+  },
+  "server_msg_id": "",
+  "target_coords": "03:120:03",
+  "uninhabited_fields": null
+ }
+}

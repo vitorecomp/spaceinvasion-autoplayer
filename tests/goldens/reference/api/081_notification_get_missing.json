@@ -1,0 +1,15 @@
+{
+ "http_status": 400,
+ "request": {
+  "json": {
+   "command": "notification_get",
+   "notification_id": 1
+  },
+  "method": "POST",
+  "path": "/command"
+ },
+ "response": {
+  "error": "Notification NTF-0001 not found.",
+  "ok": false
+ }
+}

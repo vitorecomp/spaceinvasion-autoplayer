@@ -1,0 +1,346 @@
+{
+ "inbox": [
+  {
+   "body_complete": true,
+   "body_text": "Espionage report for 03:120:03 DormantOne Pig iron: 64.000 Metal: 31.000 Kryptonite: 22.000 Spice: 9.000 Mortar: 2 Defenses are not dug-in",
+   "category": "spy_report",
+   "coords": "03:120:03",
+   "folder_type": "inbox",
+   "msg_date_text": "",
+   "msg_uid": "sha:8f952c735f9a4d76ecfcd9ab",
+   "parsed_data": {
+    "buildings": {},
+    "defense": {
+     "d1": 2
+    },
+    "dug_in": true,
+    "fleet": {},
+    "is_spacia": false,
+    "owner": "",
+    "planet_name": "",
+    "researches": {},
+    "resources": {
+     "kryptonite": 22000,
+     "metal": 31000,
+     "pig_iron": 64000,
+     "spice": 9000
+    },
+    "target_coords": "03:120:03",
+    "uninhabited_fields": null
+   },
+   "raw_html": "<div class='msg'>Espionage report for 03:120:03 DormantOne Pig iron: 64.000 Metal: 31.000 Kryptonite: 22.000 Spice: 9.000 Mortar: 2 Defenses are not dug-in</div>",
+   "sender": "",
+   "server_msg_id": "",
+   "spy_report": {
+    "buildings": {},
+    "defense": {
+     "d1": 2
+    },
+    "dug_in": true,
+    "fleet": {},
+    "is_spacia": false,
+    "msg_date_text": "",
+    "owner": "",
+    "planet_name": "",
+    "raw_text": "Espionage report for 03:120:03 DormantOne Pig iron: 64.000 Metal: 31.000 Kryptonite: 22.000 Spice: 9.000 Mortar: 2 Defenses are not dug-in",
+    "researches": {},
+    "resources": {
+     "kryptonite": 22000,
+     "metal": 31000,
+     "pig_iron": 64000,
+     "spice": 9000
+    },
+    "server_msg_id": "",
+    "target_coords": "03:120:03",
+    "uninhabited_fields": null
+   },
+   "subject": ""
+  },
+  {
+   "body_complete": true,
+   "body_text": "Espionage report for 03:120:09 Spacia Pig iron: 120.000 Metal: 80.000 Kryptonite: 40.000 Spice: 15.000 Small fighter: 2 Mortar: 25 Laser cannon battery: 6 Defenses are dug-in",
+   "category": "spy_report",
+   "coords": "03:120:09",
+   "folder_type": "inbox",
+   "msg_date_text": "",
+   "msg_uid": "sha:929bf92212b7e93f1635c650",
+   "parsed_data": {
+    "buildings": {},
+    "defense": {
+     "d1": 25,
+     "d2": 6
+    },
+    "dug_in": true,
+    "fleet": {
+     "s4": 2
+    },
+    "is_spacia": true,
+    "owner": "Spacia",
+    "planet_name": "",
+    "researches": {},
+    "resources": {
+     "kryptonite": 40000,
+     "metal": 80000,
+     "pig_iron": 120000,
+     "spice": 15000
+    },
+    "target_coords": "03:120:09",
+    "uninhabited_fields": null
+   },
+   "raw_html": "<div class='msg'>Espionage report for 03:120:09 Spacia Pig iron: 120.000 Metal: 80.000 Kryptonite: 40.000 Spice: 15.000 Small fighter: 2 Mortar: 25 Laser cannon battery: 6 Defenses are dug-in</div>",
+   "sender": "",
+   "server_msg_id": "",
+   "spy_report": {
+    "buildings": {},
+    "defense": {
+     "d1": 25,
+     "d2": 6
+    },
+    "dug_in": true,
+    "fleet": {
+     "s4": 2
+    },
+    "is_spacia": true,
+    "msg_date_text": "",
+    "owner": "Spacia",
+    "planet_name": "",
+    "raw_text": "Espionage report for 03:120:09 Spacia Pig iron: 120.000 Metal: 80.000 Kryptonite: 40.000 Spice: 15.000 Small fighter: 2 Mortar: 25 Laser cannon battery: 6 Defenses are dug-in",
+    "researches": {},
+    "resources": {
+     "kryptonite": 40000,
+     "metal": 80000,
+     "pig_iron": 120000,
+     "spice": 15000
+    },
+    "server_msg_id": "",
+    "target_coords": "03:120:09",
+    "uninhabited_fields": null
+   },
+   "subject": ""
+  }
+ ],
+ "inbox_fleet_folder": [
+  {
+   "body_complete": true,
+   "body_text": "Espionage report for 03:120:03 DormantOne Pig iron: 64.000 Metal: 31.000 Kryptonite: 22.000 Spice: 9.000 Mortar: 2 Defenses are not dug-in",
+   "category": "spy_report",
+   "coords": "03:120:03",
+   "folder_type": "fleet",
+   "msg_date_text": "",
+   "msg_uid": "sha:0335a2b01f09496af45c7539",
+   "parsed_data": {
+    "buildings": {},
+    "defense": {
+     "d1": 2
+    },
+    "dug_in": true,
+    "fleet": {},
+    "is_spacia": false,
+    "owner": "",
+    "planet_name": "",
+    "researches": {},
+    "resources": {
+     "kryptonite": 22000,
+     "metal": 31000,
+     "pig_iron": 64000,
+     "spice": 9000
+    },
+    "target_coords": "03:120:03",
+    "uninhabited_fields": null
+   },
+   "raw_html": "<div class='msg'>Espionage report for 03:120:03 DormantOne Pig iron: 64.000 Metal: 31.000 Kryptonite: 22.000 Spice: 9.000 Mortar: 2 Defenses are not dug-in</div>",
+   "sender": "",
+   "server_msg_id": "",
+   "spy_report": {
+    "buildings": {},
+    "defense": {
+     "d1": 2
+    },
+    "dug_in": true,
+    "fleet": {},
+    "is_spacia": false,
+    "msg_date_text": "",
+    "owner": "",
+    "planet_name": "",
+    "raw_text": "Espionage report for 03:120:03 DormantOne Pig iron: 64.000 Metal: 31.000 Kryptonite: 22.000 Spice: 9.000 Mortar: 2 Defenses are not dug-in",
+    "researches": {},
+    "resources": {
+     "kryptonite": 22000,
+     "metal": 31000,
+     "pig_iron": 64000,
+     "spice": 9000
+    },
+    "server_msg_id": "",
+    "target_coords": "03:120:03",
+    "uninhabited_fields": null
+   },
+   "subject": ""
+  },
+  {
+   "body_complete": true,
+   "body_text": "Espionage report for 03:120:09 Spacia Pig iron: 120.000 Metal: 80.000 Kryptonite: 40.000 Spice: 15.000 Small fighter: 2 Mortar: 25 Laser cannon battery: 6 Defenses are dug-in",
+   "category": "spy_report",
+   "coords": "03:120:09",
+   "folder_type": "fleet",
+   "msg_date_text": "",
+   "msg_uid": "sha:c6de18ee0bf500a7a5f47721",
+   "parsed_data": {
+    "buildings": {},
+    "defense": {
+     "d1": 25,
+     "d2": 6
+    },
+    "dug_in": true,
+    "fleet": {
+     "s4": 2
+    },
+    "is_spacia": true,
+    "owner": "Spacia",
+    "planet_name": "",
+    "researches": {},
+    "resources": {
+     "kryptonite": 40000,
+     "metal": 80000,
+     "pig_iron": 120000,
+     "spice": 15000
+    },
+    "target_coords": "03:120:09",
+    "uninhabited_fields": null
+   },
+   "raw_html": "<div class='msg'>Espionage report for 03:120:09 Spacia Pig iron: 120.000 Metal: 80.000 Kryptonite: 40.000 Spice: 15.000 Small fighter: 2 Mortar: 25 Laser cannon battery: 6 Defenses are dug-in</div>",
+   "sender": "",
+   "server_msg_id": "",
+   "spy_report": {
+    "buildings": {},
+    "defense": {
+     "d1": 25,
+     "d2": 6
+    },
+    "dug_in": true,
+    "fleet": {
+     "s4": 2
+    },
+    "is_spacia": true,
+    "msg_date_text": "",
+    "owner": "Spacia",
+    "planet_name": "",
+    "raw_text": "Espionage report for 03:120:09 Spacia Pig iron: 120.000 Metal: 80.000 Kryptonite: 40.000 Spice: 15.000 Small fighter: 2 Mortar: 25 Laser cannon battery: 6 Defenses are dug-in",
+    "researches": {},
+    "resources": {
+     "kryptonite": 40000,
+     "metal": 80000,
+     "pig_iron": 120000,
+     "spice": 15000
+    },
+    "server_msg_id": "",
+    "target_coords": "03:120:09",
+    "uninhabited_fields": null
+   },
+   "subject": ""
+  }
+ ],
+ "message_folder_links": [],
+ "spy_messages": [
+  {
+   "buildings": {},
+   "defense": {
+    "d1": 2
+   },
+   "dug_in": true,
+   "fleet": {},
+   "is_spacia": false,
+   "msg_date_text": "",
+   "owner": "",
+   "planet_name": "",
+   "raw_text": "Espionage report for 03:120:03 DormantOne Pig iron: 64.000 Metal: 31.000 Kryptonite: 22.000 Spice: 9.000 Mortar: 2 Defenses are not dug-in",
+   "researches": {},
+   "resources": {
+    "kryptonite": 22000,
+    "metal": 31000,
+    "pig_iron": 64000,
+    "spice": 9000
+   },
+   "server_msg_id": "",
+   "target_coords": "03:120:03",
+   "uninhabited_fields": null
+  },
+  {
+   "buildings": {},
+   "defense": {
+    "d1": 25,
+    "d2": 6
+   },
+   "dug_in": true,
+   "fleet": {
+    "s4": 2
+   },
+   "is_spacia": true,
+   "msg_date_text": "",
+   "owner": "Spacia",
+   "planet_name": "",
+   "raw_text": "Espionage report for 03:120:09 Spacia Pig iron: 120.000 Metal: 80.000 Kryptonite: 40.000 Spice: 15.000 Small fighter: 2 Mortar: 25 Laser cannon battery: 6 Defenses are dug-in",
+   "researches": {},
+   "resources": {
+    "kryptonite": 40000,
+    "metal": 80000,
+    "pig_iron": 120000,
+    "spice": 15000
+   },
+   "server_msg_id": "",
+   "target_coords": "03:120:09",
+   "uninhabited_fields": null
+  }
+ ],
+ "spy_messages_no_exclusion": [
+  {
+   "buildings": {},
+   "defense": {
+    "d1": 2
+   },
+   "dug_in": true,
+   "fleet": {},
+   "is_spacia": false,
+   "msg_date_text": "",
+   "owner": "",
+   "planet_name": "",
+   "raw_text": "Espionage report for 03:120:03 DormantOne Pig iron: 64.000 Metal: 31.000 Kryptonite: 22.000 Spice: 9.000 Mortar: 2 Defenses are not dug-in",
+   "researches": {},
+   "resources": {
+    "kryptonite": 22000,
+    "metal": 31000,
+    "pig_iron": 64000,
+    "spice": 9000
+   },
+   "server_msg_id": "",
+   "target_coords": "03:120:03",
+   "uninhabited_fields": null
+  },
+  {
+   "buildings": {},
+   "defense": {
+    "d1": 25,
+    "d2": 6
+   },
+   "dug_in": true,
+   "fleet": {
+    "s4": 2
+   },
+   "is_spacia": true,
+   "msg_date_text": "",
+   "owner": "Spacia",
+   "planet_name": "",
+   "raw_text": "Espionage report for 03:120:09 Spacia Pig iron: 120.000 Metal: 80.000 Kryptonite: 40.000 Spice: 15.000 Small fighter: 2 Mortar: 25 Laser cannon battery: 6 Defenses are dug-in",
+   "researches": {},
+   "resources": {
+    "kryptonite": 40000,
+    "metal": 80000,
+    "pig_iron": 120000,
+    "spice": 15000
+   },
+   "server_msg_id": "",
+   "target_coords": "03:120:09",
+   "uninhabited_fields": null
+  }
+ ],
+ "unread_banner_count": 0
+}

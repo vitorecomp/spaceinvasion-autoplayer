@@ -1,0 +1,3634 @@
+{
+ "http_status": 200,
+ "request": {
+  "json": {
+   "command": "buildings_eta"
+  },
+  "method": "POST",
+  "path": "/command"
+ },
+ "response": {
+  "buildings_eta": {
+   "buildings": [
+    {
+     "asteroid_ok": false,
+     "bottleneck": null,
+     "build_time_seconds": 362.2,
+     "build_time_text": "6m 02s",
+     "building_id": 1,
+     "can_afford": true,
+     "can_build_live": true,
+     "category": "mines",
+     "cost": {
+      "kryptonite": 3513,
+      "metal": 0,
+      "pig_iron": 10961,
+      "spice": 0
+     },
+     "current_level": 12,
+     "economy_rate_key": "resource1",
+     "economy_rate_pct": 100,
+     "energy_delta": -63,
+     "horizons": [
+      {
+       "bottleneck": null,
+       "build_time_text": "6m 02s",
+       "cost": {
+        "kryptonite": 3513,
+        "metal": 0,
+        "pig_iron": 10961,
+        "spice": 0
+       },
+       "cum_cost": {
+        "kryptonite": 3513,
+        "metal": 0,
+        "pig_iron": 10961,
+        "spice": 0
+       },
+       "level": 13,
+       "reach_eta": "6m",
+       "wait_eta": "Reached"
+      },
+      {
+       "bottleneck": null,
+       "build_time_text": "9m 07s",
+       "cost": {
+        "kryptonite": 5305,
+        "metal": 0,
+        "pig_iron": 16550,
+        "spice": 0
+       },
+       "cum_cost": {
+        "kryptonite": 8818,
+        "metal": 0,
+        "pig_iron": 27511,
+        "spice": 0
+       },
+       "level": 14,
+       "reach_eta": "15m",
+       "wait_eta": "Reached"
+      },
+      {
+       "bottleneck": null,
+       "build_time_text": "13m 46s",
+       "cost": {
+        "kryptonite": 8010,
+        "metal": 0,
+        "pig_iron": 24991,
+        "spice": 0
+       },
+       "cum_cost": {
+        "kryptonite": 16828,
+        "metal": 0,
+        "pig_iron": 52502,
+        "spice": 0
+       },
+       "level": 15,
+       "reach_eta": "29m",
+       "wait_eta": "Reached"
+      },
+      {
+       "bottleneck": null,
+       "build_time_text": "20m 47s",
+       "cost": {
+        "kryptonite": 12095,
+        "metal": 0,
+        "pig_iron": 37736,
+        "spice": 0
+       },
+       "cum_cost": {
+        "kryptonite": 28923,
+        "metal": 0,
+        "pig_iron": 90238,
+        "spice": 0
+       },
+       "level": 16,
+       "reach_eta": "50m",
+       "wait_eta": "Reached"
+      }
+     ],
+     "key": "b1",
+     "missing": {
+      "kryptonite": 0,
+      "metal": 0,
+      "pig_iron": 0,
+      "spice": 0
+     },
+     "missing_total": 0,
+     "name": "Pig iron mine",
+     "next_level": 13,
+     "offer_visible": true,
+     "queued_count": 0,
+     "reach_eta": "6m",
+     "reach_hours": 0.101,
+     "slug": "pig-iron-mine",
+     "unmet_prerequisites": [],
+     "wait_eta": "Reached",
+     "wait_hours": 0.0
+    },
+    {
+     "asteroid_ok": false,
+     "bottleneck": null,
+     "build_time_seconds": 102.4,
+     "build_time_text": "1m 42s",
+     "building_id": 2,
+     "can_afford": true,
+     "can_build_live": true,
+     "category": "mines",
+     "cost": {
+      "kryptonite": 1021,
+      "metal": 0,
+      "pig_iron": 3061,
+      "spice": 0
+     },
+     "current_level": 9,
+     "economy_rate_key": "resource2",
+     "economy_rate_pct": 100,
+     "energy_delta": -17,
+     "horizons": [
+      {
+       "bottleneck": null,
+       "build_time_text": "1m 42s",
+       "cost": {
+        "kryptonite": 1021,
+        "metal": 0,
+        "pig_iron": 3061,
+        "spice": 0
+       },
+       "cum_cost": {
+        "kryptonite": 1021,
+        "metal": 0,
+        "pig_iron": 3061,
+        "spice": 0
+       },
+       "level": 10,
+       "reach_eta": "2m",
+       "wait_eta": "Reached"
+      },
+      {
+       "bottleneck": null,
+       "build_time_text": "2m 35s",
+       "cost": {
+        "kryptonite": 1541,
+        "metal": 0,
+        "pig_iron": 4623,
+        "spice": 0
+       },
+       "cum_cost": {
+        "kryptonite": 2562,
+        "metal": 0,
+        "pig_iron": 7684,
+        "spice": 0
+       },
+       "level": 11,
+       "reach_eta": "4m",
+       "wait_eta": "Reached"
+      },
+      {
+       "bottleneck": null,
+       "build_time_text": "3m 53s",
+       "cost": {
+        "kryptonite": 2327,
+        "metal": 0,
+        "pig_iron": 6980,
+        "spice": 0
+       },
+       "cum_cost": {
+        "kryptonite": 4889,
+        "metal": 0,
+        "pig_iron": 14664,
+        "spice": 0
+       },
+       "level": 12,
+       "reach_eta": "8m",
+       "wait_eta": "Reached"
+      },
+      {
+       "bottleneck": null,
+       "build_time_text": "5m 52s",
+       "cost": {
+        "kryptonite": 3513,
+        "metal": 0,
+        "pig_iron": 10539,
+        "spice": 0
+       },
+       "cum_cost": {
+        "kryptonite": 8402,
+        "metal": 0,
+        "pig_iron": 25203,
+        "spice": 0
+       },
+       "level": 13,
+       "reach_eta": "14m",
+       "wait_eta": "Reached"
+      }
+     ],
+     "key": "b2",
+     "missing": {
+      "kryptonite": 0,
+      "metal": 0,
+      "pig_iron": 0,
+      "spice": 0
+     },
+     "missing_total": 0,
+     "name": "Blast furnace",
+     "next_level": 10,
+     "offer_visible": true,
+     "queued_count": 0,
+     "reach_eta": "2m",
+     "reach_hours": 0.028,
+     "slug": "blast-furnace",
+     "unmet_prerequisites": [],
+     "wait_eta": "Reached",
+     "wait_hours": 0.0
+    },
+    {
+     "asteroid_ok": false,
+     "bottleneck": null,
+     "build_time_seconds": 233.0,
+     "build_time_text": "3m 53s",
+     "building_id": 3,
+     "can_afford": true,
+     "can_build_live": true,
+     "category": "mines",
+     "cost": {
+      "kryptonite": 3390,
+      "metal": 0,
+      "pig_iron": 5547,
+      "spice": 0
+     },
+     "current_level": 10,
+     "economy_rate_key": "resource3",
+     "economy_rate_pct": 100,
+     "energy_delta": -48,
+     "horizons": [
+      {
+       "bottleneck": null,
+       "build_time_text": "3m 53s",
+       "cost": {
+        "kryptonite": 3390,
+        "metal": 0,
+        "pig_iron": 5547,
+        "spice": 0
+       },
+       "cum_cost": {
+        "kryptonite": 3390,
+        "metal": 0,
+        "pig_iron": 5547,
+        "spice": 0
+       },
+       "level": 11,
+       "reach_eta": "4m",
+       "wait_eta": "Reached"
+      },
+      {
+       "bottleneck": null,
+       "build_time_text": "5m 52s",
+       "cost": {
+        "kryptonite": 5119,
+        "metal": 0,
+        "pig_iron": 8376,
+        "spice": 0
+       },
+       "cum_cost": {
+        "kryptonite": 8509,
+        "metal": 0,
+        "pig_iron": 13923,
+        "spice": 0
+       },
+       "level": 12,
+       "reach_eta": "10m",
+       "wait_eta": "Reached"
+      },
+      {
+       "bottleneck": null,
+       "build_time_text": "8m 51s",
+       "cost": {
+        "kryptonite": 7729,
+        "metal": 0,
+        "pig_iron": 12647,
+        "spice": 0
+       },
+       "cum_cost": {
+        "kryptonite": 16238,
+        "metal": 0,
+        "pig_iron": 26570,
+        "spice": 0
+       },
+       "level": 13,
+       "reach_eta": "19m",
+       "wait_eta": "Reached"
+      },
+      {
+       "bottleneck": null,
+       "build_time_text": "13m 22s",
+       "cost": {
+        "kryptonite": 11670,
+        "metal": 0,
+        "pig_iron": 19097,
+        "spice": 0
+       },
+       "cum_cost": {
+        "kryptonite": 27908,
+        "metal": 0,
+        "pig_iron": 45667,
+        "spice": 0
+       },
+       "level": 14,
+       "reach_eta": "32m",
+       "wait_eta": "Reached"
+      }
+     ],
+     "key": "b3",
+     "missing": {
+      "kryptonite": 0,
+      "metal": 0,
+      "pig_iron": 0,
+      "spice": 0
+     },
+     "missing_total": 0,
+     "name": "Kryptonite mine",
+     "next_level": 11,
+     "offer_visible": true,
+     "queued_count": 0,
+     "reach_eta": "4m",
+     "reach_hours": 0.065,
+     "slug": "kryptonite-mine",
+     "unmet_prerequisites": [],
+     "wait_eta": "Reached",
+     "wait_hours": 0.0
+    },
+    {
+     "asteroid_ok": false,
+     "bottleneck": null,
+     "build_time_seconds": 204.4,
+     "build_time_text": "3m 24s",
+     "building_id": 4,
+     "can_afford": true,
+     "can_build_live": true,
+     "category": "mines",
+     "cost": {
+      "kryptonite": 2163,
+      "metal": 5947,
+      "pig_iron": 0,
+      "spice": 0
+     },
+     "current_level": 8,
+     "economy_rate_key": "resource4",
+     "economy_rate_pct": 100,
+     "energy_delta": -58,
+     "horizons": [
+      {
+       "bottleneck": null,
+       "build_time_text": "3m 24s",
+       "cost": {
+        "kryptonite": 2163,
+        "metal": 5947,
+        "pig_iron": 0,
+        "spice": 0
+       },
+       "cum_cost": {
+        "kryptonite": 2163,
+        "metal": 5947,
+        "pig_iron": 0,
+        "spice": 0
+       },
+       "level": 9,
+       "reach_eta": "3m",
+       "wait_eta": "Reached"
+      },
+      {
+       "bottleneck": null,
+       "build_time_text": "5m 09s",
+       "cost": {
+        "kryptonite": 3265,
+        "metal": 8979,
+        "pig_iron": 0,
+        "spice": 0
+       },
+       "cum_cost": {
+        "kryptonite": 5428,
+        "metal": 14926,
+        "pig_iron": 0,
+        "spice": 0
+       },
+       "level": 10,
+       "reach_eta": "9m",
+       "wait_eta": "Reached"
+      },
+      {
+       "bottleneck": null,
+       "build_time_text": "7m 46s",
+       "cost": {
+        "kryptonite": 4931,
+        "metal": 13558,
+        "pig_iron": 0,
+        "spice": 0
+       },
+       "cum_cost": {
+        "kryptonite": 10359,
+        "metal": 28484,
+        "pig_iron": 0,
+        "spice": 0
+       },
+       "level": 11,
+       "reach_eta": "16m",
+       "wait_eta": "Reached"
+      },
+      {
+       "bottleneck": null,
+       "build_time_text": "11m 44s",
+       "cost": {
+        "kryptonite": 7445,
+        "metal": 20473,
+        "pig_iron": 0,
+        "spice": 0
+       },
+       "cum_cost": {
+        "kryptonite": 17804,
+        "metal": 48957,
+        "pig_iron": 0,
+        "spice": 0
+       },
+       "level": 12,
+       "reach_eta": "28m",
+       "wait_eta": "Reached"
+      }
+     ],
+     "key": "b4",
+     "missing": {
+      "kryptonite": 0,
+      "metal": 0,
+      "pig_iron": 0,
+      "spice": 0
+     },
+     "missing_total": 0,
+     "name": "Spice mine",
+     "next_level": 9,
+     "offer_visible": true,
+     "queued_count": 0,
+     "reach_eta": "3m",
+     "reach_hours": 0.057,
+     "slug": "spice-mine",
+     "unmet_prerequisites": [],
+     "wait_eta": "Reached",
+     "wait_hours": 0.0
+    },
+    {
+     "asteroid_ok": false,
+     "bottleneck": null,
+     "build_time_seconds": 622.2,
+     "build_time_text": "10m 22s",
+     "building_id": 5,
+     "can_afford": true,
+     "can_build_live": true,
+     "category": "energy",
+     "cost": {
+      "kryptonite": 7427,
+      "metal": 0,
+      "pig_iron": 16975,
+      "spice": 0
+     },
+     "current_level": 13,
+     "economy_rate_key": null,
+     "economy_rate_pct": null,
+     "energy_delta": 191,
+     "horizons": [
+      {
+       "bottleneck": null,
+       "build_time_text": "10m 22s",
+       "cost": {
+        "kryptonite": 7427,
+        "metal": 0,
+        "pig_iron": 16975,
+        "spice": 0
+       },
+       "cum_cost": {
+        "kryptonite": 7427,
+        "metal": 0,
+        "pig_iron": 16975,
+        "spice": 0
+       },
+       "level": 14,
+       "reach_eta": "10m",
+       "wait_eta": "Reached"
+      },
+      {
+       "bottleneck": null,
+       "build_time_text": "15m 39s",
+       "cost": {
+        "kryptonite": 11214,
+        "metal": 0,
+        "pig_iron": 25632,
+        "spice": 0
+       },
+       "cum_cost": {
+        "kryptonite": 18641,
+        "metal": 0,
+        "pig_iron": 42607,
+        "spice": 0
+       },
+       "level": 15,
+       "reach_eta": "26m",
+       "wait_eta": "Reached"
+      },
+      {
+       "bottleneck": null,
+       "build_time_text": "23m 39s",
+       "cost": {
+        "kryptonite": 16933,
+        "metal": 0,
+        "pig_iron": 38703,
+        "spice": 0
+       },
+       "cum_cost": {
+        "kryptonite": 35574,
+        "metal": 0,
+        "pig_iron": 81310,
+        "spice": 0
+       },
+       "level": 16,
+       "reach_eta": "50m",
+       "wait_eta": "Reached"
+      },
+      {
+       "bottleneck": null,
+       "build_time_text": "35m 42s",
+       "cost": {
+        "kryptonite": 25569,
+        "metal": 0,
+        "pig_iron": 58442,
+        "spice": 0
+       },
+       "cum_cost": {
+        "kryptonite": 61143,
+        "metal": 0,
+        "pig_iron": 139752,
+        "spice": 0
+       },
+       "level": 17,
+       "reach_eta": "1.4h",
+       "wait_eta": "Reached"
+      }
+     ],
+     "key": "b5",
+     "missing": {
+      "kryptonite": 0,
+      "metal": 0,
+      "pig_iron": 0,
+      "spice": 0
+     },
+     "missing_total": 0,
+     "name": "Fusion plant",
+     "next_level": 14,
+     "offer_visible": true,
+     "queued_count": 0,
+     "reach_eta": "10m",
+     "reach_hours": 0.173,
+     "slug": "fusion-plant",
+     "unmet_prerequisites": [],
+     "wait_eta": "Reached",
+     "wait_hours": 0.0
+    },
+    {
+     "asteroid_ok": false,
+     "bottleneck": null,
+     "build_time_seconds": 3.6,
+     "build_time_text": "4s",
+     "building_id": 6,
+     "can_afford": true,
+     "can_build_live": true,
+     "category": "energy",
+     "cost": {
+      "kryptonite": 25,
+      "metal": 120,
+      "pig_iron": 0,
+      "spice": 80
+     },
+     "current_level": 0,
+     "economy_rate_key": null,
+     "economy_rate_pct": null,
+     "energy_delta": 9,
+     "horizons": [
+      {
+       "bottleneck": null,
+       "build_time_text": "4s",
+       "cost": {
+        "kryptonite": 25,
+        "metal": 120,
+        "pig_iron": 0,
+        "spice": 80
+       },
+       "cum_cost": {
+        "kryptonite": 25,
+        "metal": 120,
+        "pig_iron": 0,
+        "spice": 80
+       },
+       "level": 1,
+       "reach_eta": "1m",
+       "wait_eta": "Reached"
+      },
+      {
+       "bottleneck": null,
+       "build_time_text": "5s",
+       "cost": {
+        "kryptonite": 38,
+        "metal": 182,
+        "pig_iron": 0,
+        "spice": 121
+       },
+       "cum_cost": {
+        "kryptonite": 63,
+        "metal": 302,
+        "pig_iron": 0,
+        "spice": 201
+       },
+       "level": 2,
+       "reach_eta": "1m",
+       "wait_eta": "Reached"
+      },
+      {
+       "bottleneck": null,
+       "build_time_text": "8s",
+       "cost": {
+        "kryptonite": 58,
+        "metal": 274,
+        "pig_iron": 0,
+        "spice": 183
+       },
+       "cum_cost": {
+        "kryptonite": 121,
+        "metal": 576,
+        "pig_iron": 0,
+        "spice": 384
+       },
+       "level": 3,
+       "reach_eta": "1m",
+       "wait_eta": "Reached"
+      },
+      {
+       "bottleneck": null,
+       "build_time_text": "12s",
+       "cost": {
+        "kryptonite": 87,
+        "metal": 414,
+        "pig_iron": 0,
+        "spice": 276
+       },
+       "cum_cost": {
+        "kryptonite": 208,
+        "metal": 990,
+        "pig_iron": 0,
+        "spice": 660
+       },
+       "level": 4,
+       "reach_eta": "1m",
+       "wait_eta": "Reached"
+      }
+     ],
+     "key": "b6",
+     "missing": {
+      "kryptonite": 0,
+      "metal": 0,
+      "pig_iron": 0,
+      "spice": 0
+     },
+     "missing_total": 0,
+     "name": "Thermosolar plant",
+     "next_level": 1,
+     "offer_visible": true,
+     "queued_count": 0,
+     "reach_eta": "1m",
+     "reach_hours": 0.001,
+     "slug": "thermosolar-plant",
+     "unmet_prerequisites": [],
+     "wait_eta": "Reached",
+     "wait_hours": 0.0
+    },
+    {
+     "asteroid_ok": true,
+     "bottleneck": "metal",
+     "build_time_seconds": 5925.9,
+     "build_time_text": "1h 38m",
+     "building_id": 7,
+     "can_afford": false,
+     "can_build_live": false,
+     "category": "infra",
+     "cost": {
+      "kryptonite": 76800,
+      "metal": 153600,
+      "pig_iron": 0,
+      "spice": 51200
+     },
+     "current_level": 8,
+     "economy_rate_key": null,
+     "economy_rate_pct": null,
+     "energy_delta": 0,
+     "horizons": [
+      {
+       "bottleneck": "metal",
+       "build_time_text": "1h 38m",
+       "cost": {
+        "kryptonite": 76800,
+        "metal": 153600,
+        "pig_iron": 0,
+        "spice": 51200
+       },
+       "cum_cost": {
+        "kryptonite": 76800,
+        "metal": 153600,
+        "pig_iron": 0,
+        "spice": 51200
+       },
+       "level": 9,
+       "reach_eta": "45.0h",
+       "wait_eta": "43.4h"
+      },
+      {
+       "bottleneck": "metal",
+       "build_time_text": "2h 57m",
+       "cost": {
+        "kryptonite": 153600,
+        "metal": 307200,
+        "pig_iron": 0,
+        "spice": 102400
+       },
+       "cum_cost": {
+        "kryptonite": 230400,
+        "metal": 460800,
+        "pig_iron": 0,
+        "spice": 153600
+       },
+       "level": 10,
+       "reach_eta": "11.6d",
+       "wait_eta": "11.4d"
+      },
+      {
+       "bottleneck": "metal",
+       "build_time_text": "5h 23m",
+       "cost": {
+        "kryptonite": 307200,
+        "metal": 614400,
+        "pig_iron": 0,
+        "spice": 204800
+       },
+       "cum_cost": {
+        "kryptonite": 537600,
+        "metal": 1075200,
+        "pig_iron": 0,
+        "spice": 358400
+       },
+       "level": 11,
+       "reach_eta": "31.1d",
+       "wait_eta": "30.7d"
+      },
+      {
+       "bottleneck": "metal",
+       "build_time_text": "9h 52m",
+       "cost": {
+        "kryptonite": 614400,
+        "metal": 1228800,
+        "pig_iron": 0,
+        "spice": 409600
+       },
+       "cum_cost": {
+        "kryptonite": 1152000,
+        "metal": 2304000,
+        "pig_iron": 0,
+        "spice": 768000
+       },
+       "level": 12,
+       "reach_eta": "70.1d",
+       "wait_eta": "69.3d"
+      }
+     ],
+     "key": "b7",
+     "missing": {
+      "kryptonite": 2800,
+      "metal": 57600,
+      "pig_iron": 0,
+      "spice": 20200
+     },
+     "missing_total": 80600,
+     "name": "Development center",
+     "next_level": 9,
+     "offer_visible": true,
+     "queued_count": 0,
+     "reach_eta": "45.0h",
+     "reach_hours": 45.02,
+     "slug": "development-center",
+     "unmet_prerequisites": [],
+     "wait_eta": "43.4h",
+     "wait_hours": 43.373
+    },
+    {
+     "asteroid_ok": false,
+     "bottleneck": "spice",
+     "build_time_seconds": 2370.4,
+     "build_time_text": "39m 30s",
+     "building_id": 8,
+     "can_afford": false,
+     "can_build_live": false,
+     "category": "infra",
+     "cost": {
+      "kryptonite": 0,
+      "metal": 102400,
+      "pig_iron": 0,
+      "spice": 38400
+     },
+     "current_level": 7,
+     "economy_rate_key": null,
+     "economy_rate_pct": null,
+     "energy_delta": 0,
+     "horizons": [
+      {
+       "bottleneck": "spice",
+       "build_time_text": "39m 30s",
+       "cost": {
+        "kryptonite": 0,
+        "metal": 102400,
+        "pig_iron": 0,
+        "spice": 38400
+       },
+       "cum_cost": {
+        "kryptonite": 0,
+        "metal": 102400,
+        "pig_iron": 0,
+        "spice": 38400
+       },
+       "level": 8,
+       "reach_eta": "13.0h",
+       "wait_eta": "12.3h"
+      },
+      {
+       "bottleneck": "metal",
+       "build_time_text": "1h 19m",
+       "cost": {
+        "kryptonite": 0,
+        "metal": 204800,
+        "pig_iron": 0,
+        "spice": 76800
+       },
+       "cum_cost": {
+        "kryptonite": 0,
+        "metal": 307200,
+        "pig_iron": 0,
+        "spice": 115200
+       },
+       "level": 9,
+       "reach_eta": "6.7d",
+       "wait_eta": "6.6d"
+      },
+      {
+       "bottleneck": "metal",
+       "build_time_text": "2h 38m",
+       "cost": {
+        "kryptonite": 0,
+        "metal": 409600,
+        "pig_iron": 0,
+        "spice": 153600
+       },
+       "cum_cost": {
+        "kryptonite": 0,
+        "metal": 716800,
+        "pig_iron": 0,
+        "spice": 268800
+       },
+       "level": 10,
+       "reach_eta": "19.7d",
+       "wait_eta": "19.5d"
+      },
+      {
+       "bottleneck": "metal",
+       "build_time_text": "5h 16m",
+       "cost": {
+        "kryptonite": 0,
+        "metal": 819200,
+        "pig_iron": 0,
+        "spice": 307200
+       },
+       "cum_cost": {
+        "kryptonite": 0,
+        "metal": 1536000,
+        "pig_iron": 0,
+        "spice": 576000
+       },
+       "level": 11,
+       "reach_eta": "45.6d",
+       "wait_eta": "45.2d"
+      }
+     ],
+     "key": "b8",
+     "missing": {
+      "kryptonite": 0,
+      "metal": 6400,
+      "pig_iron": 0,
+      "spice": 7400
+     },
+     "missing_total": 13800,
+     "name": "Research lab",
+     "next_level": 8,
+     "offer_visible": true,
+     "queued_count": 0,
+     "reach_eta": "13.0h",
+     "reach_hours": 13.0,
+     "slug": "research-lab",
+     "unmet_prerequisites": [],
+     "wait_eta": "12.3h",
+     "wait_hours": 12.342
+    },
+    {
+     "asteroid_ok": true,
+     "bottleneck": null,
+     "build_time_seconds": 370.4,
+     "build_time_text": "6m 10s",
+     "building_id": 9,
+     "can_afford": true,
+     "can_build_live": true,
+     "category": "infra",
+     "cost": {
+      "kryptonite": 0,
+      "metal": 6400,
+      "pig_iron": 9600,
+      "spice": 11200
+     },
+     "current_level": 5,
+     "economy_rate_key": null,
+     "economy_rate_pct": null,
+     "energy_delta": 0,
+     "horizons": [
+      {
+       "bottleneck": null,
+       "build_time_text": "6m 10s",
+       "cost": {
+        "kryptonite": 0,
+        "metal": 6400,
+        "pig_iron": 9600,
+        "spice": 11200
+       },
+       "cum_cost": {
+        "kryptonite": 0,
+        "metal": 6400,
+        "pig_iron": 9600,
+        "spice": 11200
+       },
+       "level": 6,
+       "reach_eta": "6m",
+       "wait_eta": "Reached"
+      },
+      {
+       "bottleneck": "spice",
+       "build_time_text": "12m 21s",
+       "cost": {
+        "kryptonite": 0,
+        "metal": 12800,
+        "pig_iron": 19200,
+        "spice": 22400
+       },
+       "cum_cost": {
+        "kryptonite": 0,
+        "metal": 19200,
+        "pig_iron": 28800,
+        "spice": 33600
+       },
+       "level": 7,
+       "reach_eta": "4.6h",
+       "wait_eta": "4.3h"
+      },
+      {
+       "bottleneck": "spice",
+       "build_time_text": "24m 41s",
+       "cost": {
+        "kryptonite": 0,
+        "metal": 25600,
+        "pig_iron": 38400,
+        "spice": 44800
+       },
+       "cum_cost": {
+        "kryptonite": 0,
+        "metal": 44800,
+        "pig_iron": 67200,
+        "spice": 78400
+       },
+       "level": 8,
+       "reach_eta": "3.3d",
+       "wait_eta": "3.3d"
+      },
+      {
+       "bottleneck": "spice",
+       "build_time_text": "49m 23s",
+       "cost": {
+        "kryptonite": 0,
+        "metal": 51200,
+        "pig_iron": 76800,
+        "spice": 89600
+       },
+       "cum_cost": {
+        "kryptonite": 0,
+        "metal": 96000,
+        "pig_iron": 144000,
+        "spice": 168000
+       },
+       "level": 9,
+       "reach_eta": "9.6d",
+       "wait_eta": "9.5d"
+      }
+     ],
+     "key": "b9",
+     "missing": {
+      "kryptonite": 0,
+      "metal": 0,
+      "pig_iron": 0,
+      "spice": 0
+     },
+     "missing_total": 0,
+     "name": "Weapons factory",
+     "next_level": 6,
+     "offer_visible": true,
+     "queued_count": 0,
+     "reach_eta": "6m",
+     "reach_hours": 0.103,
+     "slug": "weapons-factory",
+     "unmet_prerequisites": [],
+     "wait_eta": "Reached",
+     "wait_hours": 0.0
+    },
+    {
+     "asteroid_ok": true,
+     "bottleneck": null,
+     "build_time_seconds": 987.7,
+     "build_time_text": "16m 28s",
+     "building_id": 10,
+     "can_afford": true,
+     "can_build_live": true,
+     "category": "infra",
+     "cost": {
+      "kryptonite": 8000,
+      "metal": 32000,
+      "pig_iron": 0,
+      "spice": 12800
+     },
+     "current_level": 4,
+     "economy_rate_key": null,
+     "economy_rate_pct": null,
+     "energy_delta": 0,
+     "horizons": [
+      {
+       "bottleneck": null,
+       "build_time_text": "16m 28s",
+       "cost": {
+        "kryptonite": 8000,
+        "metal": 32000,
+        "pig_iron": 0,
+        "spice": 12800
+       },
+       "cum_cost": {
+        "kryptonite": 8000,
+        "metal": 32000,
+        "pig_iron": 0,
+        "spice": 12800
+       },
+       "level": 5,
+       "reach_eta": "16m",
+       "wait_eta": "Reached"
+      },
+      {
+       "bottleneck": "spice",
+       "build_time_text": "32m 55s",
+       "cost": {
+        "kryptonite": 16000,
+        "metal": 64000,
+        "pig_iron": 0,
+        "spice": 25600
+       },
+       "cum_cost": {
+        "kryptonite": 24000,
+        "metal": 96000,
+        "pig_iron": 0,
+        "spice": 38400
+       },
+       "level": 6,
+       "reach_eta": "13.2h",
+       "wait_eta": "12.3h"
+      },
+      {
+       "bottleneck": "spice",
+       "build_time_text": "1h 05m",
+       "cost": {
+        "kryptonite": 32000,
+        "metal": 128000,
+        "pig_iron": 0,
+        "spice": 51200
+       },
+       "cum_cost": {
+        "kryptonite": 56000,
+        "metal": 224000,
+        "pig_iron": 0,
+        "spice": 89600
+       },
+       "level": 7,
+       "reach_eta": "4.2d",
+       "wait_eta": "4.1d"
+      },
+      {
+       "bottleneck": "metal",
+       "build_time_text": "2h 11m",
+       "cost": {
+        "kryptonite": 64000,
+        "metal": 256000,
+        "pig_iron": 0,
+        "spice": 102400
+       },
+       "cum_cost": {
+        "kryptonite": 120000,
+        "metal": 480000,
+        "pig_iron": 0,
+        "spice": 192000
+       },
+       "level": 8,
+       "reach_eta": "12.2d",
+       "wait_eta": "12.0d"
+      }
+     ],
+     "key": "b10",
+     "missing": {
+      "kryptonite": 0,
+      "metal": 0,
+      "pig_iron": 0,
+      "spice": 0
+     },
+     "missing_total": 0,
+     "name": "Fleet base",
+     "next_level": 5,
+     "offer_visible": true,
+     "queued_count": 0,
+     "reach_eta": "16m",
+     "reach_hours": 0.274,
+     "slug": "fleet-base",
+     "unmet_prerequisites": [],
+     "wait_eta": "Reached",
+     "wait_hours": 0.0
+    },
+    {
+     "asteroid_ok": false,
+     "bottleneck": null,
+     "build_time_seconds": 64.8,
+     "build_time_text": "1m 05s",
+     "building_id": 11,
+     "can_afford": true,
+     "can_build_live": true,
+     "category": "storage",
+     "cost": {
+      "kryptonite": 0,
+      "metal": 800,
+      "pig_iron": 2000,
+      "spice": 0
+     },
+     "current_level": 0,
+     "economy_rate_key": null,
+     "economy_rate_pct": null,
+     "energy_delta": 0,
+     "horizons": [
+      {
+       "bottleneck": null,
+       "build_time_text": "1m 05s",
+       "cost": {
+        "kryptonite": 0,
+        "metal": 800,
+        "pig_iron": 2000,
+        "spice": 0
+       },
+       "cum_cost": {
+        "kryptonite": 0,
+        "metal": 800,
+        "pig_iron": 2000,
+        "spice": 0
+       },
+       "level": 1,
+       "reach_eta": "1m",
+       "wait_eta": "Reached"
+      },
+      {
+       "bottleneck": null,
+       "build_time_text": "2m 10s",
+       "cost": {
+        "kryptonite": 0,
+        "metal": 1600,
+        "pig_iron": 4000,
+        "spice": 0
+       },
+       "cum_cost": {
+        "kryptonite": 0,
+        "metal": 2400,
+        "pig_iron": 6000,
+        "spice": 0
+       },
+       "level": 2,
+       "reach_eta": "3m",
+       "wait_eta": "Reached"
+      },
+      {
+       "bottleneck": null,
+       "build_time_text": "4m 19s",
+       "cost": {
+        "kryptonite": 0,
+        "metal": 3200,
+        "pig_iron": 8000,
+        "spice": 0
+       },
+       "cum_cost": {
+        "kryptonite": 0,
+        "metal": 5600,
+        "pig_iron": 14000,
+        "spice": 0
+       },
+       "level": 3,
+       "reach_eta": "8m",
+       "wait_eta": "Reached"
+      },
+      {
+       "bottleneck": null,
+       "build_time_text": "8m 39s",
+       "cost": {
+        "kryptonite": 0,
+        "metal": 6400,
+        "pig_iron": 16000,
+        "spice": 0
+       },
+       "cum_cost": {
+        "kryptonite": 0,
+        "metal": 12000,
+        "pig_iron": 30000,
+        "spice": 0
+       },
+       "level": 4,
+       "reach_eta": "16m",
+       "wait_eta": "Reached"
+      }
+     ],
+     "key": "b11",
+     "missing": {
+      "kryptonite": 0,
+      "metal": 0,
+      "pig_iron": 0,
+      "spice": 0
+     },
+     "missing_total": 0,
+     "name": "Pig iron warehouse",
+     "next_level": 1,
+     "offer_visible": true,
+     "queued_count": 0,
+     "reach_eta": "1m",
+     "reach_hours": 0.018,
+     "slug": "pig-iron-warehouse",
+     "unmet_prerequisites": [],
+     "wait_eta": "Reached",
+     "wait_hours": 0.0
+    },
+    {
+     "asteroid_ok": false,
+     "bottleneck": null,
+     "build_time_seconds": 64.8,
+     "build_time_text": "1m 05s",
+     "building_id": 12,
+     "can_afford": true,
+     "can_build_live": true,
+     "category": "storage",
+     "cost": {
+      "kryptonite": 0,
+      "metal": 800,
+      "pig_iron": 2000,
+      "spice": 0
+     },
+     "current_level": 0,
+     "economy_rate_key": null,
+     "economy_rate_pct": null,
+     "energy_delta": 0,
+     "horizons": [
+      {
+       "bottleneck": null,
+       "build_time_text": "1m 05s",
+       "cost": {
+        "kryptonite": 0,
+        "metal": 800,
+        "pig_iron": 2000,
+        "spice": 0
+       },
+       "cum_cost": {
+        "kryptonite": 0,
+        "metal": 800,
+        "pig_iron": 2000,
+        "spice": 0
+       },
+       "level": 1,
+       "reach_eta": "1m",
+       "wait_eta": "Reached"
+      },
+      {
+       "bottleneck": null,
+       "build_time_text": "2m 10s",
+       "cost": {
+        "kryptonite": 0,
+        "metal": 1600,
+        "pig_iron": 4000,
+        "spice": 0
+       },
+       "cum_cost": {
+        "kryptonite": 0,
+        "metal": 2400,
+        "pig_iron": 6000,
+        "spice": 0
+       },
+       "level": 2,
+       "reach_eta": "3m",
+       "wait_eta": "Reached"
+      },
+      {
+       "bottleneck": null,
+       "build_time_text": "4m 19s",
+       "cost": {
+        "kryptonite": 0,
+        "metal": 3200,
+        "pig_iron": 8000,
+        "spice": 0
+       },
+       "cum_cost": {
+        "kryptonite": 0,
+        "metal": 5600,
+        "pig_iron": 14000,
+        "spice": 0
+       },
+       "level": 3,
+       "reach_eta": "8m",
+       "wait_eta": "Reached"
+      },
+      {
+       "bottleneck": null,
+       "build_time_text": "8m 39s",
+       "cost": {
+        "kryptonite": 0,
+        "metal": 6400,
+        "pig_iron": 16000,
+        "spice": 0
+       },
+       "cum_cost": {
+        "kryptonite": 0,
+        "metal": 12000,
+        "pig_iron": 30000,
+        "spice": 0
+       },
+       "level": 4,
+       "reach_eta": "16m",
+       "wait_eta": "Reached"
+      }
+     ],
+     "key": "b12",
+     "missing": {
+      "kryptonite": 0,
+      "metal": 0,
+      "pig_iron": 0,
+      "spice": 0
+     },
+     "missing_total": 0,
+     "name": "Metal warehouse",
+     "next_level": 1,
+     "offer_visible": true,
+     "queued_count": 0,
+     "reach_eta": "1m",
+     "reach_hours": 0.018,
+     "slug": "metal-warehouse",
+     "unmet_prerequisites": [],
+     "wait_eta": "Reached",
+     "wait_hours": 0.0
+    },
+    {
+     "asteroid_ok": false,
+     "bottleneck": null,
+     "build_time_seconds": 64.8,
+     "build_time_text": "1m 05s",
+     "building_id": 13,
+     "can_afford": true,
+     "can_build_live": true,
+     "category": "storage",
+     "cost": {
+      "kryptonite": 0,
+      "metal": 800,
+      "pig_iron": 2000,
+      "spice": 0
+     },
+     "current_level": 0,
+     "economy_rate_key": null,
+     "economy_rate_pct": null,
+     "energy_delta": 0,
+     "horizons": [
+      {
+       "bottleneck": null,
+       "build_time_text": "1m 05s",
+       "cost": {
+        "kryptonite": 0,
+        "metal": 800,
+        "pig_iron": 2000,
+        "spice": 0
+       },
+       "cum_cost": {
+        "kryptonite": 0,
+        "metal": 800,
+        "pig_iron": 2000,
+        "spice": 0
+       },
+       "level": 1,
+       "reach_eta": "1m",
+       "wait_eta": "Reached"
+      },
+      {
+       "bottleneck": null,
+       "build_time_text": "2m 10s",
+       "cost": {
+        "kryptonite": 0,
+        "metal": 1600,
+        "pig_iron": 4000,
+        "spice": 0
+       },
+       "cum_cost": {
+        "kryptonite": 0,
+        "metal": 2400,
+        "pig_iron": 6000,
+        "spice": 0
+       },
+       "level": 2,
+       "reach_eta": "3m",
+       "wait_eta": "Reached"
+      },
+      {
+       "bottleneck": null,
+       "build_time_text": "4m 19s",
+       "cost": {
+        "kryptonite": 0,
+        "metal": 3200,
+        "pig_iron": 8000,
+        "spice": 0
+       },
+       "cum_cost": {
+        "kryptonite": 0,
+        "metal": 5600,
+        "pig_iron": 14000,
+        "spice": 0
+       },
+       "level": 3,
+       "reach_eta": "8m",
+       "wait_eta": "Reached"
+      },
+      {
+       "bottleneck": null,
+       "build_time_text": "8m 39s",
+       "cost": {
+        "kryptonite": 0,
+        "metal": 6400,
+        "pig_iron": 16000,
+        "spice": 0
+       },
+       "cum_cost": {
+        "kryptonite": 0,
+        "metal": 12000,
+        "pig_iron": 30000,
+        "spice": 0
+       },
+       "level": 4,
+       "reach_eta": "16m",
+       "wait_eta": "Reached"
+      }
+     ],
+     "key": "b13",
+     "missing": {
+      "kryptonite": 0,
+      "metal": 0,
+      "pig_iron": 0,
+      "spice": 0
+     },
+     "missing_total": 0,
+     "name": "Kryptonite warehouse",
+     "next_level": 1,
+     "offer_visible": true,
+     "queued_count": 0,
+     "reach_eta": "1m",
+     "reach_hours": 0.018,
+     "slug": "kryptonite-warehouse",
+     "unmet_prerequisites": [],
+     "wait_eta": "Reached",
+     "wait_hours": 0.0
+    },
+    {
+     "asteroid_ok": false,
+     "bottleneck": null,
+     "build_time_seconds": 64.8,
+     "build_time_text": "1m 05s",
+     "building_id": 14,
+     "can_afford": true,
+     "can_build_live": true,
+     "category": "storage",
+     "cost": {
+      "kryptonite": 0,
+      "metal": 800,
+      "pig_iron": 2000,
+      "spice": 0
+     },
+     "current_level": 0,
+     "economy_rate_key": null,
+     "economy_rate_pct": null,
+     "energy_delta": 0,
+     "horizons": [
+      {
+       "bottleneck": null,
+       "build_time_text": "1m 05s",
+       "cost": {
+        "kryptonite": 0,
+        "metal": 800,
+        "pig_iron": 2000,
+        "spice": 0
+       },
+       "cum_cost": {
+        "kryptonite": 0,
+        "metal": 800,
+        "pig_iron": 2000,
+        "spice": 0
+       },
+       "level": 1,
+       "reach_eta": "1m",
+       "wait_eta": "Reached"
+      },
+      {
+       "bottleneck": null,
+       "build_time_text": "2m 10s",
+       "cost": {
+        "kryptonite": 0,
+        "metal": 1600,
+        "pig_iron": 4000,
+        "spice": 0
+       },
+       "cum_cost": {
+        "kryptonite": 0,
+        "metal": 2400,
+        "pig_iron": 6000,
+        "spice": 0
+       },
+       "level": 2,
+       "reach_eta": "3m",
+       "wait_eta": "Reached"
+      },
+      {
+       "bottleneck": null,
+       "build_time_text": "4m 19s",
+       "cost": {
+        "kryptonite": 0,
+        "metal": 3200,
+        "pig_iron": 8000,
+        "spice": 0
+       },
+       "cum_cost": {
+        "kryptonite": 0,
+        "metal": 5600,
+        "pig_iron": 14000,
+        "spice": 0
+       },
+       "level": 3,
+       "reach_eta": "8m",
+       "wait_eta": "Reached"
+      },
+      {
+       "bottleneck": null,
+       "build_time_text": "8m 39s",
+       "cost": {
+        "kryptonite": 0,
+        "metal": 6400,
+        "pig_iron": 16000,
+        "spice": 0
+       },
+       "cum_cost": {
+        "kryptonite": 0,
+        "metal": 12000,
+        "pig_iron": 30000,
+        "spice": 0
+       },
+       "level": 4,
+       "reach_eta": "16m",
+       "wait_eta": "Reached"
+      }
+     ],
+     "key": "b14",
+     "missing": {
+      "kryptonite": 0,
+      "metal": 0,
+      "pig_iron": 0,
+      "spice": 0
+     },
+     "missing_total": 0,
+     "name": "Spice warehouse",
+     "next_level": 1,
+     "offer_visible": true,
+     "queued_count": 0,
+     "reach_eta": "1m",
+     "reach_hours": 0.018,
+     "slug": "spice-warehouse",
+     "unmet_prerequisites": [],
+     "wait_eta": "Reached",
+     "wait_hours": 0.0
+    },
+    {
+     "asteroid_ok": false,
+     "bottleneck": null,
+     "build_time_seconds": 3086.4,
+     "build_time_text": "51m 26s",
+     "building_id": 15,
+     "can_afford": true,
+     "can_build_live": false,
+     "category": "special",
+     "cost": {
+      "kryptonite": 40000,
+      "metal": 30000,
+      "pig_iron": 50000,
+      "spice": 6000
+     },
+     "current_level": 0,
+     "economy_rate_key": null,
+     "economy_rate_pct": null,
+     "energy_delta": 0,
+     "horizons": [
+      {
+       "bottleneck": null,
+       "build_time_text": "51m 26s",
+       "cost": {
+        "kryptonite": 40000,
+        "metal": 30000,
+        "pig_iron": 50000,
+        "spice": 6000
+       },
+       "cum_cost": {
+        "kryptonite": 40000,
+        "metal": 30000,
+        "pig_iron": 50000,
+        "spice": 6000
+       },
+       "level": 1,
+       "reach_eta": "51m",
+       "wait_eta": "Reached"
+      },
+      {
+       "bottleneck": "kryptonite",
+       "build_time_text": "1h 42m",
+       "cost": {
+        "kryptonite": 80000,
+        "metal": 60000,
+        "pig_iron": 100000,
+        "spice": 12000
+       },
+       "cum_cost": {
+        "kryptonite": 120000,
+        "metal": 90000,
+        "pig_iron": 150000,
+        "spice": 18000
+       },
+       "level": 2,
+       "reach_eta": "24.1h",
+       "wait_eta": "21.5h"
+      },
+      {
+       "bottleneck": "kryptonite",
+       "build_time_text": "3h 25m",
+       "cost": {
+        "kryptonite": 160000,
+        "metal": 120000,
+        "pig_iron": 200000,
+        "spice": 24000
+       },
+       "cum_cost": {
+        "kryptonite": 280000,
+        "metal": 210000,
+        "pig_iron": 350000,
+        "spice": 42000
+       },
+       "level": 3,
+       "reach_eta": "4.3d",
+       "wait_eta": "4.0d"
+      },
+      {
+       "bottleneck": "metal",
+       "build_time_text": "6h 51m",
+       "cost": {
+        "kryptonite": 320000,
+        "metal": 240000,
+        "pig_iron": 400000,
+        "spice": 48000
+       },
+       "cum_cost": {
+        "kryptonite": 600000,
+        "metal": 450000,
+        "pig_iron": 750000,
+        "spice": 90000
+       },
+       "level": 4,
+       "reach_eta": "11.6d",
+       "wait_eta": "11.1d"
+      }
+     ],
+     "key": "b15",
+     "missing": {
+      "kryptonite": 0,
+      "metal": 0,
+      "pig_iron": 0,
+      "spice": 0
+     },
+     "missing_total": 0,
+     "name": "Particle cannon",
+     "next_level": 1,
+     "offer_visible": true,
+     "queued_count": 0,
+     "reach_eta": "51m",
+     "reach_hours": 0.857,
+     "slug": "particle-cannon",
+     "unmet_prerequisites": [
+      "{'category': 'buildings', 'slug': 'weapons-factory', 'name': 'Weapons factory', 'required': 6, 'current': 5}",
+      "{'category': 'research', 'slug': 'particle-analyzer', 'name': 'Particle analyzer', 'required': 5, 'current': 0}"
+     ],
+     "wait_eta": "Reached",
+     "wait_hours": 0.0
+    },
+    {
+     "asteroid_ok": false,
+     "bottleneck": null,
+     "build_time_seconds": 949.1,
+     "build_time_text": "15m 49s",
+     "building_id": 16,
+     "can_afford": true,
+     "can_build_live": false,
+     "category": "special",
+     "cost": {
+      "kryptonite": 12000,
+      "metal": 10000,
+      "pig_iron": 15000,
+      "spice": 5000
+     },
+     "current_level": 0,
+     "economy_rate_key": null,
+     "economy_rate_pct": null,
+     "energy_delta": 0,
+     "horizons": [
+      {
+       "bottleneck": null,
+       "build_time_text": "15m 49s",
+       "cost": {
+        "kryptonite": 12000,
+        "metal": 10000,
+        "pig_iron": 15000,
+        "spice": 5000
+       },
+       "cum_cost": {
+        "kryptonite": 12000,
+        "metal": 10000,
+        "pig_iron": 15000,
+        "spice": 5000
+       },
+       "level": 1,
+       "reach_eta": "16m",
+       "wait_eta": "Reached"
+      },
+      {
+       "bottleneck": null,
+       "build_time_text": "31m 38s",
+       "cost": {
+        "kryptonite": 24000,
+        "metal": 20000,
+        "pig_iron": 30000,
+        "spice": 10000
+       },
+       "cum_cost": {
+        "kryptonite": 36000,
+        "metal": 30000,
+        "pig_iron": 45000,
+        "spice": 15000
+       },
+       "level": 2,
+       "reach_eta": "47m",
+       "wait_eta": "Reached"
+      },
+      {
+       "bottleneck": "spice",
+       "build_time_text": "1h 03m",
+       "cost": {
+        "kryptonite": 48000,
+        "metal": 40000,
+        "pig_iron": 60000,
+        "spice": 20000
+       },
+       "cum_cost": {
+        "kryptonite": 84000,
+        "metal": 70000,
+        "pig_iron": 105000,
+        "spice": 35000
+       },
+       "level": 3,
+       "reach_eta": "8.5h",
+       "wait_eta": "6.7h"
+      },
+      {
+       "bottleneck": "spice",
+       "build_time_text": "2h 06m",
+       "cost": {
+        "kryptonite": 96000,
+        "metal": 80000,
+        "pig_iron": 120000,
+        "spice": 40000
+       },
+       "cum_cost": {
+        "kryptonite": 180000,
+        "metal": 150000,
+        "pig_iron": 225000,
+        "spice": 75000
+       },
+       "level": 4,
+       "reach_eta": "3.2d",
+       "wait_eta": "3.1d"
+      }
+     ],
+     "key": "b16",
+     "missing": {
+      "kryptonite": 0,
+      "metal": 0,
+      "pig_iron": 0,
+      "spice": 0
+     },
+     "missing_total": 0,
+     "name": "Particle shield",
+     "next_level": 1,
+     "offer_visible": true,
+     "queued_count": 0,
+     "reach_eta": "16m",
+     "reach_hours": 0.264,
+     "slug": "particle-shield",
+     "unmet_prerequisites": [
+      "{'category': 'research', 'slug': 'particle-analyzer', 'name': 'Particle analyzer', 'required': 2, 'current': 0}"
+     ],
+     "wait_eta": "Reached",
+     "wait_hours": 0.0
+    },
+    {
+     "asteroid_ok": true,
+     "bottleneck": "kryptonite",
+     "build_time_seconds": 42438.3,
+     "build_time_text": "11h 47m",
+     "building_id": 17,
+     "can_afford": false,
+     "can_build_live": false,
+     "category": "infra",
+     "cost": {
+      "kryptonite": 1000000,
+      "metal": 500000,
+      "pig_iron": 0,
+      "spice": 250000
+     },
+     "current_level": 0,
+     "economy_rate_key": null,
+     "economy_rate_pct": null,
+     "energy_delta": 0,
+     "horizons": [
+      {
+       "bottleneck": "kryptonite",
+       "build_time_text": "11h 47m",
+       "cost": {
+        "kryptonite": 1000000,
+        "metal": 500000,
+        "pig_iron": 0,
+        "spice": 250000
+       },
+       "cum_cost": {
+        "kryptonite": 1000000,
+        "metal": 500000,
+        "pig_iron": 0,
+        "spice": 250000
+       },
+       "level": 1,
+       "reach_eta": "18.5d",
+       "wait_eta": "18.0d"
+      },
+      {
+       "bottleneck": "kryptonite",
+       "build_time_text": "11h 47m",
+       "cost": {
+        "kryptonite": 2000000,
+        "metal": 1000000,
+        "pig_iron": 0,
+        "spice": 500000
+       },
+       "cum_cost": {
+        "kryptonite": 3000000,
+        "metal": 1500000,
+        "pig_iron": 0,
+        "spice": 750000
+       },
+       "level": 2,
+       "reach_eta": "58.0d",
+       "wait_eta": "57.0d"
+      },
+      {
+       "bottleneck": "kryptonite",
+       "build_time_text": "11h 47m",
+       "cost": {
+        "kryptonite": 4000000,
+        "metal": 2000000,
+        "pig_iron": 0,
+        "spice": 1000000
+       },
+       "cum_cost": {
+        "kryptonite": 7000000,
+        "metal": 3500000,
+        "pig_iron": 0,
+        "spice": 1750000
+       },
+       "level": 3,
+       "reach_eta": "136.4d",
+       "wait_eta": "135.0d"
+      },
+      {
+       "bottleneck": "kryptonite",
+       "build_time_text": "11h 47m",
+       "cost": {
+        "kryptonite": 8000000,
+        "metal": 4000000,
+        "pig_iron": 0,
+        "spice": 2000000
+       },
+       "cum_cost": {
+        "kryptonite": 15000000,
+        "metal": 7500000,
+        "pig_iron": 0,
+        "spice": 3750000
+       },
+       "level": 4,
+       "reach_eta": "292.8d",
+       "wait_eta": "290.8d"
+      }
+     ],
+     "key": "b17",
+     "missing": {
+      "kryptonite": 926000,
+      "metal": 404000,
+      "pig_iron": 0,
+      "spice": 219000
+     },
+     "missing_total": 1549000,
+     "name": "Microsystem accelerator",
+     "next_level": 1,
+     "offer_visible": true,
+     "queued_count": 0,
+     "reach_eta": "18.5d",
+     "reach_hours": 444.822,
+     "slug": "microsystem-accelerator",
+     "unmet_prerequisites": [
+      "{'category': 'research', 'slug': 'energy-technology', 'name': 'Energy technology', 'required': 10, 'current': 5}",
+      "{'category': 'buildings', 'slug': 'development-center', 'name': 'Development center', 'required': 12, 'current': 8}"
+     ],
+     "wait_eta": "18.0d",
+     "wait_hours": 433.034
+    },
+    {
+     "asteroid_ok": false,
+     "bottleneck": "kryptonite",
+     "build_time_seconds": 10185.2,
+     "build_time_text": "2h 49m",
+     "building_id": 18,
+     "can_afford": false,
+     "can_build_live": false,
+     "category": "special",
+     "cost": {
+      "kryptonite": 150000,
+      "metal": 140000,
+      "pig_iron": 100000,
+      "spice": 50000
+     },
+     "current_level": 0,
+     "economy_rate_key": null,
+     "economy_rate_pct": null,
+     "energy_delta": 0,
+     "horizons": [
+      {
+       "bottleneck": "kryptonite",
+       "build_time_text": "2h 49m",
+       "cost": {
+        "kryptonite": 150000,
+        "metal": 140000,
+        "pig_iron": 100000,
+        "spice": 50000
+       },
+       "cum_cost": {
+        "kryptonite": 150000,
+        "metal": 140000,
+        "pig_iron": 100000,
+        "spice": 50000
+       },
+       "level": 1,
+       "reach_eta": "38.4h",
+       "wait_eta": "35.5h"
+      },
+      {
+       "bottleneck": "metal",
+       "build_time_text": "5h 39m",
+       "cost": {
+        "kryptonite": 300000,
+        "metal": 280000,
+        "pig_iron": 200000,
+        "spice": 100000
+       },
+       "cum_cost": {
+        "kryptonite": 450000,
+        "metal": 420000,
+        "pig_iron": 300000,
+        "spice": 150000
+       },
+       "level": 2,
+       "reach_eta": "10.5d",
+       "wait_eta": "10.2d"
+      },
+      {
+       "bottleneck": "metal",
+       "build_time_text": "11h 19m",
+       "cost": {
+        "kryptonite": 600000,
+        "metal": 560000,
+        "pig_iron": 400000,
+        "spice": 200000
+       },
+       "cum_cost": {
+        "kryptonite": 1050000,
+        "metal": 980000,
+        "pig_iron": 700000,
+        "spice": 350000
+       },
+       "level": 3,
+       "reach_eta": "28.6d",
+       "wait_eta": "27.7d"
+      },
+      {
+       "bottleneck": "metal",
+       "build_time_text": "22h 38m",
+       "cost": {
+        "kryptonite": 1200000,
+        "metal": 1120000,
+        "pig_iron": 800000,
+        "spice": 400000
+       },
+       "cum_cost": {
+        "kryptonite": 2250000,
+        "metal": 2100000,
+        "pig_iron": 1500000,
+        "spice": 750000
+       },
+       "level": 4,
+       "reach_eta": "64.6d",
+       "wait_eta": "62.9d"
+      }
+     ],
+     "key": "b18",
+     "missing": {
+      "kryptonite": 76000,
+      "metal": 44000,
+      "pig_iron": 0,
+      "spice": 19000
+     },
+     "missing_total": 139000,
+     "name": "Teleporter",
+     "next_level": 1,
+     "offer_visible": true,
+     "queued_count": 0,
+     "reach_eta": "38.4h",
+     "reach_hours": 38.37,
+     "slug": "teleporter",
+     "unmet_prerequisites": [
+      "{'category': 'research', 'slug': 'teleportation', 'name': 'Teleportation', 'required': 6, 'current': 0}",
+      "{'category': 'buildings', 'slug': 'microsystem-accelerator', 'name': 'Microsystem accelerator', 'required': 2, 'current': 0}"
+     ],
+     "wait_eta": "35.5h",
+     "wait_hours": 35.541
+    },
+    {
+     "asteroid_ok": true,
+     "bottleneck": null,
+     "build_time_seconds": 1774.7,
+     "build_time_text": "29m 35s",
+     "building_id": 19,
+     "can_afford": true,
+     "can_build_live": true,
+     "category": "special",
+     "cost": {
+      "kryptonite": 20000,
+      "metal": 40000,
+      "pig_iron": 10000,
+      "spice": 8000
+     },
+     "current_level": 0,
+     "economy_rate_key": null,
+     "economy_rate_pct": null,
+     "energy_delta": 0,
+     "horizons": [
+      {
+       "bottleneck": null,
+       "build_time_text": "29m 35s",
+       "cost": {
+        "kryptonite": 20000,
+        "metal": 40000,
+        "pig_iron": 10000,
+        "spice": 8000
+       },
+       "cum_cost": {
+        "kryptonite": 20000,
+        "metal": 40000,
+        "pig_iron": 10000,
+        "spice": 8000
+       },
+       "level": 1,
+       "reach_eta": "30m",
+       "wait_eta": "Reached"
+      },
+      {
+       "bottleneck": "metal",
+       "build_time_text": "59m 09s",
+       "cost": {
+        "kryptonite": 40000,
+        "metal": 80000,
+        "pig_iron": 20000,
+        "spice": 16000
+       },
+       "cum_cost": {
+        "kryptonite": 60000,
+        "metal": 120000,
+        "pig_iron": 30000,
+        "spice": 24000
+       },
+       "level": 2,
+       "reach_eta": "19.6h",
+       "wait_eta": "18.1h"
+      },
+      {
+       "bottleneck": "metal",
+       "build_time_text": "1h 58m",
+       "cost": {
+        "kryptonite": 80000,
+        "metal": 160000,
+        "pig_iron": 40000,
+        "spice": 32000
+       },
+       "cum_cost": {
+        "kryptonite": 140000,
+        "metal": 280000,
+        "pig_iron": 70000,
+        "spice": 56000
+       },
+       "level": 3,
+       "reach_eta": "5.9d",
+       "wait_eta": "5.8d"
+      },
+      {
+       "bottleneck": "metal",
+       "build_time_text": "3h 56m",
+       "cost": {
+        "kryptonite": 160000,
+        "metal": 320000,
+        "pig_iron": 80000,
+        "spice": 64000
+       },
+       "cum_cost": {
+        "kryptonite": 300000,
+        "metal": 600000,
+        "pig_iron": 150000,
+        "spice": 120000
+       },
+       "level": 4,
+       "reach_eta": "16.1d",
+       "wait_eta": "15.8d"
+      }
+     ],
+     "key": "b19",
+     "missing": {
+      "kryptonite": 0,
+      "metal": 0,
+      "pig_iron": 0,
+      "spice": 0
+     },
+     "missing_total": 0,
+     "name": "Galaxy scanner",
+     "next_level": 1,
+     "offer_visible": true,
+     "queued_count": 0,
+     "reach_eta": "30m",
+     "reach_hours": 0.493,
+     "slug": "galaxy-scanner",
+     "unmet_prerequisites": [],
+     "wait_eta": "Reached",
+     "wait_hours": 0.0
+    },
+    {
+     "asteroid_ok": false,
+     "bottleneck": "spice",
+     "build_time_seconds": 29321.0,
+     "build_time_text": "8h 08m",
+     "building_id": 20,
+     "can_afford": false,
+     "can_build_live": false,
+     "category": "special",
+     "cost": {
+      "kryptonite": 200000,
+      "metal": 1000000,
+      "pig_iron": 0,
+      "spice": 500000
+     },
+     "current_level": 0,
+     "economy_rate_key": null,
+     "economy_rate_pct": null,
+     "energy_delta": 0,
+     "horizons": [
+      {
+       "bottleneck": "spice",
+       "build_time_text": "8h 08m",
+       "cost": {
+        "kryptonite": 200000,
+        "metal": 1000000,
+        "pig_iron": 0,
+        "spice": 500000
+       },
+       "cum_cost": {
+        "kryptonite": 200000,
+        "metal": 1000000,
+        "pig_iron": 0,
+        "spice": 500000
+       },
+       "level": 1,
+       "reach_eta": "32.9d",
+       "wait_eta": "32.6d"
+      },
+      {
+       "bottleneck": "spice",
+       "build_time_text": "8h 47m",
+       "cost": {
+        "kryptonite": 216000,
+        "metal": 1080000,
+        "pig_iron": 0,
+        "spice": 540000
+       },
+       "cum_cost": {
+        "kryptonite": 416000,
+        "metal": 2080000,
+        "pig_iron": 0,
+        "spice": 1040000
+       },
+       "level": 2,
+       "reach_eta": "70.8d",
+       "wait_eta": "70.1d"
+      },
+      {
+       "bottleneck": "spice",
+       "build_time_text": "9h 30m",
+       "cost": {
+        "kryptonite": 233281,
+        "metal": 1166400,
+        "pig_iron": 0,
+        "spice": 583200
+       },
+       "cum_cost": {
+        "kryptonite": 649281,
+        "metal": 3246400,
+        "pig_iron": 0,
+        "spice": 1623200
+       },
+       "level": 3,
+       "reach_eta": "111.7d",
+       "wait_eta": "110.6d"
+      },
+      {
+       "bottleneck": "spice",
+       "build_time_text": "10h 15m",
+       "cost": {
+        "kryptonite": 251943,
+        "metal": 1259713,
+        "pig_iron": 0,
+        "spice": 629857
+       },
+       "cum_cost": {
+        "kryptonite": 901224,
+        "metal": 4506113,
+        "pig_iron": 0,
+        "spice": 2253057
+       },
+       "level": 4,
+       "reach_eta": "155.9d",
+       "wait_eta": "154.4d"
+      }
+     ],
+     "key": "b20",
+     "missing": {
+      "kryptonite": 126000,
+      "metal": 904000,
+      "pig_iron": 0,
+      "spice": 469000
+     },
+     "missing_total": 1499000,
+     "name": "Tunnel system",
+     "next_level": 1,
+     "offer_visible": true,
+     "queued_count": 0,
+     "reach_eta": "32.9d",
+     "reach_hours": 790.333,
+     "slug": "tunnel-system",
+     "unmet_prerequisites": [],
+     "wait_eta": "32.6d",
+     "wait_hours": 782.188
+    },
+    {
+     "asteroid_ok": false,
+     "bottleneck": "metal",
+     "build_time_seconds": 46296.3,
+     "build_time_text": "12h 51m",
+     "building_id": 21,
+     "can_afford": false,
+     "can_build_live": false,
+     "category": "special",
+     "cost": {
+      "kryptonite": 0,
+      "metal": 2000000,
+      "pig_iron": 0,
+      "spice": 25000
+     },
+     "current_level": 0,
+     "economy_rate_key": null,
+     "economy_rate_pct": null,
+     "energy_delta": 0,
+     "horizons": [
+      {
+       "bottleneck": "metal",
+       "build_time_text": "12h 51m",
+       "cost": {
+        "kryptonite": 0,
+        "metal": 2000000,
+        "pig_iron": 0,
+        "spice": 25000
+       },
+       "cum_cost": {
+        "kryptonite": 0,
+        "metal": 2000000,
+        "pig_iron": 0,
+        "spice": 25000
+       },
+       "level": 1,
+       "reach_eta": "60.3d",
+       "wait_eta": "59.7d"
+      },
+      {
+       "bottleneck": "metal",
+       "build_time_text": "18h 31m",
+       "cost": {
+        "kryptonite": 0,
+        "metal": 2880000,
+        "pig_iron": 0,
+        "spice": 36000
+       },
+       "cum_cost": {
+        "kryptonite": 0,
+        "metal": 4880000,
+        "pig_iron": 0,
+        "spice": 61000
+       },
+       "level": 2,
+       "reach_eta": "151.4d",
+       "wait_eta": "150.1d"
+      },
+      {
+       "bottleneck": "metal",
+       "build_time_text": "1d 2h",
+       "cost": {
+        "kryptonite": 0,
+        "metal": 4147200,
+        "pig_iron": 0,
+        "spice": 51840
+       },
+       "cum_cost": {
+        "kryptonite": 0,
+        "metal": 9027200,
+        "pig_iron": 0,
+        "spice": 112840
+       },
+       "level": 3,
+       "reach_eta": "282.6d",
+       "wait_eta": "280.2d"
+      },
+      {
+       "bottleneck": "metal",
+       "build_time_text": "1d 14h",
+       "cost": {
+        "kryptonite": 0,
+        "metal": 5971968,
+        "pig_iron": 0,
+        "spice": 74650
+       },
+       "cum_cost": {
+        "kryptonite": 0,
+        "metal": 14999168,
+        "pig_iron": 0,
+        "spice": 187490
+       },
+       "level": 4,
+       "reach_eta": "471.6d",
+       "wait_eta": "467.6d"
+      }
+     ],
+     "key": "b21",
+     "missing": {
+      "kryptonite": 0,
+      "metal": 1904000,
+      "pig_iron": 0,
+      "spice": 0
+     },
+     "missing_total": 1904000,
+     "name": "Quantum Array",
+     "next_level": 1,
+     "offer_visible": true,
+     "queued_count": 0,
+     "reach_eta": "60.3d",
+     "reach_hours": 1446.595,
+     "slug": "quantum-array",
+     "unmet_prerequisites": [
+      "{'category': 'buildings', 'slug': 'microsystem-accelerator', 'name': 'Microsystem accelerator', 'required': 3, 'current': 0}"
+     ],
+     "wait_eta": "59.7d",
+     "wait_hours": 1433.735
+    }
+   ],
+   "config_optimizer_goals": null,
+   "planet": {
+    "building_time_divisor": 36.0,
+    "coords": "03:120:07",
+    "dev_center_level": 8,
+    "fields_max": 262,
+    "fields_used": 76,
+    "microsystem_level": 0,
+    "name": "Golden Prime",
+    "planet_id": 20001,
+    "planet_type": "normal",
+    "research_lab_level": 7,
+    "research_time_divisor": 32.0,
+    "resources": {
+     "kryptonite": 74000,
+     "metal": 96000,
+     "pig_iron": 182000,
+     "spice": 31000
+    },
+    "temperature": 24
+   },
+   "planet_economy": {
+    "blast_furnace_pct": 100,
+    "blast_furnace_pig_used_per_hr": 2656.0,
+    "kryptonite_per_hr": 2138.4,
+    "metal_per_hr": 1328.0,
+    "pig_iron_gross_per_hr": 6652.8,
+    "pig_iron_per_hr": 3996.8,
+    "planet_coords": "03:120:07",
+    "planet_id": 20001,
+    "prod_ratio": 1.0,
+    "rates_pct": {
+     "resource1": 100,
+     "resource2": 100,
+     "resource3": 100,
+     "resource4": 100
+    },
+    "speedup_factor": 4.0,
+    "spice_per_hr": 599.6
+   },
+   "researches": [
+    {
+     "active": false,
+     "bottleneck": null,
+     "build_time_seconds": 1041.7,
+     "build_time_text": "17m 22s",
+     "can_afford": true,
+     "can_research_live": false,
+     "cost": {
+      "kryptonite": 8000,
+      "metal": 0,
+      "pig_iron": 16000,
+      "spice": 0
+     },
+     "current_level": 4,
+     "horizons": [
+      {
+       "bottleneck": null,
+       "build_time_text": "17m 22s",
+       "cost": {
+        "kryptonite": 8000,
+        "metal": 0,
+        "pig_iron": 16000,
+        "spice": 0
+       },
+       "level": 5,
+       "reach_eta": "17m",
+       "wait_eta": "Reached"
+      },
+      {
+       "bottleneck": null,
+       "build_time_text": "34m 43s",
+       "cost": {
+        "kryptonite": 16000,
+        "metal": 0,
+        "pig_iron": 32000,
+        "spice": 0
+       },
+       "level": 6,
+       "reach_eta": "52m",
+       "wait_eta": "Reached"
+      },
+      {
+       "bottleneck": null,
+       "build_time_text": "1h 09m",
+       "cost": {
+        "kryptonite": 32000,
+        "metal": 0,
+        "pig_iron": 64000,
+        "spice": 0
+       },
+       "level": 7,
+       "reach_eta": "2.0h",
+       "wait_eta": "Reached"
+      }
+     ],
+     "key": "r1",
+     "missing": {
+      "kryptonite": 0,
+      "metal": 0,
+      "pig_iron": 0,
+      "spice": 0
+     },
+     "missing_total": 0,
+     "name": "Mining technology",
+     "next_level": 5,
+     "offer_visible": false,
+     "reach_eta": "17m",
+     "reach_hours": 0.289,
+     "research_id": 1,
+     "slug": "mining-technology",
+     "unmet_prerequisites": [],
+     "wait_eta": "Reached",
+     "wait_hours": 0.0
+    },
+    {
+     "active": false,
+     "bottleneck": null,
+     "build_time_seconds": 1833.3,
+     "build_time_text": "30m 33s",
+     "can_afford": true,
+     "can_research_live": false,
+     "cost": {
+      "kryptonite": 25600,
+      "metal": 12800,
+      "pig_iron": 0,
+      "spice": 12800
+     },
+     "current_level": 5,
+     "horizons": [
+      {
+       "bottleneck": null,
+       "build_time_text": "30m 33s",
+       "cost": {
+        "kryptonite": 25600,
+        "metal": 12800,
+        "pig_iron": 0,
+        "spice": 12800
+       },
+       "level": 6,
+       "reach_eta": "31m",
+       "wait_eta": "Reached"
+      },
+      {
+       "bottleneck": "spice",
+       "build_time_text": "1h 01m",
+       "cost": {
+        "kryptonite": 51200,
+        "metal": 25600,
+        "pig_iron": 0,
+        "spice": 25600
+       },
+       "level": 7,
+       "reach_eta": "13.9h",
+       "wait_eta": "12.3h"
+      },
+      {
+       "bottleneck": "spice",
+       "build_time_text": "2h 02m",
+       "cost": {
+        "kryptonite": 102400,
+        "metal": 51200,
+        "pig_iron": 0,
+        "spice": 51200
+       },
+       "level": 8,
+       "reach_eta": "4.2d",
+       "wait_eta": "4.1d"
+      }
+     ],
+     "key": "r2",
+     "missing": {
+      "kryptonite": 0,
+      "metal": 0,
+      "pig_iron": 0,
+      "spice": 0
+     },
+     "missing_total": 0,
+     "name": "Energy technology",
+     "next_level": 6,
+     "offer_visible": false,
+     "reach_eta": "31m",
+     "reach_hours": 0.509,
+     "research_id": 2,
+     "slug": "energy-technology",
+     "unmet_prerequisites": [],
+     "wait_eta": "Reached",
+     "wait_hours": 0.0
+    },
+    {
+     "active": false,
+     "bottleneck": null,
+     "build_time_seconds": 250.0,
+     "build_time_text": "4m 10s",
+     "can_afford": true,
+     "can_research_live": false,
+     "cost": {
+      "kryptonite": 0,
+      "metal": 6400,
+      "pig_iron": 0,
+      "spice": 2000
+     },
+     "current_level": 3,
+     "horizons": [
+      {
+       "bottleneck": null,
+       "build_time_text": "4m 10s",
+       "cost": {
+        "kryptonite": 0,
+        "metal": 6400,
+        "pig_iron": 0,
+        "spice": 2000
+       },
+       "level": 4,
+       "reach_eta": "4m",
+       "wait_eta": "Reached"
+      },
+      {
+       "bottleneck": null,
+       "build_time_text": "8m 20s",
+       "cost": {
+        "kryptonite": 0,
+        "metal": 12800,
+        "pig_iron": 0,
+        "spice": 4000
+       },
+       "level": 5,
+       "reach_eta": "12m",
+       "wait_eta": "Reached"
+      },
+      {
+       "bottleneck": null,
+       "build_time_text": "16m 40s",
+       "cost": {
+        "kryptonite": 0,
+        "metal": 25600,
+        "pig_iron": 0,
+        "spice": 8000
+       },
+       "level": 6,
+       "reach_eta": "29m",
+       "wait_eta": "Reached"
+      }
+     ],
+     "key": "r3",
+     "missing": {
+      "kryptonite": 0,
+      "metal": 0,
+      "pig_iron": 0,
+      "spice": 0
+     },
+     "missing_total": 0,
+     "name": "Engine research",
+     "next_level": 4,
+     "offer_visible": false,
+     "reach_eta": "4m",
+     "reach_hours": 0.069,
+     "research_id": 3,
+     "slug": "engine-research",
+     "unmet_prerequisites": [],
+     "wait_eta": "Reached",
+     "wait_hours": 0.0
+    },
+    {
+     "active": false,
+     "bottleneck": null,
+     "build_time_seconds": 541.7,
+     "build_time_text": "9m 02s",
+     "can_afford": true,
+     "can_research_live": false,
+     "cost": {
+      "kryptonite": 5600,
+      "metal": 6400,
+      "pig_iron": 0,
+      "spice": 1600
+     },
+     "current_level": 4,
+     "horizons": [
+      {
+       "bottleneck": null,
+       "build_time_text": "9m 02s",
+       "cost": {
+        "kryptonite": 5600,
+        "metal": 6400,
+        "pig_iron": 0,
+        "spice": 1600
+       },
+       "level": 5,
+       "reach_eta": "9m",
+       "wait_eta": "Reached"
+      },
+      {
+       "bottleneck": null,
+       "build_time_text": "18m 03s",
+       "cost": {
+        "kryptonite": 11200,
+        "metal": 12800,
+        "pig_iron": 0,
+        "spice": 3200
+       },
+       "level": 6,
+       "reach_eta": "27m",
+       "wait_eta": "Reached"
+      },
+      {
+       "bottleneck": null,
+       "build_time_text": "36m 07s",
+       "cost": {
+        "kryptonite": 22400,
+        "metal": 25600,
+        "pig_iron": 0,
+        "spice": 6400
+       },
+       "level": 7,
+       "reach_eta": "1.1h",
+       "wait_eta": "Reached"
+      }
+     ],
+     "key": "r4",
+     "missing": {
+      "kryptonite": 0,
+      "metal": 0,
+      "pig_iron": 0,
+      "spice": 0
+     },
+     "missing_total": 0,
+     "name": "Rocket engine",
+     "next_level": 5,
+     "offer_visible": false,
+     "reach_eta": "9m",
+     "reach_hours": 0.15,
+     "research_id": 4,
+     "slug": "rocket-engine",
+     "unmet_prerequisites": [],
+     "wait_eta": "Reached",
+     "wait_hours": 0.0
+    },
+    {
+     "active": false,
+     "bottleneck": null,
+     "build_time_seconds": 109.4,
+     "build_time_text": "1m 49s",
+     "can_afford": true,
+     "can_research_live": false,
+     "cost": {
+      "kryptonite": 1200,
+      "metal": 1200,
+      "pig_iron": 0,
+      "spice": 800
+     },
+     "current_level": 2,
+     "horizons": [
+      {
+       "bottleneck": null,
+       "build_time_text": "1m 49s",
+       "cost": {
+        "kryptonite": 1200,
+        "metal": 1200,
+        "pig_iron": 0,
+        "spice": 800
+       },
+       "level": 3,
+       "reach_eta": "2m",
+       "wait_eta": "Reached"
+      },
+      {
+       "bottleneck": null,
+       "build_time_text": "3m 39s",
+       "cost": {
+        "kryptonite": 2400,
+        "metal": 2400,
+        "pig_iron": 0,
+        "spice": 1600
+       },
+       "level": 4,
+       "reach_eta": "5m",
+       "wait_eta": "Reached"
+      },
+      {
+       "bottleneck": null,
+       "build_time_text": "7m 18s",
+       "cost": {
+        "kryptonite": 4800,
+        "metal": 4800,
+        "pig_iron": 0,
+        "spice": 3200
+       },
+       "level": 5,
+       "reach_eta": "13m",
+       "wait_eta": "Reached"
+      }
+     ],
+     "key": "r5",
+     "missing": {
+      "kryptonite": 0,
+      "metal": 0,
+      "pig_iron": 0,
+      "spice": 0
+     },
+     "missing_total": 0,
+     "name": "Diffusion engine",
+     "next_level": 3,
+     "offer_visible": false,
+     "reach_eta": "2m",
+     "reach_hours": 0.03,
+     "research_id": 5,
+     "slug": "diffusion-engine",
+     "unmet_prerequisites": [
+      "{'category': 'research', 'slug': 'engine-research', 'name': 'Engine research', 'required': 6, 'current': 3}"
+     ],
+     "wait_eta": "Reached",
+     "wait_hours": 0.0
+    },
+    {
+     "active": false,
+     "bottleneck": null,
+     "build_time_seconds": 2395.8,
+     "build_time_text": "39m 56s",
+     "can_afford": true,
+     "can_research_live": false,
+     "cost": {
+      "kryptonite": 16000,
+      "metal": 40000,
+      "pig_iron": 0,
+      "spice": 8000
+     },
+     "current_level": 3,
+     "horizons": [
+      {
+       "bottleneck": null,
+       "build_time_text": "39m 56s",
+       "cost": {
+        "kryptonite": 16000,
+        "metal": 40000,
+        "pig_iron": 0,
+        "spice": 8000
+       },
+       "level": 4,
+       "reach_eta": "40m",
+       "wait_eta": "Reached"
+      },
+      {
+       "bottleneck": "metal",
+       "build_time_text": "1h 19m",
+       "cost": {
+        "kryptonite": 32000,
+        "metal": 80000,
+        "pig_iron": 0,
+        "spice": 16000
+       },
+       "level": 5,
+       "reach_eta": "20.1h",
+       "wait_eta": "18.1h"
+      },
+      {
+       "bottleneck": "metal",
+       "build_time_text": "2h 39m",
+       "cost": {
+        "kryptonite": 64000,
+        "metal": 160000,
+        "pig_iron": 0,
+        "spice": 32000
+       },
+       "level": 6,
+       "reach_eta": "6.0d",
+       "wait_eta": "5.8d"
+      }
+     ],
+     "key": "r6",
+     "missing": {
+      "kryptonite": 0,
+      "metal": 0,
+      "pig_iron": 0,
+      "spice": 0
+     },
+     "missing_total": 0,
+     "name": "Warp engine",
+     "next_level": 4,
+     "offer_visible": false,
+     "reach_eta": "40m",
+     "reach_hours": 0.666,
+     "research_id": 6,
+     "slug": "warp-engine",
+     "unmet_prerequisites": [
+      "{'category': 'research', 'slug': 'engine-research', 'name': 'Engine research', 'required': 8, 'current': 3}",
+      "{'category': 'buildings', 'slug': 'research-lab', 'name': 'Research lab', 'required': 8, 'current': 7}"
+     ],
+     "wait_eta": "Reached",
+     "wait_hours": 0.0
+    },
+    {
+     "active": false,
+     "bottleneck": null,
+     "build_time_seconds": 494.8,
+     "build_time_text": "8m 15s",
+     "can_afford": true,
+     "can_research_live": false,
+     "cost": {
+      "kryptonite": 8000,
+      "metal": 2000,
+      "pig_iron": 0,
+      "spice": 1200
+     },
+     "current_level": 2,
+     "horizons": [
+      {
+       "bottleneck": null,
+       "build_time_text": "8m 15s",
+       "cost": {
+        "kryptonite": 8000,
+        "metal": 2000,
+        "pig_iron": 0,
+        "spice": 1200
+       },
+       "level": 3,
+       "reach_eta": "8m",
+       "wait_eta": "Reached"
+      },
+      {
+       "bottleneck": null,
+       "build_time_text": "16m 30s",
+       "cost": {
+        "kryptonite": 16000,
+        "metal": 4000,
+        "pig_iron": 0,
+        "spice": 2400
+       },
+       "level": 4,
+       "reach_eta": "25m",
+       "wait_eta": "Reached"
+      },
+      {
+       "bottleneck": null,
+       "build_time_text": "32m 59s",
+       "cost": {
+        "kryptonite": 32000,
+        "metal": 8000,
+        "pig_iron": 0,
+        "spice": 4800
+       },
+       "level": 5,
+       "reach_eta": "58m",
+       "wait_eta": "Reached"
+      }
+     ],
+     "key": "r7",
+     "missing": {
+      "kryptonite": 0,
+      "metal": 0,
+      "pig_iron": 0,
+      "spice": 0
+     },
+     "missing_total": 0,
+     "name": "Spy technology",
+     "next_level": 3,
+     "offer_visible": false,
+     "reach_eta": "8m",
+     "reach_hours": 0.137,
+     "research_id": 7,
+     "slug": "spy-technology",
+     "unmet_prerequisites": [],
+     "wait_eta": "Reached",
+     "wait_hours": 0.0
+    },
+    {
+     "active": false,
+     "bottleneck": null,
+     "build_time_seconds": 83.3,
+     "build_time_text": "1m 23s",
+     "can_afford": true,
+     "can_research_live": false,
+     "cost": {
+      "kryptonite": 100,
+      "metal": 2000,
+      "pig_iron": 0,
+      "spice": 0
+     },
+     "current_level": 0,
+     "horizons": [
+      {
+       "bottleneck": null,
+       "build_time_text": "1m 23s",
+       "cost": {
+        "kryptonite": 100,
+        "metal": 2000,
+        "pig_iron": 0,
+        "spice": 0
+       },
+       "level": 1,
+       "reach_eta": "1m",
+       "wait_eta": "Reached"
+      },
+      {
+       "bottleneck": null,
+       "build_time_text": "2m 47s",
+       "cost": {
+        "kryptonite": 200,
+        "metal": 4000,
+        "pig_iron": 0,
+        "spice": 0
+       },
+       "level": 2,
+       "reach_eta": "4m",
+       "wait_eta": "Reached"
+      },
+      {
+       "bottleneck": null,
+       "build_time_text": "5m 33s",
+       "cost": {
+        "kryptonite": 400,
+        "metal": 8000,
+        "pig_iron": 0,
+        "spice": 0
+       },
+       "level": 3,
+       "reach_eta": "10m",
+       "wait_eta": "Reached"
+      }
+     ],
+     "key": "r8",
+     "missing": {
+      "kryptonite": 0,
+      "metal": 0,
+      "pig_iron": 0,
+      "spice": 0
+     },
+     "missing_total": 0,
+     "name": "Weapons technology",
+     "next_level": 1,
+     "offer_visible": false,
+     "reach_eta": "1m",
+     "reach_hours": 0.023,
+     "research_id": 8,
+     "slug": "weapons-technology",
+     "unmet_prerequisites": [],
+     "wait_eta": "Reached",
+     "wait_hours": 0.0
+    },
+    {
+     "active": false,
+     "bottleneck": null,
+     "build_time_seconds": 113.9,
+     "build_time_text": "1m 54s",
+     "can_afford": true,
+     "can_research_live": false,
+     "cost": {
+      "kryptonite": 2000,
+      "metal": 250,
+      "pig_iron": 0,
+      "spice": 0
+     },
+     "current_level": 0,
+     "horizons": [
+      {
+       "bottleneck": null,
+       "build_time_text": "1m 54s",
+       "cost": {
+        "kryptonite": 2000,
+        "metal": 250,
+        "pig_iron": 0,
+        "spice": 0
+       },
+       "level": 1,
+       "reach_eta": "2m",
+       "wait_eta": "Reached"
+      },
+      {
+       "bottleneck": null,
+       "build_time_text": "3m 48s",
+       "cost": {
+        "kryptonite": 4000,
+        "metal": 500,
+        "pig_iron": 0,
+        "spice": 0
+       },
+       "level": 2,
+       "reach_eta": "6m",
+       "wait_eta": "Reached"
+      },
+      {
+       "bottleneck": null,
+       "build_time_text": "7m 36s",
+       "cost": {
+        "kryptonite": 8000,
+        "metal": 1000,
+        "pig_iron": 0,
+        "spice": 0
+       },
+       "level": 3,
+       "reach_eta": "13m",
+       "wait_eta": "Reached"
+      }
+     ],
+     "key": "r9",
+     "missing": {
+      "kryptonite": 0,
+      "metal": 0,
+      "pig_iron": 0,
+      "spice": 0
+     },
+     "missing_total": 0,
+     "name": "Shield technology",
+     "next_level": 1,
+     "offer_visible": false,
+     "reach_eta": "2m",
+     "reach_hours": 0.032,
+     "research_id": 9,
+     "slug": "shield-technology",
+     "unmet_prerequisites": [],
+     "wait_eta": "Reached",
+     "wait_hours": 0.0
+    },
+    {
+     "active": false,
+     "bottleneck": null,
+     "build_time_seconds": 97.7,
+     "build_time_text": "1m 38s",
+     "can_afford": true,
+     "can_research_live": false,
+     "cost": {
+      "kryptonite": 0,
+      "metal": 2500,
+      "pig_iron": 0,
+      "spice": 0
+     },
+     "current_level": 0,
+     "horizons": [
+      {
+       "bottleneck": null,
+       "build_time_text": "1m 38s",
+       "cost": {
+        "kryptonite": 0,
+        "metal": 2500,
+        "pig_iron": 0,
+        "spice": 0
+       },
+       "level": 1,
+       "reach_eta": "2m",
+       "wait_eta": "Reached"
+      },
+      {
+       "bottleneck": null,
+       "build_time_text": "3m 15s",
+       "cost": {
+        "kryptonite": 0,
+        "metal": 5000,
+        "pig_iron": 0,
+        "spice": 0
+       },
+       "level": 2,
+       "reach_eta": "5m",
+       "wait_eta": "Reached"
+      },
+      {
+       "bottleneck": null,
+       "build_time_text": "6m 31s",
+       "cost": {
+        "kryptonite": 0,
+        "metal": 10000,
+        "pig_iron": 0,
+        "spice": 0
+       },
+       "level": 3,
+       "reach_eta": "11m",
+       "wait_eta": "Reached"
+      }
+     ],
+     "key": "r10",
+     "missing": {
+      "kryptonite": 0,
+      "metal": 0,
+      "pig_iron": 0,
+      "spice": 0
+     },
+     "missing_total": 0,
+     "name": "Defense systems",
+     "next_level": 1,
+     "offer_visible": false,
+     "reach_eta": "2m",
+     "reach_hours": 0.027,
+     "research_id": 10,
+     "slug": "defense-systems",
+     "unmet_prerequisites": [],
+     "wait_eta": "Reached",
+     "wait_hours": 0.0
+    },
+    {
+     "active": false,
+     "bottleneck": null,
+     "build_time_seconds": 143.2,
+     "build_time_text": "2m 23s",
+     "can_afford": true,
+     "can_research_live": false,
+     "cost": {
+      "kryptonite": 2000,
+      "metal": 1000,
+      "pig_iron": 0,
+      "spice": 500
+     },
+     "current_level": 0,
+     "horizons": [
+      {
+       "bottleneck": null,
+       "build_time_text": "2m 23s",
+       "cost": {
+        "kryptonite": 2000,
+        "metal": 1000,
+        "pig_iron": 0,
+        "spice": 500
+       },
+       "level": 1,
+       "reach_eta": "2m",
+       "wait_eta": "Reached"
+      },
+      {
+       "bottleneck": null,
+       "build_time_text": "4m 46s",
+       "cost": {
+        "kryptonite": 4000,
+        "metal": 2000,
+        "pig_iron": 0,
+        "spice": 1000
+       },
+       "level": 2,
+       "reach_eta": "7m",
+       "wait_eta": "Reached"
+      },
+      {
+       "bottleneck": null,
+       "build_time_text": "9m 33s",
+       "cost": {
+        "kryptonite": 8000,
+        "metal": 4000,
+        "pig_iron": 0,
+        "spice": 2000
+       },
+       "level": 3,
+       "reach_eta": "17m",
+       "wait_eta": "Reached"
+      }
+     ],
+     "key": "r11",
+     "missing": {
+      "kryptonite": 0,
+      "metal": 0,
+      "pig_iron": 0,
+      "spice": 0
+     },
+     "missing_total": 0,
+     "name": "Targeting systems",
+     "next_level": 1,
+     "offer_visible": false,
+     "reach_eta": "2m",
+     "reach_hours": 0.04,
+     "research_id": 11,
+     "slug": "targeting-systems",
+     "unmet_prerequisites": [
+      "{'category': 'research', 'slug': 'energy-technology', 'name': 'Energy technology', 'required': 6, 'current': 5}"
+     ],
+     "wait_eta": "Reached",
+     "wait_hours": 0.0
+    },
+    {
+     "active": false,
+     "bottleneck": null,
+     "build_time_seconds": 612.0,
+     "build_time_text": "10m 12s",
+     "can_afford": true,
+     "can_research_live": false,
+     "cost": {
+      "kryptonite": 8000,
+      "metal": 5000,
+      "pig_iron": 0,
+      "spice": 10000
+     },
+     "current_level": 0,
+     "horizons": [
+      {
+       "bottleneck": null,
+       "build_time_text": "10m 12s",
+       "cost": {
+        "kryptonite": 8000,
+        "metal": 5000,
+        "pig_iron": 0,
+        "spice": 10000
+       },
+       "level": 1,
+       "reach_eta": "10m",
+       "wait_eta": "Reached"
+      },
+      {
+       "bottleneck": null,
+       "build_time_text": "20m 24s",
+       "cost": {
+        "kryptonite": 16000,
+        "metal": 10000,
+        "pig_iron": 0,
+        "spice": 20000
+       },
+       "level": 2,
+       "reach_eta": "31m",
+       "wait_eta": "Reached"
+      },
+      {
+       "bottleneck": "spice",
+       "build_time_text": "40m 48s",
+       "cost": {
+        "kryptonite": 32000,
+        "metal": 20000,
+        "pig_iron": 0,
+        "spice": 40000
+       },
+       "level": 3,
+       "reach_eta": "2.8d",
+       "wait_eta": "2.7d"
+      }
+     ],
+     "key": "r12",
+     "missing": {
+      "kryptonite": 0,
+      "metal": 0,
+      "pig_iron": 0,
+      "spice": 0
+     },
+     "missing_total": 0,
+     "name": "Particle analyzer",
+     "next_level": 1,
+     "offer_visible": false,
+     "reach_eta": "10m",
+     "reach_hours": 0.17,
+     "research_id": 12,
+     "slug": "particle-analyzer",
+     "unmet_prerequisites": [
+      "{'category': 'research', 'slug': 'shield-technology', 'name': 'Shield technology', 'required': 5, 'current': 0}"
+     ],
+     "wait_eta": "Reached",
+     "wait_hours": 0.0
+    },
+    {
+     "active": false,
+     "bottleneck": null,
+     "build_time_seconds": 115.9,
+     "build_time_text": "1m 56s",
+     "can_afford": true,
+     "can_research_live": false,
+     "cost": {
+      "kryptonite": 2000,
+      "metal": 300,
+      "pig_iron": 0,
+      "spice": 300
+     },
+     "current_level": 0,
+     "horizons": [
+      {
+       "bottleneck": null,
+       "build_time_text": "1m 56s",
+       "cost": {
+        "kryptonite": 2000,
+        "metal": 300,
+        "pig_iron": 0,
+        "spice": 300
+       },
+       "level": 1,
+       "reach_eta": "2m",
+       "wait_eta": "Reached"
+      },
+      {
+       "bottleneck": null,
+       "build_time_text": "3m 52s",
+       "cost": {
+        "kryptonite": 4000,
+        "metal": 600,
+        "pig_iron": 0,
+        "spice": 600
+       },
+       "level": 2,
+       "reach_eta": "6m",
+       "wait_eta": "Reached"
+      },
+      {
+       "bottleneck": null,
+       "build_time_text": "7m 44s",
+       "cost": {
+        "kryptonite": 8000,
+        "metal": 1200,
+        "pig_iron": 0,
+        "spice": 1200
+       },
+       "level": 3,
+       "reach_eta": "14m",
+       "wait_eta": "Reached"
+      }
+     ],
+     "key": "r13",
+     "missing": {
+      "kryptonite": 0,
+      "metal": 0,
+      "pig_iron": 0,
+      "spice": 0
+     },
+     "missing_total": 0,
+     "name": "Graviton technology",
+     "next_level": 1,
+     "offer_visible": false,
+     "reach_eta": "2m",
+     "reach_hours": 0.032,
+     "research_id": 13,
+     "slug": "graviton-technology",
+     "unmet_prerequisites": [],
+     "wait_eta": "Reached",
+     "wait_hours": 0.0
+    },
+    {
+     "active": false,
+     "bottleneck": "metal",
+     "build_time_seconds": 8072.9,
+     "build_time_text": "2h 14m",
+     "can_afford": false,
+     "can_research_live": false,
+     "cost": {
+      "kryptonite": 80000,
+      "metal": 100000,
+      "pig_iron": 0,
+      "spice": 20000
+     },
+     "current_level": 0,
+     "horizons": [
+      {
+       "bottleneck": "metal",
+       "build_time_text": "2h 14m",
+       "cost": {
+        "kryptonite": 80000,
+        "metal": 100000,
+        "pig_iron": 0,
+        "spice": 20000
+       },
+       "level": 1,
+       "reach_eta": "5.3h",
+       "wait_eta": "3.0h"
+      },
+      {
+       "bottleneck": "metal",
+       "build_time_text": "4h 29m",
+       "cost": {
+        "kryptonite": 160000,
+        "metal": 200000,
+        "pig_iron": 0,
+        "spice": 40000
+       },
+       "level": 2,
+       "reach_eta": "6.7d",
+       "wait_eta": "6.4d"
+      },
+      {
+       "bottleneck": "metal",
+       "build_time_text": "8h 58m",
+       "cost": {
+        "kryptonite": 320000,
+        "metal": 400000,
+        "pig_iron": 0,
+        "spice": 80000
+       },
+       "level": 3,
+       "reach_eta": "19.6d",
+       "wait_eta": "19.0d"
+      }
+     ],
+     "key": "r14",
+     "missing": {
+      "kryptonite": 6000,
+      "metal": 4000,
+      "pig_iron": 0,
+      "spice": 0
+     },
+     "missing_total": 10000,
+     "name": "Teleportation",
+     "next_level": 1,
+     "offer_visible": false,
+     "reach_eta": "5.3h",
+     "reach_hours": 5.255,
+     "research_id": 14,
+     "slug": "teleportation",
+     "unmet_prerequisites": [
+      "{'category': 'buildings', 'slug': 'research-lab', 'name': 'Research lab', 'required': 10, 'current': 7}"
+     ],
+     "wait_eta": "3.0h",
+     "wait_hours": 3.012
+    },
+    {
+     "active": false,
+     "bottleneck": "kryptonite",
+     "build_time_seconds": 71614.6,
+     "build_time_text": "19h 53m",
+     "can_afford": false,
+     "can_research_live": false,
+     "cost": {
+      "kryptonite": 1000000,
+      "metal": 500000,
+      "pig_iron": 0,
+      "spice": 250000
+     },
+     "current_level": 0,
+     "horizons": [
+      {
+       "bottleneck": "kryptonite",
+       "build_time_text": "19h 53m",
+       "cost": {
+        "kryptonite": 1000000,
+        "metal": 500000,
+        "pig_iron": 0,
+        "spice": 250000
+       },
+       "level": 1,
+       "reach_eta": "18.9d",
+       "wait_eta": "18.0d"
+      },
+      {
+       "bottleneck": "kryptonite",
+       "build_time_text": "1d 15h",
+       "cost": {
+        "kryptonite": 2000000,
+        "metal": 1000000,
+        "pig_iron": 0,
+        "spice": 500000
+       },
+       "level": 2,
+       "reach_eta": "59.5d",
+       "wait_eta": "57.0d"
+      },
+      {
+       "bottleneck": "kryptonite",
+       "build_time_text": "3d 7h",
+       "cost": {
+        "kryptonite": 4000000,
+        "metal": 2000000,
+        "pig_iron": 0,
+        "spice": 1000000
+       },
+       "level": 3,
+       "reach_eta": "140.8d",
+       "wait_eta": "135.0d"
+      }
+     ],
+     "key": "r15",
+     "missing": {
+      "kryptonite": 926000,
+      "metal": 404000,
+      "pig_iron": 0,
+      "spice": 219000
+     },
+     "missing_total": 1549000,
+     "name": "Black hole research",
+     "next_level": 1,
+     "offer_visible": false,
+     "reach_eta": "18.9d",
+     "reach_hours": 452.927,
+     "research_id": 15,
+     "slug": "black-hole-research",
+     "unmet_prerequisites": [
+      "{'category': 'research', 'slug': 'warp-engine', 'name': 'Warp engine', 'required': 10, 'current': 3}",
+      "{'category': 'research', 'slug': 'graviton-technology', 'name': 'Graviton technology', 'required': 10, 'current': 0}"
+     ],
+     "wait_eta": "18.0d",
+     "wait_hours": 433.034
+    }
+   ]
+  },
+  "command": "buildings_eta",
+  "config_optimizer_goals": null,
+  "ok": true
+ }
+}

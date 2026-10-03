@@ -1,0 +1,21 @@
+{
+ "http_status": 200,
+ "request": {
+  "json": {
+   "command": "bot_control",
+   "paused": false
+  },
+  "method": "POST",
+  "path": "/command"
+ },
+ "response": {
+  "bot_control": {
+   "captcha_blocked": false,
+   "captcha_message": null,
+   "mode_override": null,
+   "paused": false
+  },
+  "command": "bot_control",
+  "ok": true
+ }
+}

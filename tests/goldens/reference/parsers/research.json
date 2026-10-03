@@ -1,0 +1,265 @@
+{
+ "offers": [
+  {
+   "active": false,
+   "can_research": false,
+   "cost": {
+    "kryptonite": 1000000,
+    "metal": 500000,
+    "pig_iron": 0,
+    "spice": 250000
+   },
+   "current_level": 0,
+   "name": "Black hole research",
+   "research_href": null,
+   "research_id": 15,
+   "research_key": "r15",
+   "status_text": "Unavailable",
+   "target_level": 1
+  },
+  {
+   "active": false,
+   "can_research": true,
+   "cost": {
+    "kryptonite": 0,
+    "metal": 2500,
+    "pig_iron": 0,
+    "spice": 0
+   },
+   "current_level": 0,
+   "name": "Defense systems",
+   "research_href": "indexInternal.es?action=internalBuildItem&researchID=10&sid=goldensid0001",
+   "research_id": 10,
+   "research_key": "r10",
+   "status_text": "Research level 1",
+   "target_level": 1
+  },
+  {
+   "active": false,
+   "can_research": false,
+   "cost": {
+    "kryptonite": 1200,
+    "metal": 1200,
+    "pig_iron": 0,
+    "spice": 800
+   },
+   "current_level": 2,
+   "name": "Diffusion engine",
+   "research_href": null,
+   "research_id": 5,
+   "research_key": "r5",
+   "status_text": "Unavailable",
+   "target_level": 3
+  },
+  {
+   "active": false,
+   "can_research": true,
+   "cost": {
+    "kryptonite": 25600,
+    "metal": 12800,
+    "pig_iron": 0,
+    "spice": 12800
+   },
+   "current_level": 5,
+   "name": "Energy technology",
+   "research_href": "indexInternal.es?action=internalBuildItem&researchID=2&sid=goldensid0001",
+   "research_id": 2,
+   "research_key": "r2",
+   "status_text": "Research level 6",
+   "target_level": 6
+  },
+  {
+   "active": false,
+   "can_research": true,
+   "cost": {
+    "kryptonite": 0,
+    "metal": 6400,
+    "pig_iron": 0,
+    "spice": 2000
+   },
+   "current_level": 3,
+   "name": "Engine research",
+   "research_href": "indexInternal.es?action=internalBuildItem&researchID=3&sid=goldensid0001",
+   "research_id": 3,
+   "research_key": "r3",
+   "status_text": "Research level 4",
+   "target_level": 4
+  },
+  {
+   "active": false,
+   "can_research": true,
+   "cost": {
+    "kryptonite": 2000,
+    "metal": 300,
+    "pig_iron": 0,
+    "spice": 300
+   },
+   "current_level": 0,
+   "name": "Graviton technology",
+   "research_href": "indexInternal.es?action=internalBuildItem&researchID=13&sid=goldensid0001",
+   "research_id": 13,
+   "research_key": "r13",
+   "status_text": "Research level 1",
+   "target_level": 1
+  },
+  {
+   "active": false,
+   "can_research": true,
+   "cost": {
+    "kryptonite": 8000,
+    "metal": 0,
+    "pig_iron": 16000,
+    "spice": 0
+   },
+   "current_level": 4,
+   "name": "Mining technology",
+   "research_href": "indexInternal.es?action=internalBuildItem&researchID=1&sid=goldensid0001",
+   "research_id": 1,
+   "research_key": "r1",
+   "status_text": "Research level 5",
+   "target_level": 5
+  },
+  {
+   "active": false,
+   "can_research": false,
+   "cost": {
+    "kryptonite": 8000,
+    "metal": 5000,
+    "pig_iron": 0,
+    "spice": 10000
+   },
+   "current_level": 0,
+   "name": "Particle analyzer",
+   "research_href": null,
+   "research_id": 12,
+   "research_key": "r12",
+   "status_text": "Unavailable",
+   "target_level": 1
+  },
+  {
+   "active": false,
+   "can_research": true,
+   "cost": {
+    "kryptonite": 5600,
+    "metal": 6400,
+    "pig_iron": 0,
+    "spice": 1600
+   },
+   "current_level": 4,
+   "name": "Rocket engine",
+   "research_href": "indexInternal.es?action=internalBuildItem&researchID=4&sid=goldensid0001",
+   "research_id": 4,
+   "research_key": "r4",
+   "status_text": "Research level 5",
+   "target_level": 5
+  },
+  {
+   "active": false,
+   "can_research": true,
+   "cost": {
+    "kryptonite": 2000,
+    "metal": 250,
+    "pig_iron": 0,
+    "spice": 0
+   },
+   "current_level": 0,
+   "name": "Shield technology",
+   "research_href": "indexInternal.es?action=internalBuildItem&researchID=9&sid=goldensid0001",
+   "research_id": 9,
+   "research_key": "r9",
+   "status_text": "Research level 1",
+   "target_level": 1
+  },
+  {
+   "active": false,
+   "can_research": true,
+   "cost": {
+    "kryptonite": 8000,
+    "metal": 2000,
+    "pig_iron": 0,
+    "spice": 1200
+   },
+   "current_level": 2,
+   "name": "Spy technology",
+   "research_href": "indexInternal.es?action=internalBuildItem&researchID=7&sid=goldensid0001",
+   "research_id": 7,
+   "research_key": "r7",
+   "status_text": "Research level 3",
+   "target_level": 3
+  },
+  {
+   "active": false,
+   "can_research": false,
+   "cost": {
+    "kryptonite": 2000,
+    "metal": 1000,
+    "pig_iron": 0,
+    "spice": 500
+   },
+   "current_level": 0,
+   "name": "Targeting systems",
+   "research_href": null,
+   "research_id": 11,
+   "research_key": "r11",
+   "status_text": "Unavailable",
+   "target_level": 1
+  },
+  {
+   "active": false,
+   "can_research": false,
+   "cost": {
+    "kryptonite": 80000,
+    "metal": 100000,
+    "pig_iron": 0,
+    "spice": 20000
+   },
+   "current_level": 0,
+   "name": "Teleportation",
+   "research_href": null,
+   "research_id": 14,
+   "research_key": "r14",
+   "status_text": "Unavailable",
+   "target_level": 1
+  },
+  {
+   "active": false,
+   "can_research": false,
+   "cost": {
+    "kryptonite": 16000,
+    "metal": 40000,
+    "pig_iron": 0,
+    "spice": 8000
+   },
+   "current_level": 3,
+   "name": "Warp engine",
+   "research_href": null,
+   "research_id": 6,
+   "research_key": "r6",
+   "status_text": "Unavailable",
+   "target_level": 4
+  },
+  {
+   "active": false,
+   "can_research": true,
+   "cost": {
+    "kryptonite": 100,
+    "metal": 2000,
+    "pig_iron": 0,
+    "spice": 0
+   },
+   "current_level": 0,
+   "name": "Weapons technology",
+   "research_href": "indexInternal.es?action=internalBuildItem&researchID=8&sid=goldensid0001",
+   "research_id": 8,
+   "research_key": "r8",
+   "status_text": "Research level 1",
+   "target_level": 1
+  }
+ ],
+ "queue_timer": {
+  "detail": "Researching (37%)",
+  "finish_ts": 1700004200.0,
+  "remaining_seconds": 4200.0,
+  "remaining_text": "01:10:00"
+ }
+}

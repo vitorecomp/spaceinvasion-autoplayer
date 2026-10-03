@@ -1,0 +1,18 @@
+{
+ "http_status": 200,
+ "request": {
+  "json": {
+   "action": "internalBuildings",
+   "command": "navigate",
+   "dry_run": true
+  },
+  "method": "POST",
+  "path": "/command"
+ },
+ "response": {
+  "action": "internalBuildings",
+  "command": "navigate",
+  "html_bytes": 6729,
+  "ok": true
+ }
+}

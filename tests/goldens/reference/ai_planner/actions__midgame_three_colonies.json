@@ -1,0 +1,170 @@
+{
+ "actions": [
+  {
+   "action_href": "indexInternal.es?action=internalBuildItem&buildingID=1&sid=goldensid0001#1",
+   "cost": {
+    "kryptonite": 197,
+    "metal": 0,
+    "pig_iron": 613,
+    "spice": 0
+   },
+   "duration_seconds": 48.67,
+   "duration_text": "49s",
+   "eta_bottleneck": null,
+   "executable_now": true,
+   "kind": "BUILD",
+   "manual_queue_id": null,
+   "manual_sort_rank": null,
+   "missing": {
+    "kryptonite": 0,
+    "metal": 0,
+    "pig_iron": 0,
+    "spice": 0
+   },
+   "planet_coords": "03:121:04",
+   "planet_id": 20003,
+   "priority": "P1",
+   "reason": "AI-Planner #1: build Pig iron mine L6",
+   "target_id": 1,
+   "target_level": 6,
+   "target_name": "Pig iron mine",
+   "total_eta": "1m",
+   "total_hours": 0.013519,
+   "total_seconds": 48.67,
+   "wait_eta": "Ready",
+   "wait_hours": 0.0,
+   "wait_seconds": 0.0
+  },
+  {
+   "action_href": "indexInternal.es?action=internalBuildItem&buildingID=1&sid=goldensid0001#1",
+   "cost": {
+    "kryptonite": 1541,
+    "metal": 0,
+    "pig_iron": 4807,
+    "spice": 0
+   },
+   "duration_seconds": 190.6,
+   "duration_text": "3m 11s",
+   "eta_bottleneck": null,
+   "executable_now": true,
+   "kind": "BUILD",
+   "manual_queue_id": null,
+   "manual_sort_rank": null,
+   "missing": {
+    "kryptonite": 0,
+    "metal": 0,
+    "pig_iron": 0,
+    "spice": 0
+   },
+   "planet_coords": "03:120:11",
+   "planet_id": 20002,
+   "priority": "P1",
+   "reason": "AI-Planner #2: build Pig iron mine L11",
+   "target_id": 1,
+   "target_level": 11,
+   "target_name": "Pig iron mine",
+   "total_eta": "3m",
+   "total_hours": 0.052944,
+   "total_seconds": 190.6,
+   "wait_eta": "Ready",
+   "wait_hours": 0.0,
+   "wait_seconds": 0.0
+  },
+  {
+   "action_href": null,
+   "cost": {
+    "kryptonite": 7729,
+    "metal": 0,
+    "pig_iron": 12647,
+    "spice": 0
+   },
+   "duration_seconds": 425.04,
+   "duration_text": "7m 05s",
+   "eta_bottleneck": null,
+   "executable_now": false,
+   "kind": "WAIT_RESOURCES",
+   "manual_queue_id": null,
+   "manual_sort_rank": null,
+   "missing": {
+    "kryptonite": 0,
+    "metal": 0,
+    "pig_iron": 0,
+    "spice": 0
+   },
+   "planet_coords": "03:120:07",
+   "planet_id": 20001,
+   "priority": "P1",
+   "reason": "AI-Planner #24: build Kryptonite mine L13 (build queue full)",
+   "target_id": 3,
+   "target_level": 13,
+   "target_name": "Kryptonite mine",
+   "total_eta": "7m",
+   "total_hours": 0.118068,
+   "total_seconds": 425.04,
+   "wait_eta": "Ready",
+   "wait_hours": 0.0,
+   "wait_seconds": 0.0
+  },
+  {
+   "action_href": null,
+   "cost": {
+    "kryptonite": 8000,
+    "metal": 0,
+    "pig_iron": 16000,
+    "spice": 0
+   },
+   "duration_seconds": 833.33,
+   "duration_text": "13m 53s",
+   "eta_bottleneck": null,
+   "executable_now": false,
+   "kind": "RESEARCH",
+   "manual_queue_id": null,
+   "manual_sort_rank": null,
+   "missing": {
+    "kryptonite": 0,
+    "metal": 0,
+    "pig_iron": 0,
+    "spice": 0
+   },
+   "planet_coords": "03:120:07",
+   "planet_id": 20001,
+   "priority": "P1",
+   "reason": "AI-Planner #27: research Mining technology L5 (research slot busy)",
+   "target_id": 1,
+   "target_level": 5,
+   "target_name": "Mining technology",
+   "total_eta": "14m",
+   "total_hours": 0.231479,
+   "total_seconds": 833.33,
+   "wait_eta": "Ready",
+   "wait_hours": 0.0,
+   "wait_seconds": 0.0
+  }
+ ],
+ "field_conflicts": [],
+ "fill_actions": [],
+ "summary": {
+  "by_kind": {
+   "BUILD": 2,
+   "RESEARCH": 1,
+   "WAIT_RESOURCES": 1
+  },
+  "by_planet_id": {
+   "20001": 2,
+   "20002": 1,
+   "20003": 1
+  },
+  "by_priority": {
+   "P1": 4
+  },
+  "executable_now": 2,
+  "first_executable": {
+   "kind": "BUILD",
+   "planet_id": 20003,
+   "priority": "P1",
+   "target_level": 6,
+   "target_name": "Pig iron mine"
+  },
+  "total": 4
+ }
+}

@@ -1,0 +1,97 @@
+{
+ "http_status": 200,
+ "request": {
+  "json": {
+   "command": "claim_tutorial",
+   "dry_run": true
+  },
+  "method": "POST",
+  "path": "/command"
+ },
+ "response": {
+  "action": {
+   "action_href": null,
+   "cost": {
+    "kryptonite": 0,
+    "metal": 0,
+    "pig_iron": 0,
+    "spice": 0
+   },
+   "duration_seconds": 0.0,
+   "duration_text": "Instant",
+   "eta_bottleneck": null,
+   "executable_now": true,
+   "kind": "CLAIM_TUTORIAL",
+   "manual_queue_id": null,
+   "manual_sort_rank": null,
+   "missing": {
+    "kryptonite": 0,
+    "metal": 0,
+    "pig_iron": 0,
+    "spice": 0
+   },
+   "planet_coords": "03:120:07",
+   "planet_id": 20001,
+   "planet_name": "Golden Prime",
+   "priority": "P2",
+   "reason": "API claim_tutorial command",
+   "target_id": null,
+   "target_level": null,
+   "target_name": "Tutorial 3/11 Reward",
+   "total_eta": "Ready",
+   "total_hours": 0.0,
+   "total_seconds": 0.0,
+   "wait_eta": "Ready",
+   "wait_hours": 0.0,
+   "wait_seconds": 0.0
+  },
+  "command": "claim_tutorial",
+  "dry_run": true,
+  "executed": false,
+  "manual_queue": [],
+  "message": "[DRY-RUN] Would execute CLAIM_TUTORIAL: Tutorial 3/11 Reward on [03:120:07].",
+  "next_action": {
+   "action_href": null,
+   "cost": {
+    "kryptonite": 0,
+    "metal": 0,
+    "pig_iron": 0,
+    "spice": 0
+   },
+   "duration_seconds": 0.0,
+   "duration_text": "Instant",
+   "eta_bottleneck": null,
+   "executable_now": true,
+   "kind": "CLAIM_TUTORIAL",
+   "manual_queue_id": null,
+   "manual_sort_rank": null,
+   "missing": {
+    "kryptonite": 0,
+    "metal": 0,
+    "pig_iron": 0,
+    "spice": 0
+   },
+   "planet_coords": "03:120:07",
+   "planet_id": 20001,
+   "planet_name": "Golden Prime",
+   "priority": "P2",
+   "reason": "All tasks complete; claim 5232 Pig iron, 900 Metal, 2758 Kryptonite, 200 Spice",
+   "target_id": null,
+   "target_level": null,
+   "target_name": "Tutorial 3/11 Reward",
+   "total_eta": "Ready",
+   "total_hours": 0.0,
+   "total_seconds": 0.0,
+   "wait_eta": "Ready",
+   "wait_hours": 0.0,
+   "wait_seconds": 0.0
+  },
+  "notifications": {
+   "items": [],
+   "unread_count": 0
+  },
+  "ok": true,
+  "validated": true,
+  "validation_error": null
+ }
+}

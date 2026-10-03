@@ -1,0 +1,15 @@
+{
+ "http_status": 400,
+ "request": {
+  "json": {
+   "command": "notification_ack",
+   "notification_id": 1
+  },
+  "method": "POST",
+  "path": "/command"
+ },
+ "response": {
+  "error": "Notification #1 not found.",
+  "ok": false
+ }
+}

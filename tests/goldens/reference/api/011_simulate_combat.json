@@ -1,0 +1,51 @@
+{
+ "http_status": 200,
+ "request": {
+  "json": {
+   "attacker_ships": {
+    "s4": 30,
+    "s5": 6
+   },
+   "command": "simulate_combat",
+   "defender_defense": {
+    "d1": 25,
+    "d2": 6
+   },
+   "defender_ships": {
+    "s4": 2
+   },
+   "target_coords": "03:120:09",
+   "target_resources": {
+    "kryptonite": 40000,
+    "metal": 80000,
+    "pig_iron": 120000,
+    "spice": 15000
+   }
+  },
+  "method": "POST",
+  "path": "/command"
+ },
+ "response": {
+  "command": "simulate_combat",
+  "ok": true,
+  "simulation": {
+   "attacker_power": 12360.0,
+   "cargo_capacity": 2400,
+   "defender_power": 20452.5,
+   "defender_researches": {},
+   "expected_plunder": {
+    "kryptonite": 0,
+    "metal": 0,
+    "pig_iron": 0,
+    "spice": 2400
+   },
+   "loot_spice_equivalent": 2400.0,
+   "notes": "Safety margin too low (0.60x < 1.40x required for battle luck)",
+   "safe_to_attack": false,
+   "safety_margin": 1.4,
+   "stealth_first_strike_power": 0.0,
+   "total_plunder": 2400,
+   "win_ratio": 0.6043270994
+  }
+ }
+}

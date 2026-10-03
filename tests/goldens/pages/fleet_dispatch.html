@@ -1,0 +1,36 @@
+<html>
+<body>
+<div class="fleet-bases">Fleet bases (available: 5, filled: 2)</div>
+<div class="active-origin">Origin: [03:120:07] id=20001</div>
+<div class='origin-switcher'>
+<a class="origin-planet-link" href="indexInternal.es?action=internalFleet&newPlanet=20001&sid=goldensid0001">03:120:07 Golden Prime</a> <a class="origin-planet-link" href="indexInternal.es?action=internalFleet&newPlanet=20002&sid=goldensid0001">03:120:11 Golden Forge</a> <a class="origin-planet-link" href="indexInternal.es?action=internalFleet&newPlanet=20003&sid=goldensid0001">03:121:04 Golden Outpost</a>
+</div>
+<form id="fav_form" action="indexInternal.es?action=internalFleet&sid=goldensid0001" method="POST">
+<select name="planet">
+<option value="03:120:07">Fav Golden Prime</option>
+<option value="03:120:11">Fav Golden Forge</option>
+<option value="03:121:04">Fav Golden Outpost</option>
+<option value="02:380:04">Fav IdlePrime</option>
+</select>
+<input type="submit" value="Load Favourite"/>
+</form>
+<form action="indexInternal.es?action=internalSendFleet&sid=goldensid0001" method="POST">
+<label>s1 (max 12): <input type="text" name="ship[1]" value="0"/>
+</label>
+<label>s2 (max 4): <input type="text" name="ship[2]" value="0"/>
+</label>
+<label>s4 (max 30): <input type="text" name="ship[4]" value="0"/>
+</label>
+<label>s5 (max 6): <input type="text" name="ship[5]" value="0"/>
+</label>
+<label>s10 (max 8): <input type="text" name="ship[10]" value="0"/>
+</label>
+<label>s11 (max 3): <input type="text" name="ship[11]" value="0"/>
+</label>
+<input type="text" name="gal" value="2"/>
+<input type="text" name="sun" value="380"/>
+<input type="text" name="pla" value="1"/>
+<input type="submit" value="Continue"/>
+</form>
+</body>
+</html>

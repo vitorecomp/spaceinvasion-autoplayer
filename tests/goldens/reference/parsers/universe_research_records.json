@@ -1,0 +1,27 @@
+{
+ "r1": {
+  "coords": "03:044:08",
+  "holder": "RecordHolderA",
+  "level": 14
+ },
+ "r15": {
+  "coords": "",
+  "holder": "",
+  "level": 2
+ },
+ "r2": {
+  "coords": "05:310:02",
+  "holder": "RecordHolderB",
+  "level": 12
+ },
+ "r6": {
+  "coords": "02:200:05",
+  "holder": "RecordHolderD",
+  "level": 11
+ },
+ "r7": {
+  "coords": "01:009:15",
+  "holder": "RecordHolderC",
+  "level": 9
+ }
+}

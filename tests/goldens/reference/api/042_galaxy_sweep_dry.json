@@ -1,0 +1,194 @@
+{
+ "http_status": 200,
+ "request": {
+  "json": {
+   "command": "galaxy_sweep",
+   "dry_run": true,
+   "pages": 6
+  },
+  "method": "POST",
+  "path": "/command"
+ },
+ "response": {
+  "allocated_normal_planets": 3,
+  "click_delay_seconds": 1.5,
+  "click_jitter_seconds": 0.6,
+  "collect_colonies": false,
+  "command": "galaxy_sweep",
+  "coverage_pct": 0.0,
+  "dry_run": true,
+  "end_galaxy": 3,
+  "end_system": 123,
+  "executed": false,
+  "exploratory_count": 6,
+  "explored_systems": 0,
+  "galaxy_sweep": {
+   "blocking_other_actions": false,
+   "click_delay_seconds": 1.5,
+   "click_jitter_seconds": 0.6,
+   "coverage_pct": 0.0,
+   "cursor_galaxy": 1,
+   "cursor_system": 1,
+   "discovery_pct": 100.0,
+   "due": true,
+   "exploratory_count": 6,
+   "explored_systems": 0,
+   "in_progress": false,
+   "last_arrow_steps": 0,
+   "last_colonies_found": 0,
+   "last_debris_found": 0,
+   "last_pages_scanned": 0,
+   "last_players_found": 0,
+   "last_sweep_completed_ts": 0.0,
+   "last_sweep_started_ts": 1700000000.0,
+   "next_sweep_due_ts": 0.0,
+   "refresh_count": 0,
+   "refresh_pct": 0.0,
+   "sample_targets": [
+    {
+     "direct_raid_count": 0,
+     "distance": 0,
+     "galaxy": 3,
+     "owner_affinity_raid_count": 0,
+     "phase": "exploratory",
+     "reason": "unscanned sector (dist 0)",
+     "score": 2016.0,
+     "sector": "03:120",
+     "system": 120
+    },
+    {
+     "direct_raid_count": 0,
+     "distance": 0,
+     "galaxy": 3,
+     "owner_affinity_raid_count": 0,
+     "phase": "exploratory",
+     "reason": "unscanned sector (dist 0)",
+     "score": 2016.0,
+     "sector": "03:121",
+     "system": 121
+    },
+    {
+     "direct_raid_count": 0,
+     "distance": 1,
+     "galaxy": 3,
+     "owner_affinity_raid_count": 0,
+     "phase": "exploratory",
+     "reason": "unscanned sector (dist 1)",
+     "score": 1936.0,
+     "sector": "03:122",
+     "system": 122
+    },
+    {
+     "direct_raid_count": 0,
+     "distance": 1,
+     "galaxy": 3,
+     "owner_affinity_raid_count": 0,
+     "phase": "exploratory",
+     "reason": "unscanned sector (dist 1)",
+     "score": 1936.0,
+     "sector": "03:119",
+     "system": 119
+    },
+    {
+     "direct_raid_count": 0,
+     "distance": 2,
+     "galaxy": 3,
+     "owner_affinity_raid_count": 0,
+     "phase": "exploratory",
+     "reason": "unscanned sector (dist 2)",
+     "score": 1863.2727,
+     "sector": "03:123",
+     "system": 123
+    }
+   ],
+   "scan_galaxies": [
+    3
+   ],
+   "scan_phase": "exploratory",
+   "selection_mode": "smart",
+   "total_pages_scanned": 0,
+   "total_sweeps": 0,
+   "total_systems": 400,
+   "universe_coverage_pct": 0.0,
+   "universe_explored_systems": 0,
+   "universe_total_systems": 5600,
+   "unscanned_systems": 400
+  },
+  "max_planets": 3,
+  "message": "[DRY-RUN] Would sweep 6 galaxy pages (smart exploratory, coverage 0.0%) starting at [03:118] (colonies=FULL).",
+  "ok": true,
+  "pages_planned": 6,
+  "planned_targets": [
+   "03:118",
+   "03:119",
+   "03:120",
+   "03:121",
+   "03:122",
+   "03:123"
+  ],
+  "refresh_count": 0,
+  "sample_targets": [
+   {
+    "direct_raid_count": 0,
+    "distance": 0,
+    "galaxy": 3,
+    "owner_affinity_raid_count": 0,
+    "phase": "exploratory",
+    "reason": "unscanned sector (dist 0)",
+    "score": 2016.0,
+    "sector": "03:120",
+    "system": 120
+   },
+   {
+    "direct_raid_count": 0,
+    "distance": 0,
+    "galaxy": 3,
+    "owner_affinity_raid_count": 0,
+    "phase": "exploratory",
+    "reason": "unscanned sector (dist 0)",
+    "score": 2016.0,
+    "sector": "03:121",
+    "system": 121
+   },
+   {
+    "direct_raid_count": 0,
+    "distance": 1,
+    "galaxy": 3,
+    "owner_affinity_raid_count": 0,
+    "phase": "exploratory",
+    "reason": "unscanned sector (dist 1)",
+    "score": 1936.0,
+    "sector": "03:122",
+    "system": 122
+   },
+   {
+    "direct_raid_count": 0,
+    "distance": 1,
+    "galaxy": 3,
+    "owner_affinity_raid_count": 0,
+    "phase": "exploratory",
+    "reason": "unscanned sector (dist 1)",
+    "score": 1936.0,
+    "sector": "03:119",
+    "system": 119
+   },
+   {
+    "direct_raid_count": 0,
+    "distance": 2,
+    "galaxy": 3,
+    "owner_affinity_raid_count": 0,
+    "phase": "exploratory",
+    "reason": "unscanned sector (dist 2)",
+    "score": 1863.2727,
+    "sector": "03:123",
+    "system": 123
+   }
+  ],
+  "scan_phase": "exploratory",
+  "selection_mode": "smart",
+  "start_galaxy": 3,
+  "start_system": 118,
+  "total_systems": 400,
+  "unscanned_systems": 400
+ }
+}

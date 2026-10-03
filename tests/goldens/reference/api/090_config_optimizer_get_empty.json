@@ -1,0 +1,116 @@
+{
+ "http_status": 200,
+ "request": {
+  "json": {
+   "command": "config_optimizer_get"
+  },
+  "method": "POST",
+  "path": "/command"
+ },
+ "response": {
+  "active": null,
+  "colonies_owned": 3,
+  "command": "config_optimizer_get",
+  "custom_planet_names": {
+   "20003": "Outpost Two"
+  },
+  "default_params": {
+   "allow_demolition": false,
+   "catalogue_grid_size": 25000,
+   "catalogue_priority_steps": 4,
+   "central_planet_min_warehouse_level": 15,
+   "central_planet_slot": 1,
+   "empty_colony_fields": 300,
+   "ga_crossover_rate": 0.9,
+   "ga_elite_count": 4,
+   "ga_generations": 150,
+   "ga_mutation_rate": 0.1,
+   "ga_population_size": 200,
+   "ga_random_seed": 20261117,
+   "ga_tournament_size": 3,
+   "hill_climb_step_sizes": [
+    1,
+    2,
+    4,
+    8
+   ],
+   "manual_planet_configs": {},
+   "max_planets": 11,
+   "min_fleet_per_planet": {
+    "s10": 10,
+    "s11": 10,
+    "s2": 10
+   },
+   "min_warehouse_level": 0,
+   "misc_building_levels": {
+    "b10": 5,
+    "b11": 0,
+    "b12": 0,
+    "b13": 0,
+    "b14": 0,
+    "b15": 0,
+    "b16": 0,
+    "b18": 0,
+    "b19": 0,
+    "b20": 0,
+    "b21": 0,
+    "b6": 0,
+    "b7": 12,
+    "b8": 0
+   },
+   "misc_building_levels_by_slot": {
+    "1": {
+     "b8": 12
+    }
+   },
+   "optimized_building_max_levels": {
+    "b1": 100,
+    "b17": 100,
+    "b2": 100,
+    "b3": 100,
+    "b4": 100,
+    "b5": 100,
+    "b9": 100
+   },
+   "pad_generic_colonies": false,
+   "planet_names": {},
+   "planet_specializations": {},
+   "preserve_previous_specializations": true,
+   "production_month_days": 30.0,
+   "research_percent_of_universe_max": 100.0,
+   "reserved_floors_by_planet": {},
+   "specialization_switch_threshold_pct": 0.5,
+   "target_ship_key": "s16",
+   "warehouse_hours_of_production": 24.0
+  },
+  "job": {
+   "auto_replan_ai": false,
+   "elapsed_ms": "<volatile>",
+   "error": null,
+   "finished_ts": null,
+   "job_id": null,
+   "kind": "config_optimizer",
+   "phase": "idle",
+   "progress": 0.0,
+   "progress_pct": 0.0,
+   "run_id": null,
+   "started_ts": null,
+   "status": "idle",
+   "trigger_source": ""
+  },
+  "live_ai_unlocked": true,
+  "max_planets": 3,
+  "ok": true,
+  "planet_specializations": {},
+  "reserved_floors": {},
+  "runs": [],
+  "specialization_options": [
+   "auto",
+   "metal",
+   "kryptonite",
+   "spice",
+   "shipyard",
+   "spice_shipyard"
+  ]
+ }
+}

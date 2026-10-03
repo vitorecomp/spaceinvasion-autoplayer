@@ -1,0 +1,51 @@
+{
+ "http_status": 200,
+ "request": {
+  "json": {
+   "command": "planner_jobs_status"
+  },
+  "method": "POST",
+  "path": "/command"
+ },
+ "response": {
+  "active_planner_mode": "priority",
+  "ai_planner_job": {
+   "auto_replan_ai": false,
+   "elapsed_ms": "<volatile>",
+   "error": null,
+   "finished_ts": null,
+   "job_id": null,
+   "kind": "ai_planner",
+   "phase": "idle",
+   "progress": 0.0,
+   "progress_pct": 0.0,
+   "run_id": null,
+   "started_ts": null,
+   "status": "idle",
+   "trigger_source": ""
+  },
+  "colonies_owned": 3,
+  "command": "planner_jobs_status",
+  "config_optimizer_job": {
+   "auto_replan_ai": false,
+   "elapsed_ms": "<volatile>",
+   "error": null,
+   "finished_ts": null,
+   "job_id": null,
+   "kind": "config_optimizer",
+   "phase": "idle",
+   "progress": 0.0,
+   "progress_pct": 0.0,
+   "run_id": null,
+   "started_ts": null,
+   "status": "idle",
+   "trigger_source": ""
+  },
+  "effective_planner_mode": "priority",
+  "fallback_reason": "",
+  "live_ai_unlocked": true,
+  "max_planets": 3,
+  "ok": true,
+  "pending_field_conflicts": []
+ }
+}

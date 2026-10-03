@@ -1,0 +1,38 @@
+{
+ "action_log": [
+  {
+   "action": "build",
+   "bid": 1,
+   "level": 13,
+   "planet_id": 20001
+  }
+ ],
+ "concurrent_render_collisions": 0,
+ "launched_fleets": [
+  {
+   "mission": "6",
+   "origin_coords": "03:120:07",
+   "origin_planet_id": 20001,
+   "ships": {
+    "s10": 1
+   },
+   "target_coords": "03:120:03",
+   "ts": 1700000000.0
+  }
+ ],
+ "page_views_by_frame_and_action": {
+  "F_Hauptframe:internalBuildItem": 1,
+  "F_Hauptframe:internalBuildings": 10,
+  "F_Hauptframe:internalEconomy": 1,
+  "F_Hauptframe:internalFleet": 1,
+  "F_Hauptframe:internalGalaxy": 3,
+  "F_Hauptframe:internalHome": 9,
+  "F_Hauptframe:internalMessages": 3,
+  "F_Hauptframe:internalResearch": 3,
+  "F_Hauptframe:internalSendFleet": 2,
+  "F_Hauptframe:internalWeaponFactory": 2,
+  "F_Navi:internalMenu": 1,
+  "F_planets:internalPlanetsOverview": 13
+ },
+ "page_views_total": 49
+}

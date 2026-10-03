@@ -1,0 +1,39 @@
+{
+ "http_status": 200,
+ "request": {
+  "json": {
+   "command": "fleetsave_plan",
+   "dry_run": true
+  },
+  "method": "POST",
+  "path": "/command"
+ },
+ "response": {
+  "command": "fleetsave_plan",
+  "escape_plan": {
+   "cargo": {
+    "kryptonite": 74000,
+    "metal": 96000,
+    "pig_iron": 68448,
+    "spice": 30500
+   },
+   "duration_hint": "next_login",
+   "feasible": true,
+   "fuel_reserved_spice": 500,
+   "planet_coords": "03:120:07",
+   "planet_id": 20001,
+   "reason": "Packed PigIron=68,448, Metal=96,000, Krypt=74,000, Spice=30,500 into 63 ships",
+   "ships": {
+    "s1": 12,
+    "s10": 8,
+    "s11": 3,
+    "s2": 4,
+    "s4": 30,
+    "s5": 6
+   },
+   "target_coords": "03:120:11",
+   "total_capacity": 269448
+  },
+  "ok": true
+ }
+}
