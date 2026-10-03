@@ -28,6 +28,8 @@ _EXPLICIT_SQLITE_NODE_SUBSTRINGS: tuple[str, ...] = (
     "test_spy_target_direct_lookup_galaxy_coalescing_and_corrupt_snapshot_guard",
     "test_r10_blob_sid_redaction_literal_sid_json_and_planet_history",
     "test_unnormalized_coords_api_guards_external_research_cancel_and_deep_sid_redaction",
+    "test_adv_t5_09_runtime_deep_target_coalescing_stale_cancel_cost_and_clocks",
+    "test_adv_t5_20_r10_e2e_unicode_digits_negative_fields_blob_redaction_and_raid_asteroid_parity",
     "test_savepoint_rollback_on_failed_migration_and_checksum_drift_and_future_version_guard",
     "test_multi_database_registry_cli_json_sidecar_and_http_api_commands",
     "test_v013_staged_upgrade_from_v012_checksum_tiers_and_cli_verify",
