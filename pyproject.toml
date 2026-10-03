@@ -1,0 +1,74 @@
+[project]
+name = "spaceinvasion-autoplayer"
+version = "0.1.0"
+description = "SpaceInvasion Classic browser autoplayer, HTTP bridge, planner, and operator console"
+requires-python = ">=3.12"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "notebooks: slow Jupyter notebook parity tests",
+    "invariants: core SpaceInvasion game and security invariants that must never break",
+]
+addopts = "-m 'not notebooks'"
+
+[tool.coverage.run]
+source = ["spaceinvasion", "bin", "scripts"]
+omit = [
+    "spaceinvasion/ui/*",
+    "tests/*",
+]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
+
+[tool.ruff]
+target-version = "py312"
+line-length = 120
+extend-exclude = [
+    "spaceinvasion/ui",
+    "notebooks",
+    ".venv",
+    "frontend",
+]
+
+[tool.ruff.lint]
+select = [
+    "E4",
+    "E7",
+    "E9",
+    "F",
+    "B",
+    "BLE",
+    "S110",
+    "S112",
+    "T20",
+    "I",
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["spaceinvasion", "bin", "scripts"]
+force-sort-within-sections = true
+
+[tool.ruff.lint.per-file-ignores]
+"spaceinvasion/core/game_data.py" = ["B", "BLE", "S110", "S112", "T20", "I"]
+"tests/*" = ["B", "BLE", "S110", "S112", "T20", "I"]
+
+[tool.mypy]
+python_version = "3.12"
+ignore_missing_imports = true
+warn_unused_configs = true
+check_untyped_defs = false
+disallow_untyped_defs = false
+exclude = [
+    "^spaceinvasion/ui/",
+    "^notebooks/",
+    "^frontend/",
+]
+
+# Rewritten packages opt into strict checking here as phases progress:
+# [[tool.mypy.overrides]]
+# module = ["spaceinvasion.core.*"]
+# strict = true

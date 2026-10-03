@@ -75,6 +75,63 @@ def _detect_content_changes(
     return changed, next_digests
 
 
+def _is_excluded_watch_path(path: Path, root: Path, exclude_dirs: Sequence[str] = ("ui", "__pycache__")) -> bool:
+    """Return True if `path` falls inside an excluded watch directory (e.g. `spaceinvasion/ui/`)."""
+    exclude_set = set(exclude_dirs)
+    if "__pycache__" in path.parts:
+        return True
+    try:
+        rel_parts = path.resolve().relative_to(root.resolve()).parts
+    except ValueError:
+        rel_parts = path.parts
+    if root.name == "spaceinvasion":
+        return any(part in exclude_set or part.startswith(".") for part in rel_parts[:-1])
+    for idx in range(len(path.parts) - 1):
+        if path.parts[idx] == "spaceinvasion" and path.parts[idx + 1] in exclude_set:
+            return True
+    return False
+
+
+def discover_watch_paths(
+    repo_root: Path,
+    *,
+    entrypoints: Sequence[Path] = (),
+    exclude_dirs: Sequence[str] = ("ui", "__pycache__"),
+) -> tuple[Path, ...]:
+    """Discover watched Python files under `spaceinvasion/` (excluding `ui/`) plus `entrypoints`."""
+    root = repo_root.resolve()
+    cwd = Path.cwd().resolve()
+    use_rel = cwd == root
+
+    def _format_path(candidate: Path) -> Path:
+        resolved = candidate.resolve()
+        if use_rel and resolved.is_relative_to(cwd):
+            return resolved.relative_to(cwd)
+        return resolved
+
+    discovered: list[Path] = []
+    seen: set[Path] = set()
+
+    for ep in entrypoints:
+        if ep.exists():
+            formatted = _format_path(ep)
+            if formatted not in seen:
+                seen.add(formatted)
+                discovered.append(formatted)
+
+    pkg_root = root / "spaceinvasion"
+    if pkg_root.is_dir():
+        for child in sorted(pkg_root.rglob("*.py")):
+            if _is_excluded_watch_path(child, pkg_root, exclude_dirs=exclude_dirs):
+                continue
+            formatted = _format_path(child)
+            if formatted not in seen:
+                seen.add(formatted)
+                discovered.append(formatted)
+
+    return tuple(discovered)
+
+
 def snapshot_mtimes(paths: Sequence[Path]) -> dict[str, int]:
     """Capture `{filepath: mtime_ns}` for all watched Python files/directories."""
     mtimes: dict[str, int] = {}
@@ -82,12 +139,16 @@ def snapshot_mtimes(paths: Sequence[Path]) -> dict[str, int]:
         if not target.exists():
             continue
         if target.is_file():
+            if _is_excluded_watch_path(target, target.parent):
+                continue
             try:
                 mtimes[str(target.resolve())] = target.stat().st_mtime_ns
             except OSError:
                 pass
         elif target.is_dir():
             for child in sorted(target.rglob("*.py")):
+                if _is_excluded_watch_path(child, target):
+                    continue
                 try:
                     mtimes[str(child.resolve())] = child.stat().st_mtime_ns
                 except OSError:

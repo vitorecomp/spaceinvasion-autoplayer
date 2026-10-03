@@ -49,33 +49,12 @@ from spaceinvasion.runtime.api_server import (  # noqa: E402
 from spaceinvasion.core.logging_utils import redact_sensitive  # noqa: E402
 from spaceinvasion.runtime.reloader import (  # noqa: E402
     current_python_cmd,
+    discover_watch_paths,
     should_spawn_reloader,
     watch_and_run,
 )
 
-WATCH_PATHS = (
-    Path(__file__).resolve(),
-    _REPO_ROOT / "spaceinvasion/planner/action_graph.py",
-    _REPO_ROOT / "spaceinvasion/session/auth.py",
-    _REPO_ROOT / "spaceinvasion/session/browser.py",
-    _REPO_ROOT / "spaceinvasion/core/config.py",
-    _REPO_ROOT / "spaceinvasion/combat/fleet.py",
-    _REPO_ROOT / "spaceinvasion/core/game_data.py",
-    _REPO_ROOT / "spaceinvasion/db/backend.py",
-    _REPO_ROOT / "spaceinvasion/db/migrations.py",
-    _REPO_ROOT / "spaceinvasion/db/postgres.py",
-    _REPO_ROOT / "spaceinvasion/combat/ranking.py",
-    _REPO_ROOT / "spaceinvasion/core/state.py",
-    _REPO_ROOT / "spaceinvasion/db/storage.py",
-    _REPO_ROOT / "spaceinvasion/planner/strategy.py",
-    _REPO_ROOT / "spaceinvasion/planner/optimizer.py",
-    _REPO_ROOT / "spaceinvasion/planner/ai_planner.py",
-    _REPO_ROOT / "spaceinvasion/planner/config_optimizer.py",
-    _REPO_ROOT / "spaceinvasion/session/client.py",
-    _REPO_ROOT / "spaceinvasion/session/executor.py",
-    _REPO_ROOT / "spaceinvasion/runtime/api_server.py",
-    _REPO_ROOT / "spaceinvasion/core/logging_utils.py",
-)
+WATCH_PATHS = discover_watch_paths(_REPO_ROOT, entrypoints=(Path(__file__).resolve(),))
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -203,7 +182,7 @@ def main(argv: list[str] | None = None) -> int:
         return watch_and_run(
             label="API",
             cmd=current_python_cmd(Path(__file__).resolve(), raw_argv),
-            watch_paths=WATCH_PATHS,
+            watch_paths=(*WATCH_PATHS, _REPO_ROOT / "spaceinvasion"),
         )
 
     startup_auth_exc: BaseException | None = None
