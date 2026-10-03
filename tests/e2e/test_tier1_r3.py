@@ -381,7 +381,7 @@ class TestTier1R3(unittest.TestCase):
 
             self.assertTrue(info["has_cfg_planner_mode"], "Missing #cfg-planner_mode in #view-config")
             self.assertIn("priority", info["cfg_planner_mode_options"])
-            self.assertIn("ga_nn", info["cfg_planner_mode_options"])
+            self.assertIn("ai_planner", info["cfg_planner_mode_options"])
 
     def test_t1_r3c_02_ui_dashboard_renders_wait_and_total_etas(self) -> None:
         planets = {
@@ -544,9 +544,9 @@ class TestTier1R3(unittest.TestCase):
                 const sel = document.getElementById("cfg-planner_mode");
                 if (!sel) throw new Error("Missing #cfg-planner_mode in DOM");
                 const initialVal = sel.value;
-                sel.value = "ga_nn";
+                sel.value = "ai_planner";
                 sel.dispatchEvent("change");
-                // Trigger background sync via real #btn-sync DOM click — dirty tracking must preserve "ga_nn"
+                // Trigger background sync via real #btn-sync DOM click — dirty tracking must preserve "ai_planner"
                 const dashBefore = fetchLog.filter((f) => String(f.url || "").startsWith("/dashboard")).length;
                 document.getElementById("btn-sync").click();
                 const syncOk = await __waitUntil(() => fetchLog.filter((f) => String(f.url || "").startsWith("/dashboard")).length > dashBefore);
@@ -563,10 +563,10 @@ class TestTier1R3(unittest.TestCase):
             self.assertEqual(res["errors"], [])
             sc = res["scenario"]
             self.assertEqual(sc["initialVal"], "priority")
-            self.assertEqual(sc["preservedVal"], "ga_nn")
-            self.assertEqual(sc["afterSaveVal"], "ga_nn")
+            self.assertEqual(sc["preservedVal"], "ai_planner")
+            self.assertEqual(sc["afterSaveVal"], "ai_planner")
             cfg = h.api.send_command({"command": "config"})["config"]
-            self.assertEqual(cfg["planner_mode"], "ga_nn")
+            self.assertEqual(cfg["planner_mode"], "ai_planner")
 
     def test_t1_r3c_06_ui_timeout_resilience_and_rate_limit_banner_keeps_chrome_online(self) -> None:
         srv = FakeSpaceInvasionServer()
@@ -602,231 +602,3 @@ class TestTier1R3(unittest.TestCase):
             self.assertIn("ONLINE", sc["chromeText"], f"Rate limit incorrectly flipped Chrome offline: {sc['chromeText']}")
             self.assertFalse(sc["banner"]["hidden"])
             self.assertIn("is-warn", sc["banner"]["className"], f"Expected .is-warn cooldown banner: {sc['banner']}")
-
-    def test_t1_r3c_07_ui_ga_nn_radial_ring_scanner_and_telemetry_hud(self) -> None:
-        cfg = make_ga_nn_config(self, planner_mode="ga_nn", ga_generations=10, ga_population_size=16)
-        srv = FakeSpaceInvasionServer()
-        with E2ETestHarness(server=srv, config=cfg) as h:
-            h.api.get_state(include_buildings=True)
-            html_resp = requests.get(f"{h.base_url}/", timeout=5.0)
-            css_resp = requests.get(f"{h.base_url}/styles.css", timeout=5.0)
-            js_resp = requests.get(f"{h.base_url}/app.js", timeout=5.0)
-            self.assertEqual(html_resp.status_code, 200)
-            self.assertEqual(css_resp.status_code, 200)
-            self.assertEqual(js_resp.status_code, 200)
-
-            html_txt = html_resp.text
-            css_txt = css_resp.text
-            stripped_css = re.sub(r"/\*.*?\*/", "", css_txt, flags=re.DOTALL)
-            low_html = html_txt.lower()
-
-            # 1) HTML must contain an SVG radial-ring calculation scanner (concentric circles/paths, not rnk-chart)
-            svg_blocks = re.findall(r"<svg\b[^>]*>.*?</svg>", html_txt, flags=re.IGNORECASE | re.DOTALL)
-            non_chart_svgs = [b for b in svg_blocks if "rnk-chart" not in b]
-            self.assertGreater(len(non_chart_svgs), 0, "Expected radial-ring scanner <svg> element in index.html (F21)")
-            has_concentric_primitives = any(
-                (len(re.findall(r"<(?:circle|path)\b", b, flags=re.IGNORECASE)) >= 2)
-                for b in non_chart_svgs
-            )
-            self.assertTrue(has_concentric_primitives, f"Radial-ring scanner <svg> must contain concentric <circle>/<path> rings: {non_chart_svgs}")
-
-            # Readout metrics referencing Generation, Neural, Fitness, Genome search telemetry
-            for metric_kw in ("generation", "neural", "fitness", "genome"):
-                self.assertIn(metric_kw, low_html, f"Expected GA+NN HUD metric keyword {metric_kw!r} in index.html (F21)")
-
-            # 2) CSS styling: dark #06090b HUD ground, @keyframes bound to CSS rules, & valid reduced-motion animation suppression
-            self.assertIn("#06090b", stripped_css.lower(), "Expected dark #06090b HUD ground in styles.css (F21)")
-            keyframes = re.findall(r"@keyframes\s+([A-Za-z0-9_-]+)", stripped_css)
-            self.assertGreater(len(keyframes), 0, "Expected @keyframes animation in styles.css (F21)")
-
-            bound_selectors: list[str] = []
-            kf_alt = "|".join(re.escape(k) for k in keyframes)
-            for m_rule in re.finditer(r"([^{}@]+)\{([^{}]+)\}", stripped_css):
-                sel_raw, body = m_rule.group(1).strip(), m_rule.group(2)
-                if re.search(rf"animation(?:-name)?\s*:[^;]*\b(?:{kf_alt})\b", body):
-                    for part in sel_raw.split(","):
-                        clean_sel = re.sub(r"::[A-Za-z0-9_-]+|:[A-Za-z0-9_-]+(?:\([^)]*\))?", "", part).strip()
-                        if clean_sel:
-                            bound_selectors.append(clean_sel)
-            self.assertGreater(len(bound_selectors), 0, f"Expected CSS selector binding @keyframes {keyframes} to a rule in styles.css")
-
-            rm_matches = re.findall(
-                r"@media\s*\([^)]*prefers-reduced-motion\s*:\s*reduce[^)]*\)\s*\{((?:[^{}]|\{[^{}]*\})*)\}",
-                stripped_css,
-                flags=re.IGNORECASE | re.DOTALL,
-            )
-            self.assertGreater(len(rm_matches), 0, "Expected @media (prefers-reduced-motion: reduce) block in styles.css (F21)")
-            rm_anim_selectors: list[str] = []
-            for blk in rm_matches:
-                for m_rm in re.finditer(r"([^{}@]+)\{([^{}]+)\}", blk):
-                    sel_raw, body = m_rm.group(1).strip(), m_rm.group(2)
-                    if re.search(
-                        r"animation(?:-duration|-name)?\s*:\s*(?:0(?:\.\d+)?\s*(?:ms|s)?|none)",
-                        body,
-                        flags=re.IGNORECASE,
-                    ):
-                        for part in sel_raw.split(","):
-                            clean_sel = re.sub(r"::[A-Za-z0-9_-]+|:[A-Za-z0-9_-]+(?:\([^)]*\))?", "", part).strip()
-                            if clean_sel:
-                                rm_anim_selectors.append(clean_sel)
-            self.assertGreater(
-                len(rm_anim_selectors),
-                0,
-                f"@media (prefers-reduced-motion: reduce) block does not disable animations: {rm_matches}",
-            )
-
-            # Extract baseline static HTML text for comparison to verify JS dynamically populates telemetry
-            static_text_norm = re.sub(r"<[^>]+>", " ", html_txt)
-            static_text_norm = re.sub(r"\s+", " ", static_text_norm).strip()
-            static_html_stripped = re.sub(
-                r"<(?:script|style)\b[^>]*>.*?</(?:script|style)>",
-                "",
-                html_txt,
-                flags=re.IGNORECASE | re.DOTALL,
-            )
-            static_text_compact = re.sub(
-                r"\s+",
-                "",
-                html.unescape(re.sub(r"<[^>]+>", "", static_html_stripped)),
-            ).lower()
-
-            # 3) Node VM executes app.js under ga_nn mode and renders GA+NN calculation HUD visibly with live metrics
-            res = run_ui_in_node(
-                h.base_url,
-                f"""
-                const boundSelectors = {json.dumps(bound_selectors)};
-                const rmAnimSelectors = {json.dumps(rm_anim_selectors)};
-                const readyOk = await __waitUntil(() => document.querySelectorAll('#dash-plan-tbody tr').length > 0 && !document.querySelector('#dash-plan-tbody td.empty-cell'), 4000);
-                if (!readyOk) throw new Error("dash-plan-tbody did not populate non-placeholder rows");
-
-                function isElementHidden(el) {{
-                  let cur = el;
-                  while (cur && cur.nodeType === 1) {{
-                    if (cur.hidden) return true;
-                    if (cur.classList && (cur.classList.contains('hidden') || cur.classList.contains('is-hidden'))) return true;
-                    if (cur.getAttribute && cur.getAttribute('aria-hidden') === 'true') return true;
-                    if (cur.style && (cur.style.display === 'none' || cur.style.visibility === 'hidden')) return true;
-                    cur = cur.parentElement || cur.parentNode;
-                  }}
-                  return false;
-                }}
-
-                function findGaNnHudPanel() {{
-                  const svgs = Array.from(document.querySelectorAll('svg')).filter((s) => s.id !== 'rnk-chart');
-                  const stopClasses = ['app-shell', 'app-layout', 'hud-sidebar', 'main-column', 'hud-canvas', 'page-view'];
-                  const candidates = [];
-                  for (const svg of svgs) {{
-                    let cur = svg.parentElement || svg.parentNode;
-                    let steps = 0;
-                    while (
-                      cur &&
-                      cur.nodeType === 1 &&
-                      cur !== document.body &&
-                      cur !== document.documentElement &&
-                      cur.tagName !== 'BODY' &&
-                      cur.tagName !== 'HTML' &&
-                      cur.id !== 'view-stage' &&
-                      cur.id !== 'app-sidebar' &&
-                      !(cur.classList && stopClasses.some((cls) => cur.classList.contains(cls)))
-                    ) {{
-                      const txt = (cur.textContent || '').toLowerCase();
-                      if (txt.includes('generation') && (txt.includes('fitness') || txt.includes('neural'))) {{
-                        let depth = 0;
-                        let anc = cur;
-                        while (anc && anc.nodeType === 1) {{
-                          depth += 1;
-                          anc = anc.parentElement || anc.parentNode;
-                        }}
-                        const childCount = cur.querySelectorAll ? cur.querySelectorAll('*').length : 0;
-                        candidates.push({{ el: cur, depth, childCount, steps }});
-                        break;
-                      }}
-                      steps += 1;
-                      cur = cur.parentElement || cur.parentNode;
-                    }}
-                  }}
-                  if (candidates.length === 0) return null;
-                  const innermost = candidates.filter(
-                    (c) => !candidates.some((other) => {{
-                      if (other.el === c.el) return false;
-                      let p = other.el.parentElement || other.el.parentNode;
-                      while (p) {{
-                        if (p === c.el) return true;
-                        p = p.parentElement || p.parentNode;
-                      }}
-                      return false;
-                    }})
-                  );
-                  const pool = innermost.length > 0 ? innermost : candidates;
-                  pool.sort((a, b) => (b.depth - a.depth) || (a.childCount - b.childCount) || (a.steps - b.steps));
-                  return pool[0].el;
-                }}
-
-                const hudPanel = findGaNnHudPanel();
-                const hudBeforeSync = hudPanel ? hudPanel.textContent.replace(/\\s+/g, ' ').trim() : '';
-
-                // Verify @keyframes CSS selector matches elements inside hudPanel AND reduced-motion disables them
-                const hudAnimatedEls = [];
-                if (hudPanel) {{
-                  for (const sel of boundSelectors) {{
-                    try {{
-                      const hits = document.querySelectorAll(sel);
-                      for (const el of hits) {{
-                        let p = el;
-                        while (p) {{
-                          if (p === hudPanel) {{
-                            if (!hudAnimatedEls.includes(el)) hudAnimatedEls.push(el);
-                            break;
-                          }}
-                          p = p.parentElement || p.parentNode;
-                        }}
-                      }}
-                    }} catch (_) {{}}
-                  }}
-                }}
-                const matchedAnimatedEl = hudAnimatedEls.length > 0;
-                const rmMatchedSet = new Set();
-                for (const rmSel of rmAnimSelectors) {{
-                  try {{
-                    for (const el of document.querySelectorAll(rmSel)) rmMatchedSet.add(el);
-                  }} catch (_) {{}}
-                }}
-                const matchedReducedMotionEl = hudAnimatedEls.some((el) => rmMatchedSet.has(el));
-
-                const dashBefore = fetchLog.filter((f) => String(f.url || '').startsWith('/dashboard')).length;
-                const runPlanBtn = document.getElementById('btn-sync');
-                if (runPlanBtn) {{
-                  runPlanBtn.click();
-                  await __waitUntil(() => fetchLog.filter((f) => String(f.url || '').startsWith('/dashboard')).length > dashBefore, 3000);
-                  await __waitUntil(() => __serializeTable('dash-plan-tbody').length > 0 && !document.querySelector('#dash-plan-tbody td.empty-cell'), 3000);
-                }}
-
-                const hudAfter = hudPanel ? hudPanel.textContent.replace(/\\s+/g, ' ').trim() : '';
-                return {{
-                  foundHud: Boolean(hudPanel),
-                  hidden: hudPanel ? isElementHidden(hudPanel) : true,
-                  matchedAnimatedEl,
-                  matchedReducedMotionEl,
-                  hudBeforeSync,
-                  hudText: hudAfter,
-                  hasUndef: hudAfter.includes('undefined') || hudAfter.includes('NaN')
-                }};
-                """,
-            )
-            self.assertEqual(res["errors"], [])
-            sc = res["scenario"]
-            self.assertTrue(sc["foundHud"], "Innermost GA+NN radial-ring HUD container missing in DOM")
-            self.assertFalse(sc["hidden"], "Expected GA+NN radial-ring calculation HUD visible when planner_mode == 'ga_nn'")
-            self.assertTrue(sc["matchedAnimatedEl"], f"None of @keyframes CSS selectors {bound_selectors} matched elements inside GA+NN HUD")
-            self.assertTrue(sc["matchedReducedMotionEl"], f"@media (prefers-reduced-motion: reduce) selectors {rm_anim_selectors} did not cover bound HUD animated elements")
-            self.assertFalse(sc["hasUndef"], f"Rendered undefined/NaN in GA+NN HUD: {sc['hudText']!r}")
-            self.assertRegex(sc["hudText"], r"[1-9]", f"Expected non-zero live numeric telemetry inside GA+NN HUD; got {sc['hudText']!r}")
-            # Must not be unhydrated static placeholder text (spaced or tag-adjacent)
-            self.assertNotIn(sc["hudText"], static_text_norm, "GA+NN HUD text matches static index.html without dynamic telemetry updates")
-            hud_text_compact = re.sub(r"\s+", "", sc["hudText"]).lower()
-            if hud_text_compact:
-                self.assertNotIn(
-                    hud_text_compact,
-                    static_text_compact,
-                    "GA+NN HUD compact text matches static index.html without dynamic telemetry updates",
-                )

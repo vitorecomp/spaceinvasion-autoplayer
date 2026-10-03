@@ -2970,7 +2970,7 @@ return {
                 self.assertEqual(fav_ico.status_code, 200)
                 self.assertGreater(len(fav_ico.content), 64)
 
-                # Trigger live SPY to protected user -> records 6h target block + unread SQLite notification
+                # Trigger live SPY to protected user -> records 6h target block without UI popup spam
                 spy_res = requests.post(
                     f"{base_url}/command",
                     json={"command": "spy", "target_coords": "02:381:12", "planet_id": 12476, "dry_run": False},
@@ -2979,7 +2979,20 @@ return {
                 self.assertFalse(spy_res["executed"])
                 self.assertFalse(spy_res["validated"])
                 self.assertIn("can't be attacked", spy_res["message"].lower())
-                self.assertEqual(spy_res["notifications"]["unread_count"], 1)
+                self.assertEqual(spy_res["notifications"]["unread_count"], 0)
+
+                # Trigger non-protection SPY failure -> records unread SQLite notification & auto-help popup
+                fake_client._wait_frame_ready.return_value = (
+                    '<div style="color:red">Fleet dispatch failed: unexpected server error</div>'
+                )
+                spy_err_res = requests.post(
+                    f"{base_url}/command",
+                    json={"command": "spy", "target_coords": "02:381:13", "planet_id": 12476, "dry_run": False},
+                    timeout=5,
+                ).json()
+                self.assertFalse(spy_err_res["executed"])
+                self.assertFalse(spy_err_res["validated"])
+                self.assertEqual(spy_err_res["notifications"]["unread_count"], 1)
 
                 scenario_js = """
 await __waitUntil(() => document.getElementById("notif-unread-badge") && !document.getElementById("notif-unread-badge").hidden);
@@ -2989,7 +3002,7 @@ const helpTitle = document.getElementById("notif-help-title").textContent;
 const helpPrompt = document.getElementById("notif-help-prompt").textContent;
 
 document.getElementById("btn-notifications").click();
-await __waitUntil(() => !document.getElementById("notif-center-modal").hidden && document.getElementById("notif-center-list").textContent.toLowerCase().includes("can't be attacked"));
+await __waitUntil(() => !document.getElementById("notif-center-modal").hidden && document.getElementById("notif-center-list").textContent.toLowerCase().includes("02:381:13"));
 const centerText = document.getElementById("notif-center-list").textContent;
 
 document.getElementById("btn-notif-mark-all").click();
@@ -3005,8 +3018,8 @@ return { badgeBefore, helpAutoOpened, helpTitle, helpPrompt, centerText, badgeHi
                 self.assertEqual(sc["badgeBefore"], "1")
                 self.assertTrue(sc["helpAutoOpened"])
                 self.assertIn("SPY", sc["helpTitle"])
-                self.assertIn("6-hour target cooldown", sc["helpPrompt"])
-                self.assertIn("can't be attacked", sc["centerText"].lower())
+                self.assertIn("Chrome (:9222)", sc["helpPrompt"])
+                self.assertIn("02:381:13", sc["centerText"])
                 self.assertTrue(sc["badgeHiddenAfterAck"])
             finally:
                 server.shutdown()

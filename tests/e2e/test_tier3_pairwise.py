@@ -297,7 +297,7 @@ class TestTier3Pairwise(unittest.TestCase):
                 const pm = document.getElementById('cfg-planner_mode');
                 const mm = document.getElementById('cfg-merchant_mode');
                 if (!pm || !mm) throw new Error('Missing #cfg-planner_mode or #cfg-merchant_mode');
-                pm.value = 'ga_nn';
+                pm.value = 'ai_planner';
                 pm.dispatchEvent({ type: 'change', target: pm });
                 mm.checked = true;
                 mm.dispatchEvent({ type: 'change', target: mm });
@@ -317,7 +317,7 @@ class TestTier3Pairwise(unittest.TestCase):
                 """,
             )
             disk_cfg = load_strategy_config(h.config_path)
-            self.assertEqual(disk_cfg.planner_mode, "ga_nn")
+            self.assertEqual(disk_cfg.planner_mode, "ai_planner")
             self.assertTrue(disk_cfg.merchant_mode)
 
             plan_after = h.api.send_command({"command": "plan"})["actions"]

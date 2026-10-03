@@ -2142,7 +2142,7 @@ class TestApiAndCommander(unittest.TestCase):
                 t_srv.join(timeout=5.0)
                 bridge.close()
                 bridge.close()  # idempotent
-            self.assertIsNone(bridge._db)
+            self.assertTrue(bridge._db_closed)
 
     def test_r8_client_keepalive_commander_action_redaction_and_api_float_huge_int_guards(self) -> None:
         from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -5366,7 +5366,13 @@ class TestApiAndCommander(unittest.TestCase):
                     active_planet_id=101,
                     researches={"r1": 2, "r2": 5},
                     active_queues=tuple(
-                        QueueJob(category="building", name="Pig iron mine", building_id=1, target_level=4 + idx)
+                        QueueJob(
+                            category="building",
+                            name="Pig iron mine",
+                            building_id=1,
+                            target_level=4 + idx,
+                            queue_slot=idx + 1,
+                        )
                         for idx in range(5)
                     ),
                 )
