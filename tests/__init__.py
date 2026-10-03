@@ -10,3 +10,7 @@ _BIN_DIR = _REPO_ROOT / "bin"
 for _p in (str(_REPO_ROOT), str(_BIN_DIR)):
     if _p not in sys.path:
         sys.path.insert(0, _p)
+
+from tests.pg_harness import install_hermetic_guards as _install_hermetic_guards  # noqa: E402
+
+_install_hermetic_guards()
