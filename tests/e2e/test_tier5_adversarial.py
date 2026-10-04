@@ -2504,9 +2504,7 @@ async (url, opts, fullUrl, nativeFetch) => {
             held_err = None
 
     def test_adv_t5_19_r9_priority_asteroid_full_field_defender_research_rate_limit_and_ascii_parity(self) -> None:
-        import run_bot
         from spaceinvasion.api_server import ApiRequestError
-        from spaceinvasion.client import RateLimitError
         from spaceinvasion.config import normalize_planner_mode, strategy_config_from_dict
         from spaceinvasion.fleet import (
             _parse_coords_distance,
@@ -2578,20 +2576,9 @@ async (url, opts, fullUrl, nativeFetch) => {
         self.assertEqual(neg_p.fields_used, 0)
         self.assertEqual(neg_p.fields_max, 0)
 
-        # 3. playstyle 10**5000 & run_bot RateLimitError isolation
+        # 3. playstyle 10**5000 normalization
         self.assertEqual(strategy_config_from_dict({"playstyle": 10**5000}).playstyle, "fleeter")
         self.assertEqual(normalize_planner_mode(10**5000), "priority")
-        fc_rl = MagicMock()
-        fc_rl.__enter__.return_value = fc_rl
-        fc_rl.ensure_in_game.side_effect = RateLimitError("throttle", retry_after=55.0)
-        with (
-            patch("run_bot.is_debug_port_open", return_value=True),
-            patch("run_bot.GameBrowserClient.attach", return_value=fc_rl),
-            patch("run_bot.login_with_browser") as mock_login,
-        ):
-            with self.assertRaises(RateLimitError):
-                run_bot.ensure_debug_browser_ready(debug_port=19998, env_file=Path(".env"), account="default")
-        mock_login.assert_not_called()
 
         # 4. Live E2ETestHarness HTTP API: simulate_combat defender_researches & playstyle validation & log redaction
         with E2ETestHarness() as h:

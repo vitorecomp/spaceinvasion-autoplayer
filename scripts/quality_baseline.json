@@ -1,11 +1,9 @@
 {
   "ast": {
     "broad_except": {
-      "bin/advisor.py": 7,
       "bin/commander.py": 10,
       "bin/game_api.py": 2,
       "bin/login.py": 7,
-      "bin/run_bot.py": 3,
       "bin/run_stack.py": 2,
       "scripts/sync_db.py": 1,
       "scripts/sync_wiki_data.py": 6,
@@ -41,11 +39,9 @@
       "spaceinvasion/session/executor.py:ActionExecutor": 4597
     },
     "environ_reads": {
-      "bin/advisor.py": 1,
       "bin/commander.py": 1,
       "bin/game_api.py": 1,
       "bin/login.py": 1,
-      "bin/run_bot.py": 1,
       "bin/run_stack.py": 2,
       "scripts/sync_db.py": 1,
       "spaceinvasion/core/config.py": 1,
@@ -255,11 +251,9 @@
       "spaceinvasion/session/executor.py": 4806
     },
     "print_calls": {
-      "bin/advisor.py": 21,
       "bin/commander.py": 20,
       "bin/game_api.py": 4,
       "bin/login.py": 27,
-      "bin/run_bot.py": 9,
       "bin/run_stack.py": 4,
       "scripts/sync_db.py": 7,
       "scripts/sync_wiki_data.py": 1,
@@ -277,7 +271,6 @@
   "mypy": {
     "bin/commander.py": 23,
     "bin/login.py": 8,
-    "bin/run_bot.py": 2,
     "scripts/sync_wiki_data.py": 1,
     "scripts/validate_adaptive_execution.py": 3,
     "spaceinvasion/combat/fleet.py": 29,
@@ -295,11 +288,6 @@
     "spaceinvasion/session/executor.py": 3
   },
   "ruff": {
-    "bin/advisor.py": {
-      "BLE001": 7,
-      "I001": 2,
-      "T201": 21
-    },
     "bin/commander.py": {
       "BLE001": 10,
       "I001": 2,
@@ -315,11 +303,6 @@
       "BLE001": 7,
       "I001": 2,
       "T201": 27
-    },
-    "bin/run_bot.py": {
-      "BLE001": 3,
-      "I001": 2,
-      "T201": 9
     },
     "bin/run_stack.py": {
       "BLE001": 2,

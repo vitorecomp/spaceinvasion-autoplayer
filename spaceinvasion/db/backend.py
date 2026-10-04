@@ -2,7 +2,7 @@
 
 Allows operators to control which database engine SpaceInvasion Autoplayer uses via:
 1. CLI flags (`--db-backend postgres|sqlite`, `--db-url ...`) on `starter.sh`, `bin/run_stack.py`, `bin/game_api.py`,
-   `bin/advisor.py`, `bin/run_bot.py`, and `scripts/db_migrate.py`.
+   and `scripts/db_migrate.py`.
 2. Environment variables (`SPACEINVASION_DB_BACKEND`, `SPACEINVASION_DB_URL`, `SPACEINVASION_PG_*`).
 3. Runtime persistence (`state/db_backend.json`), changeable live from the Web Operator Console (**Config** tab)
    or via `.venv/bin/python3 scripts/db_migrate.py use postgres|sqlite`.
