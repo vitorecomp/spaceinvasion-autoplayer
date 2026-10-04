@@ -144,13 +144,13 @@ def canonical(obj: Any) -> Any:
     if isinstance(obj, Mapping):
         out: dict[str, Any] = {}
         for key, value in obj.items():
-            skey = key if isinstance(key, str) else json.dumps(canonical(key))
+            skey = key if isinstance(key, str) else json.dumps(canonical(key), allow_nan=False)
             out[skey] = VOLATILE if (skey in VOLATILE_KEYS and value is not None) else canonical(value)
         return out
     if isinstance(obj, (list, tuple)):
         return [canonical(v) for v in obj]
     if isinstance(obj, (set, frozenset)):
-        return sorted((canonical(v) for v in obj), key=lambda v: json.dumps(v, sort_keys=True))
+        return sorted((canonical(v) for v in obj), key=lambda v: json.dumps(v, sort_keys=True, allow_nan=False))
     if isinstance(obj, Path):
         return str(obj)
     item = getattr(obj, "item", None)  # numpy scalar
@@ -164,7 +164,7 @@ def canonical(obj: Any) -> Any:
 
 def render(obj: Any) -> str:
     """The exact text of a reference file."""
-    return json.dumps(canonical(obj), indent=1, sort_keys=True, ensure_ascii=True) + "\n"
+    return json.dumps(canonical(obj), indent=1, sort_keys=True, ensure_ascii=True, allow_nan=False) + "\n"
 
 
 def _drop_path(node: Any, parts: Sequence[str]) -> None:

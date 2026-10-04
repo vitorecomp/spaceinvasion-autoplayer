@@ -73,7 +73,15 @@ from spaceinvasion.planner.strategy import (  # noqa: E402
     plan_actions,
 )
 
-WATCH_PATHS = discover_watch_paths(_REPO_ROOT, entrypoints=(Path(__file__).resolve(),))
+WATCH_PATHS = discover_watch_paths(
+    _REPO_ROOT,
+    entrypoints=(Path(__file__).resolve(),),
+    packages=("core", "combat", "planner"),
+    extra_files=(
+        _REPO_ROOT / "spaceinvasion/runtime/commander_client.py",
+        _REPO_ROOT / "spaceinvasion/runtime/reloader.py",
+    ),
+)
 
 _RATE_LIMIT_MARKERS = (
     "rate-limit",
@@ -1086,7 +1094,12 @@ def main(argv: list[str] | None = None) -> int:
         return watch_and_run(
             label="CMD",
             cmd=current_python_cmd(Path(__file__).resolve(), raw_argv),
-            watch_paths=(*WATCH_PATHS, _REPO_ROOT / "spaceinvasion"),
+            watch_paths=(
+                *WATCH_PATHS,
+                _REPO_ROOT / "spaceinvasion/core",
+                _REPO_ROOT / "spaceinvasion/combat",
+                _REPO_ROOT / "spaceinvasion/planner",
+            ),
         )
 
     is_main = threading.current_thread() is threading.main_thread()

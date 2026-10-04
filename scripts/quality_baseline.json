@@ -38,7 +38,7 @@
       "spaceinvasion/planner/ai_planner.py:EmpirePathSimulator": 1932,
       "spaceinvasion/planner/ai_planner.py:PathStrategy": 555,
       "spaceinvasion/planner/optimizer.py:_SimState": 526,
-      "spaceinvasion/runtime/api_server.py:GameApiBridge": 16284,
+      "spaceinvasion/runtime/api_server.py:GameApiBridge": 16286,
       "spaceinvasion/session/client.py:GameBrowserClient": 3036,
       "spaceinvasion/session/executor.py:ActionExecutor": 4597
     },
@@ -61,11 +61,11 @@
     },
     "function_loc": {
       "bin/commander.py:_action_to_command_payload": 154,
-      "bin/commander.py:main": 465,
+      "bin/commander.py:main": 470,
       "bin/commander.py:run_commander_tick": 325,
       "bin/login.py:main": 132,
       "bin/run_stack.py:main": 107,
-      "scripts/validate_adaptive_execution.py:main": 423,
+      "scripts/validate_adaptive_execution.py:main": 462,
       "spaceinvasion/combat/fleet.py:_classify_and_parse_inbox_block": 533,
       "spaceinvasion/combat/fleet.py:_compile_sector_intel_view": 341,
       "spaceinvasion/combat/fleet.py:_select_contiguous_exploratory_sectors": 159,
@@ -106,7 +106,7 @@
       "spaceinvasion/db/migrations.py:import_legacy_rank_history_json": 146,
       "spaceinvasion/db/migrations.py:import_legacy_snapshot_json": 211,
       "spaceinvasion/db/migrations.py:main": 298,
-      "spaceinvasion/db/postgres.py:PostgresSession.execute": 147,
+      "spaceinvasion/db/postgres.py:PostgresSession.execute": 146,
       "spaceinvasion/db/storage.py:GameDatabase.__init__": 166,
       "spaceinvasion/db/storage.py:GameDatabase._backfill_reports_from_game_messages_locked": 291,
       "spaceinvasion/db/storage.py:GameDatabase._coalesce_legacy_spy_target_locked": 170,
@@ -213,7 +213,7 @@
       "spaceinvasion/runtime/api_server.py:GameApiBridge._start_ai_planner_job": 250,
       "spaceinvasion/runtime/api_server.py:GameApiBridge._start_config_optimizer_job": 196,
       "spaceinvasion/runtime/api_server.py:GameApiBridge._sync_spio_if_unread": 144,
-      "spaceinvasion/runtime/api_server.py:GameApiBridge.dashboard": 449,
+      "spaceinvasion/runtime/api_server.py:GameApiBridge.dashboard": 451,
       "spaceinvasion/runtime/api_server.py:GameApiBridge.get_state": 169,
       "spaceinvasion/runtime/api_server.py:GameApiBridge.run_galaxy_sweep": 660,
       "spaceinvasion/runtime/api_server.py:_redact_api_payload": 147,
@@ -249,7 +249,7 @@
       "spaceinvasion/session/executor.py:ActionExecutor.sync_planet_names_in_game": 227
     },
     "module_loc": {
-      "bin/commander.py": 1548,
+      "bin/commander.py": 1561,
       "scripts/sync_wiki_data.py": 1286,
       "spaceinvasion/combat/fleet.py": 5447,
       "spaceinvasion/combat/ranking.py": 1940,
@@ -257,14 +257,14 @@
       "spaceinvasion/core/logging_utils.py": 999,
       "spaceinvasion/core/state.py": 3242,
       "spaceinvasion/db/migrations.py": 4001,
-      "spaceinvasion/db/postgres.py": 1122,
+      "spaceinvasion/db/postgres.py": 1114,
       "spaceinvasion/db/storage.py": 10688,
       "spaceinvasion/planner/action_graph.py": 2995,
       "spaceinvasion/planner/ai_planner.py": 7321,
       "spaceinvasion/planner/config_optimizer.py": 4604,
       "spaceinvasion/planner/optimizer.py": 10725,
       "spaceinvasion/planner/strategy.py": 8823,
-      "spaceinvasion/runtime/api_server.py": 18155,
+      "spaceinvasion/runtime/api_server.py": 18157,
       "spaceinvasion/session/auth.py": 865,
       "spaceinvasion/session/browser.py": 1092,
       "spaceinvasion/session/client.py": 3670,
@@ -279,7 +279,7 @@
       "bin/run_stack.py": 4,
       "scripts/sync_db.py": 7,
       "scripts/sync_wiki_data.py": 1,
-      "scripts/validate_adaptive_execution.py": 85,
+      "scripts/validate_adaptive_execution.py": 89,
       "spaceinvasion/db/migrations.py": 21,
       "spaceinvasion/runtime/api_server.py": 5,
       "spaceinvasion/runtime/reloader.py": 3
@@ -359,9 +359,9 @@
       "T201": 1
     },
     "scripts/validate_adaptive_execution.py": {
-      "B905": 1,
+      "B905": 2,
       "I001": 1,
-      "T201": 85
+      "T201": 89
     },
     "spaceinvasion/combat/fleet.py": {
       "BLE001": 13

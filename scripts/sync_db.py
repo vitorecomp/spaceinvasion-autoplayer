@@ -174,7 +174,7 @@ def main(argv: list[str] | None = None) -> int:
     if not ready.get("ok"):
         err = f"PostgreSQL is not reachable at {redact_db_url(pg_url)}: {ready.get('error', 'connection failed')}"
         if args.json:
-            print(json.dumps({"ok": False, "error": err}, indent=2))
+            print(json.dumps({"ok": False, "error": err}, indent=2, allow_nan=False))
         else:
             print(f"[SYNC] ERROR: {err}", file=sys.stderr)
         return 1
@@ -228,7 +228,7 @@ def main(argv: list[str] | None = None) -> int:
             "elapsed_ms": elapsed_ms,
         }
         if args.json:
-            print(json.dumps(report, indent=2))
+            print(json.dumps(report, indent=2, allow_nan=False))
         else:
             print(f"[SYNC] Completed ({report['direction']}) in {elapsed_ms:.1f}ms")
             print(f"  SQLite   ({report['sqlite_path']}): {report['sqlite_total_rows']:,} rows")

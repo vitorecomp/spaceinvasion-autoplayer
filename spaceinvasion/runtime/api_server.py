@@ -8481,6 +8481,8 @@ class GameApiBridge:
                         throttle_sig,
                         post_overflow_paused_sig,
                         fleet_cd_sig,
+                        self._observed_fleet_slot_base_offset,
+                        tuple(sorted(self._observed_fleet_slots_by_pid.items())),
                         target_blocks_sig,
                         plan_actions,
                         run_optimizer,
@@ -8724,14 +8726,14 @@ class GameApiBridge:
                 dash_state is not None
                 and not plan_cache_hit
                 and isinstance(self._dash_plan_cache_key, tuple)
-                and len(self._dash_plan_cache_key) >= 4
+                and len(self._dash_plan_cache_key) >= 5
             ):
                 final_db_tok = self._db_total_changes_token()
-                if self._dash_plan_cache_key[3] != final_db_tok:
+                if self._dash_plan_cache_key[4] != final_db_tok:
                     self._dash_plan_cache_key = (
-                        self._dash_plan_cache_key[:3]
+                        self._dash_plan_cache_key[:4]
                         + (final_db_tok,)
-                        + self._dash_plan_cache_key[4:]
+                        + self._dash_plan_cache_key[5:]
                     )
             self._last_dashboard_payload = result
             if sweep_deferred_refresh:

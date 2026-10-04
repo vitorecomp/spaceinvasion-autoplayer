@@ -109,7 +109,7 @@ def _get(base: str, path: str, payload: Optional[dict] = None) -> dict:
         urllib.request.Request(url)
         if payload is None
         else urllib.request.Request(
-            url, data=json.dumps(payload).encode(), headers={"Content-Type": "application/json"}
+            url, data=json.dumps(payload, allow_nan=False).encode(), headers={"Content-Type": "application/json"}
         )
     )
     with urllib.request.urlopen(req, timeout=60) as resp:
@@ -184,7 +184,7 @@ def _append_capacity_log(path: Path, ts: float, capacity: float, furnace_levels:
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a", encoding="utf-8") as fh:
             row = {"ts": round(ts, 1), "capacity": round(capacity, 1), "furnace_levels": furnace_levels}
-            fh.write(json.dumps(row) + "\n")
+            fh.write(json.dumps(row, allow_nan=False) + "\n")
         return True
     except OSError:
         return False

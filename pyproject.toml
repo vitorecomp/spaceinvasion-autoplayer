@@ -18,7 +18,8 @@ omit = [
     "spaceinvasion/ui/*",
     "tests/*",
 ]
-branch = true
+branch = false
+core = "sysmon"
 
 [tool.coverage.report]
 show_missing = true

@@ -246,7 +246,7 @@ def _run_on_connection(conn: Any, args: argparse.Namespace) -> int:
         LOG.info("Statement counters reset.")
     if args.report:
         report = fetch_report(conn, order_by=args.order_by, limit=args.limit, min_calls=args.min_calls)
-        _emit(json.dumps(report, indent=2) if args.json else format_report(report))
+        _emit(json.dumps(report, indent=2, allow_nan=False) if args.json else format_report(report))
     else:
         _emit_status(status)
     return EXIT_OK

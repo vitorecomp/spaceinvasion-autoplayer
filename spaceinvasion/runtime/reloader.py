@@ -96,9 +96,11 @@ def discover_watch_paths(
     repo_root: Path,
     *,
     entrypoints: Sequence[Path] = (),
+    packages: Optional[Sequence[str]] = None,
+    extra_files: Sequence[Path] = (),
     exclude_dirs: Sequence[str] = ("ui", "__pycache__"),
 ) -> tuple[Path, ...]:
-    """Discover watched Python files under `spaceinvasion/` (excluding `ui/`) plus `entrypoints`."""
+    """Discover watched Python files under `spaceinvasion/` (or selected `packages`) plus `entrypoints`."""
     root = repo_root.resolve()
     cwd = Path.cwd().resolve()
     use_rel = cwd == root
@@ -112,22 +114,30 @@ def discover_watch_paths(
     discovered: list[Path] = []
     seen: set[Path] = set()
 
+    def _add_file(candidate: Path) -> None:
+        if not candidate.exists():
+            return
+        formatted = _format_path(candidate)
+        if formatted not in seen:
+            seen.add(formatted)
+            discovered.append(formatted)
+
     for ep in entrypoints:
-        if ep.exists():
-            formatted = _format_path(ep)
-            if formatted not in seen:
-                seen.add(formatted)
-                discovered.append(formatted)
+        _add_file(ep)
 
     pkg_root = root / "spaceinvasion"
     if pkg_root.is_dir():
-        for child in sorted(pkg_root.rglob("*.py")):
-            if _is_excluded_watch_path(child, pkg_root, exclude_dirs=exclude_dirs):
+        scan_roots = [pkg_root / pkg for pkg in packages] if packages is not None else [pkg_root]
+        for scan_root in scan_roots:
+            if not scan_root.is_dir():
                 continue
-            formatted = _format_path(child)
-            if formatted not in seen:
-                seen.add(formatted)
-                discovered.append(formatted)
+            for child in sorted(scan_root.rglob("*.py")):
+                if _is_excluded_watch_path(child, pkg_root, exclude_dirs=exclude_dirs):
+                    continue
+                _add_file(child)
+
+    for extra in extra_files:
+        _add_file(extra)
 
     return tuple(discovered)
 

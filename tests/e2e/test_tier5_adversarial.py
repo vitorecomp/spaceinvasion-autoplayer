@@ -2467,7 +2467,7 @@ async (url, opts, fullUrl, nativeFetch) => {
                   buildings_eta: { planet: { planet_id: 1 }, planet_economy: { blast_furnace_pct: 0 } },
                 });
 
-                el('cfg-planner_mode').value = 'ga_nn';
+                el('cfg-planner_mode').value = 'ai_planner';
                 el('cfg-ga_seed').value = '77';
                 globalThis.__t5R7Dash = 'hold_prio';
                 const pDash = loadDashboard({ refresh: false, preserveConfig: true, force: true });
@@ -2478,7 +2478,7 @@ async (url, opts, fullUrl, nativeFetch) => {
                 await __sleep(20);
                 globalThis.__resolveT5Dash();
                 await pDash;
-                await __waitUntil(() => state.dashboard?.config?.planner_mode === 'ga_nn' && state.dashboard?.config?.ga_seed === 77);
+                await __waitUntil(() => state.dashboard?.config?.planner_mode === 'ai_planner' && state.dashboard?.config?.ga_seed === 77);
                 await __sleep(30);
 
                 return {
@@ -2497,9 +2497,9 @@ async (url, opts, fullUrl, nativeFetch) => {
             self.assertEqual(sc["fmtSmallNeg"], "0")
             self.assertEqual(sc["imprUndef"], "—")
             self.assertEqual(sc["bfFallback"], 0)
-            self.assertEqual(sc["cfgMode"], "ga_nn")
+            self.assertEqual(sc["cfgMode"], "ai_planner")
             self.assertEqual(sc["cfgSeed"], 77)
-            self.assertEqual(sc["domMode"], "ga_nn")
+            self.assertEqual(sc["domMode"], "ai_planner")
 
     def test_adv_t5_18_m5_r8_keepalive_redaction_arabic_float_mlp_horizon_and_ui_guards(self) -> None:
         import json

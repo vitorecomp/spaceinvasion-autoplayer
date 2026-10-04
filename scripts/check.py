@@ -29,10 +29,12 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 from typing import Any, Sequence
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 BASELINE_PATH = REPO_ROOT / "scripts" / "quality_baseline.json"
+COVERAGE_BASELINE_PATH = REPO_ROOT / "scripts" / "coverage_baseline.json"
 PROD_ROOTS = ("spaceinvasion", "bin", "scripts")
 EXCLUDED_AST_FILES = frozenset({"spaceinvasion/core/game_data.py"})
 
@@ -406,6 +408,16 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Skip pytest and vitest while keeping static checks and frontend tsc.",
     )
     parser.add_argument(
+        "--format-check",
+        action="store_true",
+        help="Also run `ruff format --check` across production Python.",
+    )
+    parser.add_argument(
+        "--record-coverage",
+        action="store_true",
+        help="Run pytest with coverage and record per-module coverage to scripts/coverage_baseline.json.",
+    )
+    parser.add_argument(
         "--write-baseline",
         action="store_true",
         help="Regenerate scripts/quality_baseline.json from the current workspace.",
@@ -413,24 +425,88 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _write_coverage_baseline(raw_cov_json: Path) -> None:
+    payload = json.loads(raw_cov_json.read_text(encoding="utf-8"))
+    files_raw = payload.get("files") or {}
+    files_out: dict[str, dict[str, Any]] = {}
+    for file_key, file_info in sorted(files_raw.items()):
+        summary = (file_info or {}).get("summary") or {}
+        files_out[str(file_key)] = {
+            "covered_lines": int(summary.get("covered_lines", 0)),
+            "num_statements": int(summary.get("num_statements", 0)),
+            "missing_lines": int(summary.get("missing_lines", 0)),
+            "excluded_lines": int(summary.get("excluded_lines", 0)),
+            "percent_covered": round(float(summary.get("percent_covered", 0.0)), 2),
+        }
+    totals_raw = payload.get("totals") or {}
+    baseline = {
+        "schema_version": 1,
+        "totals": {
+            "covered_lines": int(totals_raw.get("covered_lines", 0)),
+            "num_statements": int(totals_raw.get("num_statements", 0)),
+            "missing_lines": int(totals_raw.get("missing_lines", 0)),
+            "excluded_lines": int(totals_raw.get("excluded_lines", 0)),
+            "num_branches": int(totals_raw.get("num_branches", 0)),
+            "covered_branches": int(totals_raw.get("covered_branches", 0)),
+            "percent_covered": round(float(totals_raw.get("percent_covered", 0.0)), 2),
+        },
+        "files": files_out,
+    }
+    COVERAGE_BASELINE_PATH.write_text(
+        json.dumps(baseline, indent=2, sort_keys=True, allow_nan=False) + "\n",
+        encoding="utf-8",
+    )
+    _emit(f"Wrote coverage baseline to {COVERAGE_BASELINE_PATH.relative_to(REPO_ROOT)} ({len(files_out)} files)")
+
+
+def _run_pytest_step(*, record_coverage: bool) -> bool:
+    pytest_base = _resolve_python_tool("pytest")
+    if not record_coverage:
+        return _run_subprocess_step("pytest", pytest_base)
+    cov_data_file = REPO_ROOT / ".coverage"
+    with tempfile.TemporaryDirectory(prefix="si_cov_") as tmp_dir:
+        cov_json = Path(tmp_dir) / "coverage.json"
+        cmd = [
+            *pytest_base,
+            "--cov=spaceinvasion",
+            "--cov=bin",
+            "--cov=scripts",
+            f"--cov-report=json:{cov_json}",
+        ]
+        try:
+            ok = _run_subprocess_step("pytest (with coverage)", cmd)
+            if cov_json.is_file():
+                _write_coverage_baseline(cov_json)
+            elif ok:
+                _emit("[FAIL] Coverage JSON report was not produced", err=True)
+                return False
+            return ok
+        finally:
+            cov_data_file.unlink(missing_ok=True)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
     if args.write_baseline:
         payload = _build_baseline_payload()
-        BASELINE_PATH.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        BASELINE_PATH.write_text(json.dumps(payload, indent=2, sort_keys=True, allow_nan=False) + "\n", encoding="utf-8")
         _emit(f"Wrote baseline to {BASELINE_PATH.relative_to(REPO_ROOT)}")
         return 0
 
     if not _run_static_gates():
         return 1
 
+    if args.format_check:
+        fmt_cmd = [*_resolve_python_tool("ruff"), "format", "--check", *PROD_ROOTS]
+        if not _run_subprocess_step("ruff format --check", fmt_cmd):
+            return 1
+
     if args.lint_only:
         return 0
 
     ok = True
     if not args.skip_tests:
-        pytest_cmd = [*_resolve_python_tool("pytest")]
-        ok = _run_subprocess_step("pytest", pytest_cmd) and ok
+        ok = _run_pytest_step(record_coverage=args.record_coverage) and ok
         npm = _resolve_npm()
         ok = _run_subprocess_step("frontend test", [npm, "--prefix", "frontend", "test"]) and ok
 
