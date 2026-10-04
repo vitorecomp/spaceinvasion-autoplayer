@@ -396,7 +396,7 @@ class TestPostgresDialectAndBackendControl(unittest.TestCase):
                 # Sync Postgres -> SQLite and verify live GameApiBridge backend detection
                 sqlite_file = td_path / "mirror.db"
                 with allow_sqlite_for_test():
-                    sq_db = GameDatabase(sqlite_file, backend="sqlite", attack_history_path="")
+                    sq_db = GameDatabase(sqlite_file, backend="sqlite")
                     try:
                         sync_to_sq = sync_database_stores(pg_db, sq_db)
                         self.assertTrue(sync_to_sq["ok"])
@@ -432,7 +432,7 @@ class TestPostgresDialectAndBackendControl(unittest.TestCase):
                         bridge_sq.close()
 
                     # Verify sync_database_stores SQLite -> Postgres advances identity sequence past q2["id"]
-                    sq_db2 = GameDatabase(sqlite_file, backend="sqlite", attack_history_path="")
+                    sq_db2 = GameDatabase(sqlite_file, backend="sqlite")
                     try:
                         sync_to_pg = sync_database_stores(sq_db2, pg_db)
                         self.assertTrue(sync_to_pg["ok"])
@@ -492,7 +492,7 @@ class TestPostgresDialectAndBackendControl(unittest.TestCase):
             self.skipTest("PostgreSQL test redirector is active under pytest (tests/conftest.py).")
         with tempfile.TemporaryDirectory(prefix="si_pg_redir_") as tmp:
             p = Path(tmp) / "plain.db"
-            db1 = GameDatabase(p, attack_history_path="")
+            db1 = GameDatabase(p)
             try:
                 self.assertEqual(db1.backend_name, "postgres")
                 self.assertTrue(is_unix_socket_dsn(db1.postgres_url))
@@ -502,7 +502,7 @@ class TestPostgresDialectAndBackendControl(unittest.TestCase):
                 db1.close()
 
             # Reopening the same path within the test hits the same disposable PG database
-            db2 = GameDatabase(p, attack_history_path="")
+            db2 = GameDatabase(p)
             try:
                 self.assertEqual(db2.backend_name, "postgres")
                 self.assertEqual(db2.get_custom_planet_names().get("99999"), "RedirectedPG")

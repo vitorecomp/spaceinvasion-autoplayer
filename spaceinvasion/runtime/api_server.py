@@ -1665,12 +1665,7 @@ class GameApiBridge:
                 )
                 self._maybe_initial_sync_sqlite_to_postgres(resolved_cfg.sqlite_path)
             else:
-                legacy_rank_path_live: Optional[Path] = (
-                    (resolved_cfg.sqlite_path.parent / "rank_history.json")
-                    if (resolved_cfg.sqlite_path.parent / "rank_history.json").is_file()
-                    else None
-                )
-                self._db = GameDatabase(resolved_cfg.sqlite_path, legacy_rank_json=legacy_rank_path_live)
+                self._db = GameDatabase(resolved_cfg.sqlite_path)
         else:
             resolved_db = (
                 Path(db_path) if isinstance(db_path, (Path, str)) and str(db_path) != ":memory:" and not str(db_path).startswith("file:") else db_path
@@ -1679,20 +1674,7 @@ class GameApiBridge:
             )
             if isinstance(resolved_db, Path):
                 self._resolved_sqlite_path = resolved_db
-            legacy_rank_path: Optional[Path] = (
-                (resolved_db.parent / "rank_history.json")
-                if (
-                    isinstance(resolved_db, Path)
-                    and str(resolved_db) != ":memory:"
-                    and (resolved_db.parent / "rank_history.json").is_file()
-                )
-                else None
-            )
-            self._db = (
-                GameDatabase(resolved_db, legacy_rank_json=legacy_rank_path)
-                if resolved_db is not None
-                else None
-            )
+            self._db = GameDatabase(resolved_db) if resolved_db is not None else None
         if self._db is not None:
             self._rank_samples = self._db.get_rank_samples()
             self._economy_rates.update(self._db.get_all_economy_rates())
@@ -1930,7 +1912,7 @@ class GameApiBridge:
                     {"synced_ts": round(time.time(), 3), "already_populated": True, "galaxy_slot_history": existing_hist},
                 )
                 return
-            sq_db = GameDatabase(sqlite_path, attack_history_path="")
+            sq_db = GameDatabase(sqlite_path)
             try:
                 res = sync_database_stores(sq_db, self._db)
             finally:

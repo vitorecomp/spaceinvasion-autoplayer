@@ -19,7 +19,7 @@ from spaceinvasion.state import (
     TutorialTask,
 )
 import spaceinvasion.storage as storage_mod
-from spaceinvasion.storage import DEFAULT_ATTACK_HISTORY_PATH, GameDatabase
+from spaceinvasion.storage import GameDatabase
 from spaceinvasion.strategy import PlannedAction
 
 
@@ -67,28 +67,10 @@ class TestGameDatabase(unittest.TestCase):
     def test_persists_snapshots_tutorial_economy_actions_and_intel(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            legacy_json = tmp_path / "rank_history.json"
-            legacy_json.write_text(
-                json.dumps(
-                    [
-                        {
-                            "ts": 500.0,
-                            "server_points": 3000,
-                            "server_rank": 290,
-                            "estimated_points": 2950.0,
-                            "pts_per_hr": 20.0,
-                            "spice_value": 90000.0,
-                            "planets": 1,
-                        }
-                    ]
-                ),
-                encoding="utf-8",
-            )
-            db = GameDatabase(tmp_path / "spaceinvasion.db", legacy_rank_json=legacy_json)
+            db = GameDatabase(tmp_path / "spaceinvasion.db")
             try:
-                # Migrated legacy sample + new snapshot
                 samples = db.record_state_snapshot(_sample_db_state(ts=1000.0, step=6, b1=12, b2_rate=0))
-                self.assertEqual(len(samples), 2)
+                self.assertEqual(len(samples), 1)
                 self.assertEqual(db.get_all_economy_rates()[12476]["resource2"], 0)
 
                 # Step 7 observation marks step 6 completed
@@ -336,46 +318,23 @@ class TestGameDatabase(unittest.TestCase):
             finally:
                 db.close()
 
-    def test_attack_history_path_isolation_memory_and_custom_override(self) -> None:
+    def test_attack_history_json_retired(self) -> None:
         repo_hist = Path(__file__).resolve().parents[2] / "data" / "attack_history.json"
-        self.assertFalse(repo_hist.exists(), "Legacy data/attack_history.json should be retired into SQLite")
+        self.assertFalse(repo_hist.exists(), "Legacy data/attack_history.json should be retired into DB")
 
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
+            db_mem = GameDatabase(":memory:")
+            try:
+                self.assertEqual(db_mem.summary()["db_path"], ":memory:")
+            finally:
+                db_mem.close()
             db_tmp = GameDatabase(tmp_path / "spaceinvasion.db")
             try:
-                self.assertIsNone(db_tmp.attack_history_path)
+                db_tmp.record_raid("02:380:04", attacked_ts=100.0, outcome="Victory", loot={"spice": 100})
                 self.assertFalse((tmp_path / "attack_history.json").exists())
             finally:
                 db_tmp.close()
-
-            custom_json = tmp_path / "custom" / "raids.json"
-            db_custom = GameDatabase(tmp_path / "custom.db", attack_history_path=custom_json)
-            try:
-                db_custom.record_raid("02:380:04", attacked_ts=100.0, outcome="Victory", loot={"spice": 100})
-                self.assertTrue(custom_json.exists())
-            finally:
-                db_custom.close()
-
-            db_mem = GameDatabase(":memory:")
-            try:
-                self.assertIsNone(db_mem.attack_history_path)
-                self.assertEqual(db_mem.summary()["db_path"], ":memory:")
-                self.assertIsNone(db_mem.sync_attack_history_file())
-            finally:
-                db_mem.close()
-
-            patched_db = tmp_path / "default_state" / "spaceinvasion.db"
-            patched_hist = tmp_path / "default_data" / "attack_history.json"
-            with (
-                patch.object(storage_mod, "DEFAULT_DB_PATH", patched_db),
-                patch.object(storage_mod, "DEFAULT_ATTACK_HISTORY_PATH", patched_hist),
-            ):
-                db_def = GameDatabase(patched_db)
-                try:
-                    self.assertEqual(db_def.attack_history_path, patched_hist)
-                finally:
-                    db_def.close()
 
         self.assertFalse(repo_hist.exists())
 
@@ -435,7 +394,6 @@ class TestGameDatabase(unittest.TestCase):
                     db = GameDatabase(mem_uri)
                     try:
                         self.assertTrue(db._is_memory)
-                        self.assertIsNone(db.attack_history_path)
                         db.record_raid(
                             "2:380:4",
                             attacked_ts=float("inf"),
@@ -459,7 +417,7 @@ class TestGameDatabase(unittest.TestCase):
                 os.chdir(old_cwd)
 
             # Corrupt cells & null JSON values in tables degrade safely
-            db_c = GameDatabase(tmp_root / "corrupt.db", attack_history_path="")
+            db_c = GameDatabase(tmp_root / "corrupt.db")
             try:
                 db_c._conn.execute(
                     "INSERT INTO economy_rates_cache(planet_id, coords, rates_json, updated_ts) VALUES(1, '01:001:01', 'null', 10.0)"
@@ -511,12 +469,12 @@ class TestGameDatabase(unittest.TestCase):
 
             with patch("spaceinvasion.storage.sqlite3.connect", return_value=_ProxyConn(real_conn)):
                 with self.assertRaises(sqlite3.OperationalError):
-                    GameDatabase(tmp_root / "broken_ddl.db", attack_history_path="")
+                    GameDatabase(tmp_root / "broken_ddl.db")
             self.assertEqual(closed_flags, [True])
 
     def test_corrupt_numeric_cells_in_readers_and_spy_report_coord_normalization(self) -> None:
         with tempfile.TemporaryDirectory(prefix="si_stor_adv_") as tmp:
-            db = GameDatabase(Path(tmp) / "adv.db", attack_history_path="")
+            db = GameDatabase(Path(tmp) / "adv.db")
             try:
                 # 1. Corrupt non-numeric cells in rank_snapshots, galaxy_scans, action_history, planet_snapshots
                 db._conn.execute(
@@ -640,12 +598,11 @@ class TestGameDatabase(unittest.TestCase):
             finally:
                 db.close()
 
-    def test_blank_attack_history_path_disables_mirror_on_record_raid(self) -> None:
+    def test_extreme_ints_on_record_raid_and_planet_state(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            for idx, blank in enumerate(("", "   ", Path(""))):
-                db = GameDatabase(Path(tmp) / f"blank_{idx}.db", attack_history_path=blank)
+            for idx in range(1):
+                db = GameDatabase(Path(tmp) / f"extreme_{idx}.db")
                 try:
-                    self.assertIsNone(db.attack_history_path)
                     db.record_raid(
                         "02:380:04",
                         attacked_ts=1_700_000_000.0,
@@ -653,7 +610,6 @@ class TestGameDatabase(unittest.TestCase):
                         outcome="Victory",
                         loot={"pig_iron": 10**5000, "spice": 100},
                     )
-                    self.assertIsNone(db.sync_attack_history_file())
                     stats_json = json.dumps(db.get_raid_stats(), allow_nan=False)
                     stats = json.loads(stats_json)
                     self.assertIn("per_target", stats)
@@ -686,7 +642,7 @@ class TestGameDatabase(unittest.TestCase):
 
     def test_r7_storage_queries_guard_huge_limits_and_nonfinite_float_windows(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            db = GameDatabase(Path(tmp) / "r7_queries.db", attack_history_path=None)
+            db = GameDatabase(Path(tmp) / "r7_queries.db")
             try:
                 db.record_raid(
                     "02:380:04",
@@ -720,7 +676,7 @@ class TestGameDatabase(unittest.TestCase):
 
         secret = "DIRECT_DB_SECRET_SID_42"
         with tempfile.TemporaryDirectory() as tmp:
-            db = GameDatabase(Path(tmp) / "r9_redact.db", attack_history_path="")
+            db = GameDatabase(Path(tmp) / "r9_redact.db")
             try:
                 db._conn.execute(
                     "INSERT INTO action_history(ts, source, command, priority, kind, planet_coords, target_name, executed, dry_run, message) "
@@ -770,7 +726,7 @@ class TestGameDatabase(unittest.TestCase):
             self.assertNotIn(sec, san_dumped)
 
         with tempfile.TemporaryDirectory() as tmp:
-            db = GameDatabase(Path(tmp) / "r10.db", attack_history_path="")
+            db = GameDatabase(Path(tmp) / "r10.db")
             try:
                 blob_url = f"https://x/?sid={s1}".encode("utf-8")
                 fleet_json = json.dumps({"sid": s2, "password": pw, "s4": 3}, allow_nan=False)
@@ -855,7 +811,7 @@ class TestGameDatabase(unittest.TestCase):
         self.assertFalse(_is_win_outcome(10**5000, 0.0))  # type: ignore[arg-type]
 
         with tempfile.TemporaryDirectory() as tmp:
-            db = GameDatabase(Path(tmp) / "r11.db", attack_history_path="")
+            db = GameDatabase(Path(tmp) / "r11.db")
             try:
                 st = _sample_db_state(ts=2000.0)
                 ast_p = PlanetState(
@@ -974,7 +930,7 @@ class TestGameDatabase(unittest.TestCase):
         self.assertIn("authorization: bearer redacted", dumped.lower())
 
         with tempfile.TemporaryDirectory() as tmp:
-            db = GameDatabase(Path(tmp) / "r12.db", attack_history_path="")
+            db = GameDatabase(Path(tmp) / "r12.db")
             try:
                 db.record_action(
                     source=_RaiseFspath(),  # type: ignore[arg-type]
@@ -1030,7 +986,7 @@ class TestGameDatabase(unittest.TestCase):
         self.assertIn("has_sid=false", parsed["kv"])
 
         with tempfile.TemporaryDirectory() as tmp:
-            db = GameDatabase(Path(tmp) / "r13.db", attack_history_path="")
+            db = GameDatabase(Path(tmp) / "r13.db")
             try:
                 db.record_action(
                     source="test",
@@ -1092,7 +1048,7 @@ class TestGameDatabase(unittest.TestCase):
     def test_colony_attempts_append_only_logging_filtering_and_summary(self) -> None:
         now = 1_750_000_000.0
         with tempfile.TemporaryDirectory() as tmp:
-            db = GameDatabase(Path(tmp) / "col_attempts.db", attack_history_path="")
+            db = GameDatabase(Path(tmp) / "col_attempts.db")
             try:
                 # 1st attempt on 02:150:08: dispatched -> deleted_undersized (215 fields)
                 db.record_colony_attempt(
@@ -1281,7 +1237,7 @@ class TestGameDatabase(unittest.TestCase):
 
     def test_v013_config_optimizer_ai_planner_reserved_floors_and_field_conflicts(self) -> None:
         with tempfile.TemporaryDirectory(prefix="si_v13_store_") as td:
-            db = GameDatabase(Path(td) / "v13_store.db", attack_history_path="")
+            db = GameDatabase(Path(td) / "v13_store.db")
             try:
                 # 1. Reserved building floor can be updated before any optimizer run without faking active result
                 self.assertIsNone(db.get_active_config_optimizer())
@@ -1579,7 +1535,7 @@ class TestGameDatabase(unittest.TestCase):
 
         base_hr = 1_760_000_000 // 3600 * 3600
         with tempfile.TemporaryDirectory(prefix="si_store_v14_") as tmp:
-            db = GameDatabase(Path(tmp) / "store_v14.db", attack_history_path="")
+            db = GameDatabase(Path(tmp) / "store_v14.db")
             try:
                 # 1. Custom planet names: sanitization, 48-char cap, sid redaction, clear & batch
                 self.assertEqual(

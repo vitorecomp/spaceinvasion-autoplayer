@@ -571,7 +571,6 @@ class DisposablePostgresServer:
             backend="postgres",
             pool_min_size=1,
             pool_max_size=2,
-            attack_history_path="",
         )
         try:
             ver = tpl_db.verify_schema(full_integrity=False)
@@ -858,8 +857,6 @@ class PostgresTestRedirector:
                 postgres_url: Optional[str] = None,
                 pool_min_size: int = 2,
                 pool_max_size: int = 16,
-                legacy_rank_json: Optional[Path] = None,
-                attack_history_path: Optional[Path | str] = None,
                 target_schema_version: Optional[int] = None,
                 backup_on_upgrade: Optional[bool] = None,
             ) -> None:
@@ -895,8 +892,6 @@ class PostgresTestRedirector:
                             postgres_url=mapped_dsn,
                             pool_min_size=min(max(1, int(pool_min_size)), 1),
                             pool_max_size=min(max(2, int(pool_max_size)), 6),
-                            legacy_rank_json=legacy_rank_json,
-                            attack_history_path=attack_history_path,
                             target_schema_version=target_schema_version,
                             backup_on_upgrade=backup_on_upgrade,
                         )
@@ -912,8 +907,6 @@ class PostgresTestRedirector:
                     postgres_url=postgres_url,
                     pool_min_size=pool_min_size,
                     pool_max_size=pool_max_size,
-                    legacy_rank_json=legacy_rank_json,
-                    attack_history_path=attack_history_path,
                     target_schema_version=target_schema_version,
                     backup_on_upgrade=backup_on_upgrade,
                 )
@@ -944,7 +937,6 @@ class PostgresTestRedirector:
                             backend="postgres",
                             pool_min_size=1,
                             pool_max_size=2,
-                            attack_history_path="",
                         )
                         try:
                             return db.get_rank_samples()

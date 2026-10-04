@@ -180,7 +180,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     sqlite_path.parent.mkdir(parents=True, exist_ok=True)
-    sq_db = GameDatabase(sqlite_path, attack_history_path="")
+    sq_db = GameDatabase(sqlite_path)
     pg_db = GameDatabase(pg_url, backend="postgres")
     try:
         sq_ts = _latest_hot_ts(sq_db)

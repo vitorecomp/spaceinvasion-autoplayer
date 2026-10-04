@@ -280,7 +280,6 @@ class TestTier5Adversarial(unittest.TestCase):
                     db = GameDatabase(mem_uri)
                     try:
                         self.assertTrue(db._is_memory)
-                        self.assertIsNone(db.attack_history_path)
                         db.record_raid(
                             "2:380:4",
                             attacked_ts=float("nan"),
@@ -1305,16 +1304,6 @@ class TestTier5Adversarial(unittest.TestCase):
                 "https://spaceinvasion.bitmeup.com",
             )
             self.assertEqual([u.universe_id for u in uni_opts], [31])
-
-            # Finding 2: blank attack_history_path="" disables JSON mirror cleanly
-            with tempfile.TemporaryDirectory() as db_tmp:
-                blank_db = GameDatabase(Path(db_tmp) / "blank.db", attack_history_path="")
-                try:
-                    self.assertIsNone(blank_db.attack_history_path)
-                    blank_db.record_raid("02:380:04", attacked_ts=100.0, is_exempt=True, outcome="Win", loot={"pig_iron": 100})
-                    self.assertIsNone(blank_db.sync_attack_history_file())
-                finally:
-                    blank_db.close()
 
     def test_adv_t5_11_extreme_ints_1e1m_nan_rank_history_http_state_and_ui_node(self) -> None:
         import time
@@ -2632,7 +2621,7 @@ async (url, opts, fullUrl, nativeFetch) => {
         # 1. SQLite bytes BLOB + literal 'sid' JSON + non-finite cells redacted across all DB readers
         with tempfile.TemporaryDirectory() as tmp:
             tp = Path(tmp)
-            db = GameDatabase(tp / "adv20.db", attack_history_path="")
+            db = GameDatabase(tp / "adv20.db")
             try:
                 sec = "T5_R10_BLOB_SID"
                 db._conn.execute(

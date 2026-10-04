@@ -806,7 +806,7 @@ shipyard_targets:
             self.assertEqual(loaded_yaml.spy_dispatch_planet_id, 12476)
 
             db_path = tp / "cfg.db"
-            db = GameDatabase(db_path, attack_history_path="")
+            db = GameDatabase(db_path)
             db.close()
             save_strategy_config(cfg, db_path)
             loaded_db = load_strategy_config(db_path)
@@ -846,7 +846,7 @@ shipyard_targets:
             self.assertAlmostEqual(loaded_yaml.ai_resource_spare_pct, 17.5)
 
             db_path = tp / "ai_cfg.db"
-            db = GameDatabase(db_path, attack_history_path="")
+            db = GameDatabase(db_path)
             db.close()
             save_strategy_config(cfg, db_path)
             loaded_db = load_strategy_config(db_path)
@@ -897,7 +897,7 @@ shipyard_targets:
             self.assertEqual(loaded_empty.fleet_research_targets, {})
 
             db_path = tp / "fleet_res.db"
-            db = GameDatabase(db_path, attack_history_path="")
+            db = GameDatabase(db_path)
             db.close()
             save_strategy_config(cfg, db_path)
             loaded_db = load_strategy_config(db_path)
@@ -929,7 +929,7 @@ shipyard_targets:
             self.assertEqual(loaded_yaml.reserved_spy_slots, 2)
 
             db_path = tp / "spy_res_only.db"
-            db = GameDatabase(db_path, attack_history_path="")
+            db = GameDatabase(db_path)
             db.close()
             save_strategy_config(parsed, db_path)
             loaded_db = load_strategy_config(db_path)
@@ -973,7 +973,7 @@ shipyard_targets:
             self.assertAlmostEqual(loaded_yaml.recycle_min_res_per_hour, 8400.5)
 
             db_path = tp / "harvest_rph.db"
-            db = GameDatabase(db_path, attack_history_path="")
+            db = GameDatabase(db_path)
             db.close()
             save_strategy_config(parsed, db_path)
             loaded_db = load_strategy_config(db_path)
@@ -1028,7 +1028,7 @@ shipyard_targets:
             self.assertFalse(load_strategy_config(yaml_off).ai_adaptive_execution)
 
             db_path = tp / "adaptive_exec.db"
-            db = GameDatabase(db_path, attack_history_path="")
+            db = GameDatabase(db_path)
             db.close()
             save_strategy_config(enabled_cfg, db_path)
             loaded_db = load_strategy_config(db_path)

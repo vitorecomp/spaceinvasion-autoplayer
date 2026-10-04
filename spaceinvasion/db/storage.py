@@ -11,7 +11,6 @@ import os
 from pathlib import Path
 import re
 import sqlite3
-import tempfile
 import threading
 import time
 from typing import Any, Iterable, Mapping, Optional, Sequence
@@ -44,7 +43,6 @@ from spaceinvasion.db.backend import (
     redact_db_url,
 )
 from spaceinvasion.db.migrations import (
-    ATTACK_HISTORY_SCHEMA_VERSION,
     DEFAULT_GAME_MIGRATION_RUNNER,
     GAME_DB_MIGRATIONS,
     HISTORY_TABLES,
@@ -52,20 +50,14 @@ from spaceinvasion.db.migrations import (
     LATEST_SCHEMA_VERSION,
     PROTECTED_META_KEYS,
     SCHEMA_LEDGER_DDL,
-    SCHEMA_VERSION,
     TABLE_TIER_BY_NAME,
     backfill_v012_hot_tables,
     backfill_v014_loot_recycle_hourly,
     create_sqlite_backup,
-    import_legacy_attack_history_json,
-    import_legacy_config_yaml,
-    import_legacy_rank_history_json,
-    import_legacy_snapshot_json,
 )
 from spaceinvasion.core.state import GameState, game_state_from_dict, normalize_planet_type
 
 DEFAULT_DB_PATH = Path("state") / "spaceinvasion.db"
-DEFAULT_ATTACK_HISTORY_PATH: Optional[Path] = None
 
 
 def server_day_key(ts: Optional[float] = None) -> str:
@@ -1016,27 +1008,6 @@ def _json_dumps(obj: Any) -> str:
         )
 
 
-def _resolve_attack_history_path(
-    attack_history_path: Optional[Path | str],
-    *,
-    is_memory: bool,
-    db_path: Path,
-) -> Optional[Path]:
-    if attack_history_path is not None:
-        raw_txt = _raw_text(attack_history_path, "").strip()
-        if not raw_txt or raw_txt == ".":
-            return None
-        cand = Path(raw_txt) if isinstance(attack_history_path, (str, bytes, bytearray)) else attack_history_path
-        if _raw_text(cand, "").strip() in ("", "."):
-            return None
-        return cand if isinstance(cand, Path) else Path(raw_txt)
-    if is_memory:
-        return None
-    if db_path.resolve() == DEFAULT_DB_PATH.resolve():
-        return DEFAULT_ATTACK_HISTORY_PATH
-    return None
-
-
 class GameDatabase:
     """Thread-safe PostgreSQL (pooled MVCC) or SQLite (WAL) store for empire telemetry, actions, and intel."""
 
@@ -1048,8 +1019,6 @@ class GameDatabase:
         postgres_url: Optional[str] = None,
         pool_min_size: int = 2,
         pool_max_size: int = 16,
-        legacy_rank_json: Optional[Path] = None,
-        attack_history_path: Optional[Path | str] = None,
         target_schema_version: Optional[int] = None,
         backup_on_upgrade: Optional[bool] = None,
     ) -> None:
@@ -1081,11 +1050,6 @@ class GameDatabase:
                 if (isinstance(db_path, Path) and not is_postgres_dsn(str(db_path)))
                 else DEFAULT_DB_PATH
             )
-            self.attack_history_path: Optional[Path] = _resolve_attack_history_path(
-                attack_history_path,
-                is_memory=True,
-                db_path=self.db_path,
-            )
             self._pg_backend = PostgresPoolBackend(
                 eff_dsn,
                 min_size=pool_min_size,
@@ -1097,21 +1061,11 @@ class GameDatabase:
             self._is_memory = ":memory:" in raw_path or "mode=memory" in raw_path
             if self._is_memory:
                 self.db_path = Path(":memory:")
-                self.attack_history_path = _resolve_attack_history_path(
-                    attack_history_path,
-                    is_memory=True,
-                    db_path=self.db_path,
-                )
                 conn_target = raw_path
                 use_uri = raw_path.startswith("file:")
             else:
                 self.db_path = db_path if isinstance(db_path, Path) else Path(raw_path)
                 self.db_path.parent.mkdir(parents=True, exist_ok=True)
-                self.attack_history_path = _resolve_attack_history_path(
-                    attack_history_path,
-                    is_memory=False,
-                    db_path=self.db_path,
-                )
                 conn_target = str(self.db_path)
                 use_uri = False
 
@@ -1166,37 +1120,6 @@ class GameDatabase:
                     now_ts=now_ts,
                 )
                 self._repair_spy_targets_locked()
-                if legacy_rank_json is not None and legacy_rank_json.exists():
-                    self._migrate_legacy_rank_json(legacy_rank_json)
-                if (
-                    not self._is_postgres
-                    and not self._is_memory
-                    and self.db_path.resolve() == DEFAULT_DB_PATH.resolve()
-                ):
-                    if DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "raid_history"):
-                        legacy_atk = self.db_path.parent.parent / "data" / "attack_history.json"
-                        if legacy_atk.is_file():
-                            import_legacy_attack_history_json(
-                                self._conn, legacy_atk, now_ts=now_ts, remove_after_import=True
-                            )
-                    if DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "rank_snapshots"):
-                        legacy_rk = self.db_path.parent / "rank_history.json"
-                        if legacy_rk.is_file():
-                            import_legacy_rank_history_json(
-                                self._conn, legacy_rk, now_ts=now_ts, remove_after_import=True
-                            )
-                    if DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "state_snapshots"):
-                        legacy_snap = self.db_path.parent / "snapshot.json"
-                        if legacy_snap.is_file():
-                            import_legacy_snapshot_json(
-                                self._conn, legacy_snap, now_ts=now_ts, remove_after_import=True
-                            )
-                    if DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "strategy_config_store"):
-                        legacy_cfg = self.db_path.parent.parent / "config.yaml"
-                        if legacy_cfg.is_file():
-                            import_legacy_config_yaml(
-                                self._conn, legacy_cfg, now_ts=now_ts, remove_after_import=True
-                            )
                 if DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "game_messages"):
                     self._backfill_reports_from_game_messages_locked(now_ts)
                 self._conn.commit()
@@ -1505,16 +1428,6 @@ class GameDatabase:
             ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_ts = excluded.updated_ts
             """,
             (str(max_id), now_ts),
-        )
-
-    def _migrate_legacy_rank_json(self, legacy_path: Path) -> None:
-        if not DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "rank_snapshots"):
-            return
-        import_legacy_rank_history_json(
-            self._conn,
-            legacy_path,
-            now_ts=time.time(),
-            remove_after_import=False,
         )
 
     def close(self) -> None:
@@ -6741,7 +6654,6 @@ class GameDatabase:
             if parsed_blk is not None and 1 <= parsed_blk[1] <= 14 and 1 <= parsed_blk[2] <= 400:
                 self._refresh_galaxy_sectors_hot_locked(((parsed_blk[1], parsed_blk[2]),), now_val)
             self._conn.commit()
-            self._sync_attack_history_file_locked()
 
     def record_raid(
         self,
@@ -6781,7 +6693,6 @@ class GameDatabase:
             if int(cur_upd.rowcount or 0) > 0:
                 self._refresh_colony_candidates_hot_locked((norm_coords,), ts_val)
             self._conn.commit()
-            self._sync_attack_history_file_locked()
 
     @staticmethod
     def _aggregate_raid_rows(
@@ -7404,60 +7315,6 @@ class GameDatabase:
                 now=now,
                 include_telemetry_summary=include_telemetry_summary,
             )
-
-    def _sync_attack_history_file_locked(self) -> Optional[Path]:
-        if self.attack_history_path is None:
-            return None
-        raw_str = _raw_text(self.attack_history_path, "").strip()
-        if not raw_str or raw_str == ".":
-            return None
-        target = Path(raw_str)
-        if target.exists() and target.is_dir():
-            return None
-        target.parent.mkdir(parents=True, exist_ok=True)
-        stats = self._get_raid_stats_locked()
-        payload = _sanitize_obj(
-            {
-                "version": 1,
-                "schema_version": ATTACK_HISTORY_SCHEMA_VERSION,
-                "db_schema_version": LATEST_SCHEMA_VERSION,
-                "updated_at": round(time.time(), 3),
-                "overall": stats["overall"],
-                "per_target": stats["per_target"],
-                "history": stats["history"],
-                "bash_blocks": stats["bash_blocks"],
-                "blocked_targets": stats["blocked_targets"],
-                "telemetry_summary": stats["telemetry_summary"],
-            }
-        )
-        tmp_path: Optional[Path] = None
-        try:
-            with tempfile.NamedTemporaryFile(
-                mode="w",
-                encoding="utf-8",
-                dir=str(target.parent),
-                prefix=f".{target.stem}.",
-                suffix=".tmp",
-                delete=False,
-            ) as tf:
-                tmp_path = Path(tf.name)
-                json.dump(payload, tf, indent=2, sort_keys=True, allow_nan=False)
-                tf.write("\n")
-                tf.flush()
-                os.fsync(tf.fileno())
-            os.replace(tmp_path, target)
-            return target
-        except Exception:
-            if tmp_path is not None:
-                try:
-                    tmp_path.unlink(missing_ok=True)
-                except OSError:
-                    pass
-            raise
-
-    def sync_attack_history_file(self) -> Optional[Path]:
-        with self._lock:
-            return self._sync_attack_history_file_locked()
 
     def load_bash_tracker(self, *, now: Optional[float] = None) -> BashTracker:
         ref = _safe_float(now, time.time()) if now is not None else time.time()

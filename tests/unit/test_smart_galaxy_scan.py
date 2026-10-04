@@ -82,7 +82,7 @@ class TestSmartGalaxyScanConfig(unittest.TestCase):
             self.assertAlmostEqual(loaded_yaml.galaxy_scan_attack_weight, 7.25)
 
             db_path = tp / "smart_scan.db"
-            db = GameDatabase(db_path, attack_history_path="")
+            db = GameDatabase(db_path)
             db.close()
             save_strategy_config(custom, db_path)
             loaded_db = load_strategy_config(db_path)
@@ -95,7 +95,7 @@ class TestSmartGalaxySectorIntelStorage(unittest.TestCase):
     def test_sector_intel_coverage_direct_raids_and_player_affinity(self) -> None:
         now = 1_750_000_000.0
         with tempfile.TemporaryDirectory() as tmp:
-            db = GameDatabase(Path(tmp) / "intel.db", attack_history_path="")
+            db = GameDatabase(Path(tmp) / "intel.db")
             try:
                 empty_intel = db.get_galaxy_sector_intel(galaxies=[2], now_ts=now)
                 self.assertEqual(empty_intel["galaxies"], [2])
@@ -390,7 +390,7 @@ class TestSmartGalaxyScanTwoPhaseEngine(unittest.TestCase):
     def test_phase2_weights_near_sectors_and_frequent_attacked_players_and_sectors(self) -> None:
         now = 1_750_000_000.0
         with tempfile.TemporaryDirectory() as tmp:
-            db = GameDatabase(Path(tmp) / "phase2.db", attack_history_path="")
+            db = GameDatabase(Path(tmp) / "phase2.db")
             try:
                 # Mark all 400 systems scanned equally 45 minutes ago
                 for s in range(1, 401):

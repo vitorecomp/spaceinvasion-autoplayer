@@ -31,7 +31,7 @@ _EXPLICIT_SQLITE_NODE_SUBSTRINGS: tuple[str, ...] = (
     "test_adv_t5_09_runtime_deep_target_coalescing_stale_cancel_cost_and_clocks",
     "test_adv_t5_20_r10_e2e_unicode_digits_negative_fields_blob_redaction_and_raid_asteroid_parity",
     "test_savepoint_rollback_on_failed_migration_and_checksum_drift_and_future_version_guard",
-    "test_multi_database_registry_cli_json_sidecar_and_http_api_commands",
+    "test_multi_database_registry_cli_and_http_api_commands",
     "test_v013_staged_upgrade_from_v012_checksum_tiers_and_cli_verify",
     "test_v014_hourly_production_and_loot_recycle_hourly_upgrade_and_backfill",
 )

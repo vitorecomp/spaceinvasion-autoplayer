@@ -444,7 +444,7 @@ def _build_full_planner_workspace(
     `universe_research` adds what `_add_universe_research` records about other players' research.
     """
     (root / "state").mkdir(parents=True)
-    db = GameDatabase(root / "state" / "spaceinvasion.db", legacy_rank_json=None)
+    db = GameDatabase(root / "state" / "spaceinvasion.db")
     try:
         if with_attacks:
             db.record_state_snapshot(state if state is not None else _sample_snapshot_state())

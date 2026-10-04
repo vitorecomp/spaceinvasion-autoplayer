@@ -3739,7 +3739,6 @@ class TestApiAndCommander(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             db_path = tmp_path / "state" / "spaceinvasion.db"
-            hist_json_path = tmp_path / "data" / "attack_history.json"
             cfg_path = tmp_path / "config.yaml"
             cfg_path.write_text("allow_raids: true\nallow_galaxy_scan: true\n", encoding="utf-8")
 
@@ -3757,7 +3756,6 @@ class TestApiAndCommander(unittest.TestCase):
             )
             try:
                 assert bridge._db is not None
-                bridge._db.attack_history_path = hist_json_path
                 bridge._db.record_galaxy_slots(
                     [
                         GalaxySlot(
@@ -3798,16 +3796,13 @@ class TestApiAndCommander(unittest.TestCase):
                 self.assertFalse(atk_resp["executed"])
                 self.assertIn("bash protection", atk_resp["message"].lower())
 
-                # Verified persisted in SQLite spy_targets + bash_blocks + attack_history.json
+                # Verified persisted in DB spy_targets + bash_blocks
                 row = bridge._db.get_spy_target_by_coords("02:383:02")
                 self.assertIsNotNone(row)
                 assert row is not None
                 self.assertGreater(row["blocked_until_ts"], time.time() + 50000.0)
                 self.assertEqual(row["bash_hits"], 1)
                 self.assertEqual(bridge._db.summary()["counts"]["bash_blocks"], 1)
-                exported = json.loads(hist_json_path.read_text(encoding="utf-8"))
-                self.assertIn("02:383:02", exported["blocked_targets"])
-                self.assertEqual(len(exported["bash_blocks"]), 1)
 
                 # Subsequent attack command is immediately rejected without touching Selenium
                 atk_again = bridge.handle_command(
@@ -6777,7 +6772,7 @@ class TestApiAndCommander(unittest.TestCase):
             td_path = Path(td)
             db_path = td_path / "planner.db"
             # Seed raid history so SQLite live attack telemetry is populated
-            seed_db = GameDatabase(db_path, attack_history_path="")
+            seed_db = GameDatabase(db_path)
             seed_db.record_raid(
                 "01:100:12",
                 attacked_ts=1500.0,
