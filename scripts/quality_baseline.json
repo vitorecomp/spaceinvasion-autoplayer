@@ -31,11 +31,11 @@
     },
     "class_loc": {
       "spaceinvasion/db/migrations.py:MigrationRunner": 594,
-      "spaceinvasion/db/storage.py:GameDatabase": 9535,
-      "spaceinvasion/planner/ai_planner.py:EmpirePathSimulator": 1932,
+      "spaceinvasion/db/storage.py:GameDatabase": 9398,
+      "spaceinvasion/planner/ai_planner.py:EmpirePathSimulator": 1913,
       "spaceinvasion/planner/ai_planner.py:PathStrategy": 555,
-      "spaceinvasion/runtime/api_server.py:GameApiBridge": 16199,
-      "spaceinvasion/session/client.py:GameBrowserClient": 3036,
+      "spaceinvasion/runtime/api_server.py:GameApiBridge": 16157,
+      "spaceinvasion/session/client.py:GameBrowserClient": 3019,
       "spaceinvasion/session/executor.py:ActionExecutor": 4597
     },
     "environ_reads": {
@@ -226,22 +226,22 @@
     "module_loc": {
       "bin/commander.py": 1561,
       "scripts/sync_wiki_data.py": 1286,
-      "spaceinvasion/combat/fleet.py": 5447,
+      "spaceinvasion/combat/fleet.py": 5394,
       "spaceinvasion/combat/ranking.py": 1940,
-      "spaceinvasion/core/config.py": 1452,
-      "spaceinvasion/core/logging_utils.py": 999,
-      "spaceinvasion/core/state.py": 3242,
-      "spaceinvasion/db/migrations.py": 3121,
+      "spaceinvasion/core/config.py": 1436,
+      "spaceinvasion/core/logging_utils.py": 997,
+      "spaceinvasion/core/state.py": 3235,
+      "spaceinvasion/db/migrations.py": 3118,
       "spaceinvasion/db/postgres.py": 1114,
-      "spaceinvasion/db/storage.py": 10545,
+      "spaceinvasion/db/storage.py": 9990,
       "spaceinvasion/planner/action_graph.py": 2873,
-      "spaceinvasion/planner/ai_planner.py": 7321,
-      "spaceinvasion/planner/config_optimizer.py": 4604,
-      "spaceinvasion/planner/strategy.py": 8796,
-      "spaceinvasion/runtime/api_server.py": 18048,
+      "spaceinvasion/planner/ai_planner.py": 7193,
+      "spaceinvasion/planner/config_optimizer.py": 4591,
+      "spaceinvasion/planner/strategy.py": 8793,
+      "spaceinvasion/runtime/api_server.py": 18004,
       "spaceinvasion/session/auth.py": 865,
       "spaceinvasion/session/browser.py": 1092,
-      "spaceinvasion/session/client.py": 3670,
+      "spaceinvasion/session/client.py": 3647,
       "spaceinvasion/session/executor.py": 4806
     },
     "print_calls": {
@@ -272,7 +272,7 @@
     "spaceinvasion/db/migrations.py": 20,
     "spaceinvasion/db/postgres.py": 11,
     "spaceinvasion/db/storage.py": 38,
-    "spaceinvasion/planner/ai_planner.py": 114,
+    "spaceinvasion/planner/ai_planner.py": 86,
     "spaceinvasion/planner/config_optimizer.py": 13,
     "spaceinvasion/planner/strategy.py": 35,
     "spaceinvasion/runtime/api_server.py": 92,
@@ -362,7 +362,6 @@
     "spaceinvasion/db/storage.py": {
       "B905": 1,
       "BLE001": 11,
-      "F401": 4,
       "I001": 1,
       "S110": 2,
       "S112": 1
@@ -373,7 +372,6 @@
     },
     "spaceinvasion/planner/ai_planner.py": {
       "B905": 14,
-      "F401": 1,
       "S110": 1
     },
     "spaceinvasion/planner/config_optimizer.py": {

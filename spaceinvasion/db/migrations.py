@@ -2629,9 +2629,6 @@ class DatabaseMigrationRegistry:
             "primary": (self.root_dir / DEFAULT_GAME_DB_PATH, "game"),
         }
 
-    def register_schema_family(self, family: str, runner: MigrationRunner) -> None:
-        self._runners[str(family)] = runner
-
     def register_database(self, alias: str, db_path: Path | str, *, schema_family: str = "game") -> None:
         if schema_family not in self._runners:
             raise KeyError(f"Unknown schema_family {schema_family!r}")

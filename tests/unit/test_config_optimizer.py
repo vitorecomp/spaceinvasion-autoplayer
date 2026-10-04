@@ -238,8 +238,8 @@ class ConfigOptimizerUnitTests(unittest.TestCase):
         self.assertGreaterEqual(p2_targets["b14"], 11)
         self.assertEqual(p2_rec["reserved_floors"]["b10"], 9)
 
-        # Export produces valid strict JSON without NaN/Infinity.
-        raw_json = co.export_config_optimizer_json(result)
+        # Result serializes to strict JSON without NaN/Infinity.
+        raw_json = json.dumps(result, allow_nan=False)
         parsed = json.loads(raw_json)
         self.assertEqual(parsed["schema_version"], 1)
         self.assertEqual(parsed["planets"][0]["planet_id"], 101)
@@ -792,8 +792,8 @@ class ConfigOptimizerUnitTests(unittest.TestCase):
         self.assertEqual(res["summary"]["central_planet_coords"], "02:380:12")
         self.assertIn("Titan Capital", res["summary"]["central_planet"])
 
-        # Strict JSON export preserves custom planet names cleanly.
-        exported = json.loads(co.export_config_optimizer_json(res))
+        # Strict JSON serialization preserves custom planet names cleanly.
+        exported = json.loads(json.dumps(res, allow_nan=False))
         self.assertEqual(exported["planet_names"]["101"], "Titan Capital")
         self.assertEqual(exported["planets"][1]["name"], "Krypt Forge")
         self.assertEqual(exported["planets"][1]["game_name"], "Colony 2")

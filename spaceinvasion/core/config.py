@@ -426,22 +426,6 @@ DEFAULT_SHIPYARD_TARGETS: dict[str, int] = {
     "destroyer": 4,
 }
 
-FLEET_RESEARCH_KEYS: tuple[str, ...] = (
-    "r3",
-    "r4",
-    "r5",
-    "r6",
-    "r7",
-    "r8",
-    "r9",
-    "r10",
-    "r11",
-    "r12",
-    "r13",
-    "r14",
-    "r15",
-)
-
 DEFAULT_FLEET_RESEARCH_TARGETS: dict[str, int] = {}
 
 

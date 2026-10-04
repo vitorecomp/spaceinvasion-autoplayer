@@ -90,8 +90,6 @@ def is_secret_dict_key(key: str) -> bool:
     return False
 
 
-_is_secret_dict_key = is_secret_dict_key
-
 _COMP_PREFIX_RE = r"[_-]*(?:[a-z0-9]+[_-]+)*"
 _COMP_KEY_RE = rf"(?P<key>{_COMP_PREFIX_RE}(?:sid|password|passwd|cookie|api_key|api-key|secret|authorization))"
 _COMP_KV_KEY_RE = rf"(?P<key>{_COMP_PREFIX_RE}(?:password|passwd|cookie|api_key|api-key|secret))"

@@ -72,7 +72,6 @@ from spaceinvasion.combat.fleet import (
     simulate_raid_outcome,
 )
 from spaceinvasion.core.logging_utils import (
-    _SECRET_DICT_KEYS,
     _SID_RE as _LOG_SID_RE,
     _sub_sid_kv as _sub_log_sid_kv,
     append_api_log,
@@ -212,7 +211,6 @@ class GalaxyScanInProgressError(RuntimeError):
     """Raised when a non-emergency live browser action is requested during an active galaxy scan."""
 
 
-_API_SECRET_DICT_KEYS: frozenset[str] = _SECRET_DICT_KEYS
 _MAX_API_JSON_INT: int = game_data.MAX_JSON_SAFE_INT
 
 
@@ -1962,39 +1960,6 @@ class GameApiBridge:
             out["postgres_server"] = pg_msg if pg_ok else ""
             out["postgres_error"] = "" if pg_ok else pg_msg
         return out
-
-    def _rebind_database_locked(self, new_db: GameDatabase, *, selection_source: str) -> None:
-        old_db = self._db
-        self._db = new_db
-        self._db_selection_source = selection_source
-        self._db_summary_cache_key = None
-        self._db_summary_cache = None
-        self._raid_stats_cache_key = None
-        self._raid_stats_cache = None
-        self._raid_targets_cache_key = None
-        self._co_goals_cache_key = None
-        self._co_goals_cache = None
-        self._active_ai_cache_key = None
-        self._active_ai_cache = None
-        self._hourly_prod_cache_key = None
-        self._hourly_prod_cache = []
-        self._loot_recycle_cache_key = None
-        self._loot_recycle_cache = None
-        self._rank_samples = self._db.get_rank_samples()
-        self._economy_rates.clear()
-        self._economy_rates.update(self._db.get_all_economy_rates())
-        self._refresh_raid_targets_locked(limit=100)
-        self._scanned_systems.clear()
-        self._scanned_systems.update(self._db.get_galaxy_scans())
-        self._throttle_timestamps.clear()
-        self._throttle_timestamps.update(self._db.get_last_throttle_timestamps())
-        self._colony_attempt_seen.clear()
-        self._hydrate_colony_attempt_seen()
-        self._hydrate_persisted_bridge_state()
-        self._invalidate_dashboard_cache()
-        if old_db is not None and old_db is not new_db:
-            with contextlib.suppress(Exception):
-                old_db.close()
 
     def _hydrate_persisted_bridge_state(self) -> None:
         if self._db is None:
@@ -7561,15 +7526,6 @@ class GameApiBridge:
             return payload
         finally:
             self._lock.release()
-
-    def _read_log_tail(self, filename: str, lines: int = 40) -> str:
-        if self.log_dir is None:
-            return ""
-        target = self.log_dir / filename
-        if not target.exists():
-            return ""
-        raw_lines = target.read_text(encoding="utf-8", errors="replace").splitlines()
-        return str(_redact_api_payload("\n".join(raw_lines[-lines:])))
 
     def _merge_cached_offers(self, state: GameState) -> GameState:
         prev = self._last_state

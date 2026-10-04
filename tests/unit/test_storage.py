@@ -142,8 +142,10 @@ class TestGameDatabase(unittest.TestCase):
                 self.assertGreaterEqual(summary["counts"]["planet_snapshots"], 2)
                 self.assertEqual(summary["counts"]["spy_targets"], 2)
                 self.assertEqual(summary["counts"]["raid_history"], 1)
-                p_hist = db.get_planet_history(12476)
-                self.assertEqual(len(p_hist), 2)
+                latest_st = db.load_latest_game_state()
+                self.assertIsNotNone(latest_st)
+                assert latest_st is not None
+                self.assertEqual(latest_st.planets[0].planet_id, 12476)
             finally:
                 db.close()
 
@@ -279,7 +281,7 @@ class TestGameDatabase(unittest.TestCase):
                     loot={"pig_iron": 3000, "metal": 1000, "kryptonite": 500, "spice": 100},
                 )
 
-                summary = db.get_full_history_summary()
+                summary = db.get_raid_stats()["telemetry_summary"]
                 for key in (
                     "raid_history",
                     "spy_targets",
@@ -440,9 +442,8 @@ class TestGameDatabase(unittest.TestCase):
                 db_c._conn.commit()
                 self.assertEqual(db_c.get_all_economy_rates(), {})
                 self.assertEqual(len(db_c.get_spy_targets()), 1)
-                self.assertEqual(len(db_c.get_planet_history(planet_id=1)), 1)
                 self.assertEqual(len(db_c.get_tutorial_history()), 1)
-                self.assertIsInstance(db_c.get_full_history_summary(), dict)
+                self.assertIsInstance(db_c.get_raid_stats()["telemetry_summary"], dict)
             finally:
                 db_c.close()
 
@@ -519,7 +520,7 @@ class TestGameDatabase(unittest.TestCase):
                 throttles = db.get_last_throttle_timestamps()
                 self.assertEqual(throttles, {101: 0.0})
 
-                full_sum = db.get_full_history_summary()
+                full_sum = db.get_raid_stats()["telemetry_summary"]
                 self.assertEqual(full_sum["planet_snapshots"]["first_ts"], 0.0)
                 self.assertEqual(full_sum["planet_snapshots"]["latest_ts"], 0.0)
 
@@ -763,20 +764,17 @@ class TestGameDatabase(unittest.TestCase):
                 )
                 db._conn.commit()
 
-                ph = db.get_planet_history(42)
                 rs = db.get_rank_samples()
                 er = db.get_all_economy_rates()
                 st_list = db.get_spy_targets()
                 st_one = db.get_spy_target_by_coords(b"2:380:4")  # type: ignore[arg-type]
                 bash = db.load_bash_tracker(now=1000.0)
-                full_sum = db.get_full_history_summary()
+                full_sum = db.get_raid_stats()["telemetry_summary"]
                 tot_sum = db.summary()
 
-                self.assertEqual(len(ph), 1)
                 self.assertIsNotNone(st_one)
                 self.assertEqual(bash.attacks_last_24h("02:380:04", timestamp=1000.0), 1)
                 for label, payload in (
-                    ("planet_history", ph),
                     ("rank_samples", rs),
                     ("economy_rates", er),
                     ("spy_targets", st_list),
@@ -839,7 +837,7 @@ class TestGameDatabase(unittest.TestCase):
                     "SELECT planet_type FROM planet_snapshots WHERE planet_id = 77 ORDER BY id DESC LIMIT 1"
                 ).fetchone()
                 self.assertEqual(row["planet_type"], "asteroid")
-                full_sum = db.get_full_history_summary()
+                full_sum = db.get_raid_stats()["telemetry_summary"]
                 self.assertEqual(
                     full_sum["planet_snapshots"]["latest_by_planet"]["77"]["planet_type"],
                     "asteroid",

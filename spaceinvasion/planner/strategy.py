@@ -12,7 +12,6 @@ from typing import Any, Iterable, Mapping, Optional, Sequence
 from spaceinvasion.core import game_data
 from spaceinvasion.core.config import StrategyConfig
 from spaceinvasion.core.state import (
-    RAID_COLONY_FORBIDDEN_BUILDINGS,
     BuildingOffer,
     EnergyBalance,
     GameState,
@@ -212,7 +211,6 @@ def _apply_queue_cap_if_full(action: PlannedAction, queue_full: bool) -> Planned
     )
 
 
-_RAID_COLONY_FORBIDDEN_BUILDINGS: frozenset[int] = RAID_COLONY_FORBIDDEN_BUILDINGS
 _SLUG_TO_SHIP_KEY: dict[str, str] = {slug: skey for skey, slug in SHIP_SLUG_BY_KEY.items()}
 
 
@@ -6569,7 +6567,6 @@ def _plan_blast_furnace_throttle(
 
 
 AI_THROTTLE_COOLDOWN_SECONDS: float = 60.0
-METAL_OVERFLOW_PAUSE_PCT: int = 100
 METAL_OVERFLOW_RESUME_PCT: int = 95
 # Plan v4 empire smelting arm: a furnace that is already on keeps smelting until the pooled Metal is this
 # much above what the waiting steps need, and a furnace turns on only with this much Pig iron to spare.

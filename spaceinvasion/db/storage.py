@@ -29,7 +29,6 @@ from spaceinvasion.combat.fleet import (
     normalize_coords,
 )
 from spaceinvasion.core.logging_utils import (
-    _SECRET_DICT_KEYS,
     _SID_RE as _LOG_SID_RE,
     _sub_sid_kv as _sub_log_sid_kv,
     is_secret_dict_key,
@@ -44,13 +43,9 @@ from spaceinvasion.db.backend import (
 )
 from spaceinvasion.db.migrations import (
     DEFAULT_GAME_MIGRATION_RUNNER,
-    GAME_DB_MIGRATIONS,
     HISTORY_TABLES,
     HOT_TABLES,
-    LATEST_SCHEMA_VERSION,
     PROTECTED_META_KEYS,
-    SCHEMA_LEDGER_DDL,
-    TABLE_TIER_BY_NAME,
     backfill_v012_hot_tables,
     backfill_v014_loot_recycle_hourly,
     create_sqlite_backup,
@@ -223,25 +218,6 @@ def _raw_text(
         return f"<{type(value).__name__}>"
 
 
-_SAFE_STATUS_COLORS: frozenset[str] = frozenset(
-    {
-        "",
-        "free",
-        "yellow",
-        "white",
-        "green",
-        "blue",
-        "red",
-        "purple",
-        "orange",
-        "gray",
-        "grey",
-        "inactive",
-        "vacation",
-        "banned",
-        "spacia",
-    }
-)
 _NORM_GSP_RE = re.compile(r"(\d{2}):(\d{3}):(\d{2})", re.ASCII)
 _ANY_GSP_RE = re.compile(r"(\d+):(\d+):(\d+)", re.ASCII)
 
@@ -557,400 +533,6 @@ def _is_win_outcome(outcome: str, loot_spice_eq: float) -> bool:
     if float(loot_spice_eq) > 0.0:
         return True
     return bool(s and any(tok in s for tok in _WIN_OUTCOME_TOKENS))
-
-_SCHEMA_SQL = """
-CREATE TABLE IF NOT EXISTS meta (
-    key TEXT PRIMARY KEY,
-    value TEXT NOT NULL,
-    updated_ts REAL NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS rank_snapshots (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    ts REAL NOT NULL,
-    universe_id INTEGER NOT NULL DEFAULT 0,
-    nickname TEXT NOT NULL DEFAULT '',
-    server_points INTEGER,
-    server_rank INTEGER,
-    estimated_points REAL NOT NULL,
-    pts_per_hr REAL NOT NULL,
-    spice_value REAL NOT NULL,
-    planets INTEGER NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_rank_snapshots_ts ON rank_snapshots(ts);
-
-CREATE TABLE IF NOT EXISTS planet_snapshots (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    ts REAL NOT NULL,
-    universe_id INTEGER NOT NULL DEFAULT 0,
-    planet_id INTEGER NOT NULL,
-    coords TEXT NOT NULL,
-    name TEXT NOT NULL,
-    planet_type TEXT NOT NULL,
-    temperature INTEGER NOT NULL,
-    fields_used INTEGER NOT NULL,
-    fields_max INTEGER NOT NULL,
-    pig_iron INTEGER NOT NULL,
-    metal INTEGER NOT NULL,
-    kryptonite INTEGER NOT NULL,
-    spice INTEGER NOT NULL,
-    energy_produced INTEGER NOT NULL,
-    energy_used INTEGER NOT NULL,
-    buildings_json TEXT NOT NULL,
-    ships_json TEXT NOT NULL,
-    defense_json TEXT NOT NULL,
-    economy_rates_json TEXT NOT NULL,
-    researches_json TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_planet_snapshots_pid_ts ON planet_snapshots(planet_id, ts);
-
-CREATE TABLE IF NOT EXISTS state_snapshots (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    ts REAL NOT NULL,
-    source TEXT NOT NULL DEFAULT 'advisor',
-    universe_id INTEGER NOT NULL DEFAULT 0,
-    user_id INTEGER NOT NULL DEFAULT 0,
-    nickname TEXT NOT NULL DEFAULT '',
-    active_planet_id INTEGER NOT NULL DEFAULT 0,
-    planet_count INTEGER NOT NULL DEFAULT 0,
-    planned_action_count INTEGER NOT NULL DEFAULT 0,
-    state_json TEXT NOT NULL DEFAULT '{}',
-    plan_json TEXT NOT NULL DEFAULT '[]'
-);
-CREATE INDEX IF NOT EXISTS idx_state_snapshots_ts ON state_snapshots(ts);
-
-CREATE TABLE IF NOT EXISTS strategy_config_store (
-    id INTEGER PRIMARY KEY CHECK (id = 1),
-    config_json TEXT NOT NULL,
-    updated_ts REAL NOT NULL,
-    source TEXT NOT NULL DEFAULT 'sqlite'
-);
-
-CREATE TABLE IF NOT EXISTS ui_notifications (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    created_ts REAL NOT NULL,
-    updated_ts REAL NOT NULL,
-    severity TEXT NOT NULL DEFAULT 'warning',
-    category TEXT NOT NULL DEFAULT 'action_validation',
-    title TEXT NOT NULL,
-    message TEXT NOT NULL,
-    help_prompt TEXT NOT NULL DEFAULT '',
-    action_kind TEXT NOT NULL DEFAULT '',
-    planet_coords TEXT NOT NULL DEFAULT '',
-    target_name TEXT NOT NULL DEFAULT '',
-    dedupe_key TEXT NOT NULL DEFAULT '',
-    occurrence_count INTEGER NOT NULL DEFAULT 1,
-    status TEXT NOT NULL DEFAULT 'unread',
-    acknowledged_ts REAL,
-    details_json TEXT NOT NULL DEFAULT '{}'
-);
-CREATE INDEX IF NOT EXISTS idx_ui_notifications_status_ts ON ui_notifications(status, updated_ts);
-CREATE INDEX IF NOT EXISTS idx_ui_notifications_dedupe ON ui_notifications(dedupe_key, status);
-
-CREATE TABLE IF NOT EXISTS economy_rates_cache (
-    planet_id INTEGER PRIMARY KEY,
-    coords TEXT NOT NULL,
-    rates_json TEXT NOT NULL,
-    updated_ts REAL NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS tutorial_progress (
-    step INTEGER PRIMARY KEY,
-    total_steps INTEGER NOT NULL,
-    tasks_json TEXT NOT NULL,
-    reward_text TEXT NOT NULL,
-    can_complete INTEGER NOT NULL,
-    first_seen_ts REAL NOT NULL,
-    last_seen_ts REAL NOT NULL,
-    completed_ts REAL
-);
-
-CREATE TABLE IF NOT EXISTS action_history (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    ts REAL NOT NULL,
-    source TEXT NOT NULL,
-    command TEXT NOT NULL,
-    priority TEXT,
-    kind TEXT NOT NULL,
-    planet_id INTEGER,
-    planet_coords TEXT,
-    target_id INTEGER,
-    target_name TEXT,
-    target_level INTEGER,
-    executed INTEGER NOT NULL,
-    dry_run INTEGER NOT NULL,
-    reason TEXT,
-    message TEXT
-);
-CREATE INDEX IF NOT EXISTS idx_action_history_ts ON action_history(ts);
-
-CREATE TABLE IF NOT EXISTS spy_targets (
-    coords TEXT PRIMARY KEY,
-    owner TEXT NOT NULL DEFAULT '',
-    planet_name TEXT NOT NULL DEFAULT '',
-    status_color TEXT NOT NULL DEFAULT 'yellow',
-    is_inactive INTEGER NOT NULL DEFAULT 0,
-    is_spacia INTEGER NOT NULL DEFAULT 0,
-    has_debris INTEGER NOT NULL DEFAULT 0,
-    points INTEGER,
-    pig_iron INTEGER NOT NULL DEFAULT 0,
-    metal INTEGER NOT NULL DEFAULT 0,
-    kryptonite INTEGER NOT NULL DEFAULT 0,
-    spice INTEGER NOT NULL DEFAULT 0,
-    fleet_json TEXT NOT NULL DEFAULT '{}',
-    defense_json TEXT NOT NULL DEFAULT '{}',
-    dug_in INTEGER NOT NULL DEFAULT 0,
-    last_scanned_ts REAL NOT NULL,
-    last_spied_ts REAL NOT NULL DEFAULT 0.0,
-    blocked_until_ts REAL NOT NULL DEFAULT 0.0,
-    block_reason TEXT NOT NULL DEFAULT '',
-    bash_hits INTEGER NOT NULL DEFAULT 0,
-    last_blocked_ts REAL NOT NULL DEFAULT 0.0,
-    uninhabited_fields INTEGER,
-    colonize_min_fields INTEGER,
-    colonize_max_fields INTEGER,
-    temperature INTEGER,
-    spy_count INTEGER NOT NULL DEFAULT 0,
-    is_own_planet INTEGER NOT NULL DEFAULT 0,
-    merged_into TEXT NOT NULL DEFAULT ''
-);
-
-CREATE TABLE IF NOT EXISTS spy_reports (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    ts REAL NOT NULL,
-    target_coords TEXT NOT NULL,
-    owner TEXT NOT NULL DEFAULT '',
-    planet_name TEXT NOT NULL DEFAULT '',
-    is_spacia INTEGER NOT NULL DEFAULT 0,
-    pig_iron INTEGER NOT NULL DEFAULT 0,
-    metal INTEGER NOT NULL DEFAULT 0,
-    kryptonite INTEGER NOT NULL DEFAULT 0,
-    spice INTEGER NOT NULL DEFAULT 0,
-    loot_spice_eq REAL NOT NULL DEFAULT 0.0,
-    buildings_json TEXT NOT NULL DEFAULT '{}',
-    fleet_json TEXT NOT NULL DEFAULT '{}',
-    defense_json TEXT NOT NULL DEFAULT '{}',
-    researches_json TEXT NOT NULL DEFAULT '{}',
-    dug_in INTEGER,
-    uninhabited_fields INTEGER,
-    server_msg_id TEXT NOT NULL DEFAULT '',
-    msg_date_text TEXT NOT NULL DEFAULT '',
-    raw_text TEXT NOT NULL DEFAULT ''
-);
-CREATE INDEX IF NOT EXISTS idx_spy_reports_coords_ts ON spy_reports(target_coords, ts);
-
-CREATE TABLE IF NOT EXISTS game_messages (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    ingested_ts REAL NOT NULL,
-    msg_uid TEXT NOT NULL UNIQUE,
-    server_msg_id TEXT NOT NULL DEFAULT '',
-    folder_type TEXT NOT NULL DEFAULT '',
-    category TEXT NOT NULL DEFAULT 'other',
-    msg_date_text TEXT NOT NULL DEFAULT '',
-    sender TEXT NOT NULL DEFAULT '',
-    subject TEXT NOT NULL DEFAULT '',
-    coords TEXT NOT NULL DEFAULT '',
-    body_text TEXT NOT NULL DEFAULT '',
-    raw_html TEXT NOT NULL DEFAULT '',
-    parsed_json TEXT NOT NULL DEFAULT '{}',
-    deleted_in_game INTEGER NOT NULL DEFAULT 0,
-    deleted_ts REAL
-);
-CREATE INDEX IF NOT EXISTS idx_game_messages_ts ON game_messages(ingested_ts);
-CREATE INDEX IF NOT EXISTS idx_game_messages_coords ON game_messages(coords, ingested_ts);
-CREATE INDEX IF NOT EXISTS idx_game_messages_cat ON game_messages(category, ingested_ts);
-
-CREATE TABLE IF NOT EXISTS galaxy_scans (
-    galaxy INTEGER NOT NULL,
-    system INTEGER NOT NULL,
-    last_scanned_ts REAL NOT NULL,
-    occupied_count INTEGER NOT NULL DEFAULT 0,
-    target_count INTEGER NOT NULL DEFAULT 0,
-    free_count INTEGER NOT NULL DEFAULT 0,
-    PRIMARY KEY (galaxy, system)
-);
-CREATE INDEX IF NOT EXISTS idx_galaxy_scans_ts ON galaxy_scans(last_scanned_ts);
-
-CREATE TABLE IF NOT EXISTS galaxy_scan_history (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    ts REAL NOT NULL,
-    galaxy INTEGER NOT NULL,
-    system INTEGER NOT NULL,
-    occupied_count INTEGER NOT NULL DEFAULT 0,
-    target_count INTEGER NOT NULL DEFAULT 0,
-    free_count INTEGER NOT NULL DEFAULT 0,
-    debris_count INTEGER NOT NULL DEFAULT 0,
-    asteroid_count INTEGER NOT NULL DEFAULT 0
-);
-CREATE INDEX IF NOT EXISTS idx_galaxy_scan_history_sys_ts ON galaxy_scan_history(galaxy, system, ts);
-
-CREATE TABLE IF NOT EXISTS galaxy_slots (
-    coords TEXT PRIMARY KEY,
-    galaxy INTEGER NOT NULL,
-    system INTEGER NOT NULL,
-    position INTEGER NOT NULL,
-    planet_name TEXT NOT NULL DEFAULT '',
-    owner TEXT NOT NULL DEFAULT '',
-    status_color TEXT NOT NULL DEFAULT 'free',
-    is_inactive INTEGER NOT NULL DEFAULT 0,
-    is_spacia INTEGER NOT NULL DEFAULT 0,
-    has_debris INTEGER NOT NULL DEFAULT 0,
-    last_scanned_ts REAL NOT NULL,
-    colonize_min_fields INTEGER,
-    colonize_max_fields INTEGER,
-    temperature INTEGER
-);
-CREATE INDEX IF NOT EXISTS idx_galaxy_slots_sys ON galaxy_slots(galaxy, system, position);
-
-CREATE TABLE IF NOT EXISTS galaxy_slot_history (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    ts REAL NOT NULL,
-    coords TEXT NOT NULL,
-    galaxy INTEGER NOT NULL,
-    system INTEGER NOT NULL,
-    position INTEGER NOT NULL,
-    planet_name TEXT NOT NULL DEFAULT '',
-    owner TEXT NOT NULL DEFAULT '',
-    status_color TEXT NOT NULL DEFAULT 'free',
-    is_inactive INTEGER NOT NULL DEFAULT 0,
-    is_spacia INTEGER NOT NULL DEFAULT 0,
-    has_debris INTEGER NOT NULL DEFAULT 0,
-    has_asteroid INTEGER NOT NULL DEFAULT 0,
-    colonize_min_fields INTEGER,
-    colonize_max_fields INTEGER,
-    temperature INTEGER
-);
-CREATE INDEX IF NOT EXISTS idx_galaxy_slot_history_coords_ts ON galaxy_slot_history(coords, ts);
-
-CREATE TABLE IF NOT EXISTS config_history (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    ts REAL NOT NULL,
-    config_json TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_config_history_ts ON config_history(ts);
-
-CREATE TABLE IF NOT EXISTS raid_history (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    target_coords TEXT NOT NULL,
-    attacked_ts REAL NOT NULL,
-    is_exempt INTEGER NOT NULL DEFAULT 0,
-    outcome TEXT NOT NULL DEFAULT '',
-    loot_json TEXT NOT NULL DEFAULT '{}'
-);
-CREATE INDEX IF NOT EXISTS idx_raid_history_coords_ts ON raid_history(target_coords, attacked_ts);
-
-CREATE TABLE IF NOT EXISTS bash_blocks (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    target_coords TEXT NOT NULL,
-    blocked_ts REAL NOT NULL,
-    blocked_until_ts REAL NOT NULL,
-    cooldown_seconds REAL NOT NULL DEFAULT 0.0,
-    is_bash INTEGER NOT NULL DEFAULT 1,
-    reason TEXT NOT NULL DEFAULT ''
-);
-CREATE INDEX IF NOT EXISTS idx_bash_blocks_coords_ts ON bash_blocks(target_coords, blocked_ts);
-
-CREATE TABLE IF NOT EXISTS battle_reports (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    ts REAL NOT NULL,
-    msg_uid TEXT NOT NULL UNIQUE,
-    server_msg_id TEXT NOT NULL DEFAULT '',
-    battle_id TEXT NOT NULL DEFAULT '',
-    msg_date_text TEXT NOT NULL DEFAULT '',
-    target_coords TEXT NOT NULL DEFAULT '',
-    attacker TEXT NOT NULL DEFAULT '',
-    defender TEXT NOT NULL DEFAULT '',
-    outcome TEXT NOT NULL DEFAULT 'win',
-    rounds INTEGER NOT NULL DEFAULT 0,
-    pig_iron INTEGER NOT NULL DEFAULT 0,
-    metal INTEGER NOT NULL DEFAULT 0,
-    kryptonite INTEGER NOT NULL DEFAULT 0,
-    spice INTEGER NOT NULL DEFAULT 0,
-    loot_spice_eq REAL NOT NULL DEFAULT 0.0,
-    attacker_lost_spice INTEGER NOT NULL DEFAULT 0,
-    defender_lost_spice INTEGER NOT NULL DEFAULT 0,
-    debris_pig_iron INTEGER NOT NULL DEFAULT 0,
-    debris_metal INTEGER NOT NULL DEFAULT 0,
-    debris_spice_eq REAL NOT NULL DEFAULT 0.0,
-    raw_text TEXT NOT NULL DEFAULT ''
-);
-CREATE INDEX IF NOT EXISTS idx_battle_reports_coords_ts ON battle_reports(target_coords, ts);
-
-CREATE TABLE IF NOT EXISTS recycle_reports (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    ts REAL NOT NULL,
-    msg_uid TEXT NOT NULL UNIQUE,
-    server_msg_id TEXT NOT NULL DEFAULT '',
-    msg_date_text TEXT NOT NULL DEFAULT '',
-    coords TEXT NOT NULL DEFAULT '',
-    recycler_count INTEGER NOT NULL DEFAULT 0,
-    cargo_capacity INTEGER NOT NULL DEFAULT 0,
-    debris_avail_pig INTEGER NOT NULL DEFAULT 0,
-    debris_avail_metal INTEGER NOT NULL DEFAULT 0,
-    harvested_pig_iron INTEGER NOT NULL DEFAULT 0,
-    harvested_metal INTEGER NOT NULL DEFAULT 0,
-    harvested_kryptonite INTEGER NOT NULL DEFAULT 0,
-    harvested_spice INTEGER NOT NULL DEFAULT 0,
-    harvested_spice_eq REAL NOT NULL DEFAULT 0.0,
-    raw_text TEXT NOT NULL DEFAULT ''
-);
-CREATE INDEX IF NOT EXISTS idx_recycle_reports_coords_ts ON recycle_reports(coords, ts);
-
-CREATE TABLE IF NOT EXISTS manual_queue (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    created_ts REAL NOT NULL,
-    updated_ts REAL NOT NULL,
-    status TEXT NOT NULL DEFAULT 'pending',
-    priority TEXT NOT NULL DEFAULT 'P1',
-    sort_rank INTEGER NOT NULL DEFAULT 1000,
-    kind TEXT NOT NULL,
-    planet_id INTEGER NOT NULL DEFAULT 0,
-    planet_coords TEXT NOT NULL DEFAULT '',
-    target_id INTEGER,
-    target_name TEXT NOT NULL DEFAULT '',
-    target_coords TEXT NOT NULL DEFAULT '',
-    target_level INTEGER,
-    note TEXT NOT NULL DEFAULT '',
-    completed_ts REAL,
-    canceled_ts REAL,
-    result_message TEXT NOT NULL DEFAULT ''
-);
-CREATE INDEX IF NOT EXISTS idx_manual_queue_status_prio_rank
-    ON manual_queue(status, priority, sort_rank, id);
-
-CREATE TABLE IF NOT EXISTS manual_queue_events (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    ts REAL NOT NULL,
-    queue_id INTEGER NOT NULL,
-    event_type TEXT NOT NULL,
-    details_json TEXT NOT NULL DEFAULT '{}'
-);
-CREATE INDEX IF NOT EXISTS idx_manual_queue_events_qid_ts
-    ON manual_queue_events(queue_id, ts);
-
-CREATE TABLE IF NOT EXISTS colony_attempts (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    ts REAL NOT NULL,
-    event_type TEXT NOT NULL,
-    target_coords TEXT NOT NULL,
-    origin_coords TEXT NOT NULL DEFAULT '',
-    planet_id INTEGER,
-    fields_rolled INTEGER,
-    min_fields_target INTEGER NOT NULL DEFAULT 300,
-    expected_min_fields INTEGER,
-    expected_max_fields INTEGER,
-    temperature INTEGER,
-    grade TEXT NOT NULL DEFAULT '',
-    score INTEGER,
-    status_message TEXT NOT NULL DEFAULT '',
-    details_json TEXT NOT NULL DEFAULT '{}'
-);
-CREATE INDEX IF NOT EXISTS idx_colony_attempts_coords_ts
-    ON colony_attempts(target_coords, ts);
-CREATE INDEX IF NOT EXISTS idx_colony_attempts_ts
-    ON colony_attempts(ts);
-""" + SCHEMA_LEDGER_DDL
-
 
 def _stringify_keys(
     obj: Any,
@@ -2441,17 +2023,6 @@ class GameDatabase:
         raw.pop("raid_stats", None)
         raw.pop("raid_targets", None)
         self._save_meta_json_locked("latest_game_state", raw, now_ts)
-
-    def save_latest_game_state(
-        self,
-        state: GameState | Mapping[str, Any],
-        *,
-        ts: Optional[float] = None,
-    ) -> None:
-        now_ts = _safe_float(ts, time.time()) if ts is not None else time.time()
-        with self._lock:
-            self._save_latest_game_state_locked(state, now_ts)
-            self._conn.commit()
 
     def load_latest_game_state(self) -> Optional[GameState]:
         raw = self.load_meta_json("latest_game_state")
@@ -6439,91 +6010,6 @@ class GameDatabase:
         graded.sort(key=_sort_key)
         return graded[:eff_limit]
 
-    def get_galaxy_slot_history(
-        self,
-        *,
-        coords: Optional[str] = None,
-        galaxy: Optional[int] = None,
-        system: Optional[int] = None,
-        limit: int = 500,
-    ) -> list[dict[str, Any]]:
-        clauses: list[str] = []
-        params: list[Any] = []
-        if coords is not None:
-            clauses.append("coords = ?")
-            params.append(normalize_coords(_raw_text(coords, "").strip()))
-        if galaxy is not None:
-            clauses.append("galaxy = ?")
-            params.append(_sql_int(galaxy, 0))
-        if system is not None:
-            clauses.append("system = ?")
-            params.append(_sql_int(system, 0))
-        where_sql = ("WHERE " + " AND ".join(clauses)) if clauses else ""
-        params.append(max(1, _sql_int(limit, 500)))
-        with self._lock:
-            rows = self._conn.execute(
-                f"""
-                SELECT id, ts, coords, galaxy, system, position, planet_name, owner,
-                       status_color, is_inactive, is_spacia, has_debris, has_asteroid
-                FROM galaxy_slot_history
-                {where_sql}
-                ORDER BY ts DESC, id DESC
-                LIMIT ?
-                """,
-                params,
-            ).fetchall()
-        return [
-            _sanitize_obj(
-                {
-                    "id": game_data.cap_json_int(_safe_int(r["id"], 0)),
-                    "ts": _safe_float(r["ts"], 0.0),
-                    "coords": normalize_coords(_raw_text(r["coords"], "")),
-                    "galaxy": game_data.cap_json_int(_safe_int(r["galaxy"], 0)),
-                    "system": game_data.cap_json_int(_safe_int(r["system"], 0)),
-                    "position": game_data.cap_json_int(_safe_int(r["position"], 0)),
-                    "planet_name": _sanitize_text(r["planet_name"]),
-                    "owner": _sanitize_text(r["owner"]),
-                    "status_color": _sanitize_text(r["status_color"]),
-                    "is_inactive": bool(r["is_inactive"]),
-                    "is_spacia": bool(r["is_spacia"]),
-                    "has_debris": bool(r["has_debris"]),
-                    "has_asteroid": bool(r["has_asteroid"]),
-                }
-            )
-            for r in rows
-        ]
-
-    def get_galaxy_scan_history(
-        self,
-        *,
-        galaxy: Optional[int] = None,
-        system: Optional[int] = None,
-        limit: int = 200,
-    ) -> list[dict[str, Any]]:
-        clauses: list[str] = []
-        params: list[Any] = []
-        if galaxy is not None:
-            clauses.append("galaxy = ?")
-            params.append(_sql_int(galaxy, 0))
-        if system is not None:
-            clauses.append("system = ?")
-            params.append(_sql_int(system, 0))
-        where_sql = ("WHERE " + " AND ".join(clauses)) if clauses else ""
-        params.append(max(1, _sql_int(limit, 200)))
-        with self._lock:
-            rows = self._conn.execute(
-                f"""
-                SELECT id, ts, galaxy, system, occupied_count, target_count,
-                       free_count, debris_count, asteroid_count
-                FROM galaxy_scan_history
-                {where_sql}
-                ORDER BY ts DESC, id DESC
-                LIMIT ?
-                """,
-                params,
-            ).fetchall()
-        return [_sanitize_obj(dict(r)) for r in rows]
-
     def set_target_debris(self, target_coords: str, has_debris: bool) -> None:
         raw_c = _raw_text(target_coords, "").strip()
         norm_c = normalize_coords(raw_c)
@@ -7156,10 +6642,6 @@ class GameDatabase:
         self._full_history_cache_json = json.dumps(out_full, allow_nan=False)
         return out_full
 
-    def get_full_history_summary(self) -> dict[str, Any]:
-        with self._lock:
-            return self._get_full_history_summary_locked()
-
     def _get_raid_stats_locked(
         self,
         *,
@@ -7368,35 +6850,6 @@ class GameDatabase:
                 (max(1, _sql_int(limit, 25)),),
             ).fetchall()
         return [_sanitize_obj(dict(r)) for r in rows]
-
-    def get_planet_history(self, planet_id: int, *, limit: int = 50) -> list[dict[str, Any]]:
-        with self._lock:
-            rows = self._conn.execute(
-                """
-                SELECT ts, planet_id, coords, name, pig_iron, metal, kryptonite, spice,
-                       energy_produced, energy_used, buildings_json, economy_rates_json
-                FROM planet_snapshots WHERE planet_id = ? ORDER BY id DESC LIMIT ?
-                """,
-                (_sql_int(planet_id, 0), max(1, _sql_int(limit, 50))),
-            ).fetchall()
-        out = []
-        for r in rows:
-            item = {
-                "ts": _safe_float(r["ts"], 0.0),
-                "planet_id": game_data.cap_json_int(_safe_int(r["planet_id"], 0)),
-                "coords": _sanitize_text(_raw_text(r["coords"], "")),
-                "name": _sanitize_text(_raw_text(r["name"], "")),
-                "pig_iron": game_data.cap_json_int(_safe_int(r["pig_iron"], 0)),
-                "metal": game_data.cap_json_int(_safe_int(r["metal"], 0)),
-                "kryptonite": game_data.cap_json_int(_safe_int(r["kryptonite"], 0)),
-                "spice": game_data.cap_json_int(_safe_int(r["spice"], 0)),
-                "energy_produced": game_data.cap_json_int(_safe_int(r["energy_produced"], 0)),
-                "energy_used": game_data.cap_json_int(_safe_int(r["energy_used"], 0)),
-                "buildings": _safe_json_dict(r["buildings_json"]),
-                "economy_rates": _safe_json_dict(r["economy_rates_json"]),
-            }
-            out.append(_sanitize_obj(item))
-        return out
 
     def get_tutorial_history(self) -> list[dict[str, Any]]:
         with self._lock:
@@ -10401,14 +9854,6 @@ class GameDatabase:
         if eff_now <= 0.0:
             eff_now = time.time()
         return backfill_v014_loot_recycle_hourly(self._conn, eff_now)
-
-    def refresh_loot_recycle_hourly(self, *, ts: Optional[float] = None) -> dict[str, Any]:
-        """Re-aggregate battle_reports and recycle_reports into `loot_recycle_hourly` via upsert."""
-        with self._lock:
-            counts = self._refresh_loot_recycle_hourly_locked(ts=ts)
-            if counts.get("loot_recycle_hourly", 0) > 0:
-                self._conn.commit()
-            return counts
 
     def get_loot_recycle_hourly(
         self,

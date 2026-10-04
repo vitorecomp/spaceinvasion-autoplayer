@@ -2632,7 +2632,7 @@ async (url, opts, fullUrl, nativeFetch) => {
                 )
                 db._conn.commit()
                 self.assertEqual(db.load_bash_tracker(now=1000.0).attacks_last_24h("02:380:04", timestamp=1000.0), 1)
-                for obj in (db.get_planet_history(7), db.get_full_history_summary()):
+                for obj in (db.get_raid_stats()["telemetry_summary"], db.summary()):
                     self.assertNotIn(sec, json.dumps(obj, allow_nan=False))
             finally:
                 db.close()

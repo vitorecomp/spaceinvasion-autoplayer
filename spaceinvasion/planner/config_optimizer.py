@@ -12,7 +12,6 @@ from collections.abc import Callable, Iterable, Mapping
 import copy
 import datetime
 import heapq
-import json
 import math
 import time
 from typing import Any, Optional
@@ -42,13 +41,6 @@ PRODUCTION_FLOW_KEYS: tuple[str, ...] = (
 
 VALID_PLANET_SPECIALIZATIONS: tuple[str, ...] = (
     "auto",
-    "metal",
-    "kryptonite",
-    "spice",
-    "shipyard",
-    "spice_shipyard",
-)
-LOCKABLE_PLANET_SPECIALIZATIONS: tuple[str, ...] = (
     "metal",
     "kryptonite",
     "spice",
@@ -3233,11 +3225,6 @@ def run_config_optimizer(
     if progress_cb is not None:
         progress_cb("completed", 1.0)
     return result
-
-
-def export_config_optimizer_json(result: Mapping[str, Any]) -> str:
-    """Serialize a `run_config_optimizer` result into strictly finite indented JSON."""
-    return json.dumps(_json_ready(result), indent=2, ensure_ascii=False, allow_nan=False) + "\n"
 
 
 def _extract_planned_building_map_from_entry(

@@ -12,7 +12,6 @@ from spaceinvasion.combat.fleet import (
     GalaxySlot,
     SpyReport,
     extract_galaxy_universe_bounds,
-    galaxy_sector_distance,
     order_sectors_for_smooth_walk,
     score_galaxy_scan_sectors,
     select_smart_galaxy_scan_batch,
@@ -493,11 +492,7 @@ class TestSmartGalaxyScanTwoPhaseEngine(unittest.TestCase):
             finally:
                 db.close()
 
-    def test_circular_distance_smooth_walk_and_in_memory_set_inputs(self) -> None:
-        self.assertEqual(galaxy_sector_distance(2, 399, [(2, 2)]), 3)
-        self.assertEqual(galaxy_sector_distance(2, 150, [(2, 150)]), 0)
-        self.assertGreater(galaxy_sector_distance(3, 150, [(2, 150)]), 200)
-
+    def test_smooth_walk_and_in_memory_set_inputs(self) -> None:
         walked = order_sectors_for_smooth_walk(
             [
                 {"galaxy": 2, "system": 3},

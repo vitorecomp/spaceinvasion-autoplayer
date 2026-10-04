@@ -730,11 +730,7 @@ class TestTier1R1(unittest.TestCase):
                 self.assertIn("02:380:04", stats["per_target"])
                 self.assertEqual(stats["per_target"]["02:380:04"]["attempts"], 2)
 
-                if hasattr(db, "get_full_history_summary"):
-                    full_sum = db.get_full_history_summary()
-                    self.assertIsInstance(full_sum, dict)
-                else:
-                    self.assertIn("telemetry_summary", stats)
+                self.assertIn("telemetry_summary", stats)
 
                 # Raid history stored purely in SQLite (no attack_history.json sidecar created)
                 mirror = Path(tmp) / "state" / "attack_history.json"
