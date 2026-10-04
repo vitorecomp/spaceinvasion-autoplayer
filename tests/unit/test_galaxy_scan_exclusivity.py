@@ -123,9 +123,9 @@ class GalaxyScanExclusivityTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp_dir:
             tp = Path(tmp_dir)
-            yaml_path = tp / "cfg.yaml"
-            save_strategy_config(parsed_off, yaml_path)
-            self.assertFalse(load_strategy_config(yaml_path).galaxy_scan_block_other_actions)
+            json_path = tp / "cfg.json"
+            save_strategy_config(parsed_off, json_path)
+            self.assertFalse(load_strategy_config(json_path).galaxy_scan_block_other_actions)
 
             db_path = tp / "cfg.db"
             save_strategy_config(replace(parsed_off, galaxy_scan_block_other_actions=True), db_path)
@@ -172,7 +172,7 @@ class GalaxyScanExclusivityTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp_dir:
             tp = Path(tmp_dir)
-            cfg_path = tp / "cfg.yaml"
+            cfg_path = tp / "cfg.json"
             save_strategy_config(
                 StrategyConfig(
                     allow_galaxy_scan=True,
@@ -318,7 +318,7 @@ class GalaxyScanExclusivityTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp_dir:
             tp = Path(tmp_dir)
-            cfg_path = tp / "cfg.yaml"
+            cfg_path = tp / "cfg.json"
             save_strategy_config(
                 StrategyConfig(
                     allow_galaxy_scan=True,
@@ -386,7 +386,7 @@ class GalaxyScanExclusivityTest(unittest.TestCase):
     def test_commander_defers_during_galaxy_scan_unless_p0_escape_ready(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             tp = Path(tmp_dir)
-            cfg_path = tp / "cfg.yaml"
+            cfg_path = tp / "cfg.json"
             save_strategy_config(
                 StrategyConfig(
                     allow_galaxy_scan=True,

@@ -489,9 +489,9 @@ def _run_node_ui(base_url: str, scenario_js: str, *, fetch_patch_js: str = "") -
 class TestOperatorControlUi(unittest.TestCase):
     def _start_server(self, *, planner_mode: str = "priority", state_obj: GameState | None = None):
         self._tmp = tempfile.TemporaryDirectory(prefix="si_ui_srv_")
-        cfg_path = Path(self._tmp.name) / "config.yaml"
+        cfg_path = Path(self._tmp.name) / "config.json"
         cfg_path.write_text(
-            f"planner_mode: {planner_mode}\nallow_galaxy_scan: true\nallow_raids: true\nga_generations: 4\nga_population_size: 8\n",
+            json.dumps({"planner_mode": planner_mode, "allow_galaxy_scan": True, "allow_raids": True, "ga_generations": 4, "ga_population_size": 8}),
             encoding="utf-8",
         )
         st = state_obj or _sample_state()
@@ -2381,8 +2381,8 @@ return {
         )
         with tempfile.TemporaryDirectory(prefix="si_ui_dem_") as td:
             td_path = Path(td)
-            cfg_path = td_path / "config.yaml"
-            cfg_path.write_text("planner_mode: priority\nallow_build: true\n", encoding="utf-8")
+            cfg_path = td_path / "config.json"
+            cfg_path.write_text('{"planner_mode": "priority", "allow_build": true}', encoding="utf-8")
             fake_client = MagicMock()
             fake_client.__enter__.return_value = fake_client
             fake_client.driver = MagicMock(current_url="https://spaceinvasion.bitmeup.com/indexGame.es?sid=tok")
@@ -2485,9 +2485,9 @@ return {
         )
         with tempfile.TemporaryDirectory(prefix="si_ui_intel_") as td:
             td_path = Path(td)
-            cfg_path = td_path / "config.yaml"
+            cfg_path = td_path / "config.json"
             cfg_path.write_text(
-                "planner_mode: priority\nallow_build: true\nforbid_planetary_solar: true\nallow_colonize: true\nmin_colony_fields: 300\n",
+                '{"planner_mode": "priority", "allow_build": true, "forbid_planetary_solar": true, "allow_colonize": true, "min_colony_fields": 300}',
                 encoding="utf-8",
             )
             fake_client = MagicMock()
@@ -2667,8 +2667,8 @@ return {
         )
         with tempfile.TemporaryDirectory(prefix="si_ui_mq_") as td:
             td_path = Path(td)
-            cfg_path = td_path / "config.yaml"
-            cfg_path.write_text("planner_mode: priority\nallow_build: true\n", encoding="utf-8")
+            cfg_path = td_path / "config.json"
+            cfg_path.write_text('{"planner_mode": "priority", "allow_build": true}', encoding="utf-8")
             fake_client = MagicMock()
             fake_client.__enter__.return_value = fake_client
             fake_client.driver = MagicMock(current_url="https://spaceinvasion.bitmeup.com/indexGame.es?sid=tok")
@@ -2795,8 +2795,8 @@ return {
         )
         with tempfile.TemporaryDirectory(prefix="si_ui_3q_") as td:
             td_path = Path(td)
-            cfg_path = td_path / "config.yaml"
-            cfg_path.write_text("planner_mode: priority\nallow_build: true\n", encoding="utf-8")
+            cfg_path = td_path / "config.json"
+            cfg_path.write_text('{"planner_mode": "priority", "allow_build": true}', encoding="utf-8")
             fake_client = MagicMock()
             fake_client.__enter__.return_value = fake_client
             fake_client.driver = MagicMock(current_url="https://spaceinvasion.bitmeup.com/indexGame.es?sid=tok")
@@ -3034,7 +3034,7 @@ return { badgeBefore, helpAutoOpened, helpTitle, helpPrompt, centerText, badgeHi
         now_s = _time.time()
         with tempfile.TemporaryDirectory() as tmp:
             tmp_dir = Path(tmp)
-            cfg_path = tmp_dir / "cfg.yaml"
+            cfg_path = tmp_dir / "cfg.json"
             db_path = tmp_dir / "state.db"
             bridge = GameApiBridge(
                 debug_port=9222,
@@ -3255,9 +3255,9 @@ return {
         )
         with tempfile.TemporaryDirectory(prefix="si_ui_drag_col_") as td:
             td_path = Path(td)
-            cfg_path = td_path / "config.yaml"
+            cfg_path = td_path / "config.json"
             cfg_path.write_text(
-                "planner_mode: priority\nallow_build: true\nallow_colonize: true\nmin_colony_fields: 300\n",
+                '{"planner_mode": "priority", "allow_build": true, "allow_colonize": true, "min_colony_fields": 300}',
                 encoding="utf-8",
             )
             fake_client = MagicMock()

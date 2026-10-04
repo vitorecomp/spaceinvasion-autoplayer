@@ -311,8 +311,8 @@ class TestDatabaseMigrationsAndVersioning(unittest.TestCase):
             self.assertTrue(json.loads(buf_ver.getvalue())["ok"])
 
             # HTTP API commands: db_migrations, db_migrate, db_backup, db_verify
-            cfg_path = root / "config.yaml"
-            cfg_path.write_text("planner_mode: priority\n", encoding="utf-8")
+            cfg_path = root / "config.json"
+            cfg_path.write_text('{"planner_mode": "priority"}', encoding="utf-8")
             p_home = PlanetState(
                 planet_id=12476,
                 name="Colony",

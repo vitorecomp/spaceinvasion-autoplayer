@@ -350,7 +350,7 @@ class TestTier5Adversarial(unittest.TestCase):
             cur_st = GameState(31, 1, "u", 110.0, (p0,), active_planet_id=1, research_offers=(), active_queues=())
             bridge = GameApiBridge(
                 client_factory=lambda _port: MagicMock(),
-                config_path=Path(tmp) / "c.yaml",
+                config_path=Path(tmp) / "c.json",
                 db_path=Path(tmp) / "bridge.db",
                 log_dir=Path(tmp) / "logs",
             )
@@ -1716,7 +1716,7 @@ class TestTier5Adversarial(unittest.TestCase):
         self.assertIsInstance(parse_menu_status(f'<a href="x">User ({huge})</a> Points {huge} # {huge}')[0], dict)
 
         with tempfile.TemporaryDirectory() as cfg_tmp:
-            cfg_file = Path(cfg_tmp) / "cfg.yaml"
+            cfg_file = Path(cfg_tmp) / "cfg.json"
             save_strategy_config(StrategyConfig(max_actions_per_hour=10**5000), cfg_file)  # type: ignore[arg-type]
             reloaded = load_strategy_config(cfg_file)
             self.assertLessEqual(reloaded.max_actions_per_hour, 10**200)
@@ -1801,8 +1801,8 @@ class TestTier5Adversarial(unittest.TestCase):
             corrupt_bot = '{"paused": false, "throttle_cooldowns": {"²": 10.0, "101": ' + ("9" * 500) + "}}"
 
             with tempfile.TemporaryDirectory() as tmp:
-                cfg_p = Path(tmp) / "cfg.yaml"
-                cfg_p.write_text("planner_mode: priority\n", encoding="utf-8")
+                cfg_p = Path(tmp) / "cfg.json"
+                cfg_p.write_text('{"planner_mode": "priority"}\n', encoding="utf-8")
                 log_d = Path(tmp) / "logs"
 
                 for err_path, err_resp in (
@@ -2057,10 +2057,10 @@ async (url) => {
         )
         self.assertEqual(rendered_gd, Path("spaceinvasion/core/game_data.py").read_text(encoding="utf-8"))
 
-        # GAP-05: YAML roundtrip preserves '#' and ':' in playstyle without truncating comments
+        # GAP-05: JSON roundtrip preserves '#' and ':' in playstyle cleanly
         with tempfile.TemporaryDirectory() as tmp_cfg:
             for ps in ("miner#pro", "a:b # c"):
-                p_cfg = Path(tmp_cfg) / "cfg.yaml"
+                p_cfg = Path(tmp_cfg) / "cfg.json"
                 save_strategy_config(strategy_config_from_dict({"playstyle": ps}), p_cfg)
                 self.assertEqual(load_strategy_config(p_cfg).playstyle, ps)
 
@@ -2237,7 +2237,7 @@ async (url) => {
         self.assertEqual(dup_tests, [])
 
         with tempfile.TemporaryDirectory() as tmp_cfg:
-            cfg_p = Path(tmp_cfg) / "r7.yaml"
+            cfg_p = Path(tmp_cfg) / "r7.json"
             save_strategy_config(
                 StrategyConfig(
                     playstyle="line1\u2028line2",
@@ -2347,12 +2347,9 @@ async (url, opts, fullUrl, nativeFetch) => {
 
         # 1. Domain boundary regressions (config mid-token quotes, non-ASCII coords, ranking horizon, MLP train, sim horizon)
         with tempfile.TemporaryDirectory() as tmp:
-            cfg_p = Path(tmp) / "r8.yaml"
+            cfg_p = Path(tmp) / "r8.json"
             cfg_p.write_text(
-                "playstyle: Bob's miner # fav\n"
-                "shipyard_targets:\n"
-                "  unit'1: 5 # inline\n"
-                "  small-fighter: 99\n",
+                json.dumps({"playstyle": "Bob's miner", "shipyard_targets": {"unit'1": 5, "small-fighter": 99}}),
                 encoding="utf-8",
             )
             cfg_r8 = load_strategy_config(cfg_p)

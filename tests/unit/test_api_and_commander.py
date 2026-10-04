@@ -217,7 +217,7 @@ class TestApiAndCommander(unittest.TestCase):
             self.assertGreater(rnk_cmd["ranking"]["current"]["estimated_points"], 0)
 
             with tempfile.TemporaryDirectory() as tmp_cfg:
-                bridge.config_path = Path(tmp_cfg) / "config.yaml"
+                bridge.config_path = Path(tmp_cfg) / "config.json"
                 upd = api.send_command({"command": "update_config", "config": {"merchant_mode": True}})
                 self.assertTrue(upd["config"]["merchant_mode"])
                 self.assertTrue(bridge.config_path.exists())
@@ -450,7 +450,7 @@ class TestApiAndCommander(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             logs_dir = Path(tmp) / "logs"
             db_path = Path(tmp) / "state" / "spaceinvasion.db"
-            cfg_path = Path(tmp) / "config.yaml"
+            cfg_path = Path(tmp) / "config.json"
 
             fake_client = MagicMock()
             fake_client.__enter__.return_value = fake_client
@@ -520,7 +520,7 @@ class TestApiAndCommander(unittest.TestCase):
         fake_client.read_full_snapshot.return_value = state
 
         with tempfile.TemporaryDirectory() as tmp:
-            cfg_path = Path(tmp) / "config.yaml"
+            cfg_path = Path(tmp) / "config.json"
             bridge = GameApiBridge(
                 debug_port=9222,
                 config_path=cfg_path,
@@ -627,7 +627,7 @@ class TestApiAndCommander(unittest.TestCase):
         fake_client.read_full_snapshot.return_value = state
 
         with tempfile.TemporaryDirectory() as tmp:
-            cfg_path = Path(tmp) / "config.yaml"
+            cfg_path = Path(tmp) / "config.json"
             bridge = GameApiBridge(
                 debug_port=9222,
                 config_path=cfg_path,
@@ -795,7 +795,7 @@ class TestApiAndCommander(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             db_path = tmp_path / "state" / "spaceinvasion.db"
-            cfg_path = tmp_path / "config.yaml"
+            cfg_path = tmp_path / "config.json"
             nav_html = (
                 f'<a href="indexInternal.es?action=internalHome&SID={secret}" '
                 f'onclick="go(\'indexInternal.es?sid={secret}\')">Home</a>'
@@ -886,10 +886,10 @@ class TestApiAndCommander(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            cfg_a = tmp_path / "cfg_a.yaml"
-            cfg_b = tmp_path / "cfg_b.yaml"
-            cfg_a.write_text("planner_mode: priority\nga_generations: 1\nga_population_size: 4\nallow_raids: true\n", encoding="utf-8")
-            cfg_b.write_text("planner_mode: priority\nga_generations: 5\nga_population_size: 4\nallow_raids: true\n", encoding="utf-8")
+            cfg_a = tmp_path / "cfg_a.json"
+            cfg_b = tmp_path / "cfg_b.json"
+            cfg_a.write_text('{"planner_mode": "priority", "ga_generations": 1, "ga_population_size": 4, "allow_raids": true}', encoding="utf-8")
+            cfg_b.write_text('{"planner_mode": "priority", "ga_generations": 5, "ga_population_size": 4, "allow_raids": true}', encoding="utf-8")
 
             client_a = MagicMock()
             client_a.__enter__.return_value = client_a
@@ -967,7 +967,7 @@ class TestApiAndCommander(unittest.TestCase):
         fake_client.read_full_snapshot.return_value = state
 
         with tempfile.TemporaryDirectory() as tmp:
-            cfg_path = Path(tmp) / "config.yaml"
+            cfg_path = Path(tmp) / "config.json"
             bridge = GameApiBridge(
                 debug_port=9222,
                 config_path=cfg_path,
@@ -1074,7 +1074,7 @@ class TestApiAndCommander(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            cfg_path = tmp_path / "config.yaml"
+            cfg_path = tmp_path / "config.json"
             logs_dir = tmp_path / "logs"
             db_path = tmp_path / "state" / "spaceinvasion.db"
             bridge = GameApiBridge(
@@ -1295,7 +1295,7 @@ class TestApiAndCommander(unittest.TestCase):
                 research_offers=(),
                 active_queues=(),
             )
-            cfg_p = Path(tmp) / "cfg.yaml"
+            cfg_p = Path(tmp) / "cfg.json"
             bridge = GameApiBridge(
                 client_factory=lambda _port: MagicMock(),
                 config_path=cfg_p,
@@ -1389,8 +1389,8 @@ class TestApiAndCommander(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            cfg_p = tmp_path / "cfg.yaml"
-            cfg_p.write_text("allow_raids: true\nallow_pvp_in_az: false\n", encoding="utf-8")
+            cfg_p = tmp_path / "cfg.json"
+            cfg_p.write_text('{"allow_raids": true, "allow_pvp_in_az": false}', encoding="utf-8")
             p_own = PlanetState(
                 planet_id=101,
                 name="Home",
@@ -1549,9 +1549,9 @@ class TestApiAndCommander(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             tp = Path(tmp)
-            cfg_path = tp / "config.yaml"
+            cfg_path = tp / "config.json"
             cfg_path.write_text(
-                "planner_mode: priority\nallow_raids: true\nallow_pvp_in_az: true\n",
+                '{"planner_mode": "priority", "allow_raids": true, "allow_pvp_in_az": true}',
                 encoding="utf-8",
             )
             exact_pid = 10**18 + 123456789
@@ -1772,8 +1772,8 @@ class TestApiAndCommander(unittest.TestCase):
 
             with tempfile.TemporaryDirectory() as tmp:
                 tp = Path(tmp)
-                cfg_p = tp / "cfg.yaml"
-                cfg_p.write_text("planner_mode: priority\n", encoding="utf-8")
+                cfg_p = tp / "cfg.json"
+                cfg_p.write_text('{"planner_mode": "priority"}', encoding="utf-8")
 
                 for tick1_route, tick1_resp in (
                     ("/state", (502, '["bad"]')),
@@ -2063,7 +2063,7 @@ class TestApiAndCommander(unittest.TestCase):
             tp = Path(tmp)
             bridge = GameApiBridge(
                 debug_port=9222,
-                config_path=tp / "config.yaml",
+                config_path=tp / "config.json",
                 log_dir=tp / "logs",
                 db_path=tp / "test.db",
                 client_factory=lambda _port: fake_client,
@@ -2176,7 +2176,7 @@ class TestApiAndCommander(unittest.TestCase):
             tp = Path(tmp)
             bridge = GameApiBridge(
                 debug_port=9222,
-                config_path=tp / "config.yaml",
+                config_path=tp / "config.json",
                 log_dir=tp / "logs",
                 db_path=tp / "test.db",
                 client_factory=lambda _port: fake_client,
@@ -2257,7 +2257,7 @@ class TestApiAndCommander(unittest.TestCase):
             tp = Path(tmp)
             bridge = GameApiBridge(
                 debug_port=9222,
-                config_path=tp / "config.yaml",
+                config_path=tp / "config.json",
                 log_dir=tp / "logs",
                 db_path=tp / "test.db",
                 client_factory=lambda _port: fake_client,
@@ -2362,13 +2362,13 @@ class TestApiAndCommander(unittest.TestCase):
                 debug_port=0,
                 max_actions_per_hour=0,
                 log_dir=None,
-                config_path=tp / "cfg0.yaml",
+                config_path=tp / "cfg0.json",
             )
             b_huge = GameApiBridge(
                 debug_port=10**5000,
                 max_actions_per_hour=10**5000,
                 log_dir=None,
-                config_path=tp / "cfg1.yaml",
+                config_path=tp / "cfg1.json",
             )
             try:
                 self.assertEqual(b_zero.debug_port, 0)
@@ -2416,7 +2416,7 @@ class TestApiAndCommander(unittest.TestCase):
             b_rl = GameApiBridge(
                 debug_port=0,
                 log_dir=None,
-                config_path=tp / "cfgrl.yaml",
+                config_path=tp / "cfgrl.json",
                 client_factory=_RateLimitedClient,
                 ensure_session_fn=lambda: None,
             )
@@ -2472,7 +2472,7 @@ class TestApiAndCommander(unittest.TestCase):
             bridge = GameApiBridge(
                 debug_port=0,
                 log_dir=None,
-                config_path=tp / "cfg.yaml",
+                config_path=tp / "cfg.json",
                 client_factory=lambda _port: fake_cli,
                 ensure_session_fn=lambda: None,
             )
@@ -2762,7 +2762,7 @@ class TestApiAndCommander(unittest.TestCase):
             bridge = GameApiBridge(
                 debug_port=0,
                 log_dir=None,
-                config_path=tp / "cfg.yaml",
+                config_path=tp / "cfg.json",
                 ensure_session_fn=lambda: None,
             )
             try:
@@ -3044,7 +3044,7 @@ class TestApiAndCommander(unittest.TestCase):
 
             bridge = api_mod.GameApiBridge(
                 db_path=Path(tmp) / "bridge.db",
-                config_path=Path(tmp) / "missing_cfg.yaml",
+                config_path=Path(tmp) / "missing_cfg.json",
                 log_dir=Path(tmp) / "logs",
                 client_factory=_fail_factory,
                 ensure_session_fn=lambda: None,
@@ -3180,7 +3180,7 @@ class TestApiAndCommander(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             bridge = api_mod.GameApiBridge(
                 db_path=Path(tmp) / "sync.db",
-                config_path=Path(tmp) / "cfg.yaml",
+                config_path=Path(tmp) / "cfg.json",
                 log_dir=Path(tmp) / "logs",
                 client_factory=lambda _p: fake_client,
                 ensure_session_fn=lambda: None,
@@ -3298,8 +3298,8 @@ class TestApiAndCommander(unittest.TestCase):
         fake_client.read_full_snapshot.return_value = st_esc
 
         with tempfile.TemporaryDirectory() as tmp:
-            cfg_path = Path(tmp) / "cfg.yaml"
-            cfg_path.write_text("allow_fleetsave: false\nallow_raids: true\nallow_galaxy_scan: true\n", encoding="utf-8")
+            cfg_path = Path(tmp) / "cfg.json"
+            cfg_path.write_text('{"allow_fleetsave": false, "allow_raids": true, "allow_galaxy_scan": true}', encoding="utf-8")
             bridge = api_mod.GameApiBridge(
                 db_path=Path(tmp) / "esc.db",
                 config_path=cfg_path,
@@ -3438,7 +3438,7 @@ class TestApiAndCommander(unittest.TestCase):
 
         with tempfile.TemporaryDirectory(prefix="si_ag_iso_") as tmp:
             tmp_path = Path(tmp)
-            cfg_path = tmp_path / "config.yaml"
+            cfg_path = tmp_path / "config.json"
             db_path = tmp_path / "state" / "spaceinvasion.db"
             log_dir = tmp_path / "logs"
             db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -3602,7 +3602,7 @@ class TestApiAndCommander(unittest.TestCase):
 
         with tempfile.TemporaryDirectory(prefix="si_ag_val_") as tmp:
             tmp_path = Path(tmp)
-            cfg_path = tmp_path / "config.yaml"
+            cfg_path = tmp_path / "config.json"
             db_path = tmp_path / "state" / "spaceinvasion.db"
             log_dir = tmp_path / "logs"
             db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -3739,8 +3739,8 @@ class TestApiAndCommander(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             db_path = tmp_path / "state" / "spaceinvasion.db"
-            cfg_path = tmp_path / "config.yaml"
-            cfg_path.write_text("allow_raids: true\nallow_galaxy_scan: true\n", encoding="utf-8")
+            cfg_path = tmp_path / "config.json"
+            cfg_path.write_text('{"allow_raids": true, "allow_galaxy_scan": true}', encoding="utf-8")
 
             fake_client = MagicMock()
             fake_client.__enter__.return_value = fake_client
@@ -3899,8 +3899,8 @@ class TestApiAndCommander(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             db_path = tmp_path / "state" / "spaceinvasion.db"
-            cfg_path = tmp_path / "config.yaml"
-            cfg_path.write_text("allow_raids: true\nallow_galaxy_scan: true\n", encoding="utf-8")
+            cfg_path = tmp_path / "config.json"
+            cfg_path.write_text('{"allow_raids": true, "allow_galaxy_scan": true}', encoding="utf-8")
 
             fake_client = MagicMock()
             fake_client.__enter__.return_value = fake_client
@@ -3989,8 +3989,8 @@ class TestApiAndCommander(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            cfg_path = tmp_path / "config.yaml"
-            cfg_path.write_text("allow_build: true\n", encoding="utf-8")
+            cfg_path = tmp_path / "config.json"
+            cfg_path.write_text('{"allow_build": true}', encoding="utf-8")
             bridge = GameApiBridge(
                 debug_port=9222,
                 config_path=cfg_path,
@@ -4136,7 +4136,7 @@ class TestApiAndCommander(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            cfg_path = tmp_path / "config.yaml"
+            cfg_path = tmp_path / "config.json"
             db_path = tmp_path / "state" / "spaceinvasion.db"
             save_strategy_config(
                 StrategyConfig(action_batch_interval_seconds=180, allow_raids=True, allow_galaxy_scan=True),
@@ -4326,7 +4326,7 @@ class TestApiAndCommander(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            cfg_path = tmp_path / "config.yaml"
+            cfg_path = tmp_path / "config.json"
             db_path = tmp_path / "spaceinvasion.db"
             log_dir = tmp_path / "logs"
             log_dir.mkdir(parents=True, exist_ok=True)
@@ -4443,7 +4443,7 @@ class TestApiAndCommander(unittest.TestCase):
 
         with tempfile.TemporaryDirectory(prefix="si_full_db_") as tmp:
             tmp_path = Path(tmp)
-            cfg_path = tmp_path / "config.yaml"
+            cfg_path = tmp_path / "config.json"
             db_path = tmp_path / "spaceinvasion.db"
             log_dir = tmp_path / "logs"
             log_dir.mkdir(parents=True, exist_ok=True)
@@ -4713,7 +4713,7 @@ class TestApiAndCommander(unittest.TestCase):
 
         with tempfile.TemporaryDirectory(prefix="si_msg_archive_") as tmp:
             tmp_path = Path(tmp)
-            cfg_path = tmp_path / "config.yaml"
+            cfg_path = tmp_path / "config.json"
             db_path = tmp_path / "spaceinvasion.db"
             log_dir = tmp_path / "logs"
             log_dir.mkdir(parents=True, exist_ok=True)
@@ -4973,7 +4973,7 @@ class TestApiAndCommander(unittest.TestCase):
             bridge = GameApiBridge(
                 debug_port=19999,
                 env_file=td_path / "no.env",
-                config_path=td_path / "c.yaml",
+                config_path=td_path / "c.json",
                 db_path=None,
                 log_dir=None,
                 client_factory=lambda _: MagicMock(),
@@ -5042,7 +5042,7 @@ class TestApiAndCommander(unittest.TestCase):
             bridge2 = GameApiBridge(
                 debug_port=19999,
                 env_file=td2_path / "no.env",
-                config_path=td2_path / "c.yaml",
+                config_path=td2_path / "c.json",
                 db_path=td2_path / "s.db",
                 log_dir=None,
                 client_factory=lambda _: MagicMock(),
@@ -5175,7 +5175,7 @@ class TestApiAndCommander(unittest.TestCase):
             bridge = GameApiBridge(
                 debug_port=19999,
                 env_file=td_path / "no.env",
-                config_path=td_path / "c.yaml",
+                config_path=td_path / "c.json",
                 db_path=td_path / "s.db",
                 log_dir=None,
                 client_factory=lambda _: fake_client,
@@ -5409,9 +5409,9 @@ class TestApiAndCommander(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="si_intel_backfill_") as td:
             td_path = Path(td)
             db_path = td_path / "intel.db"
-            cfg_path = td_path / "config.yaml"
+            cfg_path = td_path / "config.json"
             cfg_path.write_text(
-                "planner_mode: priority\nallow_build: true\nallow_colonize: true\nmin_colony_fields: 300\n",
+                '{"planner_mode": "priority", "allow_build": true, "allow_colonize": true, "min_colony_fields": 300}',
                 encoding="utf-8",
             )
 
@@ -5689,8 +5689,8 @@ class TestApiAndCommander(unittest.TestCase):
 
         with tempfile.TemporaryDirectory(prefix="si_mq_api_") as td:
             td_path = Path(td)
-            cfg_path = td_path / "config.yaml"
-            cfg_path.write_text("planner_mode: priority\nallow_build: true\n", encoding="utf-8")
+            cfg_path = td_path / "config.json"
+            cfg_path.write_text('{"planner_mode": "priority", "allow_build": true}', encoding="utf-8")
             fake_client = MagicMock()
             fake_client.__enter__.return_value = fake_client
             fake_client.driver = MagicMock(current_url="https://spaceinvasion.bitmeup.com/indexGame.es?sid=tok")
@@ -5811,8 +5811,8 @@ class TestApiAndCommander(unittest.TestCase):
             (fake_ui / "assets" / "chunk-test.js").write_text("export const x = 42;\n", encoding="utf-8")
             (tp / "secret.txt").write_text("TOP_SECRET", encoding="utf-8")
 
-            cfg_path = tp / "config.yaml"
-            cfg_path.write_text("allow_raids: true\nallow_galaxy_scan: true\n", encoding="utf-8")
+            cfg_path = tp / "config.json"
+            cfg_path.write_text('{"allow_raids": true, "allow_galaxy_scan": true}', encoding="utf-8")
             st = _sample_state()
             fake_client = MagicMock()
             fake_client.__enter__.return_value = fake_client
@@ -6058,7 +6058,7 @@ class TestApiAndCommander(unittest.TestCase):
             bridge = GameApiBridge(
                 debug_port=1,
                 client_factory=lambda _port: mock_cli,
-                config_path=tmp_path / "config.yaml",
+                config_path=tmp_path / "config.json",
                 db_path=tmp_path / "state.db",
                 log_dir=tmp_path / "logs",
                 ensure_session_fn=lambda: None,
@@ -6300,7 +6300,7 @@ class TestApiAndCommander(unittest.TestCase):
             bridge = GameApiBridge(
                 debug_port=9222,
                 log_dir=None,
-                config_path=tp / "cfg.yaml",
+                config_path=tp / "cfg.json",
                 db_path=tp / "test.db",
             )
             try:
@@ -6434,7 +6434,7 @@ class TestApiAndCommander(unittest.TestCase):
             tp = Path(tmp)
             bridge = GameApiBridge(
                 debug_port=9222,
-                config_path=tp / "config.yaml",
+                config_path=tp / "config.json",
                 log_dir=tp / "logs",
                 db_path=tp / "test.db",
                 client_factory=lambda _port: fake_client,
@@ -6636,7 +6636,7 @@ class TestApiAndCommander(unittest.TestCase):
             bridge = GameApiBridge(
                 debug_port=19999,
                 env_file=td_path / "no.env",
-                config_path=td_path / "c.yaml",
+                config_path=td_path / "c.json",
                 db_path=None,
                 log_dir=None,
                 client_factory=lambda _: MagicMock(),
@@ -6781,9 +6781,9 @@ class TestApiAndCommander(unittest.TestCase):
             )
             seed_db.close()
 
-            cfg_path = td_path / "cfg.yaml"
+            cfg_path = td_path / "cfg.json"
             cfg_path.write_text(
-                "planner_mode: priority\nmax_planets: 11\nallow_raids: false\nallow_transport: true\n",
+                '{"planner_mode": "priority", "max_planets": 11, "allow_raids": false, "allow_transport": true}',
                 encoding="utf-8",
             )
             bridge = GameApiBridge(
@@ -7038,9 +7038,9 @@ class TestApiAndCommander(unittest.TestCase):
         ):
             td_path = Path(td)
             db_path = td_path / "gate.db"
-            cfg_path = td_path / "gate.yaml"
+            cfg_path = td_path / "gate.json"
             cfg_path.write_text(
-                "planner_mode: ai_planner\nmax_planets: 2\nallow_transport: true\nallow_shipyard: true\nallow_transmitter: true\n",
+                '{"planner_mode": "ai_planner", "max_planets": 2, "allow_transport": true, "allow_shipyard": true, "allow_transmitter": true}',
                 encoding="utf-8",
             )
             bridge = GameApiBridge(
@@ -7305,7 +7305,7 @@ class TestApiAndCommander(unittest.TestCase):
             bridge = GameApiBridge(
                 debug_port=19999,
                 env_file=td_path / "no.env",
-                config_path=td_path / "c.yaml",
+                config_path=td_path / "c.json",
                 db_path=td_path / "boot.db",
                 log_dir=None,
                 client_factory=lambda _: MagicMock(),
@@ -7364,8 +7364,8 @@ class TestApiAndCommander(unittest.TestCase):
 
         with tempfile.TemporaryDirectory(prefix="si_rec_verify_") as tmp:
             tmp_path = Path(tmp)
-            cfg_path = tmp_path / "config.yaml"
-            cfg_path.write_text("allow_raids: true\nallow_galaxy_scan: true\n", encoding="utf-8")
+            cfg_path = tmp_path / "config.json"
+            cfg_path.write_text('{"allow_raids": true, "allow_galaxy_scan": true}', encoding="utf-8")
             db_path = tmp_path / "spaceinvasion.db"
 
             base_st = _sample_state()
@@ -7529,8 +7529,8 @@ class TestApiAndCommander(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            cfg_path = tmp_path / "config.yaml"
-            cfg_path.write_text("allow_raids: true\nallow_galaxy_scan: true\n", encoding="utf-8")
+            cfg_path = tmp_path / "config.json"
+            cfg_path.write_text('{"allow_raids": true, "allow_galaxy_scan": true}', encoding="utf-8")
             db_path = tmp_path / "spaceinvasion.db"
 
             base_st = _sample_state()
@@ -7810,15 +7810,10 @@ class TestApiAndCommander(unittest.TestCase):
             tempfile.TemporaryDirectory() as td,
         ):
             td_path = Path(td)
-            cfg_path = td_path / "ai_bf.yaml"
+            cfg_path = td_path / "ai_bf.json"
             cfg_path.write_text(
                 (
-                    "planner_mode: ai_planner\n"
-                    "max_planets: 2\n"
-                    "allow_multi_planet: true\n"
-                    "allow_transport: true\n"
-                    "auto_throttle_blast_furnace: true\n"
-                    "merchant_mode: false\n"
+                    '{"planner_mode": "ai_planner", "max_planets": 2, "allow_multi_planet": true, "allow_transport": true, "auto_throttle_blast_furnace": true, "merchant_mode": false}'
                 ),
                 encoding="utf-8",
             )
@@ -8265,24 +8260,21 @@ class TestApiAndCommander(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as td:
             td_path = Path(td)
-            cfg_path = td_path / "config.yaml"
+            cfg_path = td_path / "config.json"
             cfg_path.write_text(
-                "\n".join(
-                    [
-                        "planner_mode: ai_planner",
-                        "allow_research: true",
-                        "allow_fleet_research: true",
-                        "allow_shipyard: true",
-                        "allow_raids: false",
-                        "allow_galaxy_scan: false",
-                        "allow_fleetsave: false",
-                        "ai_resource_spare_pct: 50.0",
-                        "shipyard_targets:",
-                        "  starcruiser: 6",
-                        "  small-fighter: 10",
-                    ]
-                )
-                + "\n",
+                json.dumps(
+                    {
+                        "planner_mode": "ai_planner",
+                        "allow_research": True,
+                        "allow_fleet_research": True,
+                        "allow_shipyard": True,
+                        "allow_raids": False,
+                        "allow_galaxy_scan": False,
+                        "allow_fleetsave": False,
+                        "ai_resource_spare_pct": 50.0,
+                        "shipyard_targets": {"starcruiser": 6, "small-fighter": 10},
+                    }
+                ),
                 encoding="utf-8",
             )
             bridge = GameApiBridge(
@@ -8447,9 +8439,9 @@ class TestApiAndCommander(unittest.TestCase):
             tempfile.TemporaryDirectory() as td,
         ):
             td_path = Path(td)
-            cfg_path = td_path / "early.yaml"
+            cfg_path = td_path / "early.json"
             cfg_path.write_text(
-                "planner_mode: ai_planner\nmax_planets: 2\nallow_transport: true\nallow_shipyard: false\nallow_raids: false\nallow_galaxy_scan: false\n",
+                '{"planner_mode": "ai_planner", "max_planets": 2, "allow_transport": true, "allow_shipyard": false, "allow_raids": false, "allow_galaxy_scan": false}',
                 encoding="utf-8",
             )
             bridge = GameApiBridge(
@@ -8593,7 +8585,7 @@ class TestApiAndCommander(unittest.TestCase):
         now_ts = _time.time()
         with tempfile.TemporaryDirectory(prefix="si_api_rc_") as tmp:
             db_path = Path(tmp) / "rc.db"
-            cfg_path = Path(tmp) / "config.yaml"
+            cfg_path = Path(tmp) / "config.json"
             bridge = GameApiBridge(
                 db_path=db_path,
                 config_path=cfg_path,
@@ -8894,7 +8886,7 @@ class TestApiAndCommander(unittest.TestCase):
         now_ts = _time.time()
         with tempfile.TemporaryDirectory(prefix="si_api_p100_103_") as tmp:
             db_path = Path(tmp) / "p100_103.db"
-            cfg_path = Path(tmp) / "config.yaml"
+            cfg_path = Path(tmp) / "config.json"
             bridge = GameApiBridge(
                 db_path=db_path,
                 config_path=cfg_path,
@@ -9356,7 +9348,7 @@ class TestApiAndCommander(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             tp = Path(tmp)
-            cfg_path = tp / "config.yaml"
+            cfg_path = tp / "config.json"
             save_strategy_config(
                 StrategyConfig(
                     allow_raids=True,
@@ -9598,7 +9590,7 @@ class TestApiAndCommander(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             tp = Path(tmp)
-            cfg_path = tp / "config.yaml"
+            cfg_path = tp / "config.json"
             db_path = tp / "state.db"
             save_strategy_config(StrategyConfig(planner_mode="ai_planner", max_planets=2), cfg_path)
             bridge = GameApiBridge(
@@ -9859,7 +9851,7 @@ class TestApiAndCommander(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             tp = Path(tmp)
-            cfg_path = tp / "config.yaml"
+            cfg_path = tp / "config.json"
             db_path = tp / "state.db"
             save_strategy_config(
                 StrategyConfig(planner_mode="ai_planner", max_planets=2, ai_adaptive_execution=False),

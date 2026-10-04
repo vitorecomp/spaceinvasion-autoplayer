@@ -1,4 +1,4 @@
-"""Non-secret strategy profile loader (`config.yaml` / `config.json`) for SpaceInvasion."""
+"""Non-secret strategy profile loader (`config.json` / database) for SpaceInvasion."""
 
 from __future__ import annotations
 
@@ -18,7 +18,6 @@ from typing import Any, Optional
 from urllib.parse import quote
 
 DEFAULT_CONFIG_DB_PATH: Path = Path("state") / "spaceinvasion.db"
-LEGACY_CONFIG_YAML_PATH: Path = Path("config.yaml")
 
 VALID_PLANNER_MODES: tuple[str, ...] = ("priority", "ai_planner")
 
@@ -448,7 +447,7 @@ DEFAULT_FLEET_RESEARCH_TARGETS: dict[str, int] = {}
 
 @dataclass(frozen=True)
 class StrategyConfig:
-    """Empire strategy toggles and safety thresholds loaded from `config.yaml`."""
+    """Empire strategy toggles and safety thresholds loaded from database or JSON profile."""
 
     playstyle: str = "fleeter"  # "fleeter" | "hybrid" | "miner"
     merchant_mode: bool = False
@@ -504,33 +503,6 @@ class StrategyConfig:
     fleet_research_targets: dict[str, int] = field(
         default_factory=lambda: dict(DEFAULT_FLEET_RESEARCH_TARGETS)
     )
-
-
-def _strip_yaml_comment(line: str) -> str:
-    in_quote: str | None = None
-    idx = 0
-    n = len(line)
-    while idx < n:
-        ch = line[idx]
-        if in_quote == '"':
-            if ch == "\\":
-                idx += 2
-                continue
-            if ch == '"':
-                in_quote = None
-        elif in_quote == "'":
-            if ch == "'":
-                if idx + 1 < n and line[idx + 1] == "'":
-                    idx += 2
-                    continue
-                in_quote = None
-        else:
-            if ch in ('"', "'") and (idx == 0 or line[idx - 1].isspace() or line[idx - 1] == ":"):
-                in_quote = ch
-            elif ch == "#":
-                return line[:idx]
-        idx += 1
-    return line
 
 
 _MAX_CFG_INT: int = 10**200
@@ -819,118 +791,6 @@ def _sanitize_cfg_json_tree(
         return _redact_cfg_text(raw)
 
     return _walk(obj, _depth)
-
-
-def _parse_scalar(raw: str) -> Any:
-    val = raw.strip()
-    if not val:
-        return ""
-    if val.startswith('"') and val.endswith('"') and len(val) >= 2:
-        try:
-            decoded = json.loads(val)
-            if isinstance(decoded, str):
-                return decoded
-        except (ValueError, TypeError):
-            pass
-        return val[1:-1]
-    if val.startswith("'") and val.endswith("'") and len(val) >= 2:
-        return val[1:-1].replace("''", "'")
-    low = val.lower()
-    if low == "true":
-        return True
-    if low == "false":
-        return False
-    if low in ("null", "none", "~"):
-        return None
-    if val.startswith("{") or val.startswith("["):
-        try:
-            return _sanitize_cfg_json_tree(json.loads(val))
-        except (ValueError, TypeError):
-            return val
-    if not val.isascii():
-        return val
-    try:
-        return int(val)
-    except ValueError:
-        pass
-    s_digits = val[1:] if val[0] in ("+", "-") else val
-    if s_digits.isascii() and s_digits.isdigit():
-        return -_MAX_CFG_INT if val[0] == "-" else _MAX_CFG_INT
-    try:
-        parsed_f = float(val)
-        return parsed_f if math.isfinite(parsed_f) else val
-    except (ValueError, OverflowError):
-        return val
-
-
-def _split_yaml_key_value(line: str) -> Optional[tuple[str, str]]:
-    in_quote: str | None = None
-    idx = 0
-    n = len(line)
-    while idx < n:
-        ch = line[idx]
-        if in_quote == '"':
-            if ch == "\\":
-                idx += 2
-                continue
-            if ch == '"':
-                in_quote = None
-        elif in_quote == "'":
-            if ch == "'":
-                if idx + 1 < n and line[idx + 1] == "'":
-                    idx += 2
-                    continue
-                in_quote = None
-        else:
-            if ch in ('"', "'") and (idx == 0 or line[idx - 1].isspace() or line[idx - 1] == ":"):
-                in_quote = ch
-            elif ch == ":":
-                return line[:idx], line[idx + 1 :]
-        idx += 1
-    return None
-
-
-def _parse_yaml_key(raw_key: str) -> str:
-    key = raw_key.strip()
-    if len(key) >= 2 and key.startswith('"') and key.endswith('"'):
-        try:
-            decoded = json.loads(key)
-            if isinstance(decoded, str):
-                return decoded
-        except (ValueError, TypeError):
-            pass
-        return key[1:-1]
-    if len(key) >= 2 and key.startswith("'") and key.endswith("'"):
-        return key[1:-1].replace("''", "'")
-    return key
-
-
-def _parse_simple_yaml(text: str) -> dict[str, Any]:
-    """Parse flat and one-level nested `key: value` YAML without external dependencies."""
-    root: dict[str, Any] = {}
-    current_section: str | None = None
-    for raw_line in text.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
-        cleaned = _strip_yaml_comment(raw_line).rstrip()
-        if not cleaned.strip():
-            continue
-        indent = len(cleaned) - len(cleaned.lstrip(" "))
-        stripped = cleaned.strip()
-        kv = _split_yaml_key_value(stripped)
-        if kv is None:
-            continue
-        raw_key, raw_val = kv
-        key = _parse_yaml_key(raw_key)
-        val_part = raw_val.strip()
-        if indent == 0:
-            if not val_part:
-                root[key] = {}
-                current_section = key
-            else:
-                root[key] = _parse_scalar(val_part)
-                current_section = None
-        elif current_section is not None and isinstance(root.get(current_section), dict):
-            root[current_section][key] = _parse_scalar(val_part)
-    return root
 
 
 def _parse_cfg_digit_string(raw: str) -> Optional[int]:
@@ -1345,6 +1205,12 @@ def load_strategy_config_from_sqlite(db_path: Path = DEFAULT_CONFIG_DB_PATH) -> 
     return strategy_config_from_dict(parsed)
 
 
+def _serialize_strategy_config_json(cfg: StrategyConfig, *, indent: Optional[int] = None) -> str:
+    clean_cfg = strategy_config_from_dict(asdict(cfg))
+    cfg_dict = _sanitize_cfg_json_tree(asdict(clean_cfg))
+    return json.dumps(cfg_dict, indent=indent, sort_keys=True, allow_nan=False)
+
+
 def save_strategy_config_to_sqlite(
     cfg: StrategyConfig,
     db_path: Path = DEFAULT_CONFIG_DB_PATH,
@@ -1352,9 +1218,7 @@ def save_strategy_config_to_sqlite(
     source: str = "sqlite",
 ) -> Path:
     """Persist `StrategyConfig` into SQLite (`strategy_config_store`, `meta`, and `config_history`)."""
-    clean_cfg = strategy_config_from_dict(asdict(cfg))
-    cfg_dict = _sanitize_cfg_json_tree(asdict(clean_cfg))
-    cfg_json = json.dumps(cfg_dict, sort_keys=True, allow_nan=False)
+    cfg_json = _serialize_strategy_config_json(cfg)
     now_ts = round(time.time(), 3)
     db_path.parent.mkdir(parents=True, exist_ok=True)
     with contextlib.closing(sqlite3.connect(str(db_path), timeout=10.0)) as conn:
@@ -1452,9 +1316,7 @@ def save_strategy_config_to_postgres(
     """Persist `StrategyConfig` into PostgreSQL (`strategy_config_store`, `meta`, and `config_history`)."""
     import psycopg
 
-    clean_cfg = strategy_config_from_dict(asdict(cfg))
-    cfg_dict = _sanitize_cfg_json_tree(asdict(clean_cfg))
-    cfg_json = json.dumps(cfg_dict, sort_keys=True, allow_nan=False)
+    cfg_json = _serialize_strategy_config_json(cfg)
     now_ts = round(time.time(), 3)
     target_dsn = str(dsn).strip()
     with psycopg.connect(target_dsn, connect_timeout=5) as conn:
@@ -1560,52 +1422,17 @@ def load_strategy_config(path: Optional[Path | str] = None) -> StrategyConfig:
         return StrategyConfig()
     if not text.strip():
         return StrategyConfig()
-    if path.suffix.lower() == ".json":
-        try:
-            parsed = _sanitize_cfg_json_tree(json.loads(text))
-        except (ValueError, TypeError):
-            return StrategyConfig()
-    else:
-        parsed = _parse_simple_yaml(text)
+    try:
+        parsed = _sanitize_cfg_json_tree(json.loads(text))
+    except (ValueError, TypeError):
+        return StrategyConfig()
     if not isinstance(parsed, Mapping):
         return StrategyConfig()
     return strategy_config_from_dict(parsed)
 
 
-_YAML_QUOTE_CHARS: frozenset[str] = frozenset("#:\"'\\{}[]&*!|>%@`,")
-_YAML_LINE_BREAK_CHARS: frozenset[str] = frozenset("\x85\u2028\u2029")
-
-
-def _needs_yaml_quoting(value: str) -> bool:
-    if not value or value[0].isspace() or value[-1].isspace():
-        return True
-    if value.lower() in ("true", "false", "null", "none", "~"):
-        return True
-    if any(
-        ord(ch) < 0x20
-        or ord(ch) == 0x7F
-        or ch in _YAML_QUOTE_CHARS
-        or ch in _YAML_LINE_BREAK_CHARS
-        for ch in value
-    ):
-        return True
-    if _parse_cfg_digit_string(value) is not None:
-        return True
-    try:
-        float(value)
-        return True
-    except (ValueError, OverflowError):
-        return False
-
-
-def _format_yaml_string(value: str) -> str:
-    if _needs_yaml_quoting(value):
-        return json.dumps(value, allow_nan=False)
-    return value
-
-
 def save_strategy_config(cfg: StrategyConfig, path: Optional[Path | str] = None) -> Path | str:
-    """Persist `StrategyConfig` to active database (`postgres` in Docker, `sqlite` on host), or explicit test path."""
+    """Persist `StrategyConfig` to active database (`postgres` in Docker, `sqlite` on host), or explicit JSON test path."""
     if path is None:
         backend, target = _resolve_default_config_target()
         if backend == "postgres":
@@ -1620,139 +1447,6 @@ def save_strategy_config(cfg: StrategyConfig, path: Optional[Path | str] = None)
         path = Path(os.fsdecode(fsp_val))
     if _is_sqlite_config_path(path):
         return save_strategy_config_to_sqlite(cfg, path)
-    storage_warn_ratio = max(0.1, min(0.99, _safe_cfg_float(cfg.storage_warn_ratio, 0.85)))
-    blast_share = max(0.1, min(1.0, _safe_cfg_float(cfg.blast_pig_iron_max_share, 0.70)))
-    combat_margin = max(1.0, _safe_cfg_float(cfg.combat_safety_margin, 1.4))
-    raid_min_loot = max(0.0, _safe_cfg_float(cfg.raid_min_loot_spice_eq, 1500.0))
-    attack_min_rph = max(0.0, _safe_cfg_float(getattr(cfg, "attack_min_res_per_hour", 0.0), 0.0))
-    recycle_min_rph = max(0.0, _safe_cfg_float(getattr(cfg, "recycle_min_res_per_hour", 0.0), 0.0))
-    fleet_reserve = max(0, _safe_cfg_int(cfg.fleet_save_fuel_reserve_spice, 500))
-    batch_interval = max(5, min(86400, _safe_cfg_int(cfg.action_batch_interval_seconds, 120)))
-    max_actions = max(1, _safe_cfg_int(cfg.max_actions_per_hour, 60))
-    page_view_limit = max(
-        6, min(600, _safe_cfg_int(getattr(cfg, "page_view_limit_per_minute", 60), 60))
-    )
-    hot_temp = _safe_cfg_int(cfg.hot_planet_solar_temp_threshold, 40)
-    min_fields = max(1, _safe_cfg_int(cfg.min_free_fields_warning, 20))
-    min_colony = max(50, min(600, _safe_cfg_int(cfg.min_colony_fields, 300)))
-    max_planets = max(1, min(50, _safe_cfg_int(cfg.max_planets, 11)))
-    sweep_interval = max(30, min(86400, _safe_cfg_int(cfg.galaxy_sweep_interval_seconds, 270)))
-    sweep_pages = max(1, min(400, _safe_cfg_int(cfg.galaxy_sweep_pages, 100)))
-    scan_click_delay = max(0.2, min(60.0, _safe_cfg_float(cfg.galaxy_scan_click_delay_seconds, 1.5)))
-    scan_click_jitter = max(0.0, min(30.0, _safe_cfg_float(cfg.galaxy_scan_click_jitter_seconds, 0.6)))
-    scan_explore_first = _safe_cfg_bool(cfg.galaxy_scan_explore_first, True)
-    scan_refresh_pct = max(0, min(100, _safe_cfg_int(cfg.galaxy_scan_refresh_pct, 0)))
-    scan_all_galaxies = _safe_cfg_bool(cfg.galaxy_scan_all_galaxies, False)
-    scan_near_weight = max(0.0, min(20.0, _safe_cfg_float(cfg.galaxy_scan_near_weight, 2.0)))
-    scan_attack_weight = max(0.0, min(20.0, _safe_cfg_float(cfg.galaxy_scan_attack_weight, 3.0)))
-    res_spy_slots = max(0, min(10, _safe_cfg_int(cfg.reserved_spy_slots, 1)))
-    spy_res_only = _safe_cfg_bool(getattr(cfg, "spy_reserved_slots_only", False), False)
-    spy_disp_pid = max(0, _safe_cfg_int(cfg.spy_dispatch_planet_id, 0))
-    planner_mode = normalize_planner_mode(cfg.planner_mode)
-    ai_spare_pct = max(
-        0.0, min(100.0, _safe_cfg_float(getattr(cfg, "ai_resource_spare_pct", 10.0), 10.0))
-    )
-    ai_adaptive_exec = _safe_cfg_bool(getattr(cfg, "ai_adaptive_execution", False), False)
-    ga_pop = max(4, min(200, _safe_cfg_int(cfg.ga_population_size, 24)))
-    ga_gen = max(1, min(200, _safe_cfg_int(cfg.ga_generations, 12)))
-    ga_mut = max(0.0, min(1.0, _safe_cfg_float(cfg.ga_mutation_rate, 0.25)))
-    raw_playstyle = cfg.playstyle
-    if isinstance(raw_playstyle, os.PathLike):
-        ok, fsp = _safe_fspath(raw_playstyle)
-        raw_playstyle = fsp if ok else "fleeter"
-    if raw_playstyle is None or isinstance(
-        raw_playstyle, (Mapping, list, tuple, set, frozenset, int, float, bool)
-    ):
-        playstyle = "fleeter"
-    else:
-        if isinstance(raw_playstyle, (bytes, bytearray)):
-            raw_playstyle = _decode_cfg_bytes(raw_playstyle)
-        try:
-            playstyle = str(raw_playstyle).strip().lower() or "fleeter"
-        except Exception:
-            playstyle = "fleeter"
-
-    lines = [
-        "# SpaceInvasion Autoplayer runtime strategy configuration",
-        f"playstyle: {_format_yaml_string(playstyle)}",
-        f"merchant_mode: {'true' if _safe_cfg_bool(cfg.merchant_mode, False) else 'false'}",
-        f"auto_throttle_blast_furnace: {'true' if _safe_cfg_bool(cfg.auto_throttle_blast_furnace, True) else 'false'}",
-        f"allow_research: {'true' if _safe_cfg_bool(cfg.allow_research, True) else 'false'}",
-        f"allow_fleet_research: {'true' if _safe_cfg_bool(getattr(cfg, 'allow_fleet_research', True), True) else 'false'}",
-        f"allow_shipyard: {'true' if _safe_cfg_bool(cfg.allow_shipyard, True) else 'false'}",
-        f"allow_multi_planet: {'true' if _safe_cfg_bool(cfg.allow_multi_planet, True) else 'false'}",
-        f"allow_fleetsave: {'true' if _safe_cfg_bool(cfg.allow_fleetsave, False) else 'false'}",
-        f"allow_galaxy_scan: {'true' if _safe_cfg_bool(cfg.allow_galaxy_scan, False) else 'false'}",
-        f"allow_raids: {'true' if _safe_cfg_bool(cfg.allow_raids, False) else 'false'}",
-        f"allow_pvp_in_az: {'true' if _safe_cfg_bool(cfg.allow_pvp_in_az, False) else 'false'}",
-        f"allow_colonize: {'true' if _safe_cfg_bool(cfg.allow_colonize, False) else 'false'}",
-        f"allow_transport: {'true' if _safe_cfg_bool(cfg.allow_transport, False) else 'false'}",
-        f"allow_transmitter: {'true' if _safe_cfg_bool(cfg.allow_transmitter, False) else 'false'}",
-        f"forbid_planetary_solar: {'true' if _safe_cfg_bool(cfg.forbid_planetary_solar, False) else 'false'}",
-        f"storage_warn_ratio: {storage_warn_ratio}",
-        f"blast_pig_iron_max_share: {blast_share}",
-        f"combat_safety_margin: {combat_margin}",
-        f"raid_min_loot_spice_eq: {raid_min_loot}",
-        f"attack_min_res_per_hour: {attack_min_rph}",
-        f"recycle_min_res_per_hour: {recycle_min_rph}",
-        f"fleet_save_fuel_reserve_spice: {fleet_reserve}",
-        f"action_batch_interval_seconds: {batch_interval}",
-        f"max_actions_per_hour: {max_actions}",
-        f"page_view_limit_per_minute: {page_view_limit}",
-        f"hot_planet_solar_temp_threshold: {hot_temp}",
-        f"min_free_fields_warning: {min_fields}",
-        f"min_colony_fields: {min_colony}",
-        f"max_planets: {max_planets}",
-        f"galaxy_sweep_interval_seconds: {sweep_interval}",
-        f"galaxy_sweep_pages: {sweep_pages}",
-        f"galaxy_scan_click_delay_seconds: {scan_click_delay}",
-        f"galaxy_scan_click_jitter_seconds: {scan_click_jitter}",
-        f"galaxy_scan_explore_first: {'true' if scan_explore_first else 'false'}",
-        f"galaxy_scan_refresh_pct: {scan_refresh_pct}",
-        f"galaxy_scan_all_galaxies: {'true' if scan_all_galaxies else 'false'}",
-        f"galaxy_scan_block_other_actions: {'true' if _safe_cfg_bool(getattr(cfg, 'galaxy_scan_block_other_actions', True), True) else 'false'}",
-        f"galaxy_scan_near_weight: {scan_near_weight}",
-        f"galaxy_scan_attack_weight: {scan_attack_weight}",
-        f"reserved_spy_slots: {res_spy_slots}",
-        f"spy_reserved_slots_only: {'true' if spy_res_only else 'false'}",
-        f"spy_dispatch_planet_id: {spy_disp_pid}",
-        f"planner_mode: {planner_mode}",
-        f"ai_resource_spare_pct: {ai_spare_pct}",
-        f"ai_adaptive_execution: {'true' if ai_adaptive_exec else 'false'}",
-        f"ga_population_size: {ga_pop}",
-        f"ga_generations: {ga_gen}",
-        f"ga_mutation_rate: {ga_mut}",
-        "shipyard_targets:",
-    ]
-    raw_targets = cfg.shipyard_targets if isinstance(cfg.shipyard_targets, Mapping) else DEFAULT_SHIPYARD_TARGETS
-    canonical_targets: dict[str, int] = {}
-    for slug, cnt in raw_targets.items():
-        safe_slug = _safe_cfg_key(slug)
-        if not safe_slug:
-            continue
-        canon_slug = _canonicalize_shipyard_target_key(safe_slug)
-        canonical_targets[canon_slug] = max(0, _safe_cfg_int(cnt, 0))
-    for canon_slug, val in canonical_targets.items():
-        lines.append(f"  {_format_yaml_string(canon_slug)}: {val}")
-    raw_fr_targets = (
-        cfg.fleet_research_targets
-        if isinstance(getattr(cfg, "fleet_research_targets", None), Mapping)
-        else DEFAULT_FLEET_RESEARCH_TARGETS
-    )
-    canonical_fr_targets: dict[str, int] = {}
-    for rk, lvl in raw_fr_targets.items():
-        safe_rk = _safe_cfg_key(rk)
-        if not safe_rk:
-            continue
-        canon_rk = _canonicalize_fleet_research_key(safe_rk)
-        clean_lvl = max(0, min(100, _safe_cfg_int(lvl, 0)))
-        if clean_lvl > 0:
-            canonical_fr_targets[canon_rk] = clean_lvl
-        else:
-            canonical_fr_targets.pop(canon_rk, None)
-    if canonical_fr_targets:
-        lines.append("fleet_research_targets:")
-        for canon_rk, val in canonical_fr_targets.items():
-            lines.append(f"  {_format_yaml_string(canon_rk)}: {val}")
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(_serialize_strategy_config_json(cfg, indent=2) + "\n", encoding="utf-8")
     return path

@@ -146,8 +146,8 @@ class TestRunnerDebugPortLifecycle(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             tp = Path(tmp)
-            cfg_p = tp / "cfg.yaml"
-            cfg_p.write_text("planner_mode: priority\n", encoding="utf-8")
+            cfg_p = tp / "cfg.json"
+            cfg_p.write_text('{"planner_mode": "priority"}', encoding="utf-8")
             created_bridges: list[GameApiBridge] = []
 
             def _isolated_bridge(*args, **kwargs):

@@ -79,7 +79,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--config",
         type=Path,
         default=None,
-        help="Optional strategy config path (.db SQLite or legacy .yaml; defaults to active DB).",
+        help="Optional strategy config path (.db SQLite or .json; defaults to active DB).",
     )
     parser.add_argument(
         "--db-backend",

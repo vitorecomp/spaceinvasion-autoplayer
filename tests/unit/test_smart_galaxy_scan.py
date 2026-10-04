@@ -74,12 +74,12 @@ class TestSmartGalaxyScanConfig(unittest.TestCase):
                 galaxy_scan_near_weight=4.5,
                 galaxy_scan_attack_weight=7.25,
             )
-            yaml_path = tp / "smart_scan.yaml"
-            save_strategy_config(custom, yaml_path)
-            loaded_yaml = load_strategy_config(yaml_path)
-            self.assertFalse(loaded_yaml.galaxy_scan_explore_first)
-            self.assertAlmostEqual(loaded_yaml.galaxy_scan_near_weight, 4.5)
-            self.assertAlmostEqual(loaded_yaml.galaxy_scan_attack_weight, 7.25)
+            json_path = tp / "smart_scan.json"
+            save_strategy_config(custom, json_path)
+            loaded_json = load_strategy_config(json_path)
+            self.assertFalse(loaded_json.galaxy_scan_explore_first)
+            self.assertAlmostEqual(loaded_json.galaxy_scan_near_weight, 4.5)
+            self.assertAlmostEqual(loaded_json.galaxy_scan_attack_weight, 7.25)
 
             db_path = tp / "smart_scan.db"
             db = GameDatabase(db_path)
@@ -583,7 +583,7 @@ class TestSmartGalaxyScanTwoPhaseEngine(unittest.TestCase):
         now = 1_750_000_000.0
         with tempfile.TemporaryDirectory(prefix="si_sec_api_") as tmp:
             tmp_path = Path(tmp)
-            cfg_path = tmp_path / "config.yaml"
+            cfg_path = tmp_path / "config.json"
             save_strategy_config(
                 StrategyConfig(
                     galaxy_scan_refresh_pct=25,
@@ -744,7 +744,7 @@ class TestSmartGalaxyScanTwoPhaseEngine(unittest.TestCase):
         now = 1_750_000_000.0
         with tempfile.TemporaryDirectory(prefix="si_sec_spill_") as tmp:
             tmp_path = Path(tmp)
-            cfg_path = tmp_path / "config.yaml"
+            cfg_path = tmp_path / "config.json"
             # galaxy_scan_all_galaxies=False, but mixed 30% Refresh / 70% Discovery on a 100% scanned G2
             save_strategy_config(
                 StrategyConfig(
@@ -810,7 +810,7 @@ class TestSmartGalaxyScanTwoPhaseEngine(unittest.TestCase):
         now = 1_750_000_000.0
         with tempfile.TemporaryDirectory(prefix="si_sec_prev_") as tmp:
             tmp_path = Path(tmp)
-            cfg_path = tmp_path / "config.yaml"
+            cfg_path = tmp_path / "config.json"
             save_strategy_config(
                 StrategyConfig(
                     galaxy_scan_refresh_pct=0,

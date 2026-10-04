@@ -512,7 +512,7 @@ class TestSweepAndTransmitter(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             bridge = GameApiBridge(
                 db_path=Path(tmp) / "api.db",
-                config_path=Path(tmp) / "cfg.yaml",
+                config_path=Path(tmp) / "cfg.json",
             )
             self.addCleanup(bridge.close)
             bridge._last_state = gs
@@ -637,7 +637,7 @@ class TestSweepAndTransmitter(unittest.TestCase):
                     html = _make_galaxy_html(galaxy, system, include_debris=(system % 5 == 0))
                     return html, galaxy, system
 
-            cfg_path = tmp_dir / "cfg.yaml"
+            cfg_path = tmp_dir / "cfg.json"
             bridge = GameApiBridge(
                 debug_port=9222,
                 config_path=cfg_path,
@@ -808,10 +808,9 @@ class TestSweepAndTransmitter(unittest.TestCase):
         # 2. galaxy_scan_click_delay_seconds + galaxy_scan_click_jitter_seconds + discard/restore colony candidate
         with tempfile.TemporaryDirectory(prefix="si_sweep_delay_") as tmp:
             tp = Path(tmp)
-            cfg_path = tp / "config.yaml"
+            cfg_path = tp / "config.json"
             cfg_path.write_text(
-                "allow_galaxy_scan: true\nallow_colonize: true\nmax_planets: 4\n"
-                "galaxy_scan_click_delay_seconds: 1.8\ngalaxy_scan_click_jitter_seconds: 0.4\n",
+                '{"allow_galaxy_scan": true, "allow_colonize": true, "max_planets": 4, "galaxy_scan_click_delay_seconds": 1.8, "galaxy_scan_click_jitter_seconds": 0.4}',
                 encoding="utf-8",
             )
             fake_client = MagicMock()
@@ -1001,7 +1000,7 @@ class TestSweepAndTransmitter(unittest.TestCase):
             tp10 = Path(tmp_v10)
             bridge10 = GameApiBridge(
                 debug_port=19998,
-                config_path=tp10 / "cfg.yaml",
+                config_path=tp10 / "cfg.json",
                 db_path=tp10 / "v10.db",
                 log_dir=None,
                 ensure_session_fn=lambda: None,
@@ -1378,7 +1377,7 @@ class TestSweepAndTransmitter(unittest.TestCase):
             tp = Path(tmp_dir)
             bridge = GameApiBridge(
                 debug_port=19997,
-                config_path=tp / "cfg.yaml",
+                config_path=tp / "cfg.json",
                 db_path=tp / "ntf.db",
                 log_dir=None,
                 ensure_session_fn=lambda: None,
@@ -1441,7 +1440,7 @@ class TestSweepAndTransmitter(unittest.TestCase):
             with patch("spaceinvasion.runtime.api_server.is_debug_port_open", return_value=True):
                 bridge = GameApiBridge(
                     debug_port=19996,
-                    config_path=tp / "cfg.yaml",
+                    config_path=tp / "cfg.json",
                     db_path=tp / "cap.db",
                     log_dir=None,
                     client_factory=lambda _p: _CountingClientCtx(),  # type: ignore[arg-type]
@@ -1625,7 +1624,7 @@ class TestSweepAndTransmitter(unittest.TestCase):
 
             bridge = GameApiBridge(
                 debug_port=19995,
-                config_path=tp / "cfg.yaml",
+                config_path=tp / "cfg.json",
                 db_path=tp / "smart.db",
                 log_dir=None,
                 client_factory=lambda _p: _FakeSweepClient(),
@@ -1800,7 +1799,7 @@ class TestSweepAndTransmitter(unittest.TestCase):
             tp = Path(tmp_dir)
             bridge = GameApiBridge(
                 debug_port=19992,
-                config_path=tp / "cfg.yaml",
+                config_path=tp / "cfg.json",
                 db_path=tp / "esp.db",
                 log_dir=None,
                 ensure_session_fn=lambda: None,
@@ -1892,7 +1891,7 @@ class TestSweepAndTransmitter(unittest.TestCase):
             bridge_holder: list[GameApiBridge] = []
             bridge = GameApiBridge(
                 debug_port=19991,
-                config_path=tp / "cfg.yaml",
+                config_path=tp / "cfg.json",
                 db_path=tp / "livecov.db",
                 log_dir=None,
                 client_factory=lambda _p: _LiveProgressClient(bridge_holder[0]),
@@ -1929,8 +1928,8 @@ class TestSweepAndTransmitter(unittest.TestCase):
 
         with tempfile.TemporaryDirectory(prefix="si_suspend_arrow_") as tmp:
             tp = Path(tmp)
-            cfg_path = tp / "cfg.yaml"
-            cfg_path.write_text("allow_galaxy_scan: true\ngalaxy_sweep_pages: 10\n", encoding="utf-8")
+            cfg_path = tp / "cfg.json"
+            cfg_path.write_text('{"allow_galaxy_scan": true, "galaxy_sweep_pages": 10}', encoding="utf-8")
             visited: list[tuple[int, int]] = []
             bridge_holder: list[GameApiBridge] = []
 

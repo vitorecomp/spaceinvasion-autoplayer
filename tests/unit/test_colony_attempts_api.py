@@ -51,9 +51,9 @@ class TestColonyAttemptsApi(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
         self.tp = Path(self._tmp.name)
-        self.cfg_path = self.tp / "cfg.yaml"
+        self.cfg_path = self.tp / "cfg.json"
         self.cfg_path.write_text(
-            "allow_colonize: true\nallow_galaxy_scan: true\nmin_colony_fields: 300\n",
+            '{"allow_colonize": true, "allow_galaxy_scan": true, "min_colony_fields": 300}',
             encoding="utf-8",
         )
         self.db_path = self.tp / "col.db"

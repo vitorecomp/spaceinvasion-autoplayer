@@ -10,7 +10,7 @@
       "scripts/validate_adaptive_execution.py": 1,
       "spaceinvasion/combat/fleet.py": 13,
       "spaceinvasion/combat/ranking.py": 20,
-      "spaceinvasion/core/config.py": 13,
+      "spaceinvasion/core/config.py": 12,
       "spaceinvasion/core/logging_utils.py": 6,
       "spaceinvasion/core/state.py": 8,
       "spaceinvasion/db/backend.py": 8,
@@ -77,7 +77,6 @@
       "spaceinvasion/combat/ranking.py:build_ranking_evolution": 141,
       "spaceinvasion/combat/ranking.py:compute_action_eta": 153,
       "spaceinvasion/combat/ranking.py:estimate_planet_hourly_economy": 105,
-      "spaceinvasion/core/config.py:save_strategy_config": 152,
       "spaceinvasion/core/config.py:strategy_config_from_dict": 118,
       "spaceinvasion/core/state.py:_parse_home_fadata_fleets": 162,
       "spaceinvasion/core/state.py:count_in_flight_ships_by_planet": 113,
@@ -229,7 +228,7 @@
       "scripts/sync_wiki_data.py": 1286,
       "spaceinvasion/combat/fleet.py": 5447,
       "spaceinvasion/combat/ranking.py": 1940,
-      "spaceinvasion/core/config.py": 1758,
+      "spaceinvasion/core/config.py": 1452,
       "spaceinvasion/core/logging_utils.py": 999,
       "spaceinvasion/core/state.py": 3242,
       "spaceinvasion/db/migrations.py": 3121,
@@ -335,7 +334,7 @@
     },
     "spaceinvasion/core/config.py": {
       "B904": 1,
-      "BLE001": 13,
+      "BLE001": 12,
       "S110": 1
     },
     "spaceinvasion/core/logging_utils.py": {

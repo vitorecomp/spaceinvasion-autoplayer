@@ -226,8 +226,8 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
 
         sleeps: list[float] = []
         with tempfile.TemporaryDirectory() as tmp:
-            cfg_path = Path(tmp) / "config.yaml"
-            cfg_path.write_text("playstyle: fleeter\n", encoding="utf-8")
+            cfg_path = Path(tmp) / "config.json"
+            cfg_path.write_text('{"playstyle": "fleeter"}', encoding="utf-8")
             with (
                 patch("commander.GameApiClient", return_value=fake_api),
                 patch("commander.time.sleep", side_effect=lambda s: sleeps.append(s)),
@@ -353,7 +353,7 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
 
     def test_update_config_syncs_max_actions_per_hour_and_dry_executor(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            cfg_path = Path(tmp) / "config.yaml"
+            cfg_path = Path(tmp) / "config.json"
             bridge = GameApiBridge(
                 debug_port=9222,
                 config_path=cfg_path,
@@ -383,8 +383,8 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             logs_dir = Path(tmp) / "logs"
             db_path = Path(tmp) / "state" / "spaceinvasion.db"
-            cfg_path = Path(tmp) / "config.yaml"
-            cfg_path.write_text("allow_raids: true\nallow_pvp_in_az: true\n", encoding="utf-8")
+            cfg_path = Path(tmp) / "config.json"
+            cfg_path.write_text('{"allow_raids": true, "allow_pvp_in_az": true}', encoding="utf-8")
 
             state = _sample_state(ships={"s4": 2, "s1": 1})
             fake_client = MagicMock()
@@ -756,8 +756,8 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
         }
         sleeps: list[float] = []
         with tempfile.TemporaryDirectory() as tmp:
-            cfg_path = Path(tmp) / "config.yaml"
-            cfg_path.write_text("playstyle: fleeter\n", encoding="utf-8")
+            cfg_path = Path(tmp) / "config.json"
+            cfg_path.write_text('{"playstyle": "fleeter"}', encoding="utf-8")
             with (
                 patch("commander.GameApiClient", return_value=fake_api),
                 patch("commander.time.sleep", side_effect=lambda s: sleeps.append(s)),
@@ -1004,8 +1004,8 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
             now[0] += secs
 
         with tempfile.TemporaryDirectory() as tmp:
-            cfg_path = Path(tmp) / "config.yaml"
-            cfg_path.write_text("playstyle: fleeter\n", encoding="utf-8")
+            cfg_path = Path(tmp) / "config.json"
+            cfg_path.write_text('{"playstyle": "fleeter"}', encoding="utf-8")
             with (
                 patch("commander.GameApiClient", return_value=fake_api),
                 patch("commander.time.monotonic", side_effect=lambda: now[0]),
@@ -1075,8 +1075,8 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
                 now2[0] += 40.0
 
         with tempfile.TemporaryDirectory() as tmp:
-            cfg_path = Path(tmp) / "config.yaml"
-            cfg_path.write_text("allow_galaxy_scan: true\n", encoding="utf-8")
+            cfg_path = Path(tmp) / "config.json"
+            cfg_path.write_text('{"allow_galaxy_scan": true}', encoding="utf-8")
             with (
                 patch("commander.GameApiClient", return_value=fake_api2),
                 patch("commander.time.monotonic", side_effect=lambda: now2[0]),
@@ -1116,8 +1116,8 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             db_path = tmp_path / "state" / "spaceinvasion.db"
-            cfg_path = tmp_path / "config.yaml"
-            cfg_path.write_text("allow_raids: true\n", encoding="utf-8")
+            cfg_path = tmp_path / "config.json"
+            cfg_path.write_text('{"allow_raids": true}', encoding="utf-8")
 
             state = _sample_state(ships={"s4": 4})
             fake_client = MagicMock()
@@ -1497,8 +1497,8 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
         fake_api.get_state.side_effect = GameApiError("SpaceInvasion per-minute page-view throttle hit; retry after 45s.")
         sleeps: list[float] = []
         with tempfile.TemporaryDirectory() as tmp:
-            cfg_path = Path(tmp) / "config.yaml"
-            cfg_path.write_text("playstyle: fleeter\n", encoding="utf-8")
+            cfg_path = Path(tmp) / "config.json"
+            cfg_path.write_text('{"playstyle": "fleeter"}', encoding="utf-8")
             with (
                 patch("commander.GameApiClient", return_value=fake_api),
                 patch("commander.time.sleep", side_effect=lambda s: sleeps.append(s)),
@@ -1788,8 +1788,8 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             db_path = tmp_path / "state" / "spaceinvasion.db"
-            cfg_path = tmp_path / "config.yaml"
-            cfg_path.write_text("allow_raids: true\n", encoding="utf-8")
+            cfg_path = tmp_path / "config.json"
+            cfg_path.write_text('{"allow_raids": true}', encoding="utf-8")
 
             drv = _StatefulBridgeDriver()
             bridge = GameApiBridge(
@@ -2482,8 +2482,8 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             db_path = tmp_path / "state" / "spaceinvasion.db"
-            cfg_path = tmp_path / "config.yaml"
-            cfg_path.write_text("allow_raids: true\n", encoding="utf-8")
+            cfg_path = tmp_path / "config.json"
+            cfg_path.write_text('{"allow_raids": true}', encoding="utf-8")
 
             drv = _TwoPlanetDriver()
             bridge = GameApiBridge(
@@ -2705,8 +2705,8 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
                 clock=clock,
             )
             tmp_dir.mkdir(parents=True, exist_ok=True)
-            cfg = tmp_dir / "config.yaml"
-            cfg.write_text("allow_raids: true\nallow_galaxy_scan: true\n", encoding="utf-8")
+            cfg = tmp_dir / "config.json"
+            cfg.write_text('{"allow_raids": true, "allow_galaxy_scan": true}', encoding="utf-8")
             drv = FakeDriver(srv)
             lim = PageViewLimiter(
                 min_delay_range=(0.0, 0.0),
@@ -2874,8 +2874,8 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
                 clock=clock,
             )
             tmp_dir.mkdir(parents=True, exist_ok=True)
-            cfg = tmp_dir / "config.yaml"
-            cfg.write_text("allow_raids: true\nallow_galaxy_scan: true\n", encoding="utf-8")
+            cfg = tmp_dir / "config.json"
+            cfg.write_text('{"allow_raids": true, "allow_galaxy_scan": true}', encoding="utf-8")
             drv = FakeDriver(srv)
             lim = PageViewLimiter(
                 min_delay_range=(0.0, 0.0),
@@ -3182,8 +3182,8 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
         )
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            cfg = tmp_path / "config.yaml"
-            cfg.write_text("allow_raids: true\n", encoding="utf-8")
+            cfg = tmp_path / "config.json"
+            cfg.write_text('{"allow_raids": true}', encoding="utf-8")
             drv = FakeDriver(srv)
             lim = PageViewLimiter(
                 min_delay_range=(0.0, 0.0),
@@ -3279,8 +3279,8 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
 
                 srv._render_frame_inner = _render_with_active_queues
             tmp_dir.mkdir(parents=True, exist_ok=True)
-            cfg = tmp_dir / "config.yaml"
-            cfg.write_text("allow_research: true\n", encoding="utf-8")
+            cfg = tmp_dir / "config.json"
+            cfg.write_text('{"allow_research": true}', encoding="utf-8")
             drv = FakeDriver(srv)
             lim = PageViewLimiter(
                 min_delay_range=(0.0, 0.0),
@@ -3561,8 +3561,8 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
             srv_h._render_buildings_html = _bld_with_tutorial
             drv_h = FakeDriver(srv_h)
             lim_h = PageViewLimiter(min_delay_range=(0.0, 0.0), clock=clock_h.monotonic, sleeper=clock_h.sleep)
-            cfg_h = tmp_path / "cfg_h.yaml"
-            cfg_h.write_text("allow_raids: false\n", encoding="utf-8")
+            cfg_h = tmp_path / "cfg_h.json"
+            cfg_h.write_text('{"allow_raids": false}', encoding="utf-8")
             bridge_h = GameApiBridge(
                 debug_port=9222,
                 config_path=cfg_h,
@@ -3632,7 +3632,7 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
             )
             drv_x = FakeDriver(srv_x)
             lim_x = PageViewLimiter(min_delay_range=(0.0, 0.0), clock=clock_x.monotonic, sleeper=clock_x.sleep)
-            cfg_x = tmp_path / "cfg_x.yaml"
+            cfg_x = tmp_path / "cfg_x.json"
             bridge_x = GameApiBridge(
                 debug_port=9222,
                 config_path=cfg_x,

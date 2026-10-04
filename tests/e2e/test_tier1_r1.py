@@ -67,14 +67,14 @@ class TestTier1R1(unittest.TestCase):
     def test_r1_a1_t1_default_strategy_config_preserves_priority(self) -> None:
         cfg_default = StrategyConfig()
         with tempfile.TemporaryDirectory() as tmp:
-            cfg_missing = load_strategy_config(Path(tmp) / "nonexistent.yaml")
+            cfg_missing = load_strategy_config(Path(tmp) / "nonexistent.json")
         for cfg in (cfg_default, cfg_missing):
             self.assertTrue(hasattr(cfg, "planner_mode"), "StrategyConfig missing planner_mode")
             self.assertEqual(cfg.planner_mode, "priority")
             self.assertEqual(cfg.ga_population_size, 24)
             self.assertEqual(cfg.ga_generations, 12)
 
-    def test_r1_a1_t2_yaml_and_json_roundtrip_ai_planner_and_legacy_ga_nn(self) -> None:
+    def test_r1_a1_t2_json_roundtrip_ai_planner_and_legacy_ga_nn(self) -> None:
         cfg = StrategyConfig(
             planner_mode="ai_planner",
             ga_population_size=18,
@@ -86,21 +86,21 @@ class TestTier1R1(unittest.TestCase):
             ga_generations=10,
         )
         with tempfile.TemporaryDirectory() as tmp:
-            yaml_path = Path(tmp) / "config.yaml"
-            save_strategy_config(cfg, yaml_path)
-            loaded = load_strategy_config(yaml_path)
+            json_path = Path(tmp) / "config.json"
+            save_strategy_config(cfg, json_path)
+            loaded = load_strategy_config(json_path)
             self.assertEqual(loaded, cfg)
             self.assertEqual(loaded.planner_mode, "ai_planner")
             self.assertEqual(loaded.ga_population_size, 18)
             self.assertEqual(loaded.ga_generations, 9)
 
-            save_strategy_config(cfg_legacy, yaml_path)
-            loaded_legacy = load_strategy_config(yaml_path)
+            save_strategy_config(cfg_legacy, json_path)
+            loaded_legacy = load_strategy_config(json_path)
             self.assertEqual(loaded_legacy.planner_mode, "priority")
 
-            json_path = Path(tmp) / "config.json"
-            json_path.write_text(json.dumps(asdict(cfg)), encoding="utf-8")
-            loaded_json = load_strategy_config(json_path)
+            json_raw_path = Path(tmp) / "config_raw.json"
+            json_raw_path.write_text(json.dumps(asdict(cfg)), encoding="utf-8")
+            loaded_json = load_strategy_config(json_raw_path)
             self.assertEqual(loaded_json, cfg)
 
     def test_r1_a1_t3_priority_mode_regression_bit_for_bit(self) -> None:

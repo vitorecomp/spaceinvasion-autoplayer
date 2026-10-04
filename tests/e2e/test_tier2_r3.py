@@ -203,16 +203,16 @@ class TestTier2R3(unittest.TestCase):
             dash = requests.get(f"{h.base_url}/dashboard?refresh=0", timeout=5.0).json()
             self.assertEqual(dash["plan"], [])
 
-    def test_t2_r3b_02_corrupted_planner_mode_yaml_and_http_update(self) -> None:
+    def test_t2_r3b_02_corrupted_planner_mode_json_and_http_update(self) -> None:
         _import_eta_helpers(self)
         with tempfile.TemporaryDirectory() as tmp:
-            p = Path(tmp) / "config.yaml"
-            p.write_text("planner_mode: invalid_xyz\nplaystyle: miner\n", encoding="utf-8")
+            p = Path(tmp) / "config.json"
+            p.write_text('{"planner_mode": "invalid_xyz", "playstyle": "miner"}\n', encoding="utf-8")
             loaded = load_strategy_config(p)
             self.assertTrue(hasattr(loaded, "planner_mode"), "StrategyConfig missing planner_mode")
             self.assertEqual(loaded.planner_mode, "priority")
 
-        with E2ETestHarness(raw_config_text="planner_mode: invalid_xyz\nplaystyle: fleeter\n") as h:
+        with E2ETestHarness(raw_config_text='{"planner_mode": "invalid_xyz", "playstyle": "fleeter"}\n') as h:
             cfg = h.api.send_command({"command": "config"})["config"]
             self.assertEqual(cfg["planner_mode"], "priority")
             resp = requests.post(

@@ -430,7 +430,7 @@ class TestBridgeLedgersAndRealizedLoot(unittest.TestCase):
 
     def _bridge(self, tmp: str, *, adaptive: bool) -> GameApiBridge:
         tp = Path(tmp)
-        cfg_path = tp / "config.yaml"
+        cfg_path = tp / "config.json"
         if not cfg_path.exists():
             save_strategy_config(
                 StrategyConfig(planner_mode="ai_planner", max_planets=2, ai_adaptive_execution=adaptive),
