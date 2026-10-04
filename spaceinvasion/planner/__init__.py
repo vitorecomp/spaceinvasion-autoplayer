@@ -1,11 +1,11 @@
-"""Heuristic P0-P3 planner, evolutionary GA+NN optimizer, and topological Action Graph (DAG)."""
+"""Heuristic P0-P3 planner, AI-Planner path optimizer, and topological Action Graph (DAG)."""
 
 from __future__ import annotations
 
 import importlib
 from types import ModuleType
 
-__all__ = ['action_graph', 'optimizer', 'strategy']
+__all__ = ['action_graph', 'ai_planner', 'config_optimizer', 'strategy']
 
 
 def __getattr__(name: str) -> ModuleType:

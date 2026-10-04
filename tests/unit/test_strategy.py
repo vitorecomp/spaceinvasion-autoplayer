@@ -740,9 +740,9 @@ class TestStrategyPlanner(unittest.TestCase):
         self.assertEqual(met_blocked[0].wait_eta, "—")
         self.assertEqual(met_blocked[0].eta_bottleneck, "metal")
 
-    def test_plan_actions_routes_ga_nn_normalizes_and_attaches_etas(self) -> None:
+    def test_plan_actions_legacy_ga_nn_normalizes_and_attaches_etas(self) -> None:
         empty_st = GameState(31, 1, "u", 0.0, (), active_planet_id=None)
-        self.assertEqual(plan_actions(empty_st, config=StrategyConfig(planner_mode="ga_nn", ga_seed=42)), [])
+        self.assertEqual(plan_actions(empty_st, config=StrategyConfig(planner_mode="ga_nn")), [])
 
         p = _sample_planet(
             resources=Resources(10_000, 8_000, 6_000, 3_000),
@@ -754,8 +754,8 @@ class TestStrategyPlanner(unittest.TestCase):
             ),
         )
         st = GameState(31, 1, "u", 1_700_000_000.0, (p,), researches={"r2": 1}, speedup_factor=5.0)
-        acts_ga = plan_actions(st, config=StrategyConfig(planner_mode="ga_nn", ga_seed=42, ga_generations=4, ga_population_size=8))
-        acts_ws = plan_actions(st, config=StrategyConfig(planner_mode=" GA_NN ", ga_seed=42, ga_generations=4, ga_population_size=8))
+        acts_ga = plan_actions(st, config=StrategyConfig(planner_mode="ga_nn", ga_generations=4, ga_population_size=8))
+        acts_ws = plan_actions(st, config=StrategyConfig(planner_mode=" GA_NN ", ga_generations=4, ga_population_size=8))
         self.assertGreater(len(acts_ga), 0)
         self.assertEqual(acts_ga, acts_ws)
         for act in acts_ga:
@@ -765,40 +765,11 @@ class TestStrategyPlanner(unittest.TestCase):
             self.assertEqual(act.total_eta, expected["total_eta"])
             self.assertEqual(act.eta_bottleneck, expected["eta_bottleneck"])
 
-        # Unknown planner_mode falls back cleanly to priority mode
+        # Unknown and legacy ga_nn planner_mode fall back cleanly to priority mode
         acts_unk = plan_actions(st, config=StrategyConfig(planner_mode="unknown_mode"))
         acts_pri = plan_actions(st, config=StrategyConfig(planner_mode="priority"))
         self.assertEqual(acts_unk, acts_pri)
-
-    def test_plan_actions_ga_nn_does_not_suppress_layer4_when_state_raid_stats_empty(self) -> None:
-        p = _sample_planet(buildings={"b1": 4, "b2": 3, "b3": 4, "b5": 7})
-        st_empty = GameState(31, 1, "u", 1_700_000_000.0, (p,), raid_stats={})
-        cfg = StrategyConfig(planner_mode="ga_nn", ga_seed=42)
-
-        with mock.patch("spaceinvasion.optimizer.optimize_plan_actions", return_value=[]) as mocked_opt:
-            plan_actions(st_empty, config=cfg)
-            mocked_opt.assert_called_once()
-            self.assertNotIn("raid_stats", mocked_opt.call_args.kwargs)
-
-            non_empty = {"overall": {"attempts": 3, "wins": 3, "success_rate": 1.0}}
-            st_pop = GameState(31, 1, "u", 1_700_000_000.0, (p,), raid_stats=non_empty)
-            plan_actions(st_pop, config=cfg)
-            self.assertEqual(mocked_opt.call_args.kwargs.get("raid_stats"), non_empty)
-
-            explicit_supp = {}
-            plan_actions(st_pop, config=cfg, raid_stats=explicit_supp)
-            self.assertIs(mocked_opt.call_args.kwargs.get("raid_stats"), explicit_supp)
-
-            plan_actions(
-                st_pop,
-                config=cfg,
-                now_ts=1234.0,
-                scanned_systems={"02:380": 1200.0},
-                throttle_cooldowns={1: 1210.0},
-            )
-            self.assertEqual(mocked_opt.call_args.kwargs.get("now_ts"), 1234.0)
-            self.assertEqual(mocked_opt.call_args.kwargs.get("scanned_systems"), {"02:380": 1200.0})
-            self.assertEqual(mocked_opt.call_args.kwargs.get("throttle_cooldowns"), {1: 1210.0})
+        self.assertEqual(acts_ga, acts_pri)
 
     def test_status_color_omitted_active_asteroid_vs_commander_slots_and_non_finite_fields(self) -> None:
         from spaceinvasion.strategy import _max_build_slots
@@ -988,13 +959,12 @@ class TestStrategyPlanner(unittest.TestCase):
                 planets=(planet,),
                 active_planet_id=planet.planet_id,
             )
-            for mode in ("priority", "ga_nn"):
-                acts = plan_actions(
-                    state,
-                    config=StrategyConfig(planner_mode=mode, ga_population_size=4, ga_generations=2, ga_horizon_steps=2, ga_seed=1),
-                )
-                p1_wh = [a for a in acts if a.priority == "P1" and a.kind == "BUILD" and a.target_id == PIG_IRON_WAREHOUSE]
-                self.assertTrue(p1_wh, f"Expected P1 warehouse action for mode={mode}, huge={huge.bit_length()}b")
+            acts = plan_actions(
+                state,
+                config=StrategyConfig(planner_mode="priority"),
+            )
+            p1_wh = [a for a in acts if a.priority == "P1" and a.kind == "BUILD" and a.target_id == PIG_IRON_WAREHOUSE]
+            self.assertTrue(p1_wh, f"Expected P1 warehouse action for huge={huge.bit_length()}b")
 
     def test_r8_plan_actions_allow_raids_survives_non_ascii_superscript_coords(self) -> None:
         from spaceinvasion.state import game_state_from_dict
@@ -2164,25 +2134,20 @@ class TestStrategyPlanner(unittest.TestCase):
             allow_galaxy_scan=True,
             min_colony_fields=300,
             shipyard_targets={"solar-cells": 10, "small-transport": 2},
-            ga_population_size=6,
-            ga_generations=2,
-            ga_horizon_steps=4,
-            ga_seed=7,
         )
-        for mode in ("priority", "ga_nn"):
-            acts = plan_actions(st_dem_col, config=replace(cfg_strict, planner_mode=mode), now_ts=2000.0)
-            self.assertFalse(any(a.kind in ("BUILD", "WAIT_RESOURCES") and a.target_id == 6 for a in acts), mode)
-            self.assertFalse(any(a.kind == "BUILD_SHIP" and a.target_id == 9 for a in acts), mode)
-            dem = next((a for a in acts if a.kind == "DEMOLISH_BUILDING"), None)
-            self.assertIsNotNone(dem, mode)
-            assert dem is not None
-            self.assertEqual((dem.priority, dem.target_id, dem.target_level, dem.executable_now), ("P1", 6, 9, True))
-            col = next((a for a in acts if a.kind == "COLONIZE"), None)
-            self.assertIsNotNone(col, mode)
-            assert col is not None
-            self.assertIn("02:380:09", col.target_name)
-            self.assertIn("318", col.target_name)
-            self.assertTrue(col.executable_now)
+        acts = plan_actions(st_dem_col, config=replace(cfg_strict, planner_mode="priority"), now_ts=2000.0)
+        self.assertFalse(any(a.kind in ("BUILD", "WAIT_RESOURCES") and a.target_id == 6 for a in acts))
+        self.assertFalse(any(a.kind == "BUILD_SHIP" and a.target_id == 9 for a in acts))
+        dem = next((a for a in acts if a.kind == "DEMOLISH_BUILDING"), None)
+        self.assertIsNotNone(dem)
+        assert dem is not None
+        self.assertEqual((dem.priority, dem.target_id, dem.target_level, dem.executable_now), ("P1", 6, 9, True))
+        col = next((a for a in acts if a.kind == "COLONIZE"), None)
+        self.assertIsNotNone(col)
+        assert col is not None
+        self.assertIn("02:380:09", col.target_name)
+        self.assertIn("318", col.target_name)
+        self.assertTrue(col.executable_now)
 
         # 2. Hot tight-field planet with negative energy still builds Fusion (NOT Solar cells) under forbid_planetary_solar=True,
         #    while an Asteroid with negative energy STILL builds Solar cells (s9)!
@@ -2338,24 +2303,19 @@ class TestStrategyPlanner(unittest.TestCase):
         cfg = StrategyConfig(
             playstyle="fleeter",
             auto_throttle_blast_furnace=True,
-            ga_population_size=6,
-            ga_generations=2,
-            ga_horizon_steps=4,
-            ga_seed=11,
         )
-        for mode in ("priority", "ga_nn"):
-            acts = plan_actions(
-                st_full,
-                config=replace(cfg, planner_mode=mode),
-                throttle_cooldowns={12476: 3900.0},  # Only 100s elapsed (<300s), still overrides to stop overflow!
-                now_ts=4000.0,
-            )
-            throt = next((a for a in acts if a.kind == "THROTTLE_BUILDING" and a.target_id == 2), None)
-            self.assertIsNotNone(throt, mode)
-            assert throt is not None
-            self.assertEqual(throt.priority, "P1", mode)
-            self.assertEqual(throt.target_level, 0, mode)
-            self.assertTrue(throt.executable_now, mode)
+        acts = plan_actions(
+            st_full,
+            config=replace(cfg, planner_mode="priority"),
+            throttle_cooldowns={12476: 3900.0},  # Only 100s elapsed (<300s), still overrides to stop overflow!
+            now_ts=4000.0,
+        )
+        throt = next((a for a in acts if a.kind == "THROTTLE_BUILDING" and a.target_id == 2), None)
+        self.assertIsNotNone(throt)
+        assert throt is not None
+        self.assertEqual(throt.priority, "P1")
+        self.assertEqual(throt.target_level, 0)
+        self.assertTrue(throt.executable_now)
 
         # 2. Fleet base (b10) scales at P2 when concurrent flight slots (1 + b10 = 2) are saturated by 2 active flights
         prio_acts = plan_actions(st_full, config=cfg, now_ts=4000.0)
@@ -2960,29 +2920,6 @@ class TestStrategyPlanner(unittest.TestCase):
         self.assertTrue(col_t and not col_t[0].executable_now)
         self.assertTrue(harv_t and all(not a.executable_now for a in harv_t))
 
-        # 3. Verify same 4-tier ordering & RECYCLE-beats-far-ATTACK interleaving in ga_nn mode!
-        acts_ga = plan_actions(st, config=replace(base_cfg, planner_mode="ga_nn"), now_ts=2000.0)
-        fleet_ga = [a for a in acts_ga if a.kind in ("SPY", "TRANSPORT", "COLONIZE", "ATTACK", "RECYCLE") and a.executable_now]
-        self.assertTrue(any(a.kind == "SPY" for a in fleet_ga))
-        self.assertTrue(any(a.kind == "TRANSPORT" for a in fleet_ga))
-        self.assertTrue(any(a.kind == "COLONIZE" for a in fleet_ga))
-        ga_spy_i = next(i for i, a in enumerate(fleet_ga) if a.kind == "SPY")
-        ga_tr_i = next(i for i, a in enumerate(fleet_ga) if a.kind == "TRANSPORT")
-        ga_col_i = next(i for i, a in enumerate(fleet_ga) if a.kind == "COLONIZE")
-        self.assertLess(ga_spy_i, ga_tr_i)
-        self.assertLess(ga_tr_i, ga_col_i)
-        ga_harv_idxs = [i for i, a in enumerate(fleet_ga) if a.kind in ("ATTACK", "RECYCLE")]
-        if ga_harv_idxs:
-            self.assertLess(ga_col_i, ga_harv_idxs[0])
-
-        acts_ga_rba = plan_actions(st_rec_beats_atk, config=replace(base_cfg, planner_mode="ga_nn"), now_ts=2000.0)
-        ga_harv_rba = [a for a in acts_ga_rba if a.kind in ("ATTACK", "RECYCLE") and a.executable_now]
-        self.assertTrue(any(a.kind == "RECYCLE" and "02:380:04" in a.target_name for a in ga_harv_rba))
-        if any(a.kind == "ATTACK" for a in ga_harv_rba):
-            rec_i = next(i for i, a in enumerate(ga_harv_rba) if a.kind == "RECYCLE" and "02:380:04" in a.target_name)
-            atk_i = next(i for i, a in enumerate(ga_harv_rba) if a.kind == "ATTACK" and "02:395:05" in a.target_name)
-            self.assertLess(rec_i, atk_i)
-
     def test_plan_interplanet_transports_shortfall_bootstrap_and_guards(self) -> None:
         """Verify inter-planet TRANSPORT shortfall supply, young-colony bootstrap, and safety guards."""
         from dataclasses import replace
@@ -3243,24 +3180,6 @@ class TestStrategyPlanner(unittest.TestCase):
         self.assertEqual(behind_act.kind, "BUILD")
         self.assertEqual(behind_act.target_level, 5)
 
-        # 4. GA+NN planner also unlocks remote colony stale resource offers in parallel!
-        ga_cfg = StrategyConfig(
-            planner_mode="ga_nn",
-            allow_multi_planet=True,
-            ga_population_size=8,
-            ga_generations=2,
-            ga_horizon_steps=6,
-            ga_seed=7,
-        )
-        ga_plan = plan_actions(st, config=ga_cfg)
-        ga_remote_builds = [
-            a for a in ga_plan if a.planet_id == 12453 and a.kind == "BUILD" and a.executable_now
-        ]
-        self.assertTrue(
-            len(ga_remote_builds) >= 1,
-            f"Expected GA+NN to unlock remote colony 12453 in parallel; got: {[(a.kind, a.target_id, a.executable_now, a.reason) for a in ga_plan if a.planet_id == 12453]}",
-        )
-
     def test_per_planet_fleet_slots_centralized_shipyard_proactive_b10_station_and_parallel_harvest(self) -> None:
         """Verify strictly per-planet 1+b10 slots, centralized initial b9 deferral, zero-prereq colony b10,
         one-way STATION deployment (Tier #3.5), multi-planet parallel ATTACK/RECYCLE, and smart rec_qty sizing."""
@@ -3306,26 +3225,21 @@ class TestStrategyPlanner(unittest.TestCase):
             active_planet_id=301,
             researches={"r1": 5, "r2": 6, "r3": 4, "r4": 4, "r5": 4},
         )
-        for mode in ("priority", "ga_nn"):
-            cfg_m = StrategyConfig(
-                planner_mode=mode,
-                allow_multi_planet=True,
-                allow_transport=True,
-                ga_population_size=8,
-                ga_generations=2,
-                ga_horizon_steps=6,
-                ga_seed=11,
-            )
-            plan_m = plan_actions(st_b10, config=cfg_m, now_ts=2000.0)
-            # Young colony defers Weapons factory (b9) while empire already has hub shipyard
-            col_b9 = [a for a in plan_m if a.planet_id == 302 and a.kind in ("BUILD", "WAIT_RESOURCES") and a.target_id == 9]
-            self.assertEqual(col_b9, [], msg=f"{mode}: expected young colony b9 deferred, got {col_b9}")
-            # Young colony proactively schedules zero-prereq Fleet base (b10) L1 at P2 even with b9 == 0
-            col_b10 = [a for a in plan_m if a.planet_id == 302 and a.kind == "BUILD" and a.target_id == 10]
-            self.assertTrue(
-                col_b10 and col_b10[0].priority == "P2" and col_b10[0].target_level == 1 and col_b10[0].executable_now,
-                msg=f"{mode}: expected proactive P2 Fleet base L1 on staging colony, got {[a for a in plan_m if a.planet_id == 302]}",
-            )
+        cfg_m = StrategyConfig(
+            planner_mode="priority",
+            allow_multi_planet=True,
+            allow_transport=True,
+        )
+        plan_m = plan_actions(st_b10, config=cfg_m, now_ts=2000.0)
+        # Young colony defers Weapons factory (b9) while empire already has hub shipyard
+        col_b9 = [a for a in plan_m if a.planet_id == 302 and a.kind in ("BUILD", "WAIT_RESOURCES") and a.target_id == 9]
+        self.assertEqual(col_b9, [], msg=f"expected young colony b9 deferred, got {col_b9}")
+        # Young colony proactively schedules zero-prereq Fleet base (b10) L1 at P2 even with b9 == 0
+        col_b10 = [a for a in plan_m if a.planet_id == 302 and a.kind == "BUILD" and a.target_id == 10]
+        self.assertTrue(
+            col_b10 and col_b10[0].priority == "P2" and col_b10[0].target_level == 1 and col_b10[0].executable_now,
+            msg=f"expected proactive P2 Fleet base L1 on staging colony, got {[a for a in plan_m if a.planet_id == 302]}",
+        )
 
         # 2. One-way STATION deployment (plan_interplanet_stationing) + safety filters + Tier #3.5 in priority & ga_nn
         col_ready = replace(young_staging, planet_id=302, name="ReadyBase", coords="02:380:08", buildings={**young_staging.buildings, "b10": 2})
@@ -3386,17 +3300,16 @@ class TestStrategyPlanner(unittest.TestCase):
         )
         self.assertEqual(plan_interplanet_stationing(st_station_inflight, cfg_st), [])
 
-        # Both priority and ga_nn emit STATION in plan_actions
-        for mode in ("priority", "ga_nn"):
-            pa = plan_actions(
-                st_station,
-                config=replace(cfg_st, planner_mode=mode, ga_population_size=8, ga_generations=2, ga_horizon_steps=6, ga_seed=12),
-                now_ts=2000.0,
-            )
-            self.assertTrue(
-                any(a.kind == "STATION" and a.target_id == 302 and a.executable_now for a in pa),
-                msg=f"{mode}: expected executable STATION to planet 302, got {[(a.kind, a.planet_id, a.target_id, a.executable_now) for a in pa if a.kind == 'STATION']}",
-            )
+        # Emit STATION in plan_actions
+        pa = plan_actions(
+            st_station,
+            config=replace(cfg_st, planner_mode="priority"),
+            now_ts=2000.0,
+        )
+        self.assertTrue(
+            any(a.kind == "STATION" and a.target_id == 302 and a.executable_now for a in pa),
+            msg=f"expected executable STATION to planet 302, got {[(a.kind, a.planet_id, a.target_id, a.executable_now) for a in pa if a.kind == 'STATION']}",
+        )
 
         # 3. Strictly per-planet fleet slot isolation + per-planet BUILD_SHIP transit hold
         hub_full_slots = replace(

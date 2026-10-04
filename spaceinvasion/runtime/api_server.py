@@ -81,7 +81,6 @@ from spaceinvasion.core.logging_utils import (
     is_secret_dict_key,
     redact_sensitive,
 )
-from spaceinvasion.planner.optimizer import get_last_optimizer_summary, run_optimizer
 from spaceinvasion.combat.ranking import (
     attach_action_etas,
     build_buildings_eta,
@@ -147,7 +146,6 @@ REPO_ROOT_DIR = Path(__file__).resolve().parents[2]
 UI_DIR = Path(__file__).resolve().parents[1] / "ui"
 MAX_REQUEST_BYTES = 1_048_576
 _SERVER_BOOT_ID = secrets.token_hex(4)
-_GLOBAL_OPTIMIZER_LOCK = threading.Lock()
 _API_SID_RE = re.compile(_LOG_SID_RE.pattern, _LOG_SID_RE.flags)
 
 
@@ -597,7 +595,7 @@ def _validate_config_patch(raw_cfg: Mapping[str, Any], *, strict_bools: bool = T
         raw_mode = raw_cfg["planner_mode"]
         if not isinstance(raw_mode, str) or not raw_mode.strip():
             raise ApiRequestError(
-                "'planner_mode' must be a non-empty string ('priority', 'ai_planner', or 'ga_nn')."
+                "'planner_mode' must be a non-empty string ('priority' or 'ai_planner')."
             )
         try:
             normalize_planner_mode(raw_mode, strict=True)
@@ -612,8 +610,6 @@ def _validate_config_patch(raw_cfg: Mapping[str, Any], *, strict_bools: bool = T
     int_specs: dict[str, tuple[Optional[int], Optional[int], bool]] = {
         "ga_population_size": (4, 200, False),
         "ga_generations": (1, 200, False),
-        "ga_horizon_steps": (1, 24, False),
-        "ga_seed": (-2_147_483_648, 2_147_483_647, True),
         "action_batch_interval_seconds": (5, 86400, False),
         "max_actions_per_hour": (1, 100_000, False),
         "page_view_limit_per_minute": (6, 600, False),
@@ -644,7 +640,6 @@ def _validate_config_patch(raw_cfg: Mapping[str, Any], *, strict_bools: bool = T
     float_specs: dict[str, tuple[Optional[float], Optional[float]]] = {
         "ai_resource_spare_pct": (0.0, 100.0),
         "ga_mutation_rate": (0.0, 1.0),
-        "ga_nn_weight": (0.0, 1.0),
         "storage_warn_ratio": (0.1, 0.99),
         "blast_pig_iron_max_share": (0.1, 1.0),
         "combat_safety_margin": (1.0, 1000.0),
@@ -1008,23 +1003,6 @@ def _sanitize_finite_json(
         return _bounded_api_str(val, default="<unprintable>", max_len=1024)
 
     return _walk(obj, _depth)
-
-
-def _sanitize_optimizer_summary(raw: Optional[Mapping[str, Any]]) -> Optional[dict[str, Any]]:
-    if not isinstance(raw, Mapping) or not raw:
-        return None
-    clean = _sanitize_finite_json(dict(raw))
-    if not isinstance(clean, dict):
-        return None
-    if "improvement_pct" in clean:
-        try:
-            imp = float(clean["improvement_pct"])
-        except Exception:
-            imp = 0.0
-        if not math.isfinite(imp):
-            imp = 0.0
-        clean["improvement_pct"] = round(max(-999.9, min(999.9, imp)), 4)
-    return clean
 
 
 def _redact_action_graph_strings(graph: dict[str, Any]) -> dict[str, Any]:
@@ -1598,7 +1576,6 @@ class GameApiBridge:
         else:
             self._executor_max_limiter_wait = self._max_limiter_wait
         self._last_state: Optional[GameState] = None
-        self._last_optimizer_summary: Optional[dict[str, Any]] = None
         self._last_url: Optional[str] = None
         self._last_snapshot_at: float = 0.0
         self._last_buildings_fetched: bool = False
@@ -2092,8 +2069,6 @@ class GameApiBridge:
             self._pending_spy_sync = bool(rt.get("pending_spy_sync", False))
             if isinstance(rt.get("last_url"), str) and rt["last_url"]:
                 self._last_url = _bounded_api_str(rt["last_url"], default="")
-            if isinstance(rt.get("last_optimizer_summary"), Mapping):
-                self._last_optimizer_summary = dict(rt["last_optimizer_summary"])
 
             now_wall = time.time()
             now_mono = time.monotonic()
@@ -2396,7 +2371,6 @@ class GameApiBridge:
             "shipyard_sync_at_wall": _mono_to_wall(self._last_shipyard_sync_at),
             "spy_dispatched_at_wall": _mono_to_wall(self._last_spy_dispatched_at),
             "last_url": _bounded_api_str(self._last_url, default="") if self._last_url else None,
-            "last_optimizer_summary": self._last_optimizer_summary,
             "adaptive_idle_buckets": serialized_buckets,
             "delivered_transport_events": [dict(e) for e in self._delivered_transport_events],
             "infra_transport_spend_ledger": [dict(e) for e in self._infra_transport_spend_ledger],
@@ -5379,7 +5353,7 @@ class GameApiBridge:
                 )
             )
 
-        # 4. Stalled building actions in multi-planet empires (covers priority/ga_nn modes too)
+        # 4. Stalled building actions in multi-planet empires (covers priority mode too)
         if len(display_state.planets) >= 2:
             for pid, (tb, tl, bid, act) in next_bldg_by_pid.items():
                 if pid in requested_pids:
@@ -7217,56 +7191,6 @@ class GameApiBridge:
                 persist_auto_satisfied=bool(record_summary and config is None),
                 reconcile_metal_production=False,
             ), None
-        if eff_mode == "ga_nn":
-            if not record_summary:
-                raid_stats_kw: dict[str, Any] = {}
-                state_raid_stats = getattr(enriched_state, "raid_stats", None)
-                if isinstance(state_raid_stats, Mapping) and state_raid_stats:
-                    raid_stats_kw["raid_stats"] = state_raid_stats
-                opt_res = run_optimizer(
-                    enriched_state,
-                    storage_warn_ratio=cfg.storage_warn_ratio,
-                    config=cfg,
-                    scanned_systems=self._get_scanned_systems(),
-                    throttle_cooldowns=self._get_throttle_cooldowns(),
-                    record_global_summary=False,
-                    **raid_stats_kw,
-                )
-                actions = attach_action_etas(enriched_state, list(opt_res.actions))
-                summary = _sanitize_optimizer_summary(opt_res.to_dict())
-                actions = self._apply_fleet_slot_cooldowns(actions, re_sort_priority=False)
-                actions = self._apply_fleet_slot_holds(enriched_state, actions, cfg=cfg, re_sort_priority=False)
-                return self._apply_manual_queue_to_plan(
-                    enriched_state,
-                    actions,
-                    cfg=cfg,
-                    persist_auto_satisfied=False,
-                ), summary
-            with _GLOBAL_OPTIMIZER_LOCK:
-                actions = plan_actions(
-                    enriched_state,
-                    config=cfg,
-                    scanned_systems=self._get_scanned_systems(),
-                    throttle_cooldowns=self._get_throttle_cooldowns(),
-                )
-                raw_summary = get_last_optimizer_summary()
-            summary = _sanitize_optimizer_summary(raw_summary)
-            if config is None or normalize_planner_mode(self.strategy_config.planner_mode) == "ga_nn":
-                if _summary_without_elapsed(summary) != _summary_without_elapsed(
-                    self._last_optimizer_summary
-                ):
-                    self._last_optimizer_summary = summary
-                    self._persist_runtime_state()
-                else:
-                    self._last_optimizer_summary = summary
-            actions = self._apply_fleet_slot_cooldowns(actions, re_sort_priority=False)
-            actions = self._apply_fleet_slot_holds(enriched_state, actions, cfg=cfg, re_sort_priority=False)
-            return self._apply_manual_queue_to_plan(
-                enriched_state,
-                actions,
-                cfg=cfg,
-                persist_auto_satisfied=bool(record_summary and config is None),
-            ), summary
         actions = plan_actions(
             enriched_state,
             config=cfg,
@@ -8430,7 +8354,6 @@ class GameApiBridge:
                     tuple(sorted(self._observed_fleet_slots_by_pid.items())),
                     target_blocks_sig,
                     plan_actions,
-                    run_optimizer,
                     plan_fleet_and_attack_actions,
                     round(float(self._transport_realized_utilization), 4),
                 )
@@ -8485,7 +8408,6 @@ class GameApiBridge:
                         tuple(sorted(self._observed_fleet_slots_by_pid.items())),
                         target_blocks_sig,
                         plan_actions,
-                        run_optimizer,
                         plan_fleet_and_attack_actions,
                         round(float(self._transport_realized_utilization), 4),
                     )
@@ -8493,7 +8415,7 @@ class GameApiBridge:
                     self._dash_plan_cache_val = (list(actions), opt_summary, early_copy)
             else:
                 actions = []
-                opt_summary = self._last_optimizer_summary if eff_mode == "ga_nn" else None
+                opt_summary = None
 
             static_key = (
                 dash_sig,
@@ -8567,7 +8489,7 @@ class GameApiBridge:
                     else []
                 )
             )
-            ag_opt = opt_summary if eff_mode == "ga_nn" else None
+            ag_opt = None
             ag_opt_sig = _freeze_sig_tree(_summary_without_elapsed(ag_opt))
             mq_sig = mq_pre_sig if plan_cache_hit else _freeze_sig_tree(manual_queue_pending)
             early_needs_map = (
@@ -13678,19 +13600,6 @@ class GameApiBridge:
                     )
                 ):
                     self._smart_sweep_summary_ts = 0.0
-                ga_params_changed = any(
-                    getattr(new_cfg, k) != getattr(prev_cfg, k)
-                    for k in (
-                        "ga_population_size",
-                        "ga_generations",
-                        "ga_horizon_steps",
-                        "ga_mutation_rate",
-                        "ga_nn_weight",
-                        "ga_seed",
-                    )
-                )
-                if normalize_planner_mode(new_cfg.planner_mode) != "ga_nn" or ga_params_changed:
-                    self._last_optimizer_summary = None
                 self._persist_runtime_state()
                 for ex in (self._live_executor, self._dry_executor):
                     ex.allow_fleetsave = new_cfg.allow_fleetsave
@@ -13749,7 +13658,7 @@ class GameApiBridge:
                 raw_ag_mode = payload["planner_mode"]
                 if not isinstance(raw_ag_mode, str) or not raw_ag_mode.strip():
                     raise ApiRequestError(
-                        "'planner_mode' override must be a non-empty string ('priority', 'ai_planner', or 'ga_nn')."
+                        "'planner_mode' override must be a non-empty string ('priority' or 'ai_planner')."
                     )
                 try:
                     ag_req_mode = normalize_planner_mode(raw_ag_mode, strict=True)
@@ -15099,7 +15008,7 @@ class GameApiBridge:
                     raw_mode_fast = payload["planner_mode"]
                     if not isinstance(raw_mode_fast, str) or not raw_mode_fast.strip():
                         raise ApiRequestError(
-                            "'planner_mode' override must be a non-empty string ('priority', 'ai_planner', or 'ga_nn')."
+                            "'planner_mode' override must be a non-empty string ('priority' or 'ai_planner')."
                         )
                     try:
                         req_mode_fast = normalize_planner_mode(raw_mode_fast, strict=True)
@@ -15401,7 +15310,7 @@ class GameApiBridge:
                             raw_mode = payload["planner_mode"]
                             if not isinstance(raw_mode, str) or not raw_mode.strip():
                                 raise ApiRequestError(
-                                    "'planner_mode' override must be a non-empty string ('priority', 'ai_planner', or 'ga_nn')."
+                                    "'planner_mode' override must be a non-empty string ('priority' or 'ai_planner')."
                                 )
                             try:
                                 req_mode = normalize_planner_mode(raw_mode, strict=True)

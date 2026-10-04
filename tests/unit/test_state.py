@@ -528,8 +528,6 @@ class TestStateParsers(unittest.TestCase):
         self.assertIsNone(gs.tutorial.tasks[0].building_id)
         p_acts = plan_actions(gs, config=StrategyConfig(planner_mode="priority"))
         self.assertIsInstance(p_acts, list)
-        ga_acts = plan_actions(gs, config=StrategyConfig(planner_mode="ga_nn", ga_population_size=4, ga_generations=1))
-        self.assertIsInstance(ga_acts, list)
 
         gs_scalar_containers = game_state_from_dict(
             {

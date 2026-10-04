@@ -398,12 +398,14 @@ class TestGameDatabase(unittest.TestCase):
 
             self.assertFalse((tmp_path / "attack_history.json").exists())
             self.assertEqual(list(tmp_path.glob("*.tmp")), [])
-            from spaceinvasion.optimizer import load_attack_history_stats
-
-            parsed = load_attack_history_stats(db_path)
+            stats_db = GameDatabase(db_path)
+            try:
+                parsed = stats_db.get_raid_stats()
+            finally:
+                stats_db.close()
             raw = json.dumps(parsed, allow_nan=False)
             self.assertNotIn("SID_TEST_ALPHA_999", raw)
-            for k in ("version", "overall", "per_target", "history", "telemetry_summary"):
+            for k in ("overall", "per_target", "history", "telemetry_summary"):
                 self.assertIn(k, parsed)
             self.assertEqual(parsed["overall"]["attempts"], 1)
 

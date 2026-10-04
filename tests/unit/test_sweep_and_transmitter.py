@@ -941,23 +941,20 @@ class TestSweepAndTransmitter(unittest.TestCase):
                 "block_reason": "This user can't be attacked!",
             },
         )
-        for mode in ("priority", "ga_nn"):
-            cfg_m = StrategyConfig(
-                planner_mode=mode,
-                playstyle="fleeter",
-                allow_raids=True,
-                allow_galaxy_scan=True,
-                allow_colonize=True,
-                min_colony_fields=300,
-                max_planets=11,
-                ga_population_size=6,
-                ga_generations=2,
-            )
-            st_m = GameState(31, 7, "cmdr", 1_700_000_100.0, (origin_p,), active_planet_id=101, raid_targets=raid_targets)
-            acts_m = plan_actions(st_m, config=cfg_m, now_ts=1_700_000_100.0)
-            spy_acts = [a for a in acts_m if a.kind == "SPY" and a.executable_now]
-            self.assertGreaterEqual(len(spy_acts), 2, mode)
-            self.assertEqual(spy_acts[0].target_name, "02:380:09 (Free slot)", mode)
+        cfg_m = StrategyConfig(
+            planner_mode="priority",
+            playstyle="fleeter",
+            allow_raids=True,
+            allow_galaxy_scan=True,
+            allow_colonize=True,
+            min_colony_fields=300,
+            max_planets=11,
+        )
+        st_m = GameState(31, 7, "cmdr", 1_700_000_100.0, (origin_p,), active_planet_id=101, raid_targets=raid_targets)
+        acts_m = plan_actions(st_m, config=cfg_m, now_ts=1_700_000_100.0)
+        spy_acts = [a for a in acts_m if a.kind == "SPY" and a.executable_now]
+        self.assertGreaterEqual(len(spy_acts), 2)
+        self.assertEqual(spy_acts[0].target_name, "02:380:09 (Free slot)")
 
         # 3. _execute_spy probes free slot via 2D Galaxy ecology even when RETRO returns "This user can't be attacked!"
         retro_gal_html = """
@@ -1179,58 +1176,51 @@ class TestSweepAndTransmitter(unittest.TestCase):
             active_queues=in_flight_three,
             raid_targets=raid_targets,
         )
-        for mode in ("priority", "ga_nn"):
-            cfg_top = StrategyConfig(
-                planner_mode=mode,
-                playstyle="fleeter",
-                allow_multi_planet=True,
-                allow_shipyard=True,
-                allow_raids=True,
-                allow_galaxy_scan=True,
-                allow_colonize=True,
-                forbid_planetary_solar=True,
-                min_colony_fields=300,
-                max_planets=11,
-                reserved_spy_slots=1,
-                ga_population_size=6,
-                ga_generations=2,
-            )
-            acts_top = plan_actions(st_col_top, config=cfg_top, now_ts=1_700_000_200.0)
-            self.assertGreaterEqual(len(acts_top), 3, mode)
-            # #0 = ABANDON_COLONY (delete 215-field roll), then ready SPY (fleet priority #1), then COLONIZE -> 02:380:09
-            # (fleet priority #2, executable even with 3/6 fleets in flight + 1 reserved spy slot!)
-            self.assertEqual((acts_top[0].priority, acts_top[0].kind, acts_top[0].planet_id, acts_top[0].executable_now), ("P1", "ABANDON_COLONY", 12999, True), mode)
-            col_idx = next(i for i, a in enumerate(acts_top) if a.kind == "COLONIZE")
-            self.assertTrue(all(a.kind == "SPY" and a.priority == "P1" for a in acts_top[1:col_idx]), mode)
-            self.assertEqual((acts_top[col_idx].priority, acts_top[col_idx].kind, acts_top[col_idx].executable_now), ("P1", "COLONIZE", True), mode)
-            self.assertIn("02:380:09", acts_top[col_idx].target_name, mode)
-            # Zero buildings/ships planned on undersized colony 12999 slated for deletion
-            self.assertFalse(
-                any(a.planet_id == 12999 and a.kind != "ABANDON_COLONY" for a in acts_top),
-                mode,
-            )
+        cfg_top = StrategyConfig(
+            planner_mode="priority",
+            playstyle="fleeter",
+            allow_multi_planet=True,
+            allow_shipyard=True,
+            allow_raids=True,
+            allow_galaxy_scan=True,
+            allow_colonize=True,
+            forbid_planetary_solar=True,
+            min_colony_fields=300,
+            max_planets=11,
+            reserved_spy_slots=1,
+        )
+        acts_top = plan_actions(st_col_top, config=cfg_top, now_ts=1_700_000_200.0)
+        self.assertGreaterEqual(len(acts_top), 3)
+        # #0 = ABANDON_COLONY (delete 215-field roll), then ready SPY (fleet priority #1), then COLONIZE -> 02:380:09
+        # (fleet priority #2, executable even with 3/6 fleets in flight + 1 reserved spy slot!)
+        self.assertEqual((acts_top[0].priority, acts_top[0].kind, acts_top[0].planet_id, acts_top[0].executable_now), ("P1", "ABANDON_COLONY", 12999, True))
+        col_idx = next(i for i, a in enumerate(acts_top) if a.kind == "COLONIZE")
+        self.assertTrue(all(a.kind == "SPY" and a.priority == "P1" for a in acts_top[1:col_idx]))
+        self.assertEqual((acts_top[col_idx].priority, acts_top[col_idx].kind, acts_top[col_idx].executable_now), ("P1", "COLONIZE", True))
+        self.assertIn("02:380:09", acts_top[col_idx].target_name)
+        # Zero buildings/ships planned on undersized colony 12999 slated for deletion
+        self.assertFalse(
+            any(a.planet_id == 12999 and a.kind != "ABANDON_COLONY" for a in acts_top),
+        )
 
         # When 0 Colony ships (s8) are stationed, P1 BUILD_SHIP Colony ship (target_id=8) is emitted at the top of the queue!
         st_need_s8 = replace(st_col_top, planets=(replace(homeworld, ships={"s1": 10, "s10": 5}),))
-        for mode in ("priority", "ga_nn"):
-            acts_s8 = plan_actions(
-                st_need_s8,
-                config=StrategyConfig(
-                    planner_mode=mode,
-                    allow_colonize=True,
-                    allow_shipyard=True,
-                    allow_galaxy_scan=True,
-                    min_colony_fields=300,
-                    max_planets=11,
-                    ga_population_size=6,
-                    ga_generations=2,
-                ),
-                now_ts=1_700_000_200.0,
-            )
-            s8_act = next((a for a in acts_s8 if a.kind == "BUILD_SHIP" and a.target_id == 8), None)
-            self.assertIsNotNone(s8_act, mode)
-            assert s8_act is not None
-            self.assertEqual((s8_act.priority, s8_act.executable_now), ("P1", True), mode)
+        acts_s8 = plan_actions(
+            st_need_s8,
+            config=StrategyConfig(
+                planner_mode="priority",
+                allow_colonize=True,
+                allow_shipyard=True,
+                allow_galaxy_scan=True,
+                min_colony_fields=300,
+                max_planets=11,
+            ),
+            now_ts=1_700_000_200.0,
+        )
+        s8_act = next((a for a in acts_s8 if a.kind == "BUILD_SHIP" and a.target_id == 8), None)
+        self.assertIsNotNone(s8_act)
+        assert s8_act is not None
+        self.assertEqual((s8_act.priority, s8_act.executable_now), ("P1", True))
 
         # 3. _execute_abandon_colony clicks confirmPlanetDeletion -> executeDeletePlanet on internalSettings & blocks Pos. 1!
         settings_before = """
@@ -1559,59 +1549,56 @@ class TestSweepAndTransmitter(unittest.TestCase):
             researches={"r1": 6, "r2": 6, "r3": 6, "r4": 8, "r7": 6},
             raid_targets=raid_targets, active_queues=three_in_flight,
         )
-        for mode in ("priority", "ga_nn"):
-            cfg = StrategyConfig(
-                planner_mode=mode,
-                playstyle="fleeter",
-                allow_raids=True,
-                allow_galaxy_scan=True,
-                allow_colonize=True,
-                allow_shipyard=True,
-                min_colony_fields=300,
-                max_planets=11,
-                reserved_spy_slots=1,
-                ga_population_size=6,
-                ga_generations=2,
-            )
-            acts = plan_actions(st, config=cfg, now_ts=now)
-            cols = [a for a in acts if a.kind == "COLONIZE"]
-            # 10 open planet slots, 3 stationed s8 -> 3 distinct parallel COLONIZE targets
-            self.assertEqual(len(cols), 3, mode)
-            self.assertEqual(len({a.target_name for a in cols}), 3, mode)
-            # 3 in flight, 6 slots, 1 reserved for SPY -> dispatch #1 (slot 4) and #2 (slot 5) ready, #3 held for SPY
-            ready_cols = [a for a in cols if a.executable_now]
-            held_cols = [a for a in cols if not a.executable_now]
-            self.assertEqual(len(ready_cols), 2, mode)
-            self.assertEqual(len(held_cols), 1, mode)
-            self.assertIn("reserved for Spy probes", held_cols[0].reason, mode)
-            self.assertIn("Parallel colony", ready_cols[0].reason, mode)
-            # SPY (#1) stays executable; ATTACK (#3) is held for the parallel Colony ships
-            spies = [a for a in acts if a.kind == "SPY" and "02:378:06" in a.target_name]
-            self.assertTrue(spies and spies[0].executable_now, mode)
-            atks = [a for a in acts if a.kind == "ATTACK" and "02:379:04" in a.target_name]
-            if atks:
-                self.assertFalse(atks[0].executable_now, mode)
-                self.assertRegex(atks[0].reason, r"reserved for (Colony ship|Spy probes)")
-            # Ordering: ready SPY ahead of ready COLONIZE ahead of any ATTACK
-            kinds_ready = [a.kind for a in acts if a.executable_now and a.kind in ("SPY", "COLONIZE", "ATTACK")]
-            if "SPY" in kinds_ready and "COLONIZE" in kinds_ready:
-                first_col = kinds_ready.index("COLONIZE")
-                self.assertTrue(all(k != "ATTACK" for k in kinds_ready[:first_col]), mode)
-            # Proactive s8 build: 3 stationed < min(10 open planets, 6 slots - 1 spy reserve = 5)
-            self.assertTrue(any(a.kind == "BUILD_SHIP" and a.target_id == 8 for a in acts), mode)
+        cfg = StrategyConfig(
+            planner_mode="priority",
+            playstyle="fleeter",
+            allow_raids=True,
+            allow_galaxy_scan=True,
+            allow_colonize=True,
+            allow_shipyard=True,
+            min_colony_fields=300,
+            max_planets=11,
+            reserved_spy_slots=1,
+        )
+        acts = plan_actions(st, config=cfg, now_ts=now)
+        cols = [a for a in acts if a.kind == "COLONIZE"]
+        # 10 open planet slots, 3 stationed s8 -> 3 distinct parallel COLONIZE targets
+        self.assertEqual(len(cols), 3)
+        self.assertEqual(len({a.target_name for a in cols}), 3)
+        # 3 in flight, 6 slots, 1 reserved for SPY -> dispatch #1 (slot 4) and #2 (slot 5) ready, #3 held for SPY
+        ready_cols = [a for a in cols if a.executable_now]
+        held_cols = [a for a in cols if not a.executable_now]
+        self.assertEqual(len(ready_cols), 2)
+        self.assertEqual(len(held_cols), 1)
+        self.assertIn("reserved for Spy probes", held_cols[0].reason)
+        self.assertIn("Parallel colony", ready_cols[0].reason)
+        # SPY (#1) stays executable; ATTACK (#3) is held for the parallel Colony ships
+        spies = [a for a in acts if a.kind == "SPY" and "02:378:06" in a.target_name]
+        self.assertTrue(spies and spies[0].executable_now)
+        atks = [a for a in acts if a.kind == "ATTACK" and "02:379:04" in a.target_name]
+        if atks:
+            self.assertFalse(atks[0].executable_now)
+            self.assertRegex(atks[0].reason, r"reserved for (Colony ship|Spy probes)")
+        # Ordering: ready SPY ahead of ready COLONIZE ahead of any ATTACK
+        kinds_ready = [a.kind for a in acts if a.executable_now and a.kind in ("SPY", "COLONIZE", "ATTACK")]
+        if "SPY" in kinds_ready and "COLONIZE" in kinds_ready:
+            first_col = kinds_ready.index("COLONIZE")
+            self.assertTrue(all(k != "ATTACK" for k in kinds_ready[:first_col]))
+        # Proactive s8 build: 3 stationed < min(10 open planets, 6 slots - 1 spy reserve = 5)
+        self.assertTrue(any(a.kind == "BUILD_SHIP" and a.target_id == 8 for a in acts))
 
-            # Only 1 free planet slot -> exactly 1 COLONIZE (never more flights than available planets)
-            acts_one = plan_actions(st, config=replace(cfg, max_planets=2), now_ts=now)
-            self.assertEqual(len([a for a in acts_one if a.kind == "COLONIZE"]), 1, mode)
-            self.assertFalse(any(a.kind == "BUILD_SHIP" and a.target_id == 8 for a in acts_one), mode)
+        # Only 1 free planet slot -> exactly 1 COLONIZE (never more flights than available planets)
+        acts_one = plan_actions(st, config=replace(cfg, max_planets=2), now_ts=now)
+        self.assertEqual(len([a for a in acts_one if a.kind == "COLONIZE"]), 1)
+        self.assertFalse(any(a.kind == "BUILD_SHIP" and a.target_id == 8 for a in acts_one))
 
-            # 1 free planet slot already consumed by an in-flight colonize mission -> zero COLONIZE
-            col_flight = QueueJob(
-                category="fleet", name="Colonize -> [02:390:08]", remaining_seconds=500.0, detail="Outbound"
-            )
-            st_inflight = replace(st, active_queues=three_in_flight + (col_flight,))
-            acts_full = plan_actions(st_inflight, config=replace(cfg, max_planets=2), now_ts=now)
-            self.assertFalse(any(a.kind == "COLONIZE" for a in acts_full), mode)
+        # 1 free planet slot already consumed by an in-flight colonize mission -> zero COLONIZE
+        col_flight = QueueJob(
+            category="fleet", name="Colonize -> [02:390:08]", remaining_seconds=500.0, detail="Outbound"
+        )
+        st_inflight = replace(st, active_queues=three_in_flight + (col_flight,))
+        acts_full = plan_actions(st_inflight, config=replace(cfg, max_planets=2), now_ts=now)
+        self.assertFalse(any(a.kind == "COLONIZE" for a in acts_full))
 
     def test_smart_galaxy_sweep_explores_unscanned_first_then_weighted_near_and_frequent_attack_refresh(self) -> None:
         import time as _time
@@ -1734,7 +1721,7 @@ class TestSweepAndTransmitter(unittest.TestCase):
                 bridge.close()
 
     def test_planner_scan_galaxy_prefers_unscanned_then_near_and_frequent_attack_sectors(self) -> None:
-        from spaceinvasion.planner.optimizer import _next_unscanned_system, select_planner_scan_system
+        from spaceinvasion.combat.scanner import _next_unscanned_system, select_planner_scan_system
 
         now = 1_700_100_000.0
         cfg = StrategyConfig(allow_galaxy_scan=True)

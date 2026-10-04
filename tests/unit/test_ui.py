@@ -491,7 +491,7 @@ class TestOperatorControlUi(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory(prefix="si_ui_srv_")
         cfg_path = Path(self._tmp.name) / "config.yaml"
         cfg_path.write_text(
-            f"planner_mode: {planner_mode}\nallow_galaxy_scan: true\nallow_raids: true\nga_seed: 42\nga_generations: 4\nga_population_size: 8\n",
+            f"planner_mode: {planner_mode}\nallow_galaxy_scan: true\nallow_raids: true\nga_generations: 4\nga_population_size: 8\n",
             encoding="utf-8",
         )
         st = state_obj or _sample_state()
@@ -925,6 +925,7 @@ class TestOperatorControlUi(unittest.TestCase):
                 "if (url.startsWith('/dashboard')) { "
                 "  const r = await nativeFetch(fullUrl, opts); "
                 "  const d = await r.json(); "
+                "  d.planner_mode = 'ga_nn'; if (d.config) d.config.planner_mode = 'ga_nn'; "
                 "  if (!globalThis.__dashHits) { globalThis.__dashHits = 1; delete d.optimizer_summary; } "
                 "  else { d.optimizer_summary = { generations: 4, population_size: 8, nn_evaluations: 32, baseline_fitness: 0, best_fitness: 500, improvement_pct: 5e9, best_chromosome: [{kind:'BUILD'},{kind:'ATTACK'}] }; } "
                 "  return { ok: true, status: 200, json: async () => d }; "
@@ -1790,7 +1791,7 @@ async (url, opts, fullUrl, nativeFetch) => {
     globalThis.__dashMode = 'normal';
     const r = await nativeFetch(fullUrl, opts);
     const d = await r.json();
-    d.config = { ...(d.config || {}), planner_mode: 'priority', ga_seed: 42 };
+    d.config = { ...(d.config || {}), planner_mode: 'priority', ga_generations: 4 };
     d.planner_mode = 'priority';
     return new Promise((resolve) => {
       globalThis.__resolveHeldDash = () => resolve({ ok: true, status: 200, json: async () => d });
@@ -1807,7 +1808,7 @@ async (url, opts, fullUrl, nativeFetch) => {
         status: 200,
         json: async () => ({
           ok: true,
-          config: { ...(state?.dashboard?.config || {}), ...parsed.config, planner_mode: 'ai_planner', ga_seed: 99 },
+          config: { ...(state?.dashboard?.config || {}), ...parsed.config, planner_mode: 'ai_planner', ga_generations: 16 },
         }),
       };
     }
@@ -1817,16 +1818,16 @@ async (url, opts, fullUrl, nativeFetch) => {
             scenario_js = r"""
 await __waitUntil(() => state.dashboard !== null);
 
-// 1. Invalid ga_seed="abc" must NOT coerce to null; server must reject with 400
-el("cfg-ga_seed").value = "abc";
+// 1. Invalid ga_generations="abc" must NOT coerce to default; server must reject with 400
+el("cfg-ga_generations").value = "abc";
 el("btn-save-config").click();
-await __waitUntil(() => fetchLog.some((f) => f.url === "/command" && f.body?.command === "update_config" && f.body?.config?.ga_seed === "abc"));
+await __waitUntil(() => fetchLog.some((f) => f.url === "/command" && f.body?.command === "update_config" && f.body?.config?.ga_generations === "abc"));
 await __waitUntil(() => el("feedback-banner").textContent.includes("Failed saving config"));
 const badBanner = el("feedback-banner").textContent;
 
 // 2. Race: slow pre-click dashboard resolving after save click + post-save refresh 503
 el("cfg-planner_mode").value = "ai_planner";
-el("cfg-ga_seed").value = "99";
+el("cfg-ga_generations").value = "16";
 globalThis.__dashMode = "hold_priority";
 const heldPromise = loadDashboard({ refresh: false, preserveConfig: true, force: true });
 await __waitUntil(() => typeof globalThis.__resolveHeldDash === "function");
@@ -1837,16 +1838,16 @@ await __sleep(20);
 globalThis.__resolveHeldDash();
 await heldPromise;
 
-await __waitUntil(() => el("dash-planner-mode-badge").textContent === "MODE: AI-PLANNER" && state.dashboard?.config?.ga_seed === 99);
+await __waitUntil(() => el("dash-planner-mode-badge").textContent === "MODE: AI-PLANNER" && state.dashboard?.config?.ga_generations === 16);
 await __sleep(50);
 
 return {
   badBanner,
   dashMode: state.dashboard?.planner_mode,
   cfgMode: state.dashboard?.config?.planner_mode,
-  cfgSeed: state.dashboard?.config?.ga_seed,
+  cfgGens: state.dashboard?.config?.ga_generations,
   domMode: el("cfg-planner_mode").value,
-  domSeed: el("cfg-ga_seed").value,
+  domGens: el("cfg-ga_generations").value,
   badgeText: el("dash-planner-mode-badge").textContent,
 };
 """
@@ -1857,9 +1858,9 @@ return {
             self.assertIn("Failed saving config", sc["badBanner"])
             self.assertEqual(sc["dashMode"], "ai_planner")
             self.assertEqual(sc["cfgMode"], "ai_planner")
-            self.assertEqual(sc["cfgSeed"], 99)
+            self.assertEqual(sc["cfgGens"], 16)
             self.assertEqual(sc["domMode"], "ai_planner")
-            self.assertEqual(sc["domSeed"], "99")
+            self.assertEqual(sc["domGens"], "16")
             self.assertEqual(sc["badgeText"], "MODE: AI-PLANNER")
         finally:
             bridge.close()

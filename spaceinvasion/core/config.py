@@ -20,7 +20,7 @@ from urllib.parse import quote
 DEFAULT_CONFIG_DB_PATH: Path = Path("state") / "spaceinvasion.db"
 LEGACY_CONFIG_YAML_PATH: Path = Path("config.yaml")
 
-VALID_PLANNER_MODES: tuple[str, ...] = ("priority", "ai_planner", "ga_nn")
+VALID_PLANNER_MODES: tuple[str, ...] = ("priority", "ai_planner")
 
 _CFG_SECRET_DICT_KEYS: frozenset[str] = frozenset(
     {"sid", "password", "passwd", "cookie", "api_key", "secret", "authorization"}
@@ -373,7 +373,7 @@ def _safe_cfg_exc_text(
 
 
 def normalize_planner_mode(value: Any, *, strict: bool = False) -> str:
-    """Validate and normalize `planner_mode` (`'priority'` default, `'ai_planner'`, or `'ga_nn'`)."""
+    """Validate and normalize `planner_mode` (`'priority'` default or `'ai_planner'`; legacy `'ga_nn'` maps to `'priority'`)."""
     if value is None:
         return "priority"
     if isinstance(value, os.PathLike):
@@ -403,7 +403,7 @@ def normalize_planner_mode(value: Any, *, strict: bool = False) -> str:
                 f"Unsupported planner_mode; expected one of {VALID_PLANNER_MODES}."
             )
         return "priority"
-    if not mode:
+    if not mode or mode == "ga_nn":
         return "priority"
     if mode in VALID_PLANNER_MODES:
         return mode
@@ -492,15 +492,12 @@ class StrategyConfig:
     reserved_spy_slots: int = 1
     spy_reserved_slots_only: bool = False
     spy_dispatch_planet_id: int = 0
-    planner_mode: str = "priority"  # "priority" | "ai_planner" | "ga_nn"
+    planner_mode: str = "priority"  # "priority" | "ai_planner"
     ai_resource_spare_pct: float = 10.0
     ai_adaptive_execution: bool = False
     ga_population_size: int = 24
     ga_generations: int = 12
-    ga_horizon_steps: int = 6
     ga_mutation_rate: float = 0.25
-    ga_nn_weight: float = 0.35
-    ga_seed: Optional[int] = None
     shipyard_targets: dict[str, int] = field(
         default_factory=lambda: dict(DEFAULT_SHIPYARD_TARGETS)
     )
@@ -1283,10 +1280,7 @@ def strategy_config_from_dict(data: Any) -> StrategyConfig:
         ai_adaptive_execution=_safe_cfg_bool(data.get("ai_adaptive_execution"), False),
         ga_population_size=max(4, min(200, _safe_cfg_int(data.get("ga_population_size"), 24))),
         ga_generations=max(1, min(200, _safe_cfg_int(data.get("ga_generations"), 12))),
-        ga_horizon_steps=max(1, min(24, _safe_cfg_int(data.get("ga_horizon_steps"), 6))),
         ga_mutation_rate=max(0.0, min(1.0, _safe_cfg_float(data.get("ga_mutation_rate"), 0.25))),
-        ga_nn_weight=max(0.0, min(1.0, _safe_cfg_float(data.get("ga_nn_weight"), 0.35))),
-        ga_seed=_safe_cfg_optional_int(data.get("ga_seed"), None),
         shipyard_targets=targets,
         fleet_research_targets=fleet_research_targets,
     )
@@ -1661,10 +1655,7 @@ def save_strategy_config(cfg: StrategyConfig, path: Optional[Path | str] = None)
     ai_adaptive_exec = _safe_cfg_bool(getattr(cfg, "ai_adaptive_execution", False), False)
     ga_pop = max(4, min(200, _safe_cfg_int(cfg.ga_population_size, 24)))
     ga_gen = max(1, min(200, _safe_cfg_int(cfg.ga_generations, 12)))
-    ga_hor = max(1, min(24, _safe_cfg_int(cfg.ga_horizon_steps, 6)))
     ga_mut = max(0.0, min(1.0, _safe_cfg_float(cfg.ga_mutation_rate, 0.25)))
-    ga_nn_w = max(0.0, min(1.0, _safe_cfg_float(cfg.ga_nn_weight, 0.35)))
-    ga_seed = _safe_cfg_optional_int(cfg.ga_seed, None)
     raw_playstyle = cfg.playstyle
     if isinstance(raw_playstyle, os.PathLike):
         ok, fsp = _safe_fspath(raw_playstyle)
@@ -1730,10 +1721,7 @@ def save_strategy_config(cfg: StrategyConfig, path: Optional[Path | str] = None)
         f"ai_adaptive_execution: {'true' if ai_adaptive_exec else 'false'}",
         f"ga_population_size: {ga_pop}",
         f"ga_generations: {ga_gen}",
-        f"ga_horizon_steps: {ga_hor}",
         f"ga_mutation_rate: {ga_mut}",
-        f"ga_nn_weight: {ga_nn_w}",
-        f"ga_seed: {'null' if ga_seed is None else ga_seed}",
         "shipyard_targets:",
     ]
     raw_targets = cfg.shipyard_targets if isinstance(cfg.shipyard_targets, Mapping) else DEFAULT_SHIPYARD_TARGETS

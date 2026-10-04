@@ -802,7 +802,6 @@ class PostgresTestRedirector:
         self._orig_default_db_path: Optional[Path] = None
         self._orig_load_cfg: Any = None
         self._orig_save_cfg: Any = None
-        self._orig_load_attack_stats: Any = None
         self._orig_load_rank_history: Any = None
 
     @property
@@ -836,13 +835,11 @@ class PostgresTestRedirector:
             from spaceinvasion.core import config as config_mod
             from spaceinvasion.db import backend as backend_mod
             from spaceinvasion.db import storage as storage_mod
-            from spaceinvasion.planner import optimizer as optimizer_mod
 
             self._orig_db_init = storage_mod.GameDatabase.__init__
             self._orig_default_db_path = storage_mod.DEFAULT_DB_PATH
             self._orig_load_cfg = config_mod.load_strategy_config
             self._orig_save_cfg = config_mod.save_strategy_config
-            self._orig_load_attack_stats = optimizer_mod.load_attack_history_stats
             self._orig_load_rank_history = ranking_mod.load_rank_history
             redirector = self
 
@@ -938,25 +935,6 @@ class PostgresTestRedirector:
                         return redirector._orig_save_cfg(cfg, mapped)
                 return redirector._orig_save_cfg(cfg, path)
 
-            def _wrapped_load_attack_stats(path: Any = None) -> dict[str, Any]:
-                if redirector._enabled and path is not None:
-                    mapped = redirector.lookup_mapped_dsn(path)
-                    if mapped is not None:
-                        db = storage_mod.GameDatabase(
-                            mapped,
-                            backend="postgres",
-                            pool_min_size=1,
-                            pool_max_size=2,
-                            attack_history_path="",
-                        )
-                        try:
-                            stats = db.get_raid_stats()
-                            stats.setdefault("version", 2)
-                            return stats
-                        finally:
-                            db.close()
-                return redirector._orig_load_attack_stats(path)
-
             def _wrapped_load_rank_history(history_path: Any = None) -> list[dict[str, Any]]:
                 if redirector._enabled and history_path is not None:
                     mapped = redirector.lookup_mapped_dsn(history_path)
@@ -978,7 +956,6 @@ class PostgresTestRedirector:
             sqlite3.connect = _wrapped_sqlite_connect  # type: ignore[assignment]
             config_mod.load_strategy_config = _wrapped_load_cfg
             config_mod.save_strategy_config = _wrapped_save_cfg
-            optimizer_mod.load_attack_history_stats = _wrapped_load_attack_stats
             ranking_mod.load_rank_history = _wrapped_load_rank_history
             # Keep backend_mod referenced to ensure it's loaded before tests patch anything
             _ = backend_mod.is_unix_socket_dsn

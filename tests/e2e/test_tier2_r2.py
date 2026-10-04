@@ -700,9 +700,7 @@ class TestTier2R2(unittest.TestCase):
                 )
                 mirror = Path(tmp) / "state" / "attack_history.json"
                 self.assertFalse(mirror.exists())
-                from spaceinvasion.optimizer import load_attack_history_stats
-
-                raw = json.dumps(load_attack_history_stats(db_path), allow_nan=False)
+                raw = json.dumps(db.get_raid_stats(), allow_nan=False)
                 self.assertNotIn(secret_tok, raw, "Raw sid leaked into SQLite raid_history!")
                 raw_hits = [s for s in re.findall(r"sid=([A-Za-z0-9_-]{6,})", raw, flags=re.IGNORECASE) if s.upper() != "REDACTED"]
                 self.assertEqual(raw_hits, [])

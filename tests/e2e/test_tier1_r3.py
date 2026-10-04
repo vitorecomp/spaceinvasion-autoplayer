@@ -11,7 +11,6 @@ import requests
 
 from tests.e2e.fixtures import (
     make_building_offer,
-    make_ga_nn_config,
     make_game_state,
     make_planet,
     make_research_offer,
@@ -253,7 +252,7 @@ class TestTier1R3(unittest.TestCase):
             if act.wait_seconds is not None and act.total_seconds is not None:
                 self.assertAlmostEqual(act.total_seconds, act.wait_seconds + act.duration_seconds, delta=0.5)
 
-    def test_t1_r3b_02_ga_nn_plan_actions_attaches_matching_etas(self) -> None:
+    def test_t1_r3b_02_ai_planner_plan_actions_attaches_matching_etas(self) -> None:
         compute_action_eta, _ = _import_eta_helpers(self)
         p = make_planet(
             buildings={"b1": 5, "b2": 4, "b3": 4, "b4": 2, "b5": 8, "b7": 2, "b8": 2},
@@ -261,7 +260,7 @@ class TestTier1R3(unittest.TestCase):
             auto_offers=True,
         )
         state = make_game_state(planets=(p,), researches={"r2": 1})
-        cfg = make_ga_nn_config(self, ga_seed=42)
+        cfg = StrategyConfig(planner_mode="ai_planner")
         actions = plan_actions(state, config=cfg)
         self.assertGreater(len(actions), 0)
         for act in actions:
@@ -283,7 +282,7 @@ class TestTier1R3(unittest.TestCase):
 
             res_ga = h.api.send_command({"command": "plan", "planner_mode": "ga_nn"})
             self.assertTrue(res_ga["ok"])
-            self.assertEqual(res_ga.get("planner_mode"), "ga_nn")
+            self.assertEqual(res_ga.get("planner_mode"), "priority")
             for item in res_ga["actions"]:
                 _verify_eta_fields_present(self, item)
 

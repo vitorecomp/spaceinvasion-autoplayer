@@ -30,7 +30,6 @@ import numpy as np
 import pandas as pd
 
 from spaceinvasion import game_data
-from spaceinvasion.optimizer import run_optimizer
 from spaceinvasion.ranking import compute_action_eta
 from spaceinvasion.state import (
     BuildingOffer,

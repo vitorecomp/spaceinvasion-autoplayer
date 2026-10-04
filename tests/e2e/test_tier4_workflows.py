@@ -17,7 +17,6 @@ import requests
 import commander
 from tests.e2e.fixtures import (
     evaluate_sequence_score,
-    make_ga_nn_config,
     make_game_state,
     make_planet,
     make_ship_offer,
@@ -35,14 +34,6 @@ from spaceinvasion.strategy import (
     PlannedAction,
     plan_actions,
 )
-
-
-def _import_optimizer(test: unittest.TestCase):
-    try:
-        from spaceinvasion.optimizer import optimize_plan_actions
-    except ImportError as exc:
-        test.fail(f"R1 GA+NN optimizer not importable: {exc}")
-    return optimize_plan_actions
 
 
 def _import_eta_helpers(test: unittest.TestCase):
@@ -158,20 +149,17 @@ class TestTier4Workflows(unittest.TestCase):
             self.assertIn("2/11", sc["tutTitle"]["textContent"])
             self.assertGreater(len(sc["dashRows"]), 0)
 
-    # T4-02: Multi-Planet Mid-Game Optimization (priority -> ga_nn via Operator Control UI)
-    def test_t4_02_multi_planet_midgame_priority_to_ga_nn_ui_workflow(self) -> None:
+    # T4-02: Multi-Planet Mid-Game Optimization (priority -> ai_planner via Operator Control UI)
+    def test_t4_02_multi_planet_midgame_priority_to_ai_planner_ui_workflow(self) -> None:
         compute_action_eta, _ = _import_eta_helpers(self)
-        _import_optimizer(self)
-        cfg_prio = make_ga_nn_config(
-            self,
+        cfg_prio = StrategyConfig(
             planner_mode="priority",
             allow_multi_planet=True,
             allow_shipyard=True,
             hot_planet_solar_temp_threshold=80,
         )
-        cfg_gann = make_ga_nn_config(
-            self,
-            planner_mode="ga_nn",
+        cfg_ai = StrategyConfig(
+            planner_mode="ai_planner",
             allow_multi_planet=True,
             allow_shipyard=True,
             hot_planet_solar_temp_threshold=80,
@@ -226,21 +214,21 @@ class TestTier4Workflows(unittest.TestCase):
         )
         empire = make_game_state(planets=(p_home, p_cold, p_hot, p_astro), active_planet_id=101, speedup_factor=5.0)
         prio_actions = plan_actions(empire, config=cfg_prio)
-        gann_actions = plan_actions(empire, config=cfg_gann)
+        ai_actions = plan_actions(empire, config=cfg_ai)
 
         # Asteroid respects astro_ok (no mines b1..b6) & hot tight colony emits 0-field s9
-        self.assertEqual([a for a in gann_actions if a.planet_id == 104 and a.kind == "BUILD" and a.target_id in (1, 2, 3, 4, 5, 6)], [])
-        self.assertGreater(len([a for a in gann_actions if a.planet_id == 103 and a.kind == "BUILD_SHIP" and a.target_id == 9]), 0)
-        for act in gann_actions:
+        self.assertEqual([a for a in ai_actions if a.planet_id == 104 and a.kind == "BUILD" and a.target_id in (1, 2, 3, 4, 5, 6)], [])
+        self.assertGreater(len([a for a in ai_actions if a.planet_id == 103 and a.kind == "BUILD_SHIP" and a.target_id == 9]), 0)
+        for act in ai_actions:
             _verify_eta_fields(self, act)
             exp = compute_action_eta(empire, act)
             self.assertAlmostEqual(float(act.wait_seconds), float(exp["wait_seconds"]), delta=1.0)
             self.assertAlmostEqual(float(act.duration_seconds), float(exp["duration_seconds"]), delta=1.0)
 
-        ev = evaluate_sequence_score(empire, [a for a in gann_actions if a.executable_now][:4], config=cfg_gann, horizon_hours=6.0)
-        self.assertTrue(ev.legal, f"Illegal GA+NN sequence on 4-body empire: {ev.violations}")
+        ev = evaluate_sequence_score(empire, [a for a in ai_actions if a.executable_now][:4], config=cfg_ai, horizon_hours=6.0)
+        self.assertTrue(ev.legal, f"Illegal planner sequence on 4-body empire: {ev.violations}")
 
-        # Operator UI roundtrip priority -> ga_nn -> priority via Node vm against real HTTP server
+        # Operator UI roundtrip priority -> ai_planner -> priority via Node vm against real HTTP server
         srv = FakeSpaceInvasionServer(speedup_factor=5.0)
         with E2ETestHarness(server=srv, config=cfg_prio) as h:
             h.api.get_state(include_buildings=True)
@@ -592,9 +580,8 @@ class TestTier4Workflows(unittest.TestCase):
             self.assertEqual(len(h.ensure_session_calls), 0)
 
     # T4-06: Hostile Incoming Attack Survival (P0 Escape Flight) Mid-Optimizer Session
-    def test_t4_06_hostile_incoming_attack_escape_flight_mid_ga_nn_session(self) -> None:
+    def test_t4_06_hostile_incoming_attack_escape_flight_mid_session(self) -> None:
         _import_eta_helpers(self)
-        _import_optimizer(self)
         planets = {
             12476: {
                 "planet_id": 12476,
@@ -634,7 +621,7 @@ class TestTier4Workflows(unittest.TestCase):
             active_planet_id=12476,
             hostile_alerts=["Hostile attack fleet inbound on 02:380:12 in 00:04:00"],
         )
-        cfg = make_ga_nn_config(self, allow_fleetsave=False, fleet_save_fuel_reserve_spice=1500)
+        cfg = StrategyConfig(allow_fleetsave=False, fleet_save_fuel_reserve_spice=1500)
         with E2ETestHarness(server=srv, config=cfg) as h:
             h.api.get_state(include_buildings=True)
             plan = h.api.send_command({"command": "plan"})["actions"]
@@ -669,7 +656,6 @@ class TestTier4Workflows(unittest.TestCase):
     # T4-07: API Server Restart & SQLite WAL / config.yaml / UI Hot-Reload Continuity
     def test_t4_07_api_restart_sqlite_wal_config_and_ui_hot_reload_continuity(self) -> None:
         _import_eta_helpers(self)
-        _import_optimizer(self)
         srv = FakeSpaceInvasionServer(
             planets={
                 12476: {
@@ -690,7 +676,7 @@ class TestTier4Workflows(unittest.TestCase):
                 }
             }
         )
-        cfg = make_ga_nn_config(self, planner_mode="priority", allow_galaxy_scan=True, allow_raids=True)
+        cfg = StrategyConfig(planner_mode="priority", allow_galaxy_scan=True, allow_raids=True)
         with E2ETestHarness(server=srv, config=cfg) as h:
             h.api.get_state(include_buildings=True)
             h.api.send_command(

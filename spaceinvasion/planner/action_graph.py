@@ -189,7 +189,6 @@ def _diff_strategy_configs(active: StrategyConfig, effective: StrategyConfig) ->
             "attack_min_res_per_hour",
             "recycle_min_res_per_hour",
             "ga_mutation_rate",
-            "ga_nn_weight",
         ):
             if abs(_clean_float(a_val) - _clean_float(e_val)) > 1e-9:
                 changed.append(fname)
@@ -388,101 +387,6 @@ def _slot_key_for_action(kind: str, planet_id: int) -> Optional[str]:
     if kind in ("ESCAPE_FLIGHT", "SCAN_GALAXY", "SPY", "TRANSPORT", "STATION", "ATTACK", "RECYCLE", "COLONIZE", "ABANDON_COLONY"):
         return f"planet:{planet_id}:fleet"
     return None
-
-
-def _match_ga_steps(
-    nodes_meta: Sequence[dict[str, Any]],
-    optimizer_summary: Optional[Mapping[str, Any]],
-) -> dict[int, dict[str, Any]]:
-    if not isinstance(optimizer_summary, Mapping):
-        return {}
-    best_sim = optimizer_summary.get("best_simulation")
-    if not isinstance(best_sim, Mapping):
-        return {}
-    raw_outcomes = best_sim.get("step_outcomes")
-    if not isinstance(raw_outcomes, Sequence) or isinstance(raw_outcomes, (str, bytes)):
-        return {}
-
-    outcomes: list[dict[str, Any]] = [dict(so) for so in raw_outcomes if isinstance(so, Mapping)]
-    if not outcomes:
-        return {}
-
-    used_indices: set[int] = set()
-    matched: dict[int, dict[str, Any]] = {}
-
-    for meta in nodes_meta:
-        n_idx = int(meta["idx"])
-        kind = str(meta["kind"])
-        reason = str(meta["reason"])
-        if kind in ("ALERT_HOSTILE", "ESCAPE_FLIGHT") or "[Hold:" in reason:
-            continue
-        pid = int(meta["planet_id"])
-        bid = meta["bid"]
-        rkey = meta["rkey"]
-        sid = meta["sid"]
-        ship_slug = meta["ship_slug"]
-        tgt_lvl = meta["target_level"]
-
-        candidates: list[tuple[int, int, dict[str, Any]]] = []
-        for pos, so in enumerate(outcomes):
-            if pos in used_indices:
-                continue
-            so_kind = _clean_str(so.get("kind")).upper()
-            so_pid = _clean_int(so.get("planet_id"), 0)
-            so_tid = so.get("target_id")
-            so_tname = _clean_str(so.get("target_name"))
-            so_tlvl = _clean_optional_int(so.get("target_level"))
-            so_valid = bool(so.get("valid", True))
-            valid_rank = 0 if so_valid else 1
-
-            if kind in ("BUILD", "WAIT_RESOURCES") and so_kind == "BUILD":
-                so_bid = _resolve_building_id(so_tid, so_tname)
-                if so_pid == pid and so_bid is not None and so_bid == bid:
-                    lvl_rank = 0 if (tgt_lvl is not None and so_tlvl == tgt_lvl) else 1
-                    candidates.append((valid_rank, lvl_rank * 1000 + pos, so))
-            elif kind == "RESEARCH" and so_kind == "RESEARCH":
-                so_rkey = _resolve_research_key(so_tid, so_tname)
-                if so_rkey is not None and so_rkey == rkey:
-                    lvl_rank = 0 if (tgt_lvl is not None and so_tlvl == tgt_lvl) else 1
-                    candidates.append((valid_rank, lvl_rank * 1000 + pos, so))
-            elif kind == "BUILD_SHIP" and so_kind == "BUILD_SHIP":
-                so_sid, so_slug = _resolve_ship_id_and_slug(so_tid, so_tname)
-                if so_pid == pid and (
-                    (sid is not None and so_sid == sid)
-                    or (ship_slug is not None and so_slug == ship_slug)
-                ):
-                    candidates.append((valid_rank, pos, so))
-            elif kind == "THROTTLE_BUILDING" and so_kind == "THROTTLE_BUILDING":
-                if so_pid == pid:
-                    candidates.append((valid_rank, pos, so))
-            elif kind == "DEMOLISH_BUILDING" and so_kind == "DEMOLISH_BUILDING":
-                so_bid = _resolve_building_id(so_tid, so_tname)
-                if so_pid in (0, pid) and (bid is None or so_bid is None or so_bid == bid):
-                    lvl_rank = 0 if (tgt_lvl is not None and so_tlvl == tgt_lvl) else 1
-                    candidates.append((valid_rank, lvl_rank * 1000 + pos, so))
-            elif kind in ("ATTACK", "SPY", "TRANSPORT", "STATION", "SCAN_GALAXY", "RECYCLE", "COLONIZE", "CLAIM_TUTORIAL", "ACTIVATE_TRANSMITTER") and so_kind == kind:
-                if kind in ("CLAIM_TUTORIAL", "ACTIVATE_TRANSMITTER") or so_pid in (0, pid):
-                    candidates.append((valid_rank, pos, so))
-
-        if not candidates:
-            continue
-        candidates.sort(key=lambda item: (item[0], item[1]))
-        chosen_so = candidates[0][2]
-        chosen_pos = next(i for i, item in enumerate(outcomes) if item is chosen_so)
-        used_indices.add(chosen_pos)
-
-        matched[n_idx] = {
-            "step_index": _clean_int(chosen_so.get("index"), chosen_pos),
-            "valid": bool(chosen_so.get("valid", True)),
-            "start_t": _clean_float(chosen_so.get("start_t"), 0.0),
-            "finish_t": _clean_float(chosen_so.get("finish_t"), 0.0),
-            "wait_s": _clean_float(chosen_so.get("wait_s"), 0.0),
-            "duration_s": _clean_float(chosen_so.get("duration_s"), 0.0),
-            "executable_at_t0": bool(chosen_so.get("executable_at_t0", False)),
-            "raid_loot_spice_eq": _clean_float(chosen_so.get("raid_loot_spice_eq"), 0.0),
-        }
-
-    return matched
 
 
 def _has_path(adj: Mapping[int, Sequence[int]], start: int, goal: int) -> bool:
@@ -693,8 +597,6 @@ def build_action_graph(
                 "sys_key": _extract_system_key(t_name) or _extract_system_key(reason),
             }
         )
-
-    ga_steps_by_idx = _match_ga_steps(nodes_meta, optimizer_summary) if mode == "ga_nn" else {}
 
     # Edge accumulator: (u_idx, v_idx) -> dict[edge_type, label]
     edge_Acc: dict[tuple[int, int], dict[str, str]] = {}
@@ -1097,22 +999,7 @@ def build_action_graph(
             _add_edge(prev_idx, cur_idx, "queue_order", q_label)
         last_by_slot[skey] = cur_idx
 
-    # 3. GA horizon rollout step sequence (in ga_nn mode)
-    if mode == "ga_nn" and ga_steps_by_idx:
-        ga_ordered = sorted(
-            ga_steps_by_idx.items(),
-            key=lambda item: (int(item[1]["step_index"]), item[0]),
-        )
-        for (u_idx, u_step), (v_idx, v_step) in zip(ga_ordered, ga_ordered[1:]):
-            if u_idx < v_idx:
-                _add_edge(
-                    u_idx,
-                    v_idx,
-                    "ga_step_order",
-                    f"GA rollout step #{int(u_step['step_index']) + 1} -> #{int(v_step['step_index']) + 1}",
-                )
-
-    # 4. Intra-lane dispatch sequence among executable_now actions (preserves multi-planet parallelism!)
+    # 3. Intra-lane dispatch sequence among executable_now actions (preserves multi-planet parallelism!)
     last_ready_by_lane: dict[str, tuple[int, int]] = {}
     for m in nodes_meta:
         if not m["executable_now"] or m["exec_rank"] is None:
@@ -1293,18 +1180,11 @@ def build_action_graph(
                 "total_seconds": m["total_seconds"],
                 "total_eta": m["total_eta"],
                 "eta_bottleneck": bneck,
-                "ga_step": ga_steps_by_idx.get(idx),
+                "ga_step": None,
                 "in_degree": len(incoming[idx]),
                 "out_degree": len(outgoing[idx]),
             }
         )
-
-    if mode == "ga_nn" and isinstance(optimizer_summary, Mapping):
-        best_sim = optimizer_summary.get("best_simulation")
-        if isinstance(best_sim, Mapping):
-            sim_elapsed = _clean_optional_float(best_sim.get("elapsed_seconds"))
-            if sim_elapsed is not None and sim_elapsed > max_total_s:
-                max_total_s = sim_elapsed
 
     primary_bottleneck: Optional[str] = None
     if bottleneck_counts:
@@ -1320,8 +1200,6 @@ def build_action_graph(
     )
 
     ga_summary_clean: Optional[dict[str, Any]] = None
-    if mode == "ga_nn" and isinstance(optimizer_summary, Mapping) and optimizer_summary:
-        ga_summary_clean = dict(optimizer_summary)
 
     if not is_dirty:
         act_cfg_dict = (

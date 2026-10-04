@@ -10,7 +10,7 @@ import time
 from typing import Any, Iterable, Mapping, Optional, Sequence
 
 from spaceinvasion.core import game_data
-from spaceinvasion.core.config import StrategyConfig, normalize_planner_mode
+from spaceinvasion.core.config import StrategyConfig
 from spaceinvasion.core.state import (
     RAID_COLONY_FORBIDDEN_BUILDINGS,
     BuildingOffer,
@@ -3609,7 +3609,7 @@ def _plan_combat_and_raid_actions(
         chosen: Optional[tuple[PlanetState, int, int]] = None
         smart_note = ""
         try:
-            from spaceinvasion.planner.optimizer import select_planner_scan_system
+            from spaceinvasion.combat.scanner import select_planner_scan_system
 
             hist_stats = next(
                 (
@@ -7766,7 +7766,7 @@ def plan_actions(
     transmitter_status: Optional[Mapping[str, Any]] = None,
     priority_resource_need: Optional[Mapping[int, Any]] = None,
 ) -> list[PlannedAction]:
-    """Generate an ETA-annotated action plan via the configured planner (`priority`, `ai_planner` fallback, or `ga_nn`)."""
+    """Generate an ETA-annotated action plan via the configured planner (`priority` or `ai_planner`)."""
     cfg = config or StrategyConfig()
     warn_ratio = _resolve_storage_warn_ratio(cfg, storage_warn_ratio)
     state_for_plan = (
@@ -7775,33 +7775,6 @@ def plan_actions(
         else state
     )
     tm_act = _plan_transmitter_action(state_for_plan, cfg, transmitter_status=transmitter_status)
-
-    if normalize_planner_mode(getattr(cfg, "planner_mode", "priority")) == "ga_nn":
-        from spaceinvasion.planner.optimizer import optimize_plan_actions
-
-        opt_kwargs: dict[str, Any] = {
-            "storage_warn_ratio": warn_ratio,
-            "config": cfg,
-        }
-        if raid_stats is not None:
-            opt_kwargs["raid_stats"] = raid_stats
-        else:
-            state_raid_stats = getattr(state, "raid_stats", None)
-            if isinstance(state_raid_stats, Mapping) and state_raid_stats:
-                opt_kwargs["raid_stats"] = state_raid_stats
-        if now_ts is not None:
-            opt_kwargs["now_ts"] = now_ts
-        if scanned_systems is not None:
-            opt_kwargs["scanned_systems"] = scanned_systems
-        if throttle_cooldowns is not None:
-            opt_kwargs["throttle_cooldowns"] = throttle_cooldowns
-        ga_actions = list(optimize_plan_actions(state, **opt_kwargs))
-        if tm_act is not None and not any(a.kind == "ACTIVATE_TRANSMITTER" for a in ga_actions):
-            insert_idx = 0
-            while insert_idx < len(ga_actions) and ga_actions[insert_idx].priority in ("P0", "P1"):
-                insert_idx += 1
-            ga_actions.insert(insert_idx, tm_act)
-        return attach_action_etas(state, ga_actions)
 
     plan, planets_to_check = _build_pre_throttle_plan(
         state_for_plan,

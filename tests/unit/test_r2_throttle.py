@@ -188,7 +188,8 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
 
     def test_commander_backs_off_at_least_retry_after_on_rate_limit(self) -> None:
         watched_resolved = {Path(p).resolve() for p in commander.WATCH_PATHS}
-        self.assertIn(Path("spaceinvasion/planner/optimizer.py").resolve(), watched_resolved)
+        self.assertIn(Path("spaceinvasion/combat/scanner.py").resolve(), watched_resolved)
+        self.assertIn(Path("spaceinvasion/planner/strategy.py").resolve(), watched_resolved)
         self.assertIn(Path("spaceinvasion/combat/ranking.py").resolve(), watched_resolved)
         snaps = snapshot_mtimes(commander.WATCH_PATHS)
         self.assertIn(str(Path("bin/commander.py").resolve()), snaps)

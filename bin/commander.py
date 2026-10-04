@@ -78,9 +78,15 @@ WATCH_PATHS = discover_watch_paths(
     entrypoints=(Path(__file__).resolve(),),
     packages=("core", "combat", "planner"),
     extra_files=(
+        _REPO_ROOT / "spaceinvasion/__init__.py",
         _REPO_ROOT / "spaceinvasion/runtime/commander_client.py",
         _REPO_ROOT / "spaceinvasion/runtime/reloader.py",
     ),
+)
+_WATCH_DIRS: tuple[Path, ...] = (
+    _REPO_ROOT / "spaceinvasion/core",
+    _REPO_ROOT / "spaceinvasion/combat",
+    _REPO_ROOT / "spaceinvasion/planner",
 )
 
 _RATE_LIMIT_MARKERS = (
@@ -630,7 +636,6 @@ def run_commander_tick(
                 if compute_rate_limit_backoff(_safe_cmd_str(sync_exc)) is not None:
                     raise
     norm_mode = normalize_planner_mode(getattr(cfg, "planner_mode", "priority"))
-    is_ga_nn = norm_mode == "ga_nn"
     is_ai_planner = norm_mode == "ai_planner"
     max_planets_gate = max(1, _safe_cmd_int(getattr(cfg, "max_planets", 11), 11))
     cur_mq: Optional[Sequence[Mapping[str, Any]]] = manual_queue
@@ -666,7 +671,7 @@ def run_commander_tick(
                 transmitter_status=transmitter_status,
             ),
             active_fsc,
-            re_sort_priority=not is_ga_nn,
+            re_sort_priority=True,
         )
         if mq_items:
             merged, _ = merge_manual_queue_actions(cur_st, base, mq_items, config=cfg)
@@ -1094,12 +1099,7 @@ def main(argv: list[str] | None = None) -> int:
         return watch_and_run(
             label="CMD",
             cmd=current_python_cmd(Path(__file__).resolve(), raw_argv),
-            watch_paths=(
-                *WATCH_PATHS,
-                _REPO_ROOT / "spaceinvasion/core",
-                _REPO_ROOT / "spaceinvasion/combat",
-                _REPO_ROOT / "spaceinvasion/planner",
-            ),
+            watch_paths=(*WATCH_PATHS, *_WATCH_DIRS),
         )
 
     is_main = threading.current_thread() is threading.main_thread()

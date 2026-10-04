@@ -434,13 +434,16 @@ class TestDatabaseMigrationsAndVersioning(unittest.TestCase):
             from spaceinvasion.core.config import load_strategy_config
 
             db_cfg = load_strategy_config(root / "state" / "spaceinvasion.db")
-            self.assertEqual(db_cfg.planner_mode, "ga_nn")
+            self.assertEqual(db_cfg.planner_mode, "priority")
             self.assertEqual(db_cfg.min_colony_fields, 320)
 
-            from spaceinvasion.optimizer import load_attack_history_stats
             from spaceinvasion.ranking import load_rank_history
 
-            db_stats = load_attack_history_stats(root / "state" / "spaceinvasion.db")
+            stats_db = GameDatabase(root / "state" / "spaceinvasion.db")
+            try:
+                db_stats = stats_db.get_raid_stats()
+            finally:
+                stats_db.close()
             self.assertEqual(db_stats["overall"]["attempts"], 2)
             self.assertEqual(db_stats["overall"]["wins"], 1)
             self.assertEqual(len(db_stats["bash_blocks"]), 1)

@@ -12,7 +12,6 @@ import requests
 
 from tests.e2e.fixtures import (
     make_building_offer,
-    make_ga_nn_config,
     make_game_state,
     make_planet,
 )
