@@ -5,7 +5,6 @@ from __future__ import annotations
 from collections import deque
 import contextlib
 from dataclasses import replace
-import inspect
 import math
 import random
 import re
@@ -25,6 +24,7 @@ from selenium.common.exceptions import (
 from selenium.webdriver.common.by import By
 
 from spaceinvasion.core import game_data
+from spaceinvasion.core.cli_support import call_with_optional_priority as _call_with_optional_priority
 from spaceinvasion.session.auth import AntiBotChallengeError, SpaceInvasionAuthError, detect_antibot_challenge
 from spaceinvasion.core.logging_utils import append_crash_debug_log
 from spaceinvasion.session.browser import (
@@ -568,35 +568,6 @@ def get_default_page_view_limiter() -> PageViewLimiter:
 def reset_default_page_view_limiter() -> None:
     """Reset the process-wide `PageViewLimiter` (primarily for unit tests)."""
     _DEFAULT_PAGE_VIEW_LIMITER.reset()
-
-
-def _call_with_optional_priority(
-    fn: Callable[..., Any],
-    *args: Any,
-    priority: str = "normal",
-    **kwargs: Any,
-) -> Any:
-    call_kwargs = dict(kwargs)
-    targets: list[Any] = [fn]
-    for attr in ("side_effect", "_mock_wraps"):
-        wrapped = getattr(fn, attr, None)
-        if callable(wrapped) and not isinstance(wrapped, type):
-            targets.append(wrapped)
-    accepts_priority = True
-    for target in targets:
-        try:
-            sig = inspect.signature(target)
-        except (TypeError, ValueError):
-            accepts_priority = False
-            break
-        if "priority" not in sig.parameters and not any(
-            p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()
-        ):
-            accepts_priority = False
-            break
-    if accepts_priority:
-        call_kwargs["priority"] = priority
-    return fn(*args, **call_kwargs)
 
 
 def _normalize_sid_query(raw_sid: str) -> str:

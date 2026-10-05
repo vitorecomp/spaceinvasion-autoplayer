@@ -1,10 +1,10 @@
 {
   "ast": {
     "broad_except": {
-      "bin/commander.py": 10,
-      "bin/game_api.py": 2,
-      "bin/login.py": 7,
-      "bin/run_stack.py": 2,
+      "bin/commander.py": 7,
+      "bin/game_api.py": 1,
+      "bin/login.py": 4,
+      "bin/run_stack.py": 1,
       "scripts/sync_db.py": 1,
       "scripts/sync_wiki_data.py": 6,
       "scripts/validate_adaptive_execution.py": 1,
@@ -22,9 +22,8 @@
       "spaceinvasion/planner/config_optimizer.py": 2,
       "spaceinvasion/planner/strategy.py": 3,
       "spaceinvasion/runtime/api_server.py": 71,
-      "spaceinvasion/runtime/commander_client.py": 7,
       "spaceinvasion/runtime/reloader.py": 1,
-      "spaceinvasion/session/auth.py": 3,
+      "spaceinvasion/session/auth.py": 1,
       "spaceinvasion/session/browser.py": 32,
       "spaceinvasion/session/client.py": 66,
       "spaceinvasion/session/executor.py": 15
@@ -34,9 +33,9 @@
       "spaceinvasion/db/storage.py:GameDatabase": 9398,
       "spaceinvasion/planner/ai_planner.py:EmpirePathSimulator": 1913,
       "spaceinvasion/planner/ai_planner.py:PathStrategy": 555,
-      "spaceinvasion/runtime/api_server.py:GameApiBridge": 15889,
+      "spaceinvasion/runtime/api_server.py:GameApiBridge": 15837,
       "spaceinvasion/session/client.py:GameBrowserClient": 3019,
-      "spaceinvasion/session/executor.py:ActionExecutor": 4597
+      "spaceinvasion/session/executor.py:ActionExecutor": 4578
     },
     "environ_reads": {
       "bin/commander.py": 1,
@@ -167,7 +166,7 @@
       "spaceinvasion/planner/strategy.py:plan_interplanet_stationing": 206,
       "spaceinvasion/planner/strategy.py:plan_interplanet_transports": 577,
       "spaceinvasion/runtime/api_server.py:GameApiBridge.__init__": 315,
-      "spaceinvasion/runtime/api_server.py:GameApiBridge._apply_fleet_slot_holds": 230,
+      "spaceinvasion/runtime/api_server.py:GameApiBridge._apply_fleet_slot_holds": 204,
       "spaceinvasion/runtime/api_server.py:GameApiBridge._build_building_resource_requests_locked": 295,
       "spaceinvasion/runtime/api_server.py:GameApiBridge._enrich_active_queues_locked": 194,
       "spaceinvasion/runtime/api_server.py:GameApiBridge._evaluate_ai_drift_replan_locked": 158,
@@ -197,7 +196,6 @@
       "spaceinvasion/runtime/api_server.py:_validate_config_patch": 128,
       "spaceinvasion/runtime/api_server.py:create_api_server": 341,
       "spaceinvasion/runtime/api_server.py:create_api_server.Handler.do_GET": 134,
-      "spaceinvasion/runtime/commander_client.py:_safe_client_text": 104,
       "spaceinvasion/session/auth.py:login": 111,
       "spaceinvasion/session/browser.py:login_with_browser": 161,
       "spaceinvasion/session/client.py:GameBrowserClient._submit_galaxy_coords_form": 110,
@@ -224,12 +222,11 @@
       "spaceinvasion/session/executor.py:ActionExecutor.sync_planet_names_in_game": 227
     },
     "module_loc": {
-      "bin/commander.py": 1561,
+      "bin/commander.py": 1463,
       "scripts/sync_wiki_data.py": 1286,
       "spaceinvasion/combat/fleet.py": 5394,
       "spaceinvasion/combat/ranking.py": 1940,
       "spaceinvasion/core/config.py": 1436,
-      "spaceinvasion/core/logging_utils.py": 994,
       "spaceinvasion/core/state.py": 3235,
       "spaceinvasion/db/migrations.py": 3118,
       "spaceinvasion/db/postgres.py": 1114,
@@ -238,11 +235,11 @@
       "spaceinvasion/planner/ai_planner.py": 7193,
       "spaceinvasion/planner/config_optimizer.py": 4591,
       "spaceinvasion/planner/strategy.py": 8793,
-      "spaceinvasion/runtime/api_server.py": 17733,
-      "spaceinvasion/session/auth.py": 865,
+      "spaceinvasion/runtime/api_server.py": 17707,
+      "spaceinvasion/session/auth.py": 828,
       "spaceinvasion/session/browser.py": 1092,
-      "spaceinvasion/session/client.py": 3647,
-      "spaceinvasion/session/executor.py": 4806
+      "spaceinvasion/session/client.py": 3618,
+      "spaceinvasion/session/executor.py": 4761
     },
     "print_calls": {
       "bin/commander.py": 20,
@@ -283,24 +280,23 @@
   },
   "ruff": {
     "bin/commander.py": {
-      "BLE001": 10,
+      "BLE001": 7,
       "I001": 2,
       "S110": 5,
       "T201": 20
     },
     "bin/game_api.py": {
-      "BLE001": 1,
       "I001": 2,
       "T201": 4
     },
     "bin/login.py": {
-      "BLE001": 7,
+      "BLE001": 4,
       "I001": 2,
       "T201": 27
     },
     "bin/run_stack.py": {
-      "BLE001": 2,
-      "I001": 2,
+      "BLE001": 1,
+      "I001": 1,
       "T201": 4
     },
     "scripts/db_migrate.py": {
@@ -400,18 +396,12 @@
       "T201": 5
     },
     "spaceinvasion/runtime/commander_client.py": {
-      "BLE001": 7,
-      "I001": 1,
-      "S110": 1
+      "I001": 1
     },
     "spaceinvasion/runtime/reloader.py": {
       "BLE001": 1,
       "S110": 1,
       "T201": 3
-    },
-    "spaceinvasion/session/auth.py": {
-      "BLE001": 2,
-      "S110": 1
     },
     "spaceinvasion/session/browser.py": {
       "BLE001": 26,

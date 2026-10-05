@@ -8,7 +8,7 @@ import math
 import os
 from pathlib import Path
 import re
-from typing import Any, Callable, Mapping, Optional
+from typing import Callable, Mapping, Optional
 from urllib.parse import urljoin
 
 from bs4 import BeautifulSoup
@@ -16,6 +16,15 @@ from dotenv import dotenv_values
 import requests
 
 from spaceinvasion.core import game_data
+from spaceinvasion.core.cli_support import (
+    close_http_response as _close_http_response,
+)
+from spaceinvasion.core.cli_support import (
+    close_http_session as _close_http_session,
+)
+from spaceinvasion.core.cli_support import (
+    configure_http_session_pools as _configure_http_session_pools,
+)
 
 BASE_URL = "https://spaceinvasion.bitmeup.com"
 DEFAULT_SESSIONS_DIR = Path(os.environ.get("SPACEINVASION_SESSIONS_DIR", "data/sessions"))
@@ -593,52 +602,6 @@ def load_session_cookies(
         if session is None:
             _close_http_session(sess)
         raise
-
-
-def _enable_pool_dispose(pm: Any) -> None:
-    if pm is None or isinstance(pm, type):
-        return
-    pools = getattr(pm, "pools", None)
-    if pools is None:
-        return
-    try:
-        dispose = getattr(pools, "dispose_func", ...)
-    except Exception:
-        return
-    if dispose is None:
-        try:
-            pools.dispose_func = lambda p: p.close()
-        except Exception:
-            pass
-
-
-def _configure_http_session_pools(sess: Any) -> None:
-    adapters = getattr(sess, "adapters", None)
-    if not isinstance(adapters, Mapping):
-        return
-    for adapter in list(adapters.values()):
-        _enable_pool_dispose(getattr(adapter, "poolmanager", None))
-        proxy_mgr = getattr(adapter, "proxy_manager", None)
-        if isinstance(proxy_mgr, Mapping):
-            for pm in list(proxy_mgr.values()):
-                _enable_pool_dispose(pm)
-
-
-def _close_http_session(sess: Any) -> None:
-    if sess is None:
-        return
-    _configure_http_session_pools(sess)
-    close_fn = getattr(sess, "close", None)
-    if callable(close_fn):
-        close_fn()
-
-
-def _close_http_response(resp: Any) -> None:
-    if resp is None:
-        return
-    close_fn = getattr(resp, "close", None)
-    if callable(close_fn):
-        close_fn()
 
 
 def build_http_session() -> requests.Session:

@@ -145,6 +145,32 @@ _SERVER_BOOT_ID = secrets.token_hex(4)
 _API_SID_RE = re.compile(_LOG_SID_RE.pattern, _LOG_SID_RE.flags)
 
 
+def _fleet_subrank(a: PlannedAction) -> int:
+    if a.priority == "P1":
+        if a.kind == "ABANDON_COLONY":
+            return 0
+        if a.kind == "SPY":
+            return 1 if "(free slot)" in str(a.target_name or "").lower() else 2
+        if a.kind == "TRANSPORT":
+            return 3
+        if a.kind == "COLONIZE":
+            return 4
+        return 5
+    if a.priority == "P2":
+        if a.kind == "CLAIM_TUTORIAL":
+            return 0
+        if a.kind == "SPY":
+            return 1
+        if a.kind == "TRANSPORT":
+            return 2
+        if a.kind == "COLONIZE":
+            return 3
+        if a.kind == "STATION":
+            return 4
+        return 5
+    return 0
+
+
 def _sub_api_sid(match: re.Match[str]) -> str:
     return _sub_log_sid_kv(match)
 _UI_ASSETS: dict[str, tuple[str, str]] = {
@@ -2558,32 +2584,6 @@ class GameApiBridge:
             out.append(act)
         if changed and re_sort_priority:
             prio_rank = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
-
-            def _fleet_subrank(a: PlannedAction) -> int:
-                if a.priority == "P1":
-                    if a.kind == "ABANDON_COLONY":
-                        return 0
-                    if a.kind == "SPY":
-                        return 1 if "(free slot)" in str(a.target_name or "").lower() else 2
-                    if a.kind == "TRANSPORT":
-                        return 3
-                    if a.kind == "COLONIZE":
-                        return 4
-                    return 5
-                if a.priority == "P2":
-                    if a.kind == "CLAIM_TUTORIAL":
-                        return 0
-                    if a.kind == "SPY":
-                        return 1
-                    if a.kind == "TRANSPORT":
-                        return 2
-                    if a.kind == "COLONIZE":
-                        return 3
-                    if a.kind == "STATION":
-                        return 4
-                    return 5
-                return 0
-
             out.sort(
                 key=lambda a: (
                     prio_rank.get(a.priority, 9),
@@ -2852,37 +2852,11 @@ class GameApiBridge:
             out.append(act)
         if changed and re_sort_priority:
             prio_rank = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
-
-            def _fleet_subrank_hold(a: PlannedAction) -> int:
-                if a.priority == "P1":
-                    if a.kind == "ABANDON_COLONY":
-                        return 0
-                    if a.kind == "SPY":
-                        return 1 if "(free slot)" in str(a.target_name or "").lower() else 2
-                    if a.kind == "TRANSPORT":
-                        return 3
-                    if a.kind == "COLONIZE":
-                        return 4
-                    return 5
-                if a.priority == "P2":
-                    if a.kind == "CLAIM_TUTORIAL":
-                        return 0
-                    if a.kind == "SPY":
-                        return 1
-                    if a.kind == "TRANSPORT":
-                        return 2
-                    if a.kind == "COLONIZE":
-                        return 3
-                    if a.kind == "STATION":
-                        return 4
-                    return 5
-                return 0
-
             out.sort(
                 key=lambda a: (
                     prio_rank.get(a.priority, 9),
                     -1 if a.kind == "ALERT_HOSTILE" else (0 if a.executable_now else 1),
-                    _fleet_subrank_hold(a),
+                    _fleet_subrank(a),
                 )
             )
         return out

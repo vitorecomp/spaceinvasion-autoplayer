@@ -6,7 +6,7 @@ from collections import deque
 from collections.abc import Mapping
 import contextlib
 from dataclasses import dataclass, replace
-import inspect
+import functools
 import math
 import os
 import random
@@ -26,6 +26,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import Select
 
 from spaceinvasion.core import game_data
+from spaceinvasion.core.cli_support import call_with_optional_priority
 from spaceinvasion.session.client import GameBrowserClient, PageViewLimiter
 from spaceinvasion.combat.fleet import (
     GalaxySlot,
@@ -56,34 +57,7 @@ from spaceinvasion.core.state import (
 )
 from spaceinvasion.planner.strategy import PlannedAction
 
-
-def _call_with_optional_priority(
-    fn: Callable[..., Any],
-    *args: Any,
-    priority: str = "interactive",
-    **kwargs: Any,
-) -> Any:
-    call_kwargs = dict(kwargs)
-    targets: list[Any] = [fn]
-    for attr in ("side_effect", "_mock_wraps"):
-        wrapped = getattr(fn, attr, None)
-        if callable(wrapped) and not isinstance(wrapped, type):
-            targets.append(wrapped)
-    accepts_priority = True
-    for target in targets:
-        try:
-            sig = inspect.signature(target)
-        except (TypeError, ValueError):
-            accepts_priority = False
-            break
-        if "priority" not in sig.parameters and not any(
-            p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()
-        ):
-            accepts_priority = False
-            break
-    if accepts_priority:
-        call_kwargs["priority"] = priority
-    return fn(*args, **call_kwargs)
+_call_with_optional_priority = functools.partial(call_with_optional_priority, priority="interactive")
 
 
 def _safe_optional_wait_limit(raw: Any, default: float = 60.0) -> Optional[float]:
@@ -406,26 +380,7 @@ class ActionExecutor:
             return normalize_coords(m_only.group(1))
         return ""
 
-    @staticmethod
-    def _extract_selected_planet_id(html: str, url: str = "") -> Optional[int]:
-        if not html or "internalfleet" in (url or "").lower() or "newplanet=" not in html.lower():
-            return None
-        soup = BeautifulSoup(html, "html.parser")
-        select_el = soup.find("select", attrs={"name": "planet"})
-        if select_el is None:
-            return None
-        for opt in select_el.find_all("option"):
-            val = str(opt.get("value") or "")
-            if "action=internalfleet" in val.lower():
-                return None
-            if opt.has_attr("selected"):
-                m = re.search(r"newplanet=(\d+)", val, re.IGNORECASE | re.ASCII)
-                if m:
-                    pid_s = m.group(1)
-                    if pid_s.isascii() and pid_s.isdigit() and len(pid_s) <= 18:
-                        return int(pid_s)
-                    return None
-        return None
+    _extract_selected_planet_id = staticmethod(GameBrowserClient._extract_selected_planet_id)
 
     def _build_updated_state(
         self,
