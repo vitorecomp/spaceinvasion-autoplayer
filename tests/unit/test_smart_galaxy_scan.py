@@ -12,7 +12,6 @@ from spaceinvasion.combat.fleet import (
     GalaxySlot,
     SpyReport,
     extract_galaxy_universe_bounds,
-    galaxy_sector_distance,
     order_sectors_for_smooth_walk,
     score_galaxy_scan_sectors,
     select_smart_galaxy_scan_batch,
@@ -74,15 +73,15 @@ class TestSmartGalaxyScanConfig(unittest.TestCase):
                 galaxy_scan_near_weight=4.5,
                 galaxy_scan_attack_weight=7.25,
             )
-            yaml_path = tp / "smart_scan.yaml"
-            save_strategy_config(custom, yaml_path)
-            loaded_yaml = load_strategy_config(yaml_path)
-            self.assertFalse(loaded_yaml.galaxy_scan_explore_first)
-            self.assertAlmostEqual(loaded_yaml.galaxy_scan_near_weight, 4.5)
-            self.assertAlmostEqual(loaded_yaml.galaxy_scan_attack_weight, 7.25)
+            json_path = tp / "smart_scan.json"
+            save_strategy_config(custom, json_path)
+            loaded_json = load_strategy_config(json_path)
+            self.assertFalse(loaded_json.galaxy_scan_explore_first)
+            self.assertAlmostEqual(loaded_json.galaxy_scan_near_weight, 4.5)
+            self.assertAlmostEqual(loaded_json.galaxy_scan_attack_weight, 7.25)
 
             db_path = tp / "smart_scan.db"
-            db = GameDatabase(db_path, attack_history_path="")
+            db = GameDatabase(db_path)
             db.close()
             save_strategy_config(custom, db_path)
             loaded_db = load_strategy_config(db_path)
@@ -95,7 +94,7 @@ class TestSmartGalaxySectorIntelStorage(unittest.TestCase):
     def test_sector_intel_coverage_direct_raids_and_player_affinity(self) -> None:
         now = 1_750_000_000.0
         with tempfile.TemporaryDirectory() as tmp:
-            db = GameDatabase(Path(tmp) / "intel.db", attack_history_path="")
+            db = GameDatabase(Path(tmp) / "intel.db")
             try:
                 empty_intel = db.get_galaxy_sector_intel(galaxies=[2], now_ts=now)
                 self.assertEqual(empty_intel["galaxies"], [2])
@@ -390,7 +389,7 @@ class TestSmartGalaxyScanTwoPhaseEngine(unittest.TestCase):
     def test_phase2_weights_near_sectors_and_frequent_attacked_players_and_sectors(self) -> None:
         now = 1_750_000_000.0
         with tempfile.TemporaryDirectory() as tmp:
-            db = GameDatabase(Path(tmp) / "phase2.db", attack_history_path="")
+            db = GameDatabase(Path(tmp) / "phase2.db")
             try:
                 # Mark all 400 systems scanned equally 45 minutes ago
                 for s in range(1, 401):
@@ -493,11 +492,7 @@ class TestSmartGalaxyScanTwoPhaseEngine(unittest.TestCase):
             finally:
                 db.close()
 
-    def test_circular_distance_smooth_walk_and_in_memory_set_inputs(self) -> None:
-        self.assertEqual(galaxy_sector_distance(2, 399, [(2, 2)]), 3)
-        self.assertEqual(galaxy_sector_distance(2, 150, [(2, 150)]), 0)
-        self.assertGreater(galaxy_sector_distance(3, 150, [(2, 150)]), 200)
-
+    def test_smooth_walk_and_in_memory_set_inputs(self) -> None:
         walked = order_sectors_for_smooth_walk(
             [
                 {"galaxy": 2, "system": 3},
@@ -583,7 +578,7 @@ class TestSmartGalaxyScanTwoPhaseEngine(unittest.TestCase):
         now = 1_750_000_000.0
         with tempfile.TemporaryDirectory(prefix="si_sec_api_") as tmp:
             tmp_path = Path(tmp)
-            cfg_path = tmp_path / "config.yaml"
+            cfg_path = tmp_path / "config.json"
             save_strategy_config(
                 StrategyConfig(
                     galaxy_scan_refresh_pct=25,
@@ -744,7 +739,7 @@ class TestSmartGalaxyScanTwoPhaseEngine(unittest.TestCase):
         now = 1_750_000_000.0
         with tempfile.TemporaryDirectory(prefix="si_sec_spill_") as tmp:
             tmp_path = Path(tmp)
-            cfg_path = tmp_path / "config.yaml"
+            cfg_path = tmp_path / "config.json"
             # galaxy_scan_all_galaxies=False, but mixed 30% Refresh / 70% Discovery on a 100% scanned G2
             save_strategy_config(
                 StrategyConfig(
@@ -810,7 +805,7 @@ class TestSmartGalaxyScanTwoPhaseEngine(unittest.TestCase):
         now = 1_750_000_000.0
         with tempfile.TemporaryDirectory(prefix="si_sec_prev_") as tmp:
             tmp_path = Path(tmp)
-            cfg_path = tmp_path / "config.yaml"
+            cfg_path = tmp_path / "config.json"
             save_strategy_config(
                 StrategyConfig(
                     galaxy_scan_refresh_pct=0,

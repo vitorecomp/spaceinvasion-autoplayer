@@ -17,15 +17,12 @@ import psycopg_pool
 from spaceinvasion.combat.fleet import GalaxySlot, SpyReport
 from spaceinvasion.core.logging_utils import append_tick_logs
 from spaceinvasion.core.state import EnergyBalance, GameState, PlanetState, Resources
-from spaceinvasion.db import backend as backend_mod
 from spaceinvasion.db.backend import (
     ensure_postgres_container_ready,
     is_unix_socket_dsn,
     ping_postgres,
     redact_db_url,
     resolve_database_config,
-    save_persisted_db_preference,
-    sync_database_stores,
 )
 from spaceinvasion.db.migrations import LATEST_SCHEMA_VERSION
 from spaceinvasion.db.postgres import PostgresRow, translate_sqlite_to_postgres_sql
@@ -34,7 +31,6 @@ from spaceinvasion.runtime.api_server import GameApiBridge
 from tests.pg_harness import (
     FORBIDDEN_LIVE_PORTS,
     REPO_ROOT,
-    allow_sqlite_for_test,
     get_pg_redirector,
     get_shared_pg_harness,
     install_hermetic_guards,
@@ -118,10 +114,20 @@ class TestPostgresDialectAndBackendControl(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            # Host default (outside Docker) resolves to sqlite
+            # Host default resolves to postgres
             cfg_def = resolve_database_config(root_dir=root, env={})
-            self.assertEqual(cfg_def.backend, "sqlite")
+            self.assertEqual(cfg_def.backend, "postgres")
             self.assertEqual(cfg_def.selection_source, "default")
+
+            # SQLite backend selection is retired and rejected everywhere
+            with self.assertRaises(ValueError):
+                resolve_database_config(explicit_backend="sqlite", root_dir=root, env={})
+            with self.assertRaises(ValueError):
+                resolve_database_config(
+                    explicit_backend="sqlite",
+                    root_dir=root,
+                    env={"SPACEINVASION_CONTAINER": "1"},
+                )
 
             # Docker / Podman container mode forces postgres exclusively
             cfg_container = resolve_database_config(
@@ -130,20 +136,8 @@ class TestPostgresDialectAndBackendControl(unittest.TestCase):
             )
             self.assertEqual(cfg_container.backend, "postgres")
             self.assertEqual(cfg_container.selection_source, "container_postgres_only")
-            with self.assertRaises(ValueError):
-                resolve_database_config(
-                    explicit_backend="sqlite",
-                    root_dir=root,
-                    env={"SPACEINVASION_CONTAINER": "1"},
-                )
 
-            # Persisted preference in isolated temp root
-            save_persisted_db_preference("postgres", root_dir=root)
-            cfg_pref = resolve_database_config(root_dir=root, env={})
-            self.assertEqual(cfg_pref.backend, "postgres")
-            self.assertEqual(cfg_pref.selection_source, "persisted_preference")
-
-            # Env var overrides persisted preference
+            # Env var sets postgres explicitly
             cfg_env = resolve_database_config(
                 root_dir=root,
                 env={"SPACEINVASION_DB_BACKEND": "postgres"},
@@ -153,11 +147,11 @@ class TestPostgresDialectAndBackendControl(unittest.TestCase):
 
             # CLI flag overrides env var
             cfg_cli = resolve_database_config(
-                explicit_backend="sqlite",
+                explicit_backend="postgres",
                 root_dir=root,
                 env={"SPACEINVASION_DB_BACKEND": "postgres"},
             )
-            self.assertEqual(cfg_cli.backend, "sqlite")
+            self.assertEqual(cfg_cli.backend, "postgres")
             self.assertEqual(cfg_cli.selection_source, "cli_flag")
 
     def test_hermetic_socket_and_repo_root_log_guards(self) -> None:
@@ -221,10 +215,6 @@ class TestPostgresDialectAndBackendControl(unittest.TestCase):
                 "PGPASSWORD",
             ):
                 self.assertNotIn(var, os.environ)
-
-        repo_pref = (REPO_ROOT / backend_mod.DEFAULT_BACKEND_PREF_REL_PATH).resolve()
-        self.assertNotEqual(backend_mod._pref_file_path(Path(".")).resolve(), repo_pref)
-        self.assertNotEqual(backend_mod._pref_file_path(REPO_ROOT).resolve(), repo_pref)
 
         # Ephemeral loopback port connections remain allowed
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as srv:
@@ -393,52 +383,14 @@ class TestPostgresDialectAndBackendControl(unittest.TestCase):
                 # Unix-socket backup uses portable JSONL fallback (never shells into live container)
                 self.assertTrue(str(bkp["backup_path"]).endswith(".jsonl.gz"))
 
-                # Sync Postgres -> SQLite and verify live GameApiBridge backend detection
-                sqlite_file = td_path / "mirror.db"
-                with allow_sqlite_for_test():
-                    sq_db = GameDatabase(sqlite_file, backend="sqlite", attack_history_path="")
-                    try:
-                        sync_to_sq = sync_database_stores(pg_db, sq_db)
-                        self.assertTrue(sync_to_sq["ok"])
-                        self.assertEqual(sq_db.get_custom_planet_names()["12476"], "#PP Planet")
-                        q2 = sq_db.enqueue_manual_command(
-                            kind="RESEARCH",
-                            priority="P2",
-                            planet_id=12476,
-                            planet_coords="02:380:12",
-                            target_id=1,
-                            target_name="Mining technology",
-                            target_level=6,
-                        )
-                    finally:
-                        sq_db.close()
+                # Explicit SQLite backend request fails cleanly
+                with self.assertRaises(ValueError):
+                    GameDatabase(td_path / "retired.db", backend="sqlite")
 
-                    fake_client = MagicMock()
-                    fake_client.__enter__.return_value = fake_client
-                    fake_client.driver = MagicMock(current_url="https://spaceinvasion.bitmeup.com/indexGame.es")
-                    fake_client.read_full_snapshot.return_value = state
-                    bridge_sq = GameApiBridge(
-                        debug_port=19999,
-                        env_file=td_path / "no.env",
-                        db_path=sqlite_file,
-                        log_dir=None,
-                        client_factory=lambda _port: fake_client,
-                        ensure_session_fn=lambda: None,
-                    )
-                    try:
-                        st0 = bridge_sq.handle_command({"command": "db_backend_status"})
-                        self.assertEqual(st0["db_backend"]["backend"], "sqlite")
-                    finally:
-                        bridge_sq.close()
-
-                    # Verify sync_database_stores SQLite -> Postgres advances identity sequence past q2["id"]
-                    sq_db2 = GameDatabase(sqlite_file, backend="sqlite", attack_history_path="")
-                    try:
-                        sync_to_pg = sync_database_stores(sq_db2, pg_db)
-                        self.assertTrue(sync_to_pg["ok"])
-                    finally:
-                        sq_db2.close()
-
+                fake_client = MagicMock()
+                fake_client.__enter__.return_value = fake_client
+                fake_client.driver = MagicMock(current_url="https://spaceinvasion.bitmeup.com/indexGame.es")
+                fake_client.read_full_snapshot.return_value = state
                 bridge_pg = GameApiBridge(
                     debug_port=19999,
                     env_file=td_path / "no.env",
@@ -448,10 +400,10 @@ class TestPostgresDialectAndBackendControl(unittest.TestCase):
                     ensure_session_fn=lambda: None,
                 )
                 try:
-                    st_pg = bridge_pg.handle_command({"command": "db_backend_status"})
-                    self.assertEqual(st_pg["db_backend"]["backend"], "postgres")
+                    st_pg = bridge_pg._build_db_backend_status(include_ping=True)
+                    self.assertEqual(st_pg["backend"], "postgres")
                     assert bridge_pg._db is not None
-                    q3 = bridge_pg._db.enqueue_manual_command(
+                    q2 = bridge_pg._db.enqueue_manual_command(
                         kind="BUILD_SHIP",
                         priority="P3",
                         planet_id=12476,
@@ -460,8 +412,8 @@ class TestPostgresDialectAndBackendControl(unittest.TestCase):
                         target_name="Small transporter",
                         target_level=5,
                     )
-                    self.assertGreater(q3["id"], q2["id"])
-                    self.assertEqual(len(bridge_pg._db.get_manual_queue()), 3)
+                    self.assertGreater(q2["id"], 1)
+                    self.assertEqual(len(bridge_pg._db.get_manual_queue()), 2)
                 finally:
                     bridge_pg.close()
         finally:
@@ -492,7 +444,7 @@ class TestPostgresDialectAndBackendControl(unittest.TestCase):
             self.skipTest("PostgreSQL test redirector is active under pytest (tests/conftest.py).")
         with tempfile.TemporaryDirectory(prefix="si_pg_redir_") as tmp:
             p = Path(tmp) / "plain.db"
-            db1 = GameDatabase(p, attack_history_path="")
+            db1 = GameDatabase(p)
             try:
                 self.assertEqual(db1.backend_name, "postgres")
                 self.assertTrue(is_unix_socket_dsn(db1.postgres_url))
@@ -502,7 +454,7 @@ class TestPostgresDialectAndBackendControl(unittest.TestCase):
                 db1.close()
 
             # Reopening the same path within the test hits the same disposable PG database
-            db2 = GameDatabase(p, attack_history_path="")
+            db2 = GameDatabase(p)
             try:
                 self.assertEqual(db2.backend_name, "postgres")
                 self.assertEqual(db2.get_custom_planet_names().get("99999"), "RedirectedPG")

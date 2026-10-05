@@ -1,39 +1,27 @@
-"""Versioned, append-only database migration and multi-store versioning engine.
+"""Versioned, append-only PostgreSQL database migration engine.
 
 Manages forward-only schema evolution, SHA-256 DDL checksums, savepoint-isolated
-execution, online SQLite `.backup()` snapshots, integrity verification, and
-multi-database / JSON sidecar store version tracking without destructive deletes.
+execution, integrity verification, and schema migration audit history without destructive deletes.
 """
 
 from __future__ import annotations
 
 import argparse
-import contextlib
 from dataclasses import dataclass
-from datetime import datetime, timezone
 import hashlib
 import json
 import math
-import os
 from pathlib import Path
 import re
 import sqlite3
 import sys
-import tempfile
 import time
 from typing import Any, Callable, Mapping, Optional, Sequence
 
 from spaceinvasion.core.logging_utils import redact_sensitive
 
-DEFAULT_GAME_DB_PATH = Path("state") / "spaceinvasion.db"
-DEFAULT_ATTACK_HISTORY_JSON_PATH = Path("data") / "attack_history.json"
-DEFAULT_RANK_HISTORY_JSON_PATH = Path("state") / "rank_history.json"
-DEFAULT_SNAPSHOT_JSON_PATH = Path("state") / "snapshot.json"
-DEFAULT_CONFIG_YAML_PATH = Path("config.yaml")
-
 LATEST_SCHEMA_VERSION: int = 14
 SCHEMA_VERSION: str = str(LATEST_SCHEMA_VERSION)
-ATTACK_HISTORY_SCHEMA_VERSION: int = 2
 
 PROTECTED_META_KEYS: frozenset[str] = frozenset(
     {
@@ -1117,46 +1105,8 @@ def compute_catalog_head_checksum(migrations: Sequence[Migration] = GAME_DB_MIGR
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
 
-def create_sqlite_backup(
-    conn: sqlite3.Connection,
-    db_path: Path,
-    *,
-    from_version: int = 0,
-    to_version: int = LATEST_SCHEMA_VERSION,
-    label: str = "upgrade",
-    backup_dir: Optional[Path] = None,
-) -> Path:
-    """Create a hot, WAL-consistent online SQLite backup via `sqlite3.Connection.backup`."""
-    resolved_db = Path(db_path)
-    out_dir = backup_dir if backup_dir is not None else (resolved_db.parent / "backups")
-    out_dir.mkdir(parents=True, exist_ok=True)
-    safe_label = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(label or "backup").strip())[:40] or "backup"
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    ns_tail = time.time_ns() % 1_000_000
-    dest_name = (
-        f"{resolved_db.stem}.{safe_label}.v{max(0, int(from_version)):03d}_to_v{max(0, int(to_version)):03d}"
-        f".{stamp}_{ns_tail:06d}.db"
-    )
-    dest_path = out_dir / dest_name
-    tmp_fd, tmp_raw = tempfile.mkstemp(prefix=f".{resolved_db.stem}.bkp.", suffix=".tmp", dir=str(out_dir))
-    os.close(tmp_fd)
-    tmp_path = Path(tmp_raw)
-    try:
-        with contextlib.closing(sqlite3.connect(str(tmp_path))) as dst_conn:
-            conn.backup(dst_conn)
-            dst_conn.commit()
-        os.replace(tmp_path, dest_path)
-        return dest_path
-    except Exception:
-        try:
-            tmp_path.unlink(missing_ok=True)
-        except OSError:
-            pass
-        raise
-
-
 class MigrationRunner:
-    """Forward-only, savepoint-isolated migration runner for any SQLite database."""
+    """Forward-only, savepoint-isolated migration runner for PostgreSQL databases."""
 
     def __init__(
         self,
@@ -1538,24 +1488,7 @@ class MigrationRunner:
             return preview
 
         backup_created_path: Optional[Path] = None
-        should_auto_backup = (
-            bool(auto_backup_default_db)
-            and not is_memory
-            and db_path is not None
-            and len(to_apply) > 0
-            and Path(db_path).exists()
-            and Path(db_path).resolve() == DEFAULT_GAME_DB_PATH.resolve()
-            and self._has_existing_domain_data(conn)
-        )
-        if (backup or should_auto_backup) and not is_memory and db_path is not None and Path(db_path).exists():
-            backup_created_path = create_sqlite_backup(
-                conn,
-                Path(db_path),
-                from_version=from_version,
-                to_version=eff_target,
-                label="pre_migrate" if should_auto_backup and not backup else "manual_migrate",
-                backup_dir=backup_dir,
-            )
+        _ = (backup, auto_backup_default_db, backup_dir)
 
         self._ensure_ledger_tables(conn)
         if backup_created_path is not None:
@@ -1733,9 +1666,9 @@ class MigrationRunner:
         )
         verify_out: dict[str, Any] = {
             "ok": ok,
-            "sqlite_check_mode": pragma_name,
-            "sqlite_integrity_ok": sqlite_ok,
-            "sqlite_messages": chk_messages[:20],
+            "integrity_check_mode": pragma_name,
+            "integrity_ok": sqlite_ok,
+            "integrity_messages": chk_messages[:20],
             "missing_tables": missing_tables,
             "missing_columns": missing_columns,
             "version_synced": version_synced,
@@ -2623,997 +2556,18 @@ DEFAULT_GAME_MIGRATION_RUNNER = MigrationRunner(
 
 
 # ---------------------------------------------------------------------------
-# Multi-Database & JSON Sidecar Store Versioning Registry
-# ---------------------------------------------------------------------------
-
-def inspect_json_store(path: Path, *, store_kind: str) -> dict[str, Any]:
-    """Inspect schema version of a JSON sidecar store (`attack_history`, `rank_history`, `snapshot`)."""
-    p = Path(path)
-    if not p.exists() or p.is_dir():
-        return _clean_json_obj(
-            {
-                "store_kind": store_kind,
-                "path": str(p),
-                "exists": False,
-                "format": "json",
-                "schema_version": None,
-                "target_schema_version": ATTACK_HISTORY_SCHEMA_VERSION if store_kind == "attack_history" else 1,
-                "up_to_date": True,
-                "size_bytes": 0,
-            }
-        )
-    size_bytes = p.stat().st_size
-    try:
-        parsed = json.loads(p.read_text(encoding="utf-8"))
-    except Exception as exc:
-        return _clean_json_obj(
-            {
-                "store_kind": store_kind,
-                "path": str(p),
-                "exists": True,
-                "format": "json",
-                "schema_version": None,
-                "target_schema_version": ATTACK_HISTORY_SCHEMA_VERSION if store_kind == "attack_history" else 1,
-                "up_to_date": False,
-                "size_bytes": size_bytes,
-                "error": str(exc),
-            }
-        )
-
-    if store_kind == "attack_history" and isinstance(parsed, dict):
-        sv = int(parsed.get("schema_version") or parsed.get("version") or 1)
-        return _clean_json_obj(
-            {
-                "store_kind": store_kind,
-                "path": str(p),
-                "exists": True,
-                "format": "json",
-                "schema_version": sv,
-                "target_schema_version": ATTACK_HISTORY_SCHEMA_VERSION,
-                "db_schema_version": parsed.get("db_schema_version"),
-                "up_to_date": sv >= ATTACK_HISTORY_SCHEMA_VERSION,
-                "size_bytes": size_bytes,
-            }
-        )
-
-    inferred_ver = int(parsed.get("schema_version", 1)) if isinstance(parsed, dict) else 1
-    return _clean_json_obj(
-        {
-            "store_kind": store_kind,
-            "path": str(p),
-            "exists": True,
-            "format": "json",
-            "schema_version": inferred_ver,
-            "target_schema_version": 1,
-            "up_to_date": True,
-            "size_bytes": size_bytes,
-        }
-    )
-
-
-def migrate_attack_history_json(
-    path: Path = DEFAULT_ATTACK_HISTORY_JSON_PATH,
-    *,
-    dry_run: bool = False,
-) -> dict[str, Any]:
-    """Non-destructively upgrade `attack_history.json` envelope to `ATTACK_HISTORY_SCHEMA_VERSION`."""
-    p = Path(path)
-    info = inspect_json_store(p, store_kind="attack_history")
-    if not info["exists"] or info.get("error") or info["up_to_date"]:
-        info["migrated"] = False
-        info["dry_run"] = bool(dry_run)
-        return info
-
-    raw_obj = json.loads(p.read_text(encoding="utf-8"))
-    if not isinstance(raw_obj, dict):
-        info["migrated"] = False
-        info["dry_run"] = bool(dry_run)
-        return info
-
-    prev_ver = int(raw_obj.get("schema_version") or raw_obj.get("version") or 1)
-    if dry_run:
-        info["migrated"] = False
-        info["dry_run"] = True
-        info["would_upgrade_from"] = prev_ver
-        return info
-
-    upgraded = dict(raw_obj)
-    upgraded.setdefault("version", 1)
-    upgraded["schema_version"] = ATTACK_HISTORY_SCHEMA_VERSION
-    upgraded.setdefault("db_schema_version", LATEST_SCHEMA_VERSION)
-    upgraded.setdefault("overall", {})
-    upgraded.setdefault("per_target", {})
-    upgraded.setdefault("history", [])
-    upgraded.setdefault("bash_blocks", [])
-    upgraded.setdefault("blocked_targets", {})
-    upgraded.setdefault("telemetry_summary", {})
-    upgraded["migrated_at"] = round(time.time(), 3)
-
-    tmp_fd, tmp_raw = tempfile.mkstemp(prefix=f".{p.stem}.", suffix=".tmp", dir=str(p.parent))
-    os.close(tmp_fd)
-    tmp_path = Path(tmp_raw)
-    try:
-        with tmp_path.open("w", encoding="utf-8") as fh:
-            json.dump(_clean_json_obj(upgraded), fh, indent=2, sort_keys=True, allow_nan=False)
-            fh.write("\n")
-            fh.flush()
-            os.fsync(fh.fileno())
-        os.replace(tmp_path, p)
-    except Exception:
-        try:
-            tmp_path.unlink(missing_ok=True)
-        except OSError:
-            pass
-        raise
-
-    after = inspect_json_store(p, store_kind="attack_history")
-    after["migrated"] = True
-    after["from_schema_version"] = prev_ver
-    after["dry_run"] = False
-    return after
-
-
-def import_legacy_attack_history_json(
-    conn: sqlite3.Connection,
-    json_path: Path,
-    *,
-    now_ts: Optional[float] = None,
-    remove_after_import: bool = False,
-) -> dict[str, Any]:
-    """Non-destructively absorb a legacy `attack_history.json` file into SQLite tables (`raid_history`, `bash_blocks`)."""
-    p = Path(json_path)
-    ts_ref = float(now_ts) if now_ts is not None else time.time()
-    if not p.exists() or not p.is_file():
-        return _clean_json_obj(
-            {
-                "exists": False,
-                "imported_raids": 0,
-                "imported_bash_blocks": 0,
-                "removed_json": False,
-                "path": str(p),
-            }
-        )
-
-    try:
-        raw_obj = json.loads(p.read_text(encoding="utf-8"))
-    except Exception as exc:
-        return _clean_json_obj(
-            {
-                "exists": True,
-                "imported_raids": 0,
-                "imported_bash_blocks": 0,
-                "removed_json": False,
-                "path": str(p),
-                "error": str(exc),
-            }
-        )
-
-    hist_rows = raw_obj if isinstance(raw_obj, list) else (raw_obj.get("history") if isinstance(raw_obj, Mapping) else [])
-    bash_rows = raw_obj.get("bash_blocks") if isinstance(raw_obj, Mapping) else []
-
-    imported_raids = 0
-    if isinstance(hist_rows, list) and MigrationRunner._table_exists(conn, "raid_history"):
-        for r in hist_rows:
-            if not isinstance(r, Mapping):
-                continue
-            coords = str(r.get("target_coords") or r.get("coords") or "").strip()
-            if not coords:
-                continue
-            try:
-                atk_ts = round(float(r.get("attacked_ts") or r.get("ts") or 0.0), 3)
-            except (TypeError, ValueError):
-                atk_ts = 0.0
-            outcome = str(redact_sensitive(str(r.get("outcome") or "")))[:256]
-            is_ex = 1 if bool(r.get("is_exempt", False)) else 0
-            loot_obj = r.get("loot") if isinstance(r.get("loot"), Mapping) else {}
-            clean_loot = {
-                rk: max(0, int(loot_obj.get(rk, 0) or 0))
-                for rk in ("pig_iron", "metal", "kryptonite", "spice")
-            }
-            dup = conn.execute(
-                """
-                SELECT 1 FROM raid_history
-                WHERE target_coords = ? AND ABS(attacked_ts - ?) < 0.002 AND outcome = ?
-                LIMIT 1
-                """,
-                (coords, atk_ts, outcome),
-            ).fetchone()
-            if dup is None:
-                conn.execute(
-                    """
-                    INSERT INTO raid_history(target_coords, attacked_ts, is_exempt, outcome, loot_json)
-                    VALUES (?, ?, ?, ?, ?)
-                    """,
-                    (coords, atk_ts, is_ex, outcome, _safe_json_dumps(clean_loot)),
-                )
-                imported_raids += 1
-
-    imported_blocks = 0
-    if isinstance(bash_rows, list) and MigrationRunner._table_exists(conn, "bash_blocks"):
-        for b in bash_rows:
-            if not isinstance(b, Mapping):
-                continue
-            coords = str(b.get("target_coords") or b.get("coords") or "").strip()
-            if not coords:
-                continue
-            try:
-                blk_ts = round(float(b.get("blocked_ts") or b.get("ts") or 0.0), 3)
-                until_ts = round(float(b.get("blocked_until_ts") or 0.0), 3)
-                cd_sec = round(float(b.get("cooldown_seconds") or max(0.0, until_ts - blk_ts)), 3)
-            except (TypeError, ValueError):
-                continue
-            is_bash = 1 if bool(b.get("is_bash", True)) else 0
-            reason = str(redact_sensitive(str(b.get("reason") or "")))[:256]
-            dup_b = conn.execute(
-                """
-                SELECT 1 FROM bash_blocks
-                WHERE target_coords = ? AND ABS(blocked_ts - ?) < 0.002
-                LIMIT 1
-                """,
-                (coords, blk_ts),
-            ).fetchone()
-            if dup_b is None:
-                conn.execute(
-                    """
-                    INSERT INTO bash_blocks(
-                        target_coords, blocked_ts, blocked_until_ts, cooldown_seconds, is_bash, reason
-                    ) VALUES (?, ?, ?, ?, ?, ?)
-                    """,
-                    (coords, blk_ts, until_ts, cd_sec, is_bash, reason),
-                )
-                imported_blocks += 1
-
-    if MigrationRunner._table_exists(conn, "meta"):
-        meta_val = _safe_json_dumps(
-            {
-                "source_path": str(p),
-                "imported_raids": imported_raids,
-                "imported_bash_blocks": imported_blocks,
-                "imported_ts": round(ts_ref, 3),
-            }
-        )
-        conn.execute(
-            """
-            INSERT INTO meta(key, value, updated_ts) VALUES(?, ?, ?)
-            ON CONFLICT(key) DO UPDATE SET
-                value = excluded.value,
-                updated_ts = excluded.updated_ts
-            """,
-            ("legacy_attack_history_import", meta_val, round(ts_ref, 3)),
-        )
-
-    removed_json = False
-    if remove_after_import:
-        conn.commit()
-        try:
-            p.unlink(missing_ok=True)
-            removed_json = not p.exists()
-            if removed_json and p.parent.exists() and p.parent.name == "data" and not any(p.parent.iterdir()):
-                p.parent.rmdir()
-        except OSError:
-            removed_json = False
-
-    return _clean_json_obj(
-        {
-            "exists": True,
-            "imported_raids": imported_raids,
-            "imported_bash_blocks": imported_blocks,
-            "removed_json": removed_json,
-            "path": str(p),
-        }
-    )
-
-
-def import_legacy_rank_history_json(
-    conn: sqlite3.Connection,
-    json_path: Path,
-    *,
-    now_ts: Optional[float] = None,
-    remove_after_import: bool = False,
-) -> dict[str, Any]:
-    """Non-destructively absorb a legacy `rank_history.json` file into `rank_snapshots`."""
-    p = Path(json_path)
-    ts_ref = float(now_ts) if now_ts is not None else time.time()
-    if not p.exists() or not p.is_file():
-        return _clean_json_obj(
-            {
-                "exists": False,
-                "imported_samples": 0,
-                "removed_json": False,
-                "path": str(p),
-            }
-        )
-
-    try:
-        raw_obj = json.loads(p.read_text(encoding="utf-8"))
-    except Exception as exc:
-        return _clean_json_obj(
-            {
-                "exists": True,
-                "imported_samples": 0,
-                "removed_json": False,
-                "path": str(p),
-                "error": str(exc),
-            }
-        )
-
-    samples = (
-        raw_obj
-        if isinstance(raw_obj, list)
-        else (
-            raw_obj.get("samples") or raw_obj.get("history") or []
-            if isinstance(raw_obj, Mapping)
-            else []
-        )
-    )
-    imported_samples = 0
-    if isinstance(samples, list) and MigrationRunner._table_exists(conn, "rank_snapshots"):
-        for item in samples:
-            if not isinstance(item, Mapping):
-                continue
-            try:
-                sample_ts = round(float(item.get("ts") or 0.0), 3)
-            except (TypeError, ValueError):
-                sample_ts = 0.0
-            if sample_ts <= 0.0:
-                continue
-            dup = conn.execute(
-                """
-                SELECT 1 FROM rank_snapshots
-                WHERE ABS(ts - ?) < 0.002
-                LIMIT 1
-                """,
-                (sample_ts,),
-            ).fetchone()
-            if dup is not None:
-                continue
-            try:
-                uni_id = int(item.get("universe_id") or 0)
-            except (TypeError, ValueError):
-                uni_id = 0
-            nick = str(redact_sensitive(str(item.get("nickname") or "")))[:120]
-            srv_pts_raw = item.get("server_points")
-            try:
-                srv_pts = int(srv_pts_raw) if srv_pts_raw is not None else None
-            except (TypeError, ValueError):
-                srv_pts = None
-            srv_rk_raw = item.get("server_rank")
-            try:
-                srv_rk = int(srv_rk_raw) if srv_rk_raw is not None else None
-            except (TypeError, ValueError):
-                srv_rk = None
-            try:
-                est_pts = float(item.get("estimated_points") or 0.0)
-                if not math.isfinite(est_pts):
-                    est_pts = 0.0
-            except (TypeError, ValueError):
-                est_pts = 0.0
-            try:
-                pph = float(item.get("pts_per_hr") or 0.0)
-                if not math.isfinite(pph):
-                    pph = 0.0
-            except (TypeError, ValueError):
-                pph = 0.0
-            try:
-                sp_val = float(item.get("spice_value") or 0.0)
-                if not math.isfinite(sp_val):
-                    sp_val = 0.0
-            except (TypeError, ValueError):
-                sp_val = 0.0
-            try:
-                p_cnt = max(1, int(item.get("planets") or 1))
-            except (TypeError, ValueError):
-                p_cnt = 1
-            conn.execute(
-                """
-                INSERT INTO rank_snapshots(
-                    ts, universe_id, nickname, server_points, server_rank,
-                    estimated_points, pts_per_hr, spice_value, planets
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (sample_ts, uni_id, nick, srv_pts, srv_rk, est_pts, pph, sp_val, p_cnt),
-            )
-            imported_samples += 1
-
-    if MigrationRunner._table_exists(conn, "meta"):
-        meta_val = _safe_json_dumps(
-            {
-                "source_path": str(p),
-                "imported_samples": imported_samples,
-                "imported_ts": round(ts_ref, 3),
-            }
-        )
-        conn.execute(
-            """
-            INSERT INTO meta(key, value, updated_ts) VALUES(?, ?, ?)
-            ON CONFLICT(key) DO UPDATE SET
-                value = excluded.value,
-                updated_ts = excluded.updated_ts
-            """,
-            ("legacy_rank_history_import", meta_val, round(ts_ref, 3)),
-        )
-
-    removed_json = False
-    if remove_after_import:
-        conn.commit()
-        try:
-            p.unlink(missing_ok=True)
-            removed_json = not p.exists()
-        except OSError:
-            removed_json = False
-
-    return _clean_json_obj(
-        {
-            "exists": True,
-            "imported_samples": imported_samples,
-            "removed_json": removed_json,
-            "path": str(p),
-        }
-    )
-
-
-def import_legacy_snapshot_json(
-    conn: sqlite3.Connection,
-    json_path: Path,
-    *,
-    now_ts: Optional[float] = None,
-    remove_after_import: bool = False,
-) -> dict[str, Any]:
-    """Non-destructively absorb a legacy `snapshot.json` / `state.json` file into `state_snapshots` and `planet_snapshots`."""
-    p = Path(json_path)
-    ts_ref = float(now_ts) if now_ts is not None else time.time()
-    if not p.exists() or not p.is_file():
-        return _clean_json_obj(
-            {
-                "exists": False,
-                "imported_snapshots": 0,
-                "imported_planets": 0,
-                "removed_json": False,
-                "path": str(p),
-            }
-        )
-
-    try:
-        raw_obj = json.loads(p.read_text(encoding="utf-8"))
-    except Exception as exc:
-        return _clean_json_obj(
-            {
-                "exists": True,
-                "imported_snapshots": 0,
-                "imported_planets": 0,
-                "removed_json": False,
-                "path": str(p),
-                "error": str(exc),
-            }
-        )
-
-    if not isinstance(raw_obj, Mapping):
-        return _clean_json_obj(
-            {
-                "exists": True,
-                "imported_snapshots": 0,
-                "imported_planets": 0,
-                "removed_json": False,
-                "path": str(p),
-                "error": "Expected JSON object in snapshot file",
-            }
-        )
-
-    state_raw = raw_obj.get("state") if isinstance(raw_obj.get("state"), Mapping) else raw_obj
-    plan_raw = raw_obj.get("plan") if isinstance(raw_obj.get("plan"), list) else []
-    clean_state = _clean_json_obj(dict(state_raw))
-    clean_plan = _clean_json_obj(list(plan_raw))
-
-    try:
-        snap_ts = round(float(clean_state.get("timestamp") or 0.0), 3)
-    except (TypeError, ValueError):
-        snap_ts = 0.0
-    if snap_ts <= 0.0:
-        try:
-            snap_ts = round(float(p.stat().st_mtime), 3)
-        except OSError:
-            snap_ts = round(ts_ref, 3)
-
-    planets_list = clean_state.get("planets") if isinstance(clean_state.get("planets"), list) else []
-    imported_snapshots = 0
-    if MigrationRunner._table_exists(conn, "state_snapshots"):
-        dup_s = conn.execute(
-            """
-            SELECT 1 FROM state_snapshots
-            WHERE ABS(ts - ?) < 0.002 AND source = ?
-            LIMIT 1
-            """,
-            (snap_ts, "legacy_snapshot_json"),
-        ).fetchone()
-        if dup_s is None:
-            try:
-                uni_id = int(clean_state.get("universe_id") or 0)
-            except (TypeError, ValueError):
-                uni_id = 0
-            try:
-                usr_id = int(clean_state.get("user_id") or 0)
-            except (TypeError, ValueError):
-                usr_id = 0
-            nick = str(redact_sensitive(str(clean_state.get("nickname") or "")))[:120]
-            try:
-                act_pid = int(clean_state.get("active_planet_id") or 0)
-            except (TypeError, ValueError):
-                act_pid = 0
-            conn.execute(
-                """
-                INSERT INTO state_snapshots(
-                    ts, source, universe_id, user_id, nickname, active_planet_id,
-                    planet_count, planned_action_count, state_json, plan_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    snap_ts,
-                    "legacy_snapshot_json",
-                    uni_id,
-                    usr_id,
-                    nick,
-                    act_pid,
-                    len(planets_list),
-                    len(clean_plan),
-                    _safe_json_dumps(clean_state),
-                    _safe_json_dumps(clean_plan),
-                ),
-            )
-            imported_snapshots += 1
-
-    imported_planets = 0
-    if MigrationRunner._table_exists(conn, "planet_snapshots") and isinstance(planets_list, list):
-        researches_obj = clean_state.get("researches") if isinstance(clean_state.get("researches"), Mapping) else {}
-        res_json = _safe_json_dumps(researches_obj)
-        try:
-            uni_id_p = int(clean_state.get("universe_id") or 0)
-        except (TypeError, ValueError):
-            uni_id_p = 0
-        for pl in planets_list:
-            if not isinstance(pl, Mapping):
-                continue
-            try:
-                pid_val = int(pl.get("planet_id") or 0)
-            except (TypeError, ValueError):
-                pid_val = 0
-            if pid_val <= 0:
-                continue
-            dup_p = conn.execute(
-                """
-                SELECT 1 FROM planet_snapshots
-                WHERE planet_id = ? AND ABS(ts - ?) < 0.002
-                LIMIT 1
-                """,
-                (pid_val, snap_ts),
-            ).fetchone()
-            if dup_p is not None:
-                continue
-            res_map = pl.get("resources") if isinstance(pl.get("resources"), Mapping) else {}
-            eng_map = pl.get("energy") if isinstance(pl.get("energy"), Mapping) else {}
-            conn.execute(
-                """
-                INSERT INTO planet_snapshots(
-                    ts, universe_id, planet_id, coords, name, planet_type,
-                    temperature, fields_used, fields_max,
-                    pig_iron, metal, kryptonite, spice,
-                    energy_produced, energy_used,
-                    buildings_json, ships_json, defense_json,
-                    economy_rates_json, researches_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    snap_ts,
-                    uni_id_p,
-                    pid_val,
-                    str(redact_sensitive(str(pl.get("coords") or "")))[:32],
-                    str(redact_sensitive(str(pl.get("name") or "")))[:80],
-                    str(pl.get("planet_type") or "normal")[:24],
-                    int(pl.get("temperature") or 0),
-                    int(pl.get("fields_used") or 0),
-                    int(pl.get("fields_max") or 0),
-                    int(res_map.get("pig_iron") or 0),
-                    int(res_map.get("metal") or 0),
-                    int(res_map.get("kryptonite") or 0),
-                    int(res_map.get("spice") or 0),
-                    int(eng_map.get("produced") or 0),
-                    int(eng_map.get("used") or 0),
-                    _safe_json_dumps(pl.get("buildings") if isinstance(pl.get("buildings"), Mapping) else {}),
-                    _safe_json_dumps(pl.get("ships") if isinstance(pl.get("ships"), Mapping) else {}),
-                    _safe_json_dumps(pl.get("defense") if isinstance(pl.get("defense"), Mapping) else {}),
-                    _safe_json_dumps(pl.get("economy_rates") if isinstance(pl.get("economy_rates"), Mapping) else {}),
-                    res_json,
-                ),
-            )
-            imported_planets += 1
-
-    if MigrationRunner._table_exists(conn, "meta"):
-        meta_val = _safe_json_dumps(
-            {
-                "source_path": str(p),
-                "imported_snapshots": imported_snapshots,
-                "imported_planets": imported_planets,
-                "imported_ts": round(ts_ref, 3),
-            }
-        )
-        conn.execute(
-            """
-            INSERT INTO meta(key, value, updated_ts) VALUES(?, ?, ?)
-            ON CONFLICT(key) DO UPDATE SET
-                value = excluded.value,
-                updated_ts = excluded.updated_ts
-            """,
-            ("legacy_snapshot_import", meta_val, round(ts_ref, 3)),
-        )
-
-    removed_json = False
-    if remove_after_import:
-        conn.commit()
-        try:
-            p.unlink(missing_ok=True)
-            removed_json = not p.exists()
-        except OSError:
-            removed_json = False
-
-    return _clean_json_obj(
-        {
-            "exists": True,
-            "imported_snapshots": imported_snapshots,
-            "imported_planets": imported_planets,
-            "removed_json": removed_json,
-            "path": str(p),
-        }
-    )
-
-
-def import_legacy_config_yaml(
-    conn: sqlite3.Connection,
-    yaml_path: Path,
-    *,
-    now_ts: Optional[float] = None,
-    remove_after_import: bool = False,
-) -> dict[str, Any]:
-    """Non-destructively absorb a legacy `config.yaml` file into `strategy_config_store`, `meta`, and `config_history`."""
-    from dataclasses import asdict as _dc_asdict
-    from spaceinvasion.core.config import load_strategy_config as _load_cfg
-
-    p = Path(yaml_path)
-    ts_ref = round(float(now_ts) if now_ts is not None else time.time(), 3)
-    if not p.exists() or not p.is_file():
-        return _clean_json_obj(
-            {
-                "exists": False,
-                "imported_config": False,
-                "removed_yaml": False,
-                "path": str(p),
-            }
-        )
-
-    try:
-        cfg_obj = _load_cfg(p)
-        cfg_dict = _clean_json_obj(_dc_asdict(cfg_obj))
-        cfg_json = _safe_json_dumps(cfg_dict)
-    except Exception as exc:
-        return _clean_json_obj(
-            {
-                "exists": True,
-                "imported_config": False,
-                "removed_yaml": False,
-                "path": str(p),
-                "error": str(exc),
-            }
-        )
-
-    imported_cfg = False
-    if MigrationRunner._table_exists(conn, "strategy_config_store"):
-        conn.execute(
-            """
-            INSERT INTO strategy_config_store(id, config_json, updated_ts, source)
-            VALUES (1, ?, ?, 'legacy_config_yaml')
-            ON CONFLICT(id) DO UPDATE SET
-                config_json = excluded.config_json,
-                updated_ts = excluded.updated_ts,
-                source = excluded.source
-            """,
-            (cfg_json, ts_ref),
-        )
-        imported_cfg = True
-
-    if MigrationRunner._table_exists(conn, "meta"):
-        conn.execute(
-            """
-            INSERT INTO meta(key, value, updated_ts) VALUES ('strategy_config', ?, ?)
-            ON CONFLICT(key) DO UPDATE SET
-                value = excluded.value,
-                updated_ts = excluded.updated_ts
-            """,
-            (cfg_json, ts_ref),
-        )
-        meta_audit = _safe_json_dumps(
-            {
-                "source_path": str(p),
-                "imported_config": imported_cfg,
-                "imported_ts": ts_ref,
-            }
-        )
-        conn.execute(
-            """
-            INSERT INTO meta(key, value, updated_ts) VALUES ('legacy_config_yaml_import', ?, ?)
-            ON CONFLICT(key) DO UPDATE SET
-                value = excluded.value,
-                updated_ts = excluded.updated_ts
-            """,
-            (meta_audit, ts_ref),
-        )
-        imported_cfg = True
-
-    if MigrationRunner._table_exists(conn, "config_history"):
-        last_row = conn.execute(
-            "SELECT config_json FROM config_history ORDER BY id DESC LIMIT 1"
-        ).fetchone()
-        if last_row is None or last_row[0] != cfg_json:
-            conn.execute(
-                "INSERT INTO config_history(ts, config_json) VALUES (?, ?)",
-                (ts_ref, cfg_json),
-            )
-
-    removed_yaml = False
-    if remove_after_import:
-        conn.commit()
-        try:
-            p.unlink(missing_ok=True)
-            removed_yaml = not p.exists()
-        except OSError:
-            removed_yaml = False
-
-    return _clean_json_obj(
-        {
-            "exists": True,
-            "imported_config": imported_cfg,
-            "removed_yaml": removed_yaml,
-            "path": str(p),
-        }
-    )
-
-
-class DatabaseMigrationRegistry:
-    """Multi-database registry managing schema versioning across SQLite databases."""
-
-    def __init__(self, root_dir: Path | str = Path(".")) -> None:
-        self.root_dir = Path(root_dir)
-        self._runners: dict[str, MigrationRunner] = {
-            "game": DEFAULT_GAME_MIGRATION_RUNNER,
-        }
-        self._db_targets: dict[str, tuple[Path, str]] = {
-            "primary": (self.root_dir / DEFAULT_GAME_DB_PATH, "game"),
-        }
-
-    def register_schema_family(self, family: str, runner: MigrationRunner) -> None:
-        self._runners[str(family)] = runner
-
-    def register_database(self, alias: str, db_path: Path | str, *, schema_family: str = "game") -> None:
-        if schema_family not in self._runners:
-            raise KeyError(f"Unknown schema_family {schema_family!r}")
-        self._db_targets[str(alias)] = (Path(db_path), str(schema_family))
-
-    def discover_sqlite_databases(self) -> dict[str, tuple[Path, str]]:
-        targets = dict(self._db_targets)
-        state_dir = self.root_dir / "state"
-        if state_dir.exists() and state_dir.is_dir():
-            known_resolved = {p.resolve() for p, _ in targets.values()}
-            for cand in sorted(state_dir.glob("*.db")):
-                if cand.is_file() and cand.resolve() not in known_resolved:
-                    targets[cand.stem] = (cand, "game")
-                    known_resolved.add(cand.resolve())
-        return targets
-
-    def status_all(self, *, include_events: bool = False) -> dict[str, Any]:
-        databases: dict[str, Any] = {}
-        for alias, (db_p, family) in self.discover_sqlite_databases().items():
-            runner = self._runners[family]
-            if not db_p.exists():
-                databases[alias] = {
-                    "alias": alias,
-                    "schema_family": family,
-                    "db_path": str(db_p),
-                    "exists": False,
-                    "version": 0,
-                    "version_tag": "V000",
-                    "target_version": runner.latest_version,
-                    "target_version_tag": f"V{runner.latest_version:03d}",
-                    "up_to_date": False,
-                    "pending_count": len(runner.migrations),
-                }
-                continue
-            with contextlib.closing(sqlite3.connect(f"file:{db_p}?mode=ro", uri=True, timeout=5.0)) as conn:
-                st = runner.inspect(conn, db_path=db_p, include_events=include_events)
-                st["alias"] = alias
-                st["exists"] = True
-                databases[alias] = st
-
-        legacy_atk_path = self.root_dir / DEFAULT_ATTACK_HISTORY_JSON_PATH
-        legacy_rank_path = self.root_dir / DEFAULT_RANK_HISTORY_JSON_PATH
-        legacy_snap_path = self.root_dir / DEFAULT_SNAPSHOT_JSON_PATH
-        legacy_cfg_path = self.root_dir / DEFAULT_CONFIG_YAML_PATH
-        legacy_atk_retired = not legacy_atk_path.exists()
-        legacy_rank_retired = not legacy_rank_path.exists()
-        legacy_snap_retired = not legacy_snap_path.exists()
-        legacy_cfg_retired = not legacy_cfg_path.exists()
-        json_stores = {
-            "attack_history_retired": {
-                "store_kind": "attack_history",
-                "path": str(legacy_atk_path),
-                "exists": legacy_atk_path.exists(),
-                "retired_to_sqlite": legacy_atk_retired,
-                "up_to_date": legacy_atk_retired,
-            },
-            "rank_history_retired": {
-                "store_kind": "rank_history",
-                "path": str(legacy_rank_path),
-                "exists": legacy_rank_path.exists(),
-                "retired_to_sqlite": legacy_rank_retired,
-                "up_to_date": legacy_rank_retired,
-            },
-            "snapshot_retired": {
-                "store_kind": "snapshot",
-                "path": str(legacy_snap_path),
-                "exists": legacy_snap_path.exists(),
-                "retired_to_sqlite": legacy_snap_retired,
-                "up_to_date": legacy_snap_retired,
-            },
-            "config_yaml_retired": {
-                "store_kind": "config_yaml",
-                "path": str(legacy_cfg_path),
-                "exists": legacy_cfg_path.exists(),
-                "retired_to_sqlite": legacy_cfg_retired,
-                "up_to_date": legacy_cfg_retired,
-            },
-        }
-        all_ok = (
-            all((not d["exists"]) or bool(d.get("up_to_date")) for d in databases.values())
-            and legacy_atk_retired
-            and legacy_rank_retired
-            and legacy_snap_retired
-            and legacy_cfg_retired
-        )
-        return _clean_json_obj(
-            {
-                "ok": all_ok,
-                "latest_game_schema_version": LATEST_SCHEMA_VERSION,
-                "databases": databases,
-                "json_stores": json_stores,
-            }
-        )
-
-    def migrate_all(
-        self,
-        *,
-        dry_run: bool = False,
-        backup: bool = False,
-        target_version: Optional[int] = None,
-        create_missing_primary: bool = False,
-        remove_legacy_attack_json: bool = True,
-        remove_legacy_rank_json: bool = True,
-        remove_legacy_snapshot_json: bool = True,
-        remove_legacy_config_yaml: bool = True,
-    ) -> dict[str, Any]:
-        db_results: dict[str, Any] = {}
-        legacy_atk_path = self.root_dir / DEFAULT_ATTACK_HISTORY_JSON_PATH
-        legacy_rank_path = self.root_dir / DEFAULT_RANK_HISTORY_JSON_PATH
-        legacy_snap_path = self.root_dir / DEFAULT_SNAPSHOT_JSON_PATH
-        legacy_cfg_path = self.root_dir / DEFAULT_CONFIG_YAML_PATH
-        atk_import_res: dict[str, Any] = {
-            "exists": legacy_atk_path.exists(),
-            "imported_raids": 0,
-            "imported_bash_blocks": 0,
-            "removed_json": False,
-            "dry_run": bool(dry_run),
-        }
-        rank_import_res: dict[str, Any] = {
-            "exists": legacy_rank_path.exists(),
-            "imported_samples": 0,
-            "removed_json": False,
-            "dry_run": bool(dry_run),
-        }
-        snap_import_res: dict[str, Any] = {
-            "exists": legacy_snap_path.exists(),
-            "imported_snapshots": 0,
-            "imported_planets": 0,
-            "removed_json": False,
-            "dry_run": bool(dry_run),
-        }
-        cfg_import_res: dict[str, Any] = {
-            "exists": legacy_cfg_path.exists(),
-            "imported_config": False,
-            "removed_yaml": False,
-            "dry_run": bool(dry_run),
-        }
-        has_any_legacy_json = (
-            legacy_atk_path.exists()
-            or legacy_rank_path.exists()
-            or legacy_snap_path.exists()
-            or legacy_cfg_path.exists()
-        )
-        for alias, (db_p, family) in self.discover_sqlite_databases().items():
-            if not db_p.exists() and not (alias == "primary" and (create_missing_primary or has_any_legacy_json)):
-                continue
-            db_p.parent.mkdir(parents=True, exist_ok=True)
-            runner = self._runners[family]
-            with contextlib.closing(sqlite3.connect(str(db_p), timeout=10.0)) as conn:
-                conn.execute("PRAGMA journal_mode=WAL;")
-                conn.execute("PRAGMA synchronous=NORMAL;")
-                conn.execute("PRAGMA foreign_keys=ON;")
-                db_results[alias] = runner.migrate(
-                    conn,
-                    db_path=db_p,
-                    target_version=target_version,
-                    dry_run=dry_run,
-                    backup=backup,
-                )
-                if alias == "primary" and not dry_run:
-                    if legacy_atk_path.exists():
-                        atk_import_res = import_legacy_attack_history_json(
-                            conn,
-                            legacy_atk_path,
-                            remove_after_import=remove_legacy_attack_json,
-                        )
-                    if legacy_rank_path.exists():
-                        rank_import_res = import_legacy_rank_history_json(
-                            conn,
-                            legacy_rank_path,
-                            remove_after_import=remove_legacy_rank_json,
-                        )
-                    if legacy_snap_path.exists():
-                        snap_import_res = import_legacy_snapshot_json(
-                            conn,
-                            legacy_snap_path,
-                            remove_after_import=remove_legacy_snapshot_json,
-                        )
-                    if legacy_cfg_path.exists():
-                        cfg_import_res = import_legacy_config_yaml(
-                            conn,
-                            legacy_cfg_path,
-                            remove_after_import=remove_legacy_config_yaml,
-                        )
-                    conn.commit()
-
-        return _clean_json_obj(
-            {
-                "ok": True,
-                "dry_run": bool(dry_run),
-                "databases": db_results,
-                "legacy_attack_json": atk_import_res,
-                "legacy_rank_json": rank_import_res,
-                "legacy_snapshot_json": snap_import_res,
-                "legacy_config_yaml": cfg_import_res,
-            }
-        )
-
-
-# ---------------------------------------------------------------------------
-# CLI Entrypoint (`python -m spaceinvasion.migrations` / `scripts/db_migrate.py`)
+# CLI Entrypoint (`python -m spaceinvasion.db.migrations` / `scripts/db_migrate.py`)
 # ---------------------------------------------------------------------------
 
 def build_cli_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="SpaceInvasion Autoplayer — Database Versioning, Backend Control & Migration Manager",
+        description="SpaceInvasion Autoplayer — PostgreSQL Database Versioning & Migration Manager",
     )
     parser.add_argument(
         "--root",
         type=Path,
         default=Path("."),
         help="Workspace root directory (default: current directory).",
-    )
-    parser.add_argument(
-        "--db",
-        type=Path,
-        default=None,
-        help="Explicit SQLite database file path (defaults to state/spaceinvasion.db or --all).",
-    )
-    parser.add_argument(
-        "--backend",
-        choices=("auto", "postgres", "sqlite"),
-        default="auto",
-        help="Database backend to target ('auto', 'postgres', or 'sqlite').",
     )
     parser.add_argument(
         "--db-url",
@@ -3627,372 +2581,136 @@ def build_cli_parser() -> argparse.ArgumentParser:
     )
     sub = parser.add_subparsers(dest="subcommand")
 
-    p_status = sub.add_parser("status", help="Show version and pending migrations across databases.")
+    p_status = sub.add_parser("status", help="Show version and pending migrations.")
     p_status.add_argument("--events", action="store_true", help="Include recent migration events.")
 
     p_mig = sub.add_parser("migrate", help="Apply pending forward migrations.")
-    p_mig.add_argument("--all", action="store_true", help="Migrate all discovered SQLite & JSON stores.")
     p_mig.add_argument("--target", type=int, default=None, help="Optional target schema version.")
     p_mig.add_argument("--dry-run", action="store_true", help="Preview pending migrations without writing.")
-    p_mig.add_argument("--backup", action="store_true", help="Create online backup before migrating.")
-    p_mig.add_argument("--create", action="store_true", help="Create primary DB if it does not exist yet.")
+    p_mig.add_argument("--backup", action="store_true", help="Create PostgreSQL backup before migrating.")
 
     p_ver = sub.add_parser("verify", help="Verify database integrity, schema columns, and SHA-256 checksums.")
     p_ver.add_argument("--full-integrity", action="store_true", help="Run full integrity check.")
 
-    p_bkp = sub.add_parser("backup", help="Create an online snapshot in state/backups/.")
+    p_bkp = sub.add_parser("backup", help="Create a PostgreSQL backup snapshot in data/backups/.")
     p_bkp.add_argument("--label", default="manual", help="Label embedded in the backup filename.")
 
     p_hist = sub.add_parser("history", help="Show applied migrations and audit events.")
     p_hist.add_argument("--limit", type=int, default=50, help="Max audit events to display.")
-
-    p_use = sub.add_parser("use", help="Persist which database backend ('postgres' or 'sqlite') the stack uses.")
-    p_use.add_argument("target_backend", choices=("postgres", "sqlite"), help="Database engine to activate.")
-    p_use.add_argument(
-        "--sync",
-        action="store_true",
-        help="Non-destructively sync data from the previous database into the newly selected backend.",
-    )
-
-    p_sync = sub.add_parser(
-        "sync",
-        help="Non-destructively sync all 40 tables between SQLite and PostgreSQL (zero deletes).",
-    )
-    p_sync.add_argument("--from", dest="source_backend", choices=("sqlite", "postgres"), default="sqlite")
-    p_sync.add_argument("--to", dest="target_backend", choices=("sqlite", "postgres"), default="postgres")
     return parser
 
 
-def _resolve_cli_postgres_target(args: argparse.Namespace) -> tuple[bool, str]:
-    """Determine whether CLI command should operate on PostgreSQL vs SQLite."""
-    from spaceinvasion.db.backend import (
-        build_default_postgres_url,
-        is_postgres_dsn,
-        load_persisted_db_preference,
-    )
-
-    if args.db is not None:
-        return (False, "")
-    raw_url = str(getattr(args, "db_url", None) or "").strip()
-    if is_postgres_dsn(raw_url):
-        return (True, raw_url)
-    backend_arg = str(getattr(args, "backend", "auto") or "auto").strip().lower()
-    if backend_arg == "postgres":
-        pref = load_persisted_db_preference(args.root) or {}
-        dsn = str(pref.get("postgres_url") or "").strip()
-        return (True, dsn if is_postgres_dsn(dsn) else build_default_postgres_url())
-    if backend_arg == "sqlite":
-        return (False, "")
-    # auto mode: check env var or `state/db_backend.json` inside `--root`
-    env_b = str(os.environ.get("SPACEINVASION_DB_BACKEND") or "").strip().lower()
-    env_u = str(os.environ.get("SPACEINVASION_DB_URL") or "").strip()
-    if env_b == "postgres" or is_postgres_dsn(env_u):
-        return (True, env_u if is_postgres_dsn(env_u) else build_default_postgres_url())
-    if env_b == "sqlite":
-        return (False, "")
-    pref = load_persisted_db_preference(args.root)
-    if pref and str(pref.get("backend") or "").strip().lower() == "postgres":
-        dsn = str(pref.get("postgres_url") or "").strip()
-        return (True, dsn if is_postgres_dsn(dsn) else build_default_postgres_url())
-    return (False, "")
-
-
 def main(argv: Optional[Sequence[str]] = None) -> int:
+    from types import SimpleNamespace
+
+    from spaceinvasion.db.backend import (
+        create_postgres_backup,
+        ensure_postgres_container_ready,
+        redact_db_url,
+        resolve_database_config,
+    )
+    from spaceinvasion.db.postgres import PostgresPoolBackend
+
     parser = build_cli_parser()
     args = parser.parse_args(argv)
     cmd = args.subcommand or "status"
-    reg = DatabaseMigrationRegistry(args.root)
-    explicit_db: Optional[Path] = args.db
 
-    if cmd == "use":
-        from spaceinvasion.db.backend import (
-            DEFAULT_SQLITE_REL_PATH,
-            build_default_postgres_url,
-            ensure_postgres_container_ready,
-            redact_db_url,
-            save_persisted_db_preference,
-            sync_database_stores,
-        )
-        from spaceinvasion.db.storage import GameDatabase
-
-        chosen = str(args.target_backend).strip().lower()
-        pg_url = str(args.db_url or "").strip() or build_default_postgres_url()
-        sqlite_p = Path(args.root) / DEFAULT_SQLITE_REL_PATH
-        pref_file = save_persisted_db_preference(
-            chosen,
-            postgres_url=pg_url if args.db_url else None,
-            sqlite_path=DEFAULT_SQLITE_REL_PATH,
-            root_dir=args.root,
-        )
-        sync_res: Optional[dict[str, Any]] = None
-        if chosen == "postgres":
-            ensure_postgres_container_ready(pg_url, root_dir=args.root, auto_start=True)
-        if getattr(args, "sync", False):
-            if chosen == "postgres" and sqlite_p.is_file():
-                src_db = GameDatabase(sqlite_p)
-                dst_db = GameDatabase(pg_url, backend="postgres")
-                try:
-                    sync_res = sync_database_stores(src_db, dst_db)
-                finally:
-                    src_db.close()
-                    dst_db.close()
-            elif chosen == "sqlite":
-                src_db = GameDatabase(pg_url, backend="postgres")
-                dst_db = GameDatabase(sqlite_p)
-                try:
-                    sync_res = sync_database_stores(src_db, dst_db)
-                finally:
-                    src_db.close()
-                    dst_db.close()
-        out_use = {
-            "ok": True,
-            "active_backend": chosen,
-            "preference_file": str(pref_file),
-            "target": redact_db_url(pg_url) if chosen == "postgres" else str(sqlite_p),
-            "sync": sync_res,
-        }
-        print(_safe_json_dumps(out_use, indent=2))
-        return 0
-
-    if cmd == "sync":
-        from spaceinvasion.db.backend import (
-            DEFAULT_SQLITE_REL_PATH,
-            build_default_postgres_url,
-            ensure_postgres_container_ready,
-            sync_database_stores,
-        )
-        from spaceinvasion.db.storage import GameDatabase
-
-        src_b = str(args.source_backend).strip().lower()
-        dst_b = str(args.target_backend).strip().lower()
-        if src_b == dst_b:
-            print(_safe_json_dumps({"ok": False, "error": "Source and target backends must differ."}, indent=2))
-            return 1
-        pg_url = str(args.db_url or "").strip() or build_default_postgres_url()
-        sqlite_p = explicit_db if explicit_db is not None else (Path(args.root) / DEFAULT_SQLITE_REL_PATH)
-        ensure_postgres_container_ready(pg_url, root_dir=args.root, auto_start=True)
-        src_db = GameDatabase(pg_url, backend="postgres") if src_b == "postgres" else GameDatabase(sqlite_p)
-        dst_db = GameDatabase(pg_url, backend="postgres") if dst_b == "postgres" else GameDatabase(sqlite_p)
-        try:
-            res_sync = sync_database_stores(src_db, dst_db)
-        finally:
-            src_db.close()
-            dst_db.close()
-        print(_safe_json_dumps(res_sync, indent=2))
-        return 0
-
-    use_pg, pg_dsn = _resolve_cli_postgres_target(args)
-
-    if use_pg and not getattr(args, "all", False):
-        from spaceinvasion.db.backend import (
-            create_postgres_backup,
-            ensure_postgres_container_ready,
-            redact_db_url,
-        )
-        from spaceinvasion.db.postgres import PostgresPoolBackend
-
-        ready = ensure_postgres_container_ready(pg_dsn, root_dir=args.root, auto_start=True)
-        if not ready.get("ok"):
-            err_obj = {"ok": False, "backend": "postgres", "target": redact_db_url(pg_dsn), "error": ready.get("error")}
-            print(_safe_json_dumps(err_obj, indent=2), file=sys.stderr if not args.json else sys.stdout)
-            return 1
-
-        pg_pool = PostgresPoolBackend(pg_dsn, min_size=1, max_size=4)
-        try:
-            with pg_pool.session_lock:
-                conn = pg_pool.conn_proxy
-                disp = redact_db_url(pg_dsn)
-                if cmd == "status":
-                    payload = DEFAULT_GAME_MIGRATION_RUNNER.inspect(
-                        conn,
-                        db_path=disp,
-                        include_events=bool(getattr(args, "events", False)),
-                    )
-                    payload["backend"] = "postgres"
-                    payload["exists"] = True
-                    if args.json:
-                        print(_safe_json_dumps(payload, indent=2))
-                    else:
-                        state_lbl = "UP-TO-DATE" if payload.get("up_to_date") else f"PENDING ({payload.get('pending_count', 0)})"
-                        print(
-                            f"Active DB Backend: PostgreSQL (Podman) | Schema: {payload.get('version_tag')} / "
-                            f"V{LATEST_SCHEMA_VERSION:03d} [{state_lbl}]\n  [Postgres] {disp}"
-                        )
-                    return 0
-
-                if cmd == "migrate":
-                    res = DEFAULT_GAME_MIGRATION_RUNNER.migrate(
-                        conn,
-                        db_path=None,
-                        is_memory=True,
-                        target_version=args.target,
-                        dry_run=bool(args.dry_run),
-                        backup=False,
-                    )
-                    res["backend"] = "postgres"
-                    res["db_path"] = disp
-                    print(_safe_json_dumps(res, indent=2))
-                    return 0
-
-                if cmd == "verify":
-                    ver_res = DEFAULT_GAME_MIGRATION_RUNNER.verify(
-                        conn,
-                        db_path=disp,
-                        full_integrity=bool(args.full_integrity),
-                    )
-                    ver_res["backend"] = "postgres"
-                    print(_safe_json_dumps(ver_res, indent=2))
-                    return 0 if ver_res.get("ok") else 2
-
-                if cmd == "backup":
-                    from spaceinvasion.db.storage import GameDatabase
-
-                    pg_pool.close()
-                    gdb = GameDatabase(pg_dsn, backend="postgres")
-                    try:
-                        bkp_out = gdb.create_backup(label=str(args.label))
-                    finally:
-                        gdb.close()
-                    print(_safe_json_dumps(bkp_out, indent=2))
-                    return 0
-
-                if cmd == "history":
-                    hist = DEFAULT_GAME_MIGRATION_RUNNER.inspect(
-                        conn,
-                        db_path=disp,
-                        include_events=True,
-                        event_limit=int(args.limit),
-                    )
-                    hist["backend"] = "postgres"
-                    print(_safe_json_dumps(hist, indent=2))
-                    return 0
-        finally:
-            pg_pool.close()
-
-    if cmd == "status":
-        if explicit_db is not None:
-            if not explicit_db.exists():
-                payload: dict[str, Any] = {
-                    "exists": False,
-                    "db_path": str(explicit_db),
-                    "version": 0,
-                    "target_version": LATEST_SCHEMA_VERSION,
-                    "up_to_date": False,
-                }
-            else:
-                with contextlib.closing(sqlite3.connect(f"file:{explicit_db}?mode=ro", uri=True, timeout=5.0)) as conn:
-                    payload = DEFAULT_GAME_MIGRATION_RUNNER.inspect(
-                        conn,
-                        db_path=explicit_db,
-                        include_events=bool(getattr(args, "events", False)),
-                    )
-                    payload["exists"] = True
-        else:
-            payload = reg.status_all(include_events=bool(getattr(args, "events", False)))
-
-        if args.json:
-            print(_safe_json_dumps(payload, indent=2))
-        else:
-            if "databases" in payload:
-                print(
-                    f"Latest Game DB Schema: V{LATEST_SCHEMA_VERSION:03d} (version {LATEST_SCHEMA_VERSION}) | "
-                    f"Tables: {len(HOT_TABLES)} hot / {len(HISTORY_TABLES)} history ({len(GAME_REQUIRED_TABLES)} total)"
-                )
-                for alias, d in payload["databases"].items():
-                    state_lbl = "UP-TO-DATE" if d.get("up_to_date") else ("MISSING" if not d.get("exists") else f"PENDING ({d.get('pending_count', 0)})")
-                    print(f"  [SQLite:{alias}] {d['db_path']} -> {d.get('version_tag')} / {d.get('target_version_tag')} [{state_lbl}]")
-                for jname, j in payload.get("json_stores", {}).items():
-                    jlbl = (
-                        "RETIRED-TO-SQLITE"
-                        if j.get("retired_to_sqlite")
-                        else ("UP-TO-DATE" if j.get("up_to_date") else "PENDING-IMPORT")
-                    )
-                    print(f"  [JSON:{jname}]   {j['path']} (exists={j.get('exists')}) [{jlbl}]")
-            else:
-                print(
-                    f"{payload.get('db_path')}: {payload.get('version_tag', 'V000')} / "
-                    f"V{LATEST_SCHEMA_VERSION:03d} (up_to_date={payload.get('up_to_date')})"
-                )
-        return 0
-
-    if cmd == "migrate":
-        if explicit_db is not None and not getattr(args, "all", False):
-            explicit_db.parent.mkdir(parents=True, exist_ok=True)
-            with contextlib.closing(sqlite3.connect(str(explicit_db), timeout=10.0)) as conn:
-                conn.execute("PRAGMA journal_mode=WAL;")
-                conn.execute("PRAGMA synchronous=NORMAL;")
-                conn.execute("PRAGMA foreign_keys=ON;")
-                res = DEFAULT_GAME_MIGRATION_RUNNER.migrate(
-                    conn,
-                    db_path=explicit_db,
-                    target_version=args.target,
-                    dry_run=bool(args.dry_run),
-                    backup=bool(args.backup),
-                )
-        else:
-            res = reg.migrate_all(
-                dry_run=bool(args.dry_run),
-                backup=bool(args.backup),
-                target_version=args.target,
-                create_missing_primary=bool(args.create),
-            )
-        if args.json:
-            print(_safe_json_dumps(res, indent=2))
-        else:
-            print(_safe_json_dumps(res, indent=2))
-        return 0
-
-    target_db = explicit_db if explicit_db is not None else (Path(args.root) / DEFAULT_GAME_DB_PATH)
-    if not target_db.exists():
-        err_obj = {"ok": False, "error": f"Database file not found: {target_db}"}
+    resolved = resolve_database_config(
+        explicit_db_url=args.db_url,
+        root_dir=args.root,
+    )
+    pg_dsn = resolved.postgres_url
+    ready = ensure_postgres_container_ready(
+        pg_dsn,
+        root_dir=args.root,
+        auto_start=resolved.auto_start_podman,
+    )
+    if not ready.get("ok"):
+        err_obj = {"ok": False, "backend": "postgres", "target": redact_db_url(pg_dsn), "error": ready.get("error")}
         print(_safe_json_dumps(err_obj, indent=2), file=sys.stderr if not args.json else sys.stdout)
         return 1
 
-    if cmd == "verify":
-        with contextlib.closing(sqlite3.connect(f"file:{target_db}?mode=ro", uri=True, timeout=5.0)) as conn:
-            ver_res = DEFAULT_GAME_MIGRATION_RUNNER.verify(
-                conn,
-                db_path=target_db,
-                full_integrity=bool(args.full_integrity),
-            )
-        print(_safe_json_dumps(ver_res, indent=2))
-        return 0 if ver_res.get("ok") else 2
-
     if cmd == "backup":
-        with contextlib.closing(sqlite3.connect(str(target_db), timeout=10.0)) as conn:
-            st = DEFAULT_GAME_MIGRATION_RUNNER.inspect(conn, db_path=target_db, include_events=False)
-            bkp = create_sqlite_backup(
-                conn,
-                target_db,
-                from_version=int(st["version"]),
-                to_version=int(st["version"]),
-                label=str(args.label),
-            )
-            DEFAULT_GAME_MIGRATION_RUNNER._ensure_ledger_tables(conn)
-            DEFAULT_GAME_MIGRATION_RUNNER._record_event(
-                conn,
-                ts=time.time(),
-                event_type="backup_created",
-                from_version=int(st["version"]),
-                to_version=int(st["version"]),
-                backup_path=str(bkp),
-                details={"label": str(args.label)},
-            )
-            conn.commit()
-        bkp_out = {"ok": True, "db_path": str(target_db), "backup_path": str(bkp), "version": st["version"]}
+        from spaceinvasion.db.storage import GameDatabase
+
+        gdb = GameDatabase(pg_dsn, backend="postgres")
+        try:
+            bkp_out = gdb.create_backup(label=str(args.label))
+        finally:
+            gdb.close()
         print(_safe_json_dumps(bkp_out, indent=2))
         return 0
 
-    if cmd == "history":
-        with contextlib.closing(sqlite3.connect(f"file:{target_db}?mode=ro", uri=True, timeout=5.0)) as conn:
-            hist = DEFAULT_GAME_MIGRATION_RUNNER.inspect(
-                conn,
-                db_path=target_db,
-                include_events=True,
-                event_limit=int(args.limit),
+    pg_pool = PostgresPoolBackend(pg_dsn, min_size=1, max_size=4)
+    try:
+        bkp_pre_path: Optional[str] = None
+        if cmd == "migrate" and bool(getattr(args, "backup", False)) and not bool(getattr(args, "dry_run", False)):
+            bkp_proxy: Any = SimpleNamespace(
+                postgres_url=pg_dsn,
+                _lock=pg_pool.session_lock,
+                _conn=pg_pool.conn_proxy,
             )
-        print(_safe_json_dumps(hist, indent=2))
-        return 0
+            bkp_pre_path = str(create_postgres_backup(bkp_proxy, label="pre_migrate"))
+
+        with pg_pool.session_lock:
+            conn = pg_pool.conn_proxy
+            disp = redact_db_url(pg_dsn)
+            if cmd == "status":
+                payload = DEFAULT_GAME_MIGRATION_RUNNER.inspect(
+                    conn,
+                    db_path=disp,
+                    include_events=bool(getattr(args, "events", False)),
+                )
+                payload["backend"] = "postgres"
+                payload["exists"] = True
+                if args.json:
+                    print(_safe_json_dumps(payload, indent=2))
+                else:
+                    state_lbl = "UP-TO-DATE" if payload.get("up_to_date") else f"PENDING ({payload.get('pending_count', 0)})"
+                    print(
+                        f"Active DB Backend: PostgreSQL | Schema: {payload.get('version_tag')} / "
+                        f"V{LATEST_SCHEMA_VERSION:03d} [{state_lbl}]\n  [Postgres] {disp}"
+                    )
+                return 0
+
+            if cmd == "migrate":
+                res = DEFAULT_GAME_MIGRATION_RUNNER.migrate(
+                    conn,
+                    db_path=None,
+                    is_memory=True,
+                    target_version=args.target,
+                    dry_run=bool(args.dry_run),
+                    backup=False,
+                )
+                res["backend"] = "postgres"
+                res["db_path"] = disp
+                if bkp_pre_path is not None:
+                    res["backup_path"] = bkp_pre_path
+                print(_safe_json_dumps(res, indent=2))
+                return 0
+
+            if cmd == "verify":
+                ver_res = DEFAULT_GAME_MIGRATION_RUNNER.verify(
+                    conn,
+                    db_path=disp,
+                    full_integrity=bool(args.full_integrity),
+                )
+                ver_res["backend"] = "postgres"
+                print(_safe_json_dumps(ver_res, indent=2))
+                return 0 if ver_res.get("ok") else 2
+
+            if cmd == "history":
+                hist = DEFAULT_GAME_MIGRATION_RUNNER.inspect(
+                    conn,
+                    db_path=disp,
+                    include_events=True,
+                    event_limit=int(args.limit),
+                )
+                hist["backend"] = "postgres"
+                print(_safe_json_dumps(hist, indent=2))
+                return 0
+    finally:
+        pg_pool.close()
 
     return 0
 

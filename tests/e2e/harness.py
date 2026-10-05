@@ -1686,7 +1686,7 @@ class FakeDriver:
 
 
 class E2ETestHarness:
-    """Isolated temporary runtime with ephemeral HTTP API server, SQLite DB, config.yaml, and FakeBrowserShell."""
+    """Isolated temporary runtime with ephemeral HTTP API server, SQLite DB, config.json, and FakeBrowserShell."""
 
     def __init__(
         self,
@@ -1857,7 +1857,7 @@ class E2ETestHarness:
     def __enter__(self) -> E2ETestHarness:
         self.tmp_dir = Path(tempfile.mkdtemp(prefix="si_e2e_"))
         try:
-            self.config_path = self.tmp_dir / "config.yaml"
+            self.config_path = self.tmp_dir / "config.json"
             self.log_dir = self.tmp_dir / "logs"
             self.db_path = self.tmp_dir / "state" / "spaceinvasion.db"
             self.env_file = self.tmp_dir / ".env"

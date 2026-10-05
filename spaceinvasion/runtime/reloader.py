@@ -12,6 +12,8 @@ import threading
 import time
 from typing import Mapping, Optional, Sequence
 
+from spaceinvasion.core.cli_support import terminate_child as _terminate_child
+
 RELOAD_CHILD_ENV = "SPACEINVASION_RELOAD_CHILD"
 
 
@@ -164,26 +166,6 @@ def snapshot_mtimes(paths: Sequence[Path]) -> dict[str, int]:
                 except OSError:
                     pass
     return mtimes
-
-
-def _terminate_child(proc: subprocess.Popen) -> None:
-    if proc.poll() is not None:
-        return
-    try:
-        proc.terminate()
-        proc.wait(timeout=5.0)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        try:
-            proc.wait(timeout=5.0)
-        except (subprocess.TimeoutExpired, OSError):
-            pass
-    except OSError:
-        if proc.poll() is None:
-            try:
-                proc.wait(timeout=0.5)
-            except (subprocess.TimeoutExpired, OSError):
-                pass
 
 
 def watch_and_run(

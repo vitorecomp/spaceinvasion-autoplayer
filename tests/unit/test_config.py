@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 import tempfile
 import unittest
@@ -18,7 +19,7 @@ from spaceinvasion.config import (
 
 class TestStrategyConfig(unittest.TestCase):
     def test_missing_file_returns_safe_defaults(self) -> None:
-        cfg = load_strategy_config(Path("/nonexistent/does_not_exist.yaml"))
+        cfg = load_strategy_config(Path("/nonexistent/does_not_exist.json"))
         self.assertEqual(cfg, StrategyConfig())
         self.assertFalse(cfg.merchant_mode)
         self.assertTrue(cfg.auto_throttle_blast_furnace)
@@ -27,56 +28,40 @@ class TestStrategyConfig(unittest.TestCase):
         self.assertEqual(cfg.planner_mode, "priority")
         self.assertEqual(cfg.ga_population_size, 24)
         self.assertEqual(cfg.ga_generations, 12)
-        self.assertEqual(cfg.ga_horizon_steps, 6)
         self.assertAlmostEqual(cfg.ga_mutation_rate, 0.25)
-        self.assertAlmostEqual(cfg.ga_nn_weight, 0.35)
-        self.assertIsNone(cfg.ga_seed)
 
-    def test_loads_config_example_yaml_defaults(self) -> None:
-        cfg = load_strategy_config(Path("config.example.yaml"))
-        self.assertEqual(cfg.planner_mode, "priority")
-        self.assertEqual(cfg.ga_population_size, 24)
-        self.assertEqual(cfg.ga_generations, 12)
-        self.assertEqual(cfg.ga_horizon_steps, 6)
-        self.assertIsNone(cfg.ga_seed)
-        self.assertIn("small-fighter", cfg.shipyard_targets)
-
-    def test_ga_nn_planner_mode_yaml_roundtrip_and_zero_seed(self) -> None:
-        for seed_yaml, expected_seed in (("42", 42), ("0", 0), ("null", None)):
-            yaml_text = f"""
-playstyle: miner
-planner_mode: ga_nn
-ga_population_size: 32
-ga_generations: 16
-ga_horizon_steps: 8
-ga_mutation_rate: 0.3
-ga_nn_weight: 0.45
-ga_seed: {seed_yaml}
-shipyard_targets:
-  small-transport: 12
-"""
+    def test_legacy_ga_nn_normalizes_to_priority_and_ai_planner_json_roundtrip(self) -> None:
+        for raw_mode, expected_mode in (("ga_nn", "priority"), ("ai_planner", "ai_planner")):
+            json_text = json.dumps(
+                {
+                    "playstyle": "miner",
+                    "planner_mode": raw_mode,
+                    "ga_population_size": 32,
+                    "ga_generations": 16,
+                    "ga_mutation_rate": 0.3,
+                    "shipyard_targets": {"small-transport": 12},
+                }
+            )
             with tempfile.TemporaryDirectory() as tmp:
-                p = Path(tmp) / "config.yaml"
-                p.write_text(yaml_text, encoding="utf-8")
+                p = Path(tmp) / "config.json"
+                p.write_text(json_text, encoding="utf-8")
                 cfg = load_strategy_config(p)
-                self.assertEqual(cfg.planner_mode, "ga_nn")
+                self.assertEqual(cfg.planner_mode, expected_mode)
                 self.assertEqual(cfg.playstyle, "miner")
                 self.assertEqual(cfg.ga_population_size, 32)
                 self.assertEqual(cfg.ga_generations, 16)
-                self.assertEqual(cfg.ga_horizon_steps, 8)
                 self.assertAlmostEqual(cfg.ga_mutation_rate, 0.3)
-                self.assertAlmostEqual(cfg.ga_nn_weight, 0.45)
-                self.assertEqual(cfg.ga_seed, expected_seed)
                 self.assertEqual(cfg.shipyard_targets["small-transport"], 12)
 
-                out = Path(tmp) / "saved.yaml"
+                out = Path(tmp) / "saved.json"
                 save_strategy_config(cfg, out)
                 reloaded = load_strategy_config(out)
                 self.assertEqual(reloaded, cfg)
 
     def test_planner_mode_normalization_and_ga_clamping(self) -> None:
-        self.assertEqual(VALID_PLANNER_MODES, ("priority", "ai_planner", "ga_nn"))
-        self.assertEqual(normalize_planner_mode(" GA_NN "), "ga_nn")
+        self.assertEqual(VALID_PLANNER_MODES, ("priority", "ai_planner"))
+        self.assertEqual(normalize_planner_mode(" GA_NN "), "priority")
+        self.assertEqual(normalize_planner_mode("ga_nn", strict=True), "priority")
         self.assertEqual(normalize_planner_mode(" AI_PLANNER "), "ai_planner")
         self.assertEqual(normalize_planner_mode("ai_planner", strict=True), "ai_planner")
         self.assertEqual(normalize_planner_mode("invalid_mode"), "priority")
@@ -90,88 +75,66 @@ shipyard_targets:
                 "planner_mode": "unknown",
                 "ga_population_size": 1,
                 "ga_generations": 999,
-                "ga_horizon_steps": 0,
                 "ga_mutation_rate": 2.5,
-                "ga_nn_weight": -0.5,
-                "ga_seed": "~",
             }
         )
         self.assertEqual(clamped.planner_mode, "priority")
         self.assertEqual(clamped.ga_population_size, 4)
         self.assertEqual(clamped.ga_generations, 200)
-        self.assertEqual(clamped.ga_horizon_steps, 1)
         self.assertAlmostEqual(clamped.ga_mutation_rate, 1.0)
-        self.assertAlmostEqual(clamped.ga_nn_weight, 0.0)
-        self.assertIsNone(clamped.ga_seed)
 
         null_nums = strategy_config_from_dict(
             {
                 "ga_population_size": None,
                 "ga_generations": None,
-                "ga_horizon_steps": None,
                 "ga_mutation_rate": None,
-                "ga_nn_weight": None,
-                "ga_seed": 0,
             }
         )
         self.assertEqual(null_nums.ga_population_size, 24)
         self.assertEqual(null_nums.ga_generations, 12)
-        self.assertEqual(null_nums.ga_horizon_steps, 6)
-        self.assertEqual(null_nums.ga_seed, 0)
 
-    def test_empty_yaml_scalars_and_non_finite_ga_floats_fallback_safely(self) -> None:
-        yaml_text = """
-planner_mode: ga_nn
-ga_population_size:
-ga_generations:
-ga_horizon_steps:
-ga_mutation_rate:
-ga_nn_weight:
-ga_seed:
-"""
+    def test_null_json_scalars_and_non_finite_ga_floats_fallback_safely(self) -> None:
+        json_text = json.dumps(
+            {
+                "planner_mode": "ga_nn",
+                "ga_population_size": None,
+                "ga_generations": None,
+                "ga_mutation_rate": None,
+            }
+        )
         with tempfile.TemporaryDirectory() as tmp:
-            p = Path(tmp) / "empty_ga.yaml"
-            p.write_text(yaml_text, encoding="utf-8")
+            p = Path(tmp) / "empty_ga.json"
+            p.write_text(json_text, encoding="utf-8")
             cfg = load_strategy_config(p)
-            self.assertEqual(cfg.planner_mode, "ga_nn")
+            self.assertEqual(cfg.planner_mode, "priority")
             self.assertEqual(cfg.ga_population_size, 24)
             self.assertEqual(cfg.ga_generations, 12)
-            self.assertEqual(cfg.ga_horizon_steps, 6)
             self.assertAlmostEqual(cfg.ga_mutation_rate, 0.25)
-            self.assertAlmostEqual(cfg.ga_nn_weight, 0.35)
-            self.assertIsNone(cfg.ga_seed)
 
         bad_cfg = strategy_config_from_dict(
             {
                 "ga_population_size": "abc",
                 "ga_generations": {},
-                "ga_horizon_steps": "bad",
                 "ga_mutation_rate": float("nan"),
-                "ga_nn_weight": float("inf"),
-                "ga_seed": "invalid_seed",
             }
         )
         self.assertEqual(bad_cfg.ga_population_size, 24)
         self.assertEqual(bad_cfg.ga_generations, 12)
-        self.assertEqual(bad_cfg.ga_horizon_steps, 6)
         self.assertAlmostEqual(bad_cfg.ga_mutation_rate, 0.25)
-        self.assertAlmostEqual(bad_cfg.ga_nn_weight, 0.35)
-        self.assertIsNone(bad_cfg.ga_seed)
 
-    def test_loads_nested_yaml_profile_with_comments(self) -> None:
-        yaml_text = """
-# Strategy override
-merchant_mode: true   # Skip Blast furnace post-tutorial
-auto_throttle_blast_furnace: false
-allow_fleetsave: false
-combat_safety_margin: 1.55
-shipyard_targets:
-  small-transport: 10
-  transmitter: 2
-"""
+    def test_loads_nested_json_profile(self) -> None:
+        json_text = json.dumps(
+            {
+                "merchant_mode": True,
+                "auto_throttle_blast_furnace": False,
+                "allow_fleetsave": False,
+                "combat_safety_margin": 1.55,
+                "shipyard_targets": {"small-transport": 10, "transmitter": 2},
+            }
+        )
         with tempfile.TemporaryDirectory() as tmp:
-            p = Path(tmp) / "config.yaml"
-            p.write_text(yaml_text, encoding="utf-8")
+            p = Path(tmp) / "config.json"
+            p.write_text(json_text, encoding="utf-8")
             cfg = load_strategy_config(p)
             self.assertTrue(cfg.merchant_mode)
             self.assertFalse(cfg.auto_throttle_blast_furnace)
@@ -180,22 +143,16 @@ shipyard_targets:
             self.assertEqual(cfg.shipyard_targets["small-transport"], 10)
             self.assertEqual(cfg.shipyard_targets["transmitter"], 2)
 
-            out = Path(tmp) / "saved.yaml"
+            out = Path(tmp) / "saved.json"
             save_strategy_config(cfg, out)
             reloaded = load_strategy_config(out)
             self.assertEqual(reloaded, cfg)
 
-    def test_malformed_json_and_broken_brace_yaml_scalars_fallback_safely(self) -> None:
+    def test_malformed_json_fallbacks_safely(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             bad_json = Path(tmp) / "broken.json"
             bad_json.write_text("{bad json", encoding="utf-8")
             self.assertEqual(load_strategy_config(bad_json), StrategyConfig())
-
-            bad_brace_yaml = Path(tmp) / "brace.yaml"
-            bad_brace_yaml.write_text("ga_seed: {broken\nplanner_mode: ga_nn\n", encoding="utf-8")
-            cfg = load_strategy_config(bad_brace_yaml)
-            self.assertIsNone(cfg.ga_seed)
-            self.assertEqual(cfg.planner_mode, "ga_nn")
 
     def test_mapping_proxy_non_dict_invalid_utf8_and_non_finite_bool_and_yaml(self) -> None:
         from types import MappingProxyType
@@ -206,12 +163,12 @@ shipyard_targets:
         proxy_cfg = strategy_config_from_dict(
             MappingProxyType(
                 {
-                    "planner_mode": "ga_nn",
+                    "planner_mode": "ai_planner",
                     "shipyard_targets": MappingProxyType({"small-transport": 7}),
                 }
             )
         )
-        self.assertEqual(proxy_cfg.planner_mode, "ga_nn")
+        self.assertEqual(proxy_cfg.planner_mode, "ai_planner")
         self.assertEqual(proxy_cfg.shipyard_targets["small-transport"], 7)
 
         self.assertTrue(_safe_cfg_bool(float("nan"), True))
@@ -221,12 +178,12 @@ shipyard_targets:
         self.assertFalse(_safe_cfg_bool(b"false", True))
 
         with tempfile.TemporaryDirectory() as tmp:
-            bad_utf8 = Path(tmp) / "bad.yaml"
+            bad_utf8 = Path(tmp) / "bad.json"
             bad_utf8.write_bytes(b"\xff\xfe\xfd")
             self.assertEqual(load_strategy_config(bad_utf8), StrategyConfig())
 
             nan_cfg = StrategyConfig(combat_safety_margin=float("nan"), storage_warn_ratio=float("inf"))
-            out = Path(tmp) / "sanitized.yaml"
+            out = Path(tmp) / "sanitized.json"
             save_strategy_config(nan_cfg, out)
             reloaded = load_strategy_config(out)
             self.assertTrue(0.5 <= reloaded.storage_warn_ratio <= 1.0)
@@ -235,46 +192,34 @@ shipyard_targets:
     def test_5000_digit_and_extreme_int_clamping_and_null_seed_roundtrip(self) -> None:
         huge_pos = "9" * 5000
         huge_neg = "-" + "9" * 5000
-        yaml_text = f"""
-playstyle: miner
-planner_mode: ga_nn
-ga_seed: {huge_pos}
-max_actions_per_hour: {huge_pos}
-fleet_save_fuel_reserve_spice: {huge_neg}
-hot_planet_solar_temp_threshold: {huge_pos}
-min_free_fields_warning: {huge_pos}
-shipyard_targets:
-  small-transport: {huge_pos}
-  small-fighter: 0
-"""
+        json_text = (
+            '{"playstyle": "miner", "planner_mode": "ga_nn", '
+            f'"ga_generations": {huge_pos}, "max_actions_per_hour": {huge_pos}, '
+            f'"fleet_save_fuel_reserve_spice": {huge_neg}, '
+            f'"hot_planet_solar_temp_threshold": {huge_pos}, '
+            f'"min_free_fields_warning": {huge_pos}, '
+            f'"shipyard_targets": {{"small-transport": {huge_pos}, "small-fighter": 0}}}}'
+        )
         with tempfile.TemporaryDirectory() as tmp:
-            p = Path(tmp) / "huge.yaml"
-            p.write_text(yaml_text, encoding="utf-8")
+            p = Path(tmp) / "huge.json"
+            p.write_text(json_text, encoding="utf-8")
             cfg = load_strategy_config(p)
-            self.assertIsNotNone(cfg.ga_seed)
-            self.assertLessEqual(abs(int(cfg.ga_seed or 0)), 10**200)
+            self.assertEqual(cfg.planner_mode, "priority")
+            self.assertGreaterEqual(cfg.ga_generations, 1)
             self.assertGreaterEqual(cfg.max_actions_per_hour, 1)
             self.assertGreaterEqual(cfg.fleet_save_fuel_reserve_spice, 0)
             self.assertLessEqual(abs(cfg.hot_planet_solar_temp_threshold), 10**200)
             self.assertLessEqual(cfg.min_free_fields_warning, 10**200)
             self.assertLessEqual(cfg.shipyard_targets.get("small-transport", 0), 10**200)
 
-            out = Path(tmp) / "saved.yaml"
+            out = Path(tmp) / "saved.json"
             save_strategy_config(cfg, out)
             reloaded = load_strategy_config(out)
-            self.assertEqual(reloaded.planner_mode, "ga_nn")
-
-            # Preserve ga_seed=0 and null/~ semantics
-            p_tilde = Path(tmp) / "tilde.yaml"
-            p_tilde.write_text("ga_seed: ~\n", encoding="utf-8")
-            self.assertIsNone(load_strategy_config(p_tilde).ga_seed)
-            p_zero = Path(tmp) / "zero.yaml"
-            p_zero.write_text("ga_seed: 0\n", encoding="utf-8")
-            self.assertEqual(load_strategy_config(p_zero).ga_seed, 0)
+            self.assertEqual(reloaded.planner_mode, "priority")
 
         huge_dict_cfg = strategy_config_from_dict(
             {
-                "ga_seed": 10**5000,
+                "ga_generations": 10**5000,
                 "max_actions_per_hour": 10**5000,
                 "fleet_save_fuel_reserve_spice": -(10**5000),
                 "hot_planet_solar_temp_threshold": 10**5000,
@@ -282,7 +227,7 @@ shipyard_targets:
                 "shipyard_targets": {"small-transport": 10**5000, 123: 5},  # type: ignore[dict-item]
             }
         )
-        self.assertLessEqual(abs(int(huge_dict_cfg.ga_seed or 0)), 10**200)
+        self.assertLessEqual(huge_dict_cfg.ga_generations, 200)
         self.assertLessEqual(huge_dict_cfg.shipyard_targets["small-transport"], 10**200)
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -290,25 +235,25 @@ shipyard_targets:
                 playstyle=123,  # type: ignore[arg-type]
                 shipyard_targets={456: 2},  # type: ignore[dict-item]
             )
-            weird_path = Path(tmp) / "weird.yaml"
+            weird_path = Path(tmp) / "weird.json"
             save_strategy_config(weird, weird_path)
             self.assertTrue(weird_path.exists())
 
-    def test_adv_yaml_roundtrip_preserves_hash_and_colon_strings(self) -> None:
+    def test_adv_json_roundtrip_preserves_hash_and_colon_strings(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             for val in ("miner#pro", "a:b # c", 'miner"quote#tag', "123", "true"):
-                p = Path(tmp) / "special.yaml"
+                p = Path(tmp) / "special.json"
                 cfg = strategy_config_from_dict({"playstyle": val})
                 save_strategy_config(cfg, p)
                 reloaded = load_strategy_config(p)
                 self.assertEqual(reloaded.playstyle, val)
 
-            plain_p = Path(tmp) / "plain.yaml"
+            plain_p = Path(tmp) / "plain.json"
             save_strategy_config(strategy_config_from_dict({"playstyle": "fleeter"}), plain_p)
-            self.assertIn("playstyle: fleeter\n", plain_p.read_text(encoding="utf-8"))
+            self.assertEqual(json.loads(plain_p.read_text(encoding="utf-8"))["playstyle"], "fleeter")
             self.assertEqual(load_strategy_config(plain_p).playstyle, "fleeter")
 
-    def test_r7_yaml_roundtrip_unicode_line_separators_and_shipyard_target_keys(self) -> None:
+    def test_r7_json_roundtrip_unicode_line_separators_and_shipyard_target_keys(self) -> None:
         from spaceinvasion.config import DEFAULT_SHIPYARD_TARGETS
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -322,7 +267,7 @@ shipyard_targets:
                 "line1\nallow_raids: true",
                 "line1\r\nline2",
             ):
-                p = Path(tmp) / "ps.yaml"
+                p = Path(tmp) / "ps.json"
                 cfg = StrategyConfig(playstyle=weird_ps, allow_raids=False)
                 save_strategy_config(cfg, p)
                 reloaded = load_strategy_config(p)
@@ -346,7 +291,7 @@ shipyard_targets:
                 "line1\nline2": 10,
                 "small-fighter": 99,
             }
-            tp = Path(tmp) / "targets.yaml"
+            tp = Path(tmp) / "targets.json"
             save_strategy_config(StrategyConfig(shipyard_targets=special_targets), tp)
             loaded_t = load_strategy_config(tp)
             for k, v in special_targets.items():
@@ -354,88 +299,26 @@ shipyard_targets:
             self.assertNotIn("a", loaded_t.shipyard_targets)
             self.assertNotIn("12", loaded_t.shipyard_targets)
 
-            hand_yaml = (
-                "playstyle: line1\u2028line2\n"
-                "allow_raids: false\n"
-                "shipyard_targets:\n"
-                "  line1\x0bline2: 5\n"
-                "  'it''s:unit#1': 17  # inline comment\n"
-                "  small-fighter: 77\n"
-            )
-            hp = Path(tmp) / "hand.yaml"
-            hp.write_text(hand_yaml, encoding="utf-8")
-            loaded_h = load_strategy_config(hp)
-            self.assertEqual(loaded_h.playstyle, "line1\u2028line2")
-            self.assertFalse(loaded_h.allow_raids)
-            self.assertEqual(loaded_h.shipyard_targets["line1\x0bline2"], 5)
-            self.assertEqual(loaded_h.shipyard_targets["it's:unit#1"], 17)
-            self.assertEqual(loaded_h.shipyard_targets["small-fighter"], 77)
-
             clamped_int_key = strategy_config_from_dict({"shipyard_targets": {10**5000: 5}})
             self.assertIn(str(10**200), clamped_int_key.shipyard_targets)
 
-    def test_r8_strip_yaml_comment_and_key_value_preserve_mid_token_quotes(self) -> None:
-        from spaceinvasion.config import _parse_simple_yaml
-
-        yaml_text = (
-            "playstyle: Bob's miner # fav\n"
-            "shipyard_targets:\n"
-            "  unit'1: 5 # inline comment\n"
-            '  unit"1: 7 # inline comment\n'
-            "  'it''s:unit#1': 11 # quoted single\n"
-            "  small-fighter: 99\n"
-        )
-        parsed = _parse_simple_yaml(yaml_text)
-        self.assertEqual(parsed["playstyle"], "Bob's miner")
-        self.assertEqual(parsed["shipyard_targets"]["unit'1"], 5)
-        self.assertEqual(parsed["shipyard_targets"]['unit"1'], 7)
-        self.assertEqual(parsed["shipyard_targets"]["it's:unit#1"], 11)
-        self.assertEqual(parsed["shipyard_targets"]["small-fighter"], 99)
-
-        with tempfile.TemporaryDirectory() as tmp:
-            p = Path(tmp) / "r8_quotes.yaml"
-            p.write_text(yaml_text, encoding="utf-8")
-            cfg = load_strategy_config(p)
-            self.assertEqual(cfg.playstyle, "bob's miner")
-            self.assertEqual(cfg.shipyard_targets["unit'1"], 5)
-            self.assertEqual(cfg.shipyard_targets['unit"1'], 7)
-            self.assertEqual(cfg.shipyard_targets["it's:unit#1"], 11)
-            self.assertEqual(cfg.shipyard_targets["small-fighter"], 99)
-
-            out = Path(tmp) / "r8_saved.yaml"
-            save_strategy_config(cfg, out)
-            self.assertEqual(load_strategy_config(out), cfg)
-
     def test_r9_rejects_arabic_indic_ints_and_huge_playstyle_or_planner_mode(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            for fname, txt in (
-                (
-                    "quoted.yaml",
-                    'ga_seed: "\u0664\u0662"\nmax_actions_per_hour: "\u0661\u0665"\nga_population_size: "\u0661\u0666"\n',
-                ),
-                (
-                    "unquoted.yaml",
-                    "ga_seed: \u0664\u0662\nmax_actions_per_hour: \u0661\u0665\nga_population_size: \u0661\u0666\n",
-                ),
-            ):
-                p = Path(tmp) / fname
-                p.write_text(txt, encoding="utf-8")
-                cfg = load_strategy_config(p)
-                self.assertIsNone(cfg.ga_seed)
-                self.assertEqual(cfg.max_actions_per_hour, 60)
-                self.assertEqual(cfg.ga_population_size, 24)
+            p = Path(tmp) / "arabic_ints.json"
+            p.write_text('{"max_actions_per_hour": "\u0661\u0665", "ga_population_size": "\u0661\u0666"}', encoding="utf-8")
+            cfg = load_strategy_config(p)
+            self.assertEqual(cfg.max_actions_per_hour, 60)
+            self.assertEqual(cfg.ga_population_size, 24)
 
         dict_cfg = strategy_config_from_dict(
             {
                 "playstyle": 10**5000,
                 "planner_mode": 10**5000,
-                "ga_seed": "\u0664\u0662",
                 "max_actions_per_hour": "\u0661\u0665",
             }
         )
         self.assertEqual(dict_cfg.playstyle, "fleeter")
         self.assertEqual(dict_cfg.planner_mode, "priority")
-        self.assertIsNone(dict_cfg.ga_seed)
         self.assertEqual(dict_cfg.max_actions_per_hour, 60)
         self.assertEqual(normalize_planner_mode(10**5000), "priority")
         with self.assertRaises(ValueError):
@@ -461,17 +344,17 @@ shipyard_targets:
                 (huge, "ignored"): 123,  # type: ignore[dict-item]
                 frozenset({huge}): 456,  # type: ignore[dict-item]
                 "playstyle": "miner",
-                "planner_mode": "ga_nn",
+                "planner_mode": "ai_planner",
             }
         )
         self.assertEqual(cfg.playstyle, "miner")
-        self.assertEqual(cfg.planner_mode, "ga_nn")
+        self.assertEqual(cfg.planner_mode, "ai_planner")
         with tempfile.TemporaryDirectory() as tmp:
-            out_p = Path(tmp) / "cfg.yaml"
+            out_p = Path(tmp) / "cfg.json"
             save_strategy_config(cfg, out_p)
             reloaded = load_strategy_config(out_p)
             self.assertEqual(asdict(reloaded)["playstyle"], "miner")
-            self.assertEqual(asdict(reloaded)["planner_mode"], "ga_nn")
+            self.assertEqual(asdict(reloaded)["planner_mode"], "ai_planner")
 
 
     def test_r11_frozenset_pathlike_unknown_scalar_and_secret_key_redaction(self) -> None:
@@ -497,7 +380,8 @@ shipyard_targets:
 
         self.assertIs(_safe_cfg_bool(frozenset({"false"}), False), False)
         self.assertIs(_safe_cfg_bool(frozenset({"true"}), False), False)
-        self.assertEqual(normalize_planner_mode(Path("ga_nn")), "ga_nn")
+        self.assertEqual(normalize_planner_mode(Path("ai_planner")), "ai_planner")
+        self.assertEqual(normalize_planner_mode(Path("ga_nn")), "priority")
 
         cfg = strategy_config_from_dict(
             {
@@ -505,7 +389,7 @@ shipyard_targets:
                 "min_free_fields_warning": frozenset({9}),
                 "combat_safety_margin": frozenset({2.5}),
                 "playstyle": frozenset({"miner"}),
-                "planner_mode": frozenset({"ga_nn"}),
+                "planner_mode": frozenset({"ai_planner"}),
             }
         )
         default_cfg = StrategyConfig()
@@ -590,7 +474,7 @@ shipyard_targets:
         self.assertEqual(cfg.planner_mode, "priority")
 
         with tempfile.TemporaryDirectory() as tmp:
-            ok_path = Path(tmp) / "ok.yaml"
+            ok_path = Path(tmp) / "ok.json"
             save_strategy_config(cfg, ok_path)
             self.assertTrue(ok_path.exists())
             bad_cfg = StrategyConfig(
@@ -600,7 +484,7 @@ shipyard_targets:
                 ga_population_size=_IntPath(),  # type: ignore[arg-type]
                 shipyard_targets={_RaiseFspath(): 1, "small-fighter": _RaiseFspath()},  # type: ignore[dict-item]
             )
-            bad_path = Path(tmp) / "bad_ok.yaml"
+            bad_path = Path(tmp) / "bad_ok.json"
             save_strategy_config(bad_cfg, bad_path)
             self.assertTrue(bad_path.exists())
             with self.assertRaises((AttributeError, RuntimeError, TypeError)):
@@ -705,7 +589,6 @@ shipyard_targets:
     def test_r14_config_shipyard_aliases_urlenc_json_esc_quotes_and_dag20_cycles(self) -> None:
         import time
         from spaceinvasion.config import (
-            _parse_simple_yaml,
             _redact_cfg_text,
             _safe_cfg_exc_text,
             _safe_cfg_key,
@@ -735,16 +618,12 @@ shipyard_targets:
         self.assertNotIn("s4", cfg.shipyard_targets)
 
         with tempfile.TemporaryDirectory() as tmp:
-            out_path = Path(tmp) / "strategy.yaml"
+            out_path = Path(tmp) / "strategy.json"
             save_strategy_config(cfg, out_path)
-            saved_text = out_path.read_text(encoding="utf-8")
-            self.assertIn("small-fighter: 25", saved_text)
-            self.assertIn("battleship: 3", saved_text)
-            self.assertNotIn("s4:", saved_text)
-
-        # 2. _parse_simple_yaml preserves U+2028 and \x0b inside single scalar lines
-        yaml_u2028 = "account_name: 'a\u2028b\x0bc'\n"
-        self.assertEqual(_parse_simple_yaml(yaml_u2028)["account_name"], "a\u2028b\x0bc")
+            saved_obj = json.loads(out_path.read_text(encoding="utf-8"))
+            self.assertEqual(saved_obj["shipyard_targets"]["small-fighter"], 25)
+            self.assertEqual(saved_obj["shipyard_targets"]["battleship"], 3)
+            self.assertNotIn("s4", saved_obj["shipyard_targets"])
 
         # 3. Linear redaction: urlenc JSON, escaped JSON quotes, spaced brackets, unclosed, schemeless Bearer, zero ReDoS
         vectors = (
@@ -840,16 +719,16 @@ shipyard_targets:
                 reserved_spy_slots=3,
                 spy_dispatch_planet_id=12476,
             )
-            yaml_path = tp / "cfg.yaml"
-            save_strategy_config(cfg, yaml_path)
-            loaded_yaml = load_strategy_config(yaml_path)
-            self.assertAlmostEqual(loaded_yaml.galaxy_scan_click_delay_seconds, 2.75)
-            self.assertAlmostEqual(loaded_yaml.galaxy_scan_click_jitter_seconds, 0.85)
-            self.assertEqual(loaded_yaml.reserved_spy_slots, 3)
-            self.assertEqual(loaded_yaml.spy_dispatch_planet_id, 12476)
+            json_path = tp / "cfg.json"
+            save_strategy_config(cfg, json_path)
+            loaded_json = load_strategy_config(json_path)
+            self.assertAlmostEqual(loaded_json.galaxy_scan_click_delay_seconds, 2.75)
+            self.assertAlmostEqual(loaded_json.galaxy_scan_click_jitter_seconds, 0.85)
+            self.assertEqual(loaded_json.reserved_spy_slots, 3)
+            self.assertEqual(loaded_json.spy_dispatch_planet_id, 12476)
 
             db_path = tp / "cfg.db"
-            db = GameDatabase(db_path, attack_history_path="")
+            db = GameDatabase(db_path)
             db.close()
             save_strategy_config(cfg, db_path)
             loaded_db = load_strategy_config(db_path)
@@ -882,14 +761,14 @@ shipyard_targets:
         with tempfile.TemporaryDirectory() as tmp:
             tp = Path(tmp)
             cfg = StrategyConfig(planner_mode="ai_planner", ai_resource_spare_pct=17.5)
-            yaml_path = tp / "ai_cfg.yaml"
-            save_strategy_config(cfg, yaml_path)
-            loaded_yaml = load_strategy_config(yaml_path)
-            self.assertEqual(loaded_yaml.planner_mode, "ai_planner")
-            self.assertAlmostEqual(loaded_yaml.ai_resource_spare_pct, 17.5)
+            json_path = tp / "ai_cfg.json"
+            save_strategy_config(cfg, json_path)
+            loaded_json = load_strategy_config(json_path)
+            self.assertEqual(loaded_json.planner_mode, "ai_planner")
+            self.assertAlmostEqual(loaded_json.ai_resource_spare_pct, 17.5)
 
             db_path = tp / "ai_cfg.db"
-            db = GameDatabase(db_path, attack_history_path="")
+            db = GameDatabase(db_path)
             db.close()
             save_strategy_config(cfg, db_path)
             loaded_db = load_strategy_config(db_path)
@@ -924,23 +803,23 @@ shipyard_targets:
                 allow_fleet_research=True,
                 fleet_research_targets={"r6": 6, "r9": 8, "r11": 5},
             )
-            yaml_path = tp / "fleet_res.yaml"
-            save_strategy_config(cfg, yaml_path)
-            loaded_yaml = load_strategy_config(yaml_path)
-            self.assertTrue(loaded_yaml.allow_fleet_research)
-            self.assertEqual(loaded_yaml.fleet_research_targets, {"r6": 6, "r9": 8, "r11": 5})
+            json_path = tp / "fleet_res.json"
+            save_strategy_config(cfg, json_path)
+            loaded_json = load_strategy_config(json_path)
+            self.assertTrue(loaded_json.allow_fleet_research)
+            self.assertEqual(loaded_json.fleet_research_targets, {"r6": 6, "r9": 8, "r11": 5})
 
-            # Clearing targets back to {} omits section and round-trips cleanly
+            # Clearing targets back to {} round-trips cleanly
             empty_cfg = StrategyConfig(allow_fleet_research=False, fleet_research_targets={})
-            empty_yaml = tp / "fleet_res_empty.yaml"
-            save_strategy_config(empty_cfg, empty_yaml)
-            self.assertNotIn("fleet_research_targets:", empty_yaml.read_text(encoding="utf-8"))
-            loaded_empty = load_strategy_config(empty_yaml)
+            empty_json = tp / "fleet_res_empty.json"
+            save_strategy_config(empty_cfg, empty_json)
+            self.assertEqual(json.loads(empty_json.read_text(encoding="utf-8"))["fleet_research_targets"], {})
+            loaded_empty = load_strategy_config(empty_json)
             self.assertFalse(loaded_empty.allow_fleet_research)
             self.assertEqual(loaded_empty.fleet_research_targets, {})
 
             db_path = tp / "fleet_res.db"
-            db = GameDatabase(db_path, attack_history_path="")
+            db = GameDatabase(db_path)
             db.close()
             save_strategy_config(cfg, db_path)
             loaded_db = load_strategy_config(db_path)
@@ -964,15 +843,15 @@ shipyard_targets:
 
         with tempfile.TemporaryDirectory() as tmp:
             tp = Path(tmp)
-            yaml_path = tp / "spy_res_only.yaml"
-            save_strategy_config(parsed, yaml_path)
-            self.assertIn("spy_reserved_slots_only: true", yaml_path.read_text(encoding="utf-8"))
-            loaded_yaml = load_strategy_config(yaml_path)
-            self.assertTrue(loaded_yaml.spy_reserved_slots_only)
-            self.assertEqual(loaded_yaml.reserved_spy_slots, 2)
+            json_path = tp / "spy_res_only.json"
+            save_strategy_config(parsed, json_path)
+            self.assertTrue(json.loads(json_path.read_text(encoding="utf-8"))["spy_reserved_slots_only"])
+            loaded_json = load_strategy_config(json_path)
+            self.assertTrue(loaded_json.spy_reserved_slots_only)
+            self.assertEqual(loaded_json.reserved_spy_slots, 2)
 
             db_path = tp / "spy_res_only.db"
-            db = GameDatabase(db_path, attack_history_path="")
+            db = GameDatabase(db_path)
             db.close()
             save_strategy_config(parsed, db_path)
             loaded_db = load_strategy_config(db_path)
@@ -1006,17 +885,17 @@ shipyard_targets:
 
         with tempfile.TemporaryDirectory() as tmp:
             tp = Path(tmp)
-            yaml_path = tp / "harvest_rph.yaml"
-            save_strategy_config(parsed, yaml_path)
-            yaml_text = yaml_path.read_text(encoding="utf-8")
-            self.assertIn("attack_min_res_per_hour: 12500.0", yaml_text)
-            self.assertIn("recycle_min_res_per_hour: 8400.5", yaml_text)
-            loaded_yaml = load_strategy_config(yaml_path)
-            self.assertAlmostEqual(loaded_yaml.attack_min_res_per_hour, 12500.0)
-            self.assertAlmostEqual(loaded_yaml.recycle_min_res_per_hour, 8400.5)
+            json_path = tp / "harvest_rph.json"
+            save_strategy_config(parsed, json_path)
+            saved_obj = json.loads(json_path.read_text(encoding="utf-8"))
+            self.assertAlmostEqual(saved_obj["attack_min_res_per_hour"], 12500.0)
+            self.assertAlmostEqual(saved_obj["recycle_min_res_per_hour"], 8400.5)
+            loaded_json = load_strategy_config(json_path)
+            self.assertAlmostEqual(loaded_json.attack_min_res_per_hour, 12500.0)
+            self.assertAlmostEqual(loaded_json.recycle_min_res_per_hour, 8400.5)
 
             db_path = tp / "harvest_rph.db"
-            db = GameDatabase(db_path, attack_history_path="")
+            db = GameDatabase(db_path)
             db.close()
             save_strategy_config(parsed, db_path)
             loaded_db = load_strategy_config(db_path)
@@ -1059,19 +938,19 @@ shipyard_targets:
 
         with tempfile.TemporaryDirectory() as tmp:
             tp = Path(tmp)
-            yaml_path = tp / "adaptive_exec.yaml"
-            save_strategy_config(enabled_cfg, yaml_path)
-            self.assertIn("ai_adaptive_execution: true", yaml_path.read_text(encoding="utf-8"))
-            loaded_yaml = load_strategy_config(yaml_path)
-            self.assertTrue(loaded_yaml.ai_adaptive_execution)
+            json_path = tp / "adaptive_exec.json"
+            save_strategy_config(enabled_cfg, json_path)
+            self.assertTrue(json.loads(json_path.read_text(encoding="utf-8"))["ai_adaptive_execution"])
+            loaded_json = load_strategy_config(json_path)
+            self.assertTrue(loaded_json.ai_adaptive_execution)
 
-            yaml_off = tp / "adaptive_exec_off.yaml"
-            save_strategy_config(default_cfg, yaml_off)
-            self.assertIn("ai_adaptive_execution: false", yaml_off.read_text(encoding="utf-8"))
-            self.assertFalse(load_strategy_config(yaml_off).ai_adaptive_execution)
+            json_off = tp / "adaptive_exec_off.json"
+            save_strategy_config(default_cfg, json_off)
+            self.assertFalse(json.loads(json_off.read_text(encoding="utf-8"))["ai_adaptive_execution"])
+            self.assertFalse(load_strategy_config(json_off).ai_adaptive_execution)
 
             db_path = tp / "adaptive_exec.db"
-            db = GameDatabase(db_path, attack_history_path="")
+            db = GameDatabase(db_path)
             db.close()
             save_strategy_config(enabled_cfg, db_path)
             loaded_db = load_strategy_config(db_path)

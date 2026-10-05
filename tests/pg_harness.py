@@ -13,8 +13,8 @@ Provides:
    Podman with `--network=none --userns=keep-id` and `listen_addresses=''`, migrating a
    `si_template` database once per process and cloning per-test databases via
    `CREATE DATABASE test_<n> TEMPLATE si_template`.
-3. `PostgresTestRedirector` routing storage, bridge, and e2e tests onto disposable
-   PostgreSQL through `GameDatabase` while keeping explicit SQLite / `:memory:` tests intact.
+3. `PostgresTestRedirector` routing `GameDatabase` instances in tests onto disposable
+   PostgreSQL (`DisposablePostgresServer`) databases.
 """
 
 from __future__ import annotations
@@ -26,7 +26,6 @@ from pathlib import Path
 import re
 import shutil
 import socket
-import sqlite3
 import subprocess
 import tempfile
 import threading
@@ -64,20 +63,17 @@ _HERMETIC_SCRUB_ENV_KEYS: tuple[str, ...] = (
 _ALLOWED_TOOL_ROOT_ENTRIES: frozenset[str] = frozenset(
     {".pytest_cache", "__pycache__", ".coverage", ".mypy_cache", ".ruff_cache"}
 )
-_SQLITE_HEADER = b"SQLite format 3\x00"
 _SAFE_DB_PREFIX_RE = re.compile(r"[^a-z0-9_]+")
 
 _GUARD_LOCK = threading.Lock()
 _SOCKET_GUARD_INSTALLED = False
 _LIBPQ_GUARD_INSTALLED = False
 _LOG_GUARD_INSTALLED = False
-_PREF_GUARD_INSTALLED = False
 _HERMETIC_TMP_DIR: Optional[Path] = None
 
 _ORIG_SOCK_CONNECT = socket.socket.connect
 _ORIG_SOCK_CONNECT_EX = socket.socket.connect_ex
 _ORIG_CREATE_CONNECTION = socket.create_connection
-_ORIG_SQLITE_CONNECT = sqlite3.connect
 _ORIG_PSYCOPG_CONNECT = psycopg.connect
 _ORIG_PSYCOPG_CONN_CONNECT = psycopg.Connection.connect.__func__  # type: ignore[attr-defined]
 _ORIG_PSYCOPG_ASYNC_CONNECT = psycopg.AsyncConnection.connect.__func__  # type: ignore[attr-defined]
@@ -276,38 +272,12 @@ def scrub_live_db_env() -> None:
         os.environ.pop(key, None)
 
 
-def install_backend_pref_guard() -> None:
-    """Redirect repo-root `state/db_backend.json` lookups into the hermetic temp directory."""
-    global _PREF_GUARD_INSTALLED
-    with _GUARD_LOCK:
-        if _PREF_GUARD_INSTALLED:
-            return
-        from spaceinvasion.db import backend as backend_mod
-
-        hermetic_tmp = _ensure_hermetic_tmp_dir()
-        repo_root_resolved = REPO_ROOT.resolve()
-        orig_pref_path = backend_mod._pref_file_path
-
-        def _hermetic_pref_file_path(root_dir: Path | str = Path(".")) -> Path:
-            try:
-                resolved = Path(root_dir).resolve()
-            except OSError:
-                return hermetic_tmp / backend_mod.DEFAULT_BACKEND_PREF_REL_PATH
-            if resolved == repo_root_resolved:
-                return hermetic_tmp / backend_mod.DEFAULT_BACKEND_PREF_REL_PATH
-            return orig_pref_path(root_dir)
-
-        backend_mod._pref_file_path = _hermetic_pref_file_path
-        _PREF_GUARD_INSTALLED = True
-
-
 def install_hermetic_guards() -> None:
-    """Install socket, libpq, env-scrub, backend-pref, and log-artifact hermetic guards."""
+    """Install socket, libpq, env-scrub, and log-artifact hermetic guards."""
     scrub_live_db_env()
     install_socket_guard()
     install_libpq_guard()
     install_log_artifact_guard()
-    install_backend_pref_guard()
 
 
 def snapshot_repo_root() -> frozenset[str]:
@@ -571,7 +541,6 @@ class DisposablePostgresServer:
             backend="postgres",
             pool_min_size=1,
             pool_max_size=2,
-            attack_history_path="",
         )
         try:
             ver = tpl_db.verify_schema(full_integrity=False)
@@ -689,65 +658,6 @@ def shutdown_shared_pg_harness() -> None:
         harness.stop()
 
 
-class _SqliteCompatPostgresConn:
-    """Context-manager wrapper over a `PostgresPoolBackend` for tests calling `sqlite3.connect(h.db_path)`."""
-
-    def __init__(self, dsn: str) -> None:
-        from spaceinvasion.db.postgres import PostgresPoolBackend
-
-        self._backend = PostgresPoolBackend(dsn, min_size=1, max_size=2)
-        self._proxy = self._backend.conn_proxy
-
-    @property
-    def row_factory(self) -> Any:
-        return self._proxy.row_factory
-
-    @row_factory.setter
-    def row_factory(self, val: Any) -> None:
-        self._proxy.row_factory = val
-
-    def cursor(self) -> Any:
-        return self._proxy.cursor()
-
-    def execute(self, sql: str, params: Any = None) -> Any:
-        return self._proxy.execute(sql, params)
-
-    def executemany(self, sql: str, seq_of_params: Any) -> Any:
-        return self._proxy.executemany(sql, seq_of_params)
-
-    def executescript(self, script: str) -> Any:
-        return self._proxy.executescript(script)
-
-    def commit(self) -> None:
-        self._proxy.commit()
-
-    def rollback(self) -> None:
-        self._proxy.rollback()
-
-    def close(self) -> None:
-        self._backend.close()
-
-    def __enter__(self) -> "_SqliteCompatPostgresConn":
-        return self
-
-    def __exit__(self, exc_type: Any, _exc_val: Any, _exc_tb: Any) -> None:
-        if exc_type is not None:
-            self.rollback()
-        else:
-            self.commit()
-        self.close()
-
-
-def _is_existing_sqlite_file(path: Path) -> bool:
-    try:
-        if not path.is_file() or path.stat().st_size < len(_SQLITE_HEADER):
-            return False
-        with path.open("rb") as fh:
-            return fh.read(len(_SQLITE_HEADER)) == _SQLITE_HEADER
-    except OSError:
-        return False
-
-
 def _resolve_db_key(raw: Any) -> Optional[str]:
     try:
         if isinstance(raw, Path):
@@ -770,7 +680,7 @@ def _resolve_db_key(raw: Any) -> Optional[str]:
 
 
 def _touch_pg_marker_if_outside_repo(path: Path, dsn: str) -> None:
-    """Create a non-SQLite marker file for temp test paths so `h.db_path.exists()` stays True."""
+    """Create a marker file for temp test paths so `h.db_path.exists()` stays True."""
     try:
         resolved = path.resolve()
         repo_resolved = REPO_ROOT.resolve()
@@ -784,42 +694,23 @@ def _touch_pg_marker_if_outside_repo(path: Path, dsn: str) -> None:
 
 
 class PostgresTestRedirector:
-    """Redirects file-backed `GameDatabase` instances in tests onto disposable PostgreSQL.
-
-    Preserves explicit SQLite / `:memory:` / pre-existing SQLite file tests while routing
-    storage, bridge, config, and e2e tests onto isolated per-test cloned PostgreSQL databases.
-    """
+    """Redirects `GameDatabase` instances in tests onto isolated disposable PostgreSQL databases."""
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._tls = threading.local()
         self._installed = False
         self._enabled = False
         self._path_to_dsn: dict[str, str] = {}
         self._open_dbs: list[weakref.ref[Any]] = []
         self.redirected_count: int = 0
         self._orig_db_init: Any = None
-        self._orig_default_db_path: Optional[Path] = None
         self._orig_load_cfg: Any = None
         self._orig_save_cfg: Any = None
-        self._orig_load_attack_stats: Any = None
         self._orig_load_rank_history: Any = None
 
     @property
     def enabled(self) -> bool:
         return self._enabled
-
-    def _sqlite_allowed_on_thread(self) -> bool:
-        return int(getattr(self._tls, "allow_sqlite_depth", 0)) > 0
-
-    @contextlib.contextmanager
-    def allow_sqlite(self) -> Iterator[None]:
-        depth = int(getattr(self._tls, "allow_sqlite_depth", 0))
-        self._tls.allow_sqlite_depth = depth + 1
-        try:
-            yield
-        finally:
-            self._tls.allow_sqlite_depth = depth
 
     def lookup_mapped_dsn(self, path: Any) -> Optional[str]:
         key = _resolve_db_key(path)
@@ -836,54 +727,44 @@ class PostgresTestRedirector:
             from spaceinvasion.core import config as config_mod
             from spaceinvasion.db import backend as backend_mod
             from spaceinvasion.db import storage as storage_mod
-            from spaceinvasion.planner import optimizer as optimizer_mod
 
             self._orig_db_init = storage_mod.GameDatabase.__init__
-            self._orig_default_db_path = storage_mod.DEFAULT_DB_PATH
             self._orig_load_cfg = config_mod.load_strategy_config
             self._orig_save_cfg = config_mod.save_strategy_config
-            self._orig_load_attack_stats = optimizer_mod.load_attack_history_stats
             self._orig_load_rank_history = ranking_mod.load_rank_history
             redirector = self
 
-            def _wrapped_sqlite_connect(database: Any, *args: Any, **kwargs: Any) -> Any:
-                if redirector._enabled and not redirector._sqlite_allowed_on_thread():
-                    mapped = redirector.lookup_mapped_dsn(database)
-                    if mapped is not None:
-                        return _SqliteCompatPostgresConn(mapped)
-                return _ORIG_SQLITE_CONNECT(database, *args, **kwargs)
-
             def _wrapped_db_init(
                 db_self: Any,
-                db_path: Any = storage_mod.DEFAULT_DB_PATH,
+                db_path: Any = None,
                 *,
                 backend: Optional[str] = None,
                 postgres_url: Optional[str] = None,
                 pool_min_size: int = 2,
                 pool_max_size: int = 16,
-                legacy_rank_json: Optional[Path] = None,
-                attack_history_path: Optional[Path | str] = None,
                 target_schema_version: Optional[int] = None,
                 backup_on_upgrade: Optional[bool] = None,
             ) -> None:
+                explicit_invalid_backend = backend is not None and str(backend).strip().lower() in (
+                    "sqlite",
+                    "sqlite3",
+                    "file",
+                )
+                raw_path_s = str(db_path or "").strip()
                 use_pg_redirect = (
                     redirector._enabled
-                    and not redirector._sqlite_allowed_on_thread()
-                    and backend is None
+                    and not explicit_invalid_backend
                     and postgres_url is None
-                    and storage_mod.sqlite3.connect in (_ORIG_SQLITE_CONNECT, _wrapped_sqlite_connect)
-                    and storage_mod.DEFAULT_DB_PATH == redirector._orig_default_db_path
+                    and not backend_mod.is_postgres_dsn(raw_path_s)
                 )
-                key = _resolve_db_key(db_path) if use_pg_redirect else None
-                if use_pg_redirect and key is not None:
-                    with redirector._lock:
-                        mapped_dsn = redirector._path_to_dsn.get(key)
-                    if mapped_dsn is None and _is_existing_sqlite_file(Path(key)):
-                        use_pg_redirect = False
-                    else:
+                if use_pg_redirect:
+                    key = _resolve_db_key(db_path)
+                    harness = get_shared_pg_harness()
+                    from_tpl = target_schema_version is None
+                    if key is not None:
+                        with redirector._lock:
+                            mapped_dsn = redirector._path_to_dsn.get(key)
                         if mapped_dsn is None:
-                            harness = get_shared_pg_harness()
-                            from_tpl = target_schema_version is None
                             new_dsn = harness.create_database(
                                 prefix="staged" if not from_tpl else "test",
                                 from_template=from_tpl,
@@ -891,22 +772,25 @@ class PostgresTestRedirector:
                             with redirector._lock:
                                 mapped_dsn = redirector._path_to_dsn.setdefault(key, new_dsn)
                         _touch_pg_marker_if_outside_repo(Path(key), mapped_dsn)
-                        redirector._orig_db_init(
-                            db_self,
-                            db_path,
-                            backend="postgres",
-                            postgres_url=mapped_dsn,
-                            pool_min_size=min(max(1, int(pool_min_size)), 1),
-                            pool_max_size=min(max(2, int(pool_max_size)), 6),
-                            legacy_rank_json=legacy_rank_json,
-                            attack_history_path=attack_history_path,
-                            target_schema_version=target_schema_version,
-                            backup_on_upgrade=backup_on_upgrade,
+                    else:
+                        mapped_dsn = harness.create_database(
+                            prefix="staged" if not from_tpl else "mem",
+                            from_template=from_tpl,
                         )
-                        with redirector._lock:
-                            redirector.redirected_count += 1
-                            redirector._open_dbs.append(weakref.ref(db_self))
-                        return
+                    redirector._orig_db_init(
+                        db_self,
+                        db_path,
+                        backend="postgres",
+                        postgres_url=mapped_dsn,
+                        pool_min_size=min(max(1, int(pool_min_size)), 1),
+                        pool_max_size=min(max(2, int(pool_max_size)), 6),
+                        target_schema_version=target_schema_version,
+                        backup_on_upgrade=backup_on_upgrade,
+                    )
+                    with redirector._lock:
+                        redirector.redirected_count += 1
+                        redirector._open_dbs.append(weakref.ref(db_self))
+                    return
 
                 redirector._orig_db_init(
                     db_self,
@@ -915,8 +799,6 @@ class PostgresTestRedirector:
                     postgres_url=postgres_url,
                     pool_min_size=pool_min_size,
                     pool_max_size=pool_max_size,
-                    legacy_rank_json=legacy_rank_json,
-                    attack_history_path=attack_history_path,
                     target_schema_version=target_schema_version,
                     backup_on_upgrade=backup_on_upgrade,
                 )
@@ -938,25 +820,6 @@ class PostgresTestRedirector:
                         return redirector._orig_save_cfg(cfg, mapped)
                 return redirector._orig_save_cfg(cfg, path)
 
-            def _wrapped_load_attack_stats(path: Any = None) -> dict[str, Any]:
-                if redirector._enabled and path is not None:
-                    mapped = redirector.lookup_mapped_dsn(path)
-                    if mapped is not None:
-                        db = storage_mod.GameDatabase(
-                            mapped,
-                            backend="postgres",
-                            pool_min_size=1,
-                            pool_max_size=2,
-                            attack_history_path="",
-                        )
-                        try:
-                            stats = db.get_raid_stats()
-                            stats.setdefault("version", 2)
-                            return stats
-                        finally:
-                            db.close()
-                return redirector._orig_load_attack_stats(path)
-
             def _wrapped_load_rank_history(history_path: Any = None) -> list[dict[str, Any]]:
                 if redirector._enabled and history_path is not None:
                     mapped = redirector.lookup_mapped_dsn(history_path)
@@ -966,7 +829,6 @@ class PostgresTestRedirector:
                             backend="postgres",
                             pool_min_size=1,
                             pool_max_size=2,
-                            attack_history_path="",
                         )
                         try:
                             return db.get_rank_samples()
@@ -975,10 +837,8 @@ class PostgresTestRedirector:
                 return redirector._orig_load_rank_history(history_path)
 
             storage_mod.GameDatabase.__init__ = _wrapped_db_init  # type: ignore[assignment,method-assign]
-            sqlite3.connect = _wrapped_sqlite_connect  # type: ignore[assignment]
             config_mod.load_strategy_config = _wrapped_load_cfg
             config_mod.save_strategy_config = _wrapped_save_cfg
-            optimizer_mod.load_attack_history_stats = _wrapped_load_attack_stats
             ranking_mod.load_rank_history = _wrapped_load_rank_history
             # Keep backend_mod referenced to ensure it's loaded before tests patch anything
             _ = backend_mod.is_unix_socket_dsn
@@ -1009,10 +869,3 @@ _REDIRECTOR = PostgresTestRedirector()
 
 def get_pg_redirector() -> PostgresTestRedirector:
     return _REDIRECTOR
-
-
-@contextlib.contextmanager
-def allow_sqlite_for_test() -> Iterator[None]:
-    """Context manager opting a specific block out of automatic PostgreSQL redirection."""
-    with _REDIRECTOR.allow_sqlite():
-        yield

@@ -23,18 +23,9 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
+from spaceinvasion.core.cli_support import maybe_reexec_venv, safe_cli_str  # noqa: E402
 
-def _maybe_reexec_venv() -> None:
-    if os.environ.get("SPACEINVASION_NO_REEXEC") == "1":
-        return
-    if sys.prefix != sys.base_prefix:
-        return
-    venv_python = _REPO_ROOT / ".venv" / "bin" / "python3"
-    if venv_python.exists() and os.path.abspath(sys.executable) != os.path.abspath(venv_python):
-        os.execv(str(venv_python), [str(venv_python), *sys.argv])
-
-
-_maybe_reexec_venv()
+maybe_reexec_venv(_REPO_ROOT, skip=os.environ.get("SPACEINVASION_NO_REEXEC") == "1")
 
 from spaceinvasion.combat.fleet import parse_station_ships_spec  # noqa: E402
 from spaceinvasion.core import game_data # noqa: E402
@@ -78,9 +69,15 @@ WATCH_PATHS = discover_watch_paths(
     entrypoints=(Path(__file__).resolve(),),
     packages=("core", "combat", "planner"),
     extra_files=(
+        _REPO_ROOT / "spaceinvasion/__init__.py",
         _REPO_ROOT / "spaceinvasion/runtime/commander_client.py",
         _REPO_ROOT / "spaceinvasion/runtime/reloader.py",
     ),
+)
+_WATCH_DIRS: tuple[Path, ...] = (
+    _REPO_ROOT / "spaceinvasion/core",
+    _REPO_ROOT / "spaceinvasion/combat",
+    _REPO_ROOT / "spaceinvasion/planner",
 )
 
 _RATE_LIMIT_MARKERS = (
@@ -171,7 +168,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--config",
         type=Path,
         default=None,
-        help="Optional strategy config path (.db SQLite or legacy .yaml; defaults to state/spaceinvasion.db).",
+        help="Optional strategy config JSON path (defaults to active PostgreSQL database).",
     )
     parser.add_argument(
         "--log-dir",
@@ -198,97 +195,8 @@ def _safe_cmd_opt_int(val: Any) -> Optional[int]:
     return game_data.cap_json_int(parsed)
 
 
-def _safe_cmd_str(
-    val: Any,
-    default: str = "",
-    *,
-    _depth: int = 0,
-    _seen: Optional[set[int]] = None,
-    _budget: Optional[list[int]] = None,
-) -> str:
-    if val is None:
-        return default
-    if isinstance(val, os.PathLike):
-        try:
-            val = os.fspath(val)
-        except Exception:
-            return default
-        if val is None:
-            return default
-        if isinstance(val, os.PathLike):
-            return default
-    if isinstance(val, (bytes, bytearray)):
-        txt = bytes(val).decode("utf-8", errors="replace")
-    elif isinstance(val, BaseException):
-        str_fn = getattr(type(val), "__str__", BaseException.__str__)
-        used_custom_str = False
-        txt = ""
-        if str_fn not in (BaseException.__str__, KeyError.__str__):
-            try:
-                txt = str(val)[:16_384]
-                used_custom_str = True
-            except Exception:
-                txt = ""
-        if not used_custom_str:
-            args = getattr(val, "args", ())
-            if not isinstance(args, (tuple, list)) or not args:
-                txt = "" if str_fn is BaseException.__str__ else type(val).__name__
-            else:
-                seen = _seen if _seen is not None else set()
-                budget = _budget if _budget is not None else [256]
-                vid = id(val)
-                if vid in seen or _depth >= 16 or budget[0] <= 0:
-                    txt = f"<{type(val).__name__}>"
-                else:
-                    budget[0] -= 1
-                    seen.add(vid)
-                    try:
-                        if len(args) == 1:
-                            a0 = args[0]
-                            if isinstance(a0, str):
-                                txt = (repr(a0) if isinstance(val, KeyError) else a0)[:16_384]
-                            else:
-                                txt = _safe_cmd_str(
-                                    a0,
-                                    f"<{type(a0).__name__}>",
-                                    _depth=_depth + 1,
-                                    _seen=seen,
-                                    _budget=budget,
-                                )
-                        else:
-                            parts = []
-                            for a in args[:8]:
-                                if budget[0] <= 0:
-                                    parts.append("...")
-                                    break
-                                if isinstance(a, str):
-                                    parts.append(repr(a))
-                                else:
-                                    parts.append(
-                                        _safe_cmd_str(
-                                            a,
-                                            f"<{type(a).__name__}>",
-                                            _depth=_depth + 1,
-                                            _seen=seen,
-                                            _budget=budget,
-                                        )
-                                    )
-                            if len(args) > 8:
-                                parts.append(f"...+{len(args) - 8}")
-                            txt = ("(" + ", ".join(parts) + ")")[:4096]
-                    finally:
-                        seen.discard(vid)
-    elif isinstance(val, int) and not isinstance(val, bool):
-        txt = game_data.fmt_compact_int(val) if abs(val).bit_length() >= 12_000 else str(val)
-    else:
-        try:
-            txt = game_data.safe_key(val)
-        except Exception:
-            return default
-    txt = str(redact_sensitive(txt))
-    if _depth == 0 and len(txt) > 1024:
-        return txt[:1024]
-    return txt[:4096] if len(txt) > 4096 else txt
+def _safe_cmd_str(val: Any, default: str = "") -> str:
+    return safe_cli_str(val, default, root_cap=1024, redact_fn=redact_sensitive)
 
 
 def _planned_action_from_dict(raw: Any) -> Optional[PlannedAction]:
@@ -630,7 +538,6 @@ def run_commander_tick(
                 if compute_rate_limit_backoff(_safe_cmd_str(sync_exc)) is not None:
                     raise
     norm_mode = normalize_planner_mode(getattr(cfg, "planner_mode", "priority"))
-    is_ga_nn = norm_mode == "ga_nn"
     is_ai_planner = norm_mode == "ai_planner"
     max_planets_gate = max(1, _safe_cmd_int(getattr(cfg, "max_planets", 11), 11))
     cur_mq: Optional[Sequence[Mapping[str, Any]]] = manual_queue
@@ -666,7 +573,7 @@ def run_commander_tick(
                 transmitter_status=transmitter_status,
             ),
             active_fsc,
-            re_sort_priority=not is_ga_nn,
+            re_sort_priority=True,
         )
         if mq_items:
             merged, _ = merge_manual_queue_actions(cur_st, base, mq_items, config=cfg)
@@ -1094,12 +1001,7 @@ def main(argv: list[str] | None = None) -> int:
         return watch_and_run(
             label="CMD",
             cmd=current_python_cmd(Path(__file__).resolve(), raw_argv),
-            watch_paths=(
-                *WATCH_PATHS,
-                _REPO_ROOT / "spaceinvasion/core",
-                _REPO_ROOT / "spaceinvasion/combat",
-                _REPO_ROOT / "spaceinvasion/planner",
-            ),
+            watch_paths=(*WATCH_PATHS, *_WATCH_DIRS),
         )
 
     is_main = threading.current_thread() is threading.main_thread()

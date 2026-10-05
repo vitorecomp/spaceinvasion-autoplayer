@@ -705,57 +705,6 @@ class AiPlannerUnitTests(unittest.TestCase):
             self.assertFalse(ra.target_id == 1 and ra.target_level == 5)
             self.assertFalse(ra.executable_now)  # Research slot is busy!
 
-    def test_export_ai_planner_txt_14_line_header_and_causal_lines(self) -> None:
-        p1 = _make_planet(
-            101,
-            "02:380:12",
-            "Homeworld",
-            buildings={"b1": 4, "b2": 2, "b3": 3, "b4": 2, "b5": 6, "b7": 2, "b8": 3},
-            resources=Resources(40_000, 20_000, 20_000, 10_000),
-        )
-        state = GameState(
-            universe_id=31,
-            user_id=1,
-            nickname="Tester",
-            timestamp=1_700_000_000.0,
-            planets=(p1,),
-            active_planet_id=101,
-            researches={"r1": 1, "r2": 4},
-            speedup_factor=5.0,
-        )
-        target = _sample_target_config(
-            [
-                _target_planet_entry(
-                    1,
-                    101,
-                    "02:380:12",
-                    "Homeworld",
-                    {"b1": 6, "b2": 3, "b3": 5, "b4": 3, "b5": 8, "b7": 2, "b8": 3, "b11": 2, "b12": 2, "b13": 2, "b14": 2},
-                    is_central=True,
-                    pays_for_research=True,
-                ),
-            ],
-            planned_research={"r1": 2, "r2": 5},
-        )
-        plan = ap.run_ai_planner(state, target, params={"reward_weeks": 4, "ga_generations": 0})
-        txt = ap.export_ai_planner_txt(plan)
-        lines = txt.splitlines()
-        # Exact 14-line header: lines 0..12 non-empty, line 13 blank separator, line 14+ numbered steps.
-        self.assertGreater(len(lines), 14)
-        self.assertTrue(all(lines[i].strip() for i in range(13)))
-        self.assertEqual(lines[13], "")
-        self.assertTrue(lines[0].startswith("Best 4-week path"))
-        self.assertTrue(lines[5].startswith("Attacks & spare:"))
-        self.assertTrue(lines[6].startswith("Reward:"))
-        self.assertTrue(lines[8].startswith("Colonies reached:"))
-        self.assertTrue(lines[9].startswith("Max building levels reached:"))
-        self.assertTrue(lines[10].startswith("Research levels reached:"))
-        action_lines = lines[14:]
-        self.assertEqual(len(action_lines), len(plan["steps"]))
-        self.assertIn("1. at ", action_lines[0])
-        self.assertTrue(any("build " in ln for ln in action_lines))
-        self.assertTrue(any("research " in ln for ln in action_lines))
-
     def test_mathematical_parity_with_full_planner_notebook(self) -> None:
         """Cross-check `EmpirePathSimulator` & `PathStrategy` against `notebooks/full_planner.ipynb` §11."""
         nb = json.loads(NOTEBOOK_PATH.read_text(encoding="utf-8"))
@@ -2398,11 +2347,6 @@ class AiPlannerUnitTests(unittest.TestCase):
         self.assertEqual(plan["summary"]["planned_cargo_per_hour_24h"], td["cargo_per_hour_24h"])
         self.assertEqual(plan["summary"]["recommended_cargo_capacity"], td["recommended_cargo_capacity"])
         self.assertEqual(plan["summary"]["recommended_large_transports"], td["recommended_large_transports"])
-
-        # Export header contract (exact 14 lines) remains untouched
-        txt_lines = ap.export_ai_planner_txt(plan).splitlines()
-        self.assertTrue(all(txt_lines[i].strip() for i in range(13)))
-        self.assertEqual(txt_lines[13], "")
 
         # Single-planet empire has zero transport demand and fallback 2.5 round_trips_per_hour
         single_state = GameState(

@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-import contextlib
-import sqlite3
-import threading
 import unittest
 
 import requests
@@ -377,7 +374,7 @@ class TestTier1R2(unittest.TestCase):
             )
             self.assertTrue(spy_res["ok"])
             self.assertTrue(spy_res["executed"])
-            sync_res = h.api.send_command({"command": "sync_spy_reports"})
+            sync_res = h.api.send_command({"command": "sync_messages"})
             self.assertGreaterEqual(sync_res.get("synced_reports", 0), 1)
 
             targets = {t["coords"]: t for t in h.api.send_command({"command": "db_summary"})["db"]["spy_targets"]}
@@ -422,10 +419,9 @@ class TestTier1R2(unittest.TestCase):
             self.assertEqual(last["ships"], {"s4": 20, "s1": 5})
 
             # Raid history recorded with is_exempt=1 for yellow inactive
-            assert h.db_path is not None
-            with contextlib.closing(sqlite3.connect(h.db_path)) as conn:
-                conn.row_factory = sqlite3.Row
-                rows = conn.execute(
+            assert h.bridge._db is not None
+            with h.bridge._db._lock:
+                rows = h.bridge._db._conn.execute(
                     "SELECT target_coords, is_exempt FROM raid_history ORDER BY id DESC LIMIT 1"
                 ).fetchall()
             self.assertEqual(len(rows), 1)

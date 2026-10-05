@@ -32,7 +32,7 @@ fi
 STACK_SCRIPT="${STACK_SCRIPT:-$BIN_DIR/run_stack.py}"
 WATCHDOG_LOG="${WATCHDOG_LOG:-}"
 WATCHDOG_PID_FILE="${WATCHDOG_PID_FILE:-$REPO_DIR/state/run_stack_watchdog.pid}"
-export SPACEINVASION_DB_BACKEND="${SPACEINVASION_DB_BACKEND:-sqlite}"
+export SPACEINVASION_DB_BACKEND="${SPACEINVASION_DB_BACKEND:-postgres}"
 export SPACEINVASION_DISK_LOGS="${SPACEINVASION_DISK_LOGS:-0}"
 INITIAL_BACKOFF_SEC="${INITIAL_BACKOFF_SEC:-5}"
 MAX_BACKOFF_SEC="${MAX_BACKOFF_SEC:-60}"
@@ -46,17 +46,15 @@ Usage: ./starter.sh [--dry-run | run_stack.py options...]
 Supervises `bin/run_stack.py` and automatically restarts it if Python crashes or exits unexpectedly.
 
 Defaults & Options:
-  (no arguments)            Starts `bin/run_stack.py --live` locally using SQLite (`state/spaceinvasion.db`)
+  (no arguments)            Starts `bin/run_stack.py --live` using PostgreSQL (`SPACEINVASION_DB_URL` or Podman :5433)
   --dry-run                 Starts `bin/run_stack.py` in dry-run mode (without `--live`)
   -h, --help                Show this help message and `bin/run_stack.py --help`
 
 Note:
-  - Running via `./starter.sh` runs containerless on the host with SQLite (`state/spaceinvasion.db`).
-  - Running via Docker/Podman (`podman-compose up -d`) uses PostgreSQL (`./data/postgres`) exclusively.
-  - Sync both databases anytime with: `.venv/bin/python3 scripts/sync_db.py`
+  - Both host runs (`./starter.sh`) and container runs (`podman-compose up -d`) use PostgreSQL exclusively.
 
 Environment Overrides:
-  SPACEINVASION_DB_BACKEND  Database engine override (`postgres` or `sqlite`)
+  SPACEINVASION_DB_BACKEND  Database engine (`postgres` only)
   SPACEINVASION_DB_URL      Explicit PostgreSQL DSN override
   SPACEINVASION_PG_PORT     Host port bound by Podman PostgreSQL container (default: 5433)
   INITIAL_BACKOFF_SEC       Initial restart delay in seconds (default: 5)

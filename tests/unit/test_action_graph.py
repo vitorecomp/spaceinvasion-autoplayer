@@ -13,10 +13,6 @@ from spaceinvasion.action_graph import (
     merge_strategy_config_overrides,
 )
 from spaceinvasion.config import StrategyConfig
-from spaceinvasion.optimizer import (
-    get_last_optimizer_summary,
-    run_optimizer,
-)
 from spaceinvasion.state import (
     BuildingOffer,
     EnergyBalance,
@@ -118,11 +114,10 @@ class TestActionGraphEngine(unittest.TestCase):
             base,
             {
                 "ga_population_size": 48,
-                "ga_horizon_steps": 9,
                 "allow_raids": True,
                 "shipyard_targets": {"small-fighter": 30},
             },
-            planner_mode_override="ga_nn",
+            planner_mode_override="ai_planner",
         )
 
         # Base config and its nested dict must remain 100% unmutated
@@ -132,16 +127,15 @@ class TestActionGraphEngine(unittest.TestCase):
         self.assertEqual(base.shipyard_targets, snapshot_targets)
 
         # Effective config reflects overrides + preserved sibling shipyard keys
-        self.assertEqual(eff.planner_mode, "ga_nn")
+        self.assertEqual(eff.planner_mode, "ai_planner")
         self.assertEqual(eff.ga_population_size, 48)
-        self.assertEqual(eff.ga_horizon_steps, 9)
         self.assertTrue(eff.allow_raids)
         self.assertEqual(eff.shipyard_targets["small-fighter"], 30)
         self.assertEqual(eff.shipyard_targets["spy-probe"], 10)
         self.assertEqual(eff.shipyard_targets["recycler"], 4)
         self.assertEqual(
             changed,
-            ["allow_raids", "ga_horizon_steps", "ga_population_size", "planner_mode", "shipyard_targets"],
+            ["allow_raids", "ga_population_size", "planner_mode", "shipyard_targets"],
         )
 
     def test_empty_state_and_planet_filter_produce_clean_acyclic_graph(self) -> None:
@@ -517,7 +511,7 @@ class TestActionGraphEngine(unittest.TestCase):
             )
         )
 
-    def test_priority_vs_ga_nn_step_outcomes_and_optimizer_summary_isolation(self) -> None:
+    def test_priority_and_legacy_ga_nn_mode_normalize_with_null_ga_fields(self) -> None:
         p1 = _mk_planet(
             101,
             "Homeworld",
@@ -544,30 +538,7 @@ class TestActionGraphEngine(unittest.TestCase):
             speedup_factor=4.0,
         )
 
-        # Record a baseline global summary first
-        base_ga_cfg = StrategyConfig(
-            planner_mode="ga_nn",
-            ga_population_size=6,
-            ga_generations=2,
-            ga_horizon_steps=4,
-            ga_seed=11,
-        )
-        baseline_opt = run_optimizer(st, config=base_ga_cfg, record_global_summary=True)
-        global_before = copy.deepcopy(get_last_optimizer_summary())
-        self.assertIsNotNone(global_before)
-        self.assertIn("step_outcomes", baseline_opt.to_dict()["best_simulation"])
-
-        # Now run an isolated simulation with different GA seed/population/generations (record_global_summary=False)
-        sim_ga_cfg = StrategyConfig(
-            planner_mode="ga_nn",
-            ga_population_size=10,
-            ga_generations=3,
-            ga_horizon_steps=5,
-            ga_seed=77,
-        )
-        sim_opt = run_optimizer(st, config=sim_ga_cfg, record_global_summary=False)
-        global_after = get_last_optimizer_summary()
-        self.assertEqual(global_after, global_before)
+        from spaceinvasion.strategy import plan_actions
 
         prio_cfg = StrategyConfig(planner_mode="priority")
         prio_actions = plan_actions(st, config=prio_cfg)
@@ -577,22 +548,22 @@ class TestActionGraphEngine(unittest.TestCase):
         self.assertIsNone(g_prio["ga_summary"])
         self.assertTrue(all(n["ga_step"] is None for n in g_prio["nodes"]))
 
-        g_gann = build_action_graph(
+        legacy_cfg = StrategyConfig(planner_mode="ga_nn", allow_raids=True)
+        g_legacy = build_action_graph(
             st,
-            list(sim_opt.actions),
-            effective_config=sim_ga_cfg,
+            prio_actions,
+            effective_config=legacy_cfg,
             active_config=prio_cfg,
             simulated=True,
-            optimizer_summary=sim_opt.to_dict(),
         )
-        self._assert_strict_dag(g_gann)
-        self.assertEqual(g_gann["mode"], "ga_nn")
-        self.assertTrue(g_gann["simulated"])
-        self.assertTrue(g_gann["is_dirty"])
-        self.assertIsNotNone(g_gann["ga_summary"])
-        self.assertTrue(any(n["ga_step"] is not None for n in g_gann["nodes"]))
+        self._assert_strict_dag(g_legacy)
+        self.assertEqual(g_legacy["mode"], "priority")
+        self.assertTrue(g_legacy["simulated"])
+        self.assertTrue(g_legacy["is_dirty"])
+        self.assertIsNone(g_legacy["ga_summary"])
+        self.assertTrue(all(n["ga_step"] is None for n in g_legacy["nodes"]))
 
-    def test_recycle_and_tutorial_task_classification_slot_edges_and_ga_step_matching(self) -> None:
+    def test_recycle_and_tutorial_task_classification_and_slot_edges(self) -> None:
         p1 = _mk_planet(101, "Homeworld", "01:042:07", ships={"s11": 0})
         st = GameState(1, 1, "cmdr", 1000.0, (p1,), active_planet_id=101)
         acts = [
@@ -635,39 +606,18 @@ class TestActionGraphEngine(unittest.TestCase):
                 executable_now=False,
             ),
         ]
-        ga_cfg = StrategyConfig(planner_mode="ga_nn")
-        opt_summary = {
-            "planner_mode": "ga_nn",
-            "best_simulation": {
-                "fitness": 125.0,
-                "step_outcomes": [
-                    {
-                        "index": 0,
-                        "kind": "RECYCLE",
-                        "planet_id": 101,
-                        "target_id": 11,
-                        "target_name": "Recycle debris [01:042:08]",
-                        "wait_s": 60.0,
-                        "duration_s": 180.0,
-                        "start_t": 60.0,
-                        "finish_t": 240.0,
-                    }
-                ],
-            },
-        }
+        cfg = StrategyConfig(planner_mode="priority")
         graph = build_action_graph(
             st,
             acts,
-            effective_config=ga_cfg,
-            active_config=ga_cfg,
-            optimizer_summary=opt_summary,
+            effective_config=cfg,
+            active_config=cfg,
         )
         self._assert_strict_dag(graph)
         by_id = {n["id"]: n for n in graph["nodes"]}
         self.assertEqual(by_id["act_2"]["category"], "recon")
         self.assertEqual(by_id["act_2"]["lane_id"], "lane:planet:101")
-        self.assertIsNotNone(by_id["act_2"]["ga_step"])
-        self.assertEqual(by_id["act_2"]["ga_step"]["finish_t"], 240.0)
+        self.assertIsNone(by_id["act_2"]["ga_step"])
         self.assertEqual(by_id["act_3"]["category"], "tutorial")
 
         edge_map = {(e["source"], e["target"]): e for e in graph["edges"]}
@@ -706,28 +656,16 @@ class TestActionGraphEngine(unittest.TestCase):
             PlannedAction("P2", "BUILD_SHIP", 101, "01:042:07", "Recycler", "5000-digit ship id", target_id="s" + huge_digits, target_level=1, executable_now=False),  # type: ignore[arg-type]
             PlannedAction("P2", "BUILD", 101, "01:042:07", "Metal mine", "5000-digit build id", target_id=huge_digits, target_level=4, executable_now=False),  # type: ignore[arg-type]
         ]
-        ga_cfg = StrategyConfig(planner_mode="ga_nn")
-        opt_summary = {
-            "planner_mode": "ga_nn",
-            "best_simulation": {
-                "fitness": 88.0,
-                "step_outcomes": [
-                    {"index": 0, "kind": "BUILD", "planet_id": 101, "target_id": "b5", "target_name": "Fusion plant", "target_level": 6, "finish_t": 30.0},
-                    {"index": 1, "kind": "BUILD", "planet_id": 101, "target_id": "b\u00b2", "target_name": "Unknown", "finish_t": 45.0},
-                    {"index": 2, "kind": "BUILD_SHIP", "planet_id": 101, "target_id": "s" + huge_digits, "target_name": "Unknown", "finish_t": 60.0},
-                ],
-            },
-        }
-        g_adv = build_action_graph(st, acts, effective_config=ga_cfg, active_config=ga_cfg, optimizer_summary=opt_summary)
+        cfg = StrategyConfig(planner_mode="priority")
+        g_adv = build_action_graph(st, acts, effective_config=cfg, active_config=cfg)
         self._assert_strict_dag(g_adv)
         by_id = {n["id"]: n for n in g_adv["nodes"]}
-        self.assertIsNotNone(by_id["act_1"]["ga_step"])
-        self.assertEqual(by_id["act_1"]["ga_step"]["finish_t"], 30.0)
+        self.assertIsNone(by_id["act_1"]["ga_step"])
         edge_map = {(e["source"], e["target"]): e for e in g_adv["edges"]}
         self.assertIn(("act_0", "act_4"), edge_map)
         self.assertIn("storage_cap", edge_map[("act_0", "act_4")]["types"])
 
-    def test_demolish_building_category_slot_edges_and_ga_step_matching(self) -> None:
+    def test_demolish_building_category_and_slot_edges(self) -> None:
         p1 = _mk_planet(
             101,
             "Homeworld",
@@ -784,27 +722,14 @@ class TestActionGraphEngine(unittest.TestCase):
                 executable_now=False,
             ),
         ]
-        ga_cfg = StrategyConfig(planner_mode="ga_nn")
-        opt_summary = {
-            "planner_mode": "ga_nn",
-            "best_simulation": {
-                "fitness": 120.0,
-                "step_outcomes": [
-                    {"index": 0, "kind": "BUILD", "planet_id": 101, "target_id": 5, "target_level": 11, "finish_t": 40.0},
-                    {"index": 1, "kind": "DEMOLISH_BUILDING", "planet_id": 101, "target_id": 6, "target_level": 1, "finish_t": 95.0},
-                    {"index": 2, "kind": "DEMOLISH_BUILDING", "planet_id": 101, "target_id": "b6", "target_level": 0, "finish_t": 130.0},
-                ],
-            },
-        }
-        graph = build_action_graph(st, acts, effective_config=ga_cfg, active_config=ga_cfg, optimizer_summary=opt_summary)
+        cfg = StrategyConfig(planner_mode="priority")
+        graph = build_action_graph(st, acts, effective_config=cfg, active_config=cfg)
         self._assert_strict_dag(graph)
         by_id = {n["id"]: n for n in graph["nodes"]}
         self.assertEqual(by_id["act_1"]["category"], "energy")
         self.assertEqual(by_id["act_1"]["lane_id"], "lane:planet:101")
-        self.assertIsNotNone(by_id["act_1"]["ga_step"])
-        self.assertEqual(by_id["act_1"]["ga_step"]["finish_t"], 95.0)
-        self.assertIsNotNone(by_id["act_2"]["ga_step"])
-        self.assertEqual(by_id["act_2"]["ga_step"]["finish_t"], 130.0)
+        self.assertIsNone(by_id["act_1"]["ga_step"])
+        self.assertIsNone(by_id["act_2"]["ga_step"])
 
         edge_map = {(e["source"], e["target"]): e for e in graph["edges"]}
         self.assertIn("energy_support", edge_map[("act_0", "act_1")]["types"])

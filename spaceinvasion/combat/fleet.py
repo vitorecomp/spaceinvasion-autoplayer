@@ -1105,7 +1105,6 @@ _COORD_CONTEXT_PREFIX_RE = re.compile(
     r")\s*(?:[:=\-]\s*)?\[?\s*$",
     re.IGNORECASE,
 )
-_GALAXY_COORD_CONTEXT_PREFIX_RE = _COORD_CONTEXT_PREFIX_RE
 _GALAXY_PAIR_NOISE_PREFIX_RE = re.compile(
     r"(?:server\s*time|report\s*time|date|datum|timestamp|sent|gesendet|time|clock|uhr|zeit|timer|countdown|eta|updated|stand|fields?|felder|arrival|ankunft)\s*:?\s*[\(\[]?\s*$",
     re.IGNORECASE,
@@ -4052,37 +4051,6 @@ def grade_colony_candidate(
     }
 
 
-def pick_colony_candidates(
-    slots: tuple[GalaxySlot, ...],
-    *,
-    goal: str = "large_fields",
-    min_fields_target: int = 300,
-    uninhabited_reports: Optional[Mapping[str, SpyReport]] = None,
-) -> list[GalaxySlot]:
-    """Filter & rank free galaxy slots for large economy colonies (pos 7-12, 300+ fields) or cold Spice (13-16)."""
-    reports = uninhabited_reports or {}
-    free = [s for s in slots if s.status_color == "free"]
-    filtered: list[tuple[float, GalaxySlot]] = []
-
-    for slot in free:
-        rep = reports.get(slot.coords)
-        if rep and rep.uninhabited_fields is not None and rep.uninhabited_fields < min_fields_target:
-            if goal != "cold_spice":
-                continue
-        if goal == "cold_spice":
-            # Edge cold positions 13-16 yield maximum Spice
-            pos_score = 100.0 - abs(slot.position - 15) * 15.0
-        else:
-            # Mid-outer slots 7-12 offer best statistical odds for >=300 field rolls
-            pos_score = 100.0 - abs(slot.position - 9.5) * 12.0
-        if rep and rep.uninhabited_fields:
-            pos_score += rep.uninhabited_fields * 0.25
-        filtered.append((pos_score, slot))
-
-    filtered.sort(key=lambda pair: (-pair[0], pair[1].position))
-    return [slot for _, slot in filtered]
-
-
 def _parse_gal_sys_pair(raw: Any) -> Optional[tuple[int, int]]:
     if isinstance(raw, (tuple, list)) and len(raw) >= 2:
         g = _safe_fleet_int(raw[0], 0)
@@ -4121,27 +4089,6 @@ def _safe_scan_float(value: Any, default: float = 0.0) -> float:
         except Exception:
             return default
     return default
-
-
-def galaxy_sector_distance(
-    galaxy: int,
-    system: int,
-    own_colonies: Sequence[tuple[int, int]],
-    *,
-    systems_per_galaxy: int = 400,
-) -> int:
-    """Return minimum circular system distance (`min(|s-own_s|, N-|s-own_s|)`) or cross-galaxy penalized distance."""
-    n_sys = max(1, _safe_fleet_int(systems_per_galaxy, 400))
-    if not own_colonies:
-        return 0
-    best: Optional[int] = None
-    for col_g, col_s in own_colonies:
-        delta = abs(int(system) - int(col_s))
-        circ = min(delta, max(0, n_sys - delta))
-        dist = circ if int(col_g) == int(galaxy) else (250 * abs(int(galaxy) - int(col_g)) + circ)
-        if best is None or dist < best:
-            best = dist
-    return best if best is not None else 0
 
 
 ARROW_NAV_MAX_DISTANCE = 5

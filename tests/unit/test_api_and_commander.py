@@ -211,13 +211,11 @@ class TestApiAndCommander(unittest.TestCase):
             self.assertTrue(sim_cmd["ok"])
             self.assertTrue(sim_cmd["simulation"]["safe_to_attack"])
 
-            rnk_cmd = api.send_command({"command": "ranking_evolution"})
-            self.assertTrue(rnk_cmd["ok"])
-            self.assertIn("current", rnk_cmd["ranking"])
-            self.assertGreater(rnk_cmd["ranking"]["current"]["estimated_points"], 0)
+            self.assertIn("current", dash["ranking"])
+            self.assertGreater(dash["ranking"]["current"]["estimated_points"], 0)
 
             with tempfile.TemporaryDirectory() as tmp_cfg:
-                bridge.config_path = Path(tmp_cfg) / "config.yaml"
+                bridge.config_path = Path(tmp_cfg) / "config.json"
                 upd = api.send_command({"command": "update_config", "config": {"merchant_mode": True}})
                 self.assertTrue(upd["config"]["merchant_mode"])
                 self.assertTrue(bridge.config_path.exists())
@@ -279,7 +277,7 @@ class TestApiAndCommander(unittest.TestCase):
                 server.shutdown()
                 server.server_close()
 
-            self.assertTrue((Path(tmp) / "state" / "spaceinvasion.db").exists())
+            self.assertTrue((Path(tmp) / "state" / "postgres").exists())
             self.assertIsNotNone(bridge._db)
             summary = bridge._db.summary()
             bridge._db.close()
@@ -426,16 +424,10 @@ class TestApiAndCommander(unittest.TestCase):
 
     def test_bridge_limiter_wait_defaults_and_dynamic_raid_stats_isolated_from_repo_file(self) -> None:
         from dataclasses import replace as dc_replace
-        import sqlite3
         from spaceinvasion.storage import GameDatabase
 
         repo_hist = Path("data") / "attack_history.json"
         self.assertFalse(repo_hist.exists())
-        repo_db = Path("state") / "spaceinvasion.db"
-        before_raids = 0
-        if repo_db.is_file():
-            with sqlite3.connect(f"file:{repo_db}?mode=ro", uri=True) as rconn:
-                before_raids = int(rconn.execute("SELECT COUNT(*) FROM raid_history").fetchone()[0])
 
         state = _sample_state()
         p = state.planets[0]
@@ -450,7 +442,7 @@ class TestApiAndCommander(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             logs_dir = Path(tmp) / "logs"
             db_path = Path(tmp) / "state" / "spaceinvasion.db"
-            cfg_path = Path(tmp) / "config.yaml"
+            cfg_path = Path(tmp) / "config.json"
 
             fake_client = MagicMock()
             fake_client.__enter__.return_value = fake_client
@@ -506,10 +498,6 @@ class TestApiAndCommander(unittest.TestCase):
                     bridge._db.close()
 
         self.assertFalse(repo_hist.exists())
-        if repo_db.is_file():
-            with sqlite3.connect(f"file:{repo_db}?mode=ro", uri=True) as rconn:
-                after_raids = int(rconn.execute("SELECT COUNT(*) FROM raid_history").fetchone()[0])
-            self.assertEqual(after_raids, before_raids)
 
     def test_update_config_validation_and_executor_sync(self) -> None:
         import requests
@@ -520,7 +508,7 @@ class TestApiAndCommander(unittest.TestCase):
         fake_client.read_full_snapshot.return_value = state
 
         with tempfile.TemporaryDirectory() as tmp:
-            cfg_path = Path(tmp) / "config.yaml"
+            cfg_path = Path(tmp) / "config.json"
             bridge = GameApiBridge(
                 debug_port=9222,
                 config_path=cfg_path,
@@ -549,19 +537,10 @@ class TestApiAndCommander(unittest.TestCase):
                     {"ga_generations": 201},
                     {"ga_generations": False},
                     {"ga_generations": 2.5},
-                    {"ga_horizon_steps": 0},
-                    {"ga_horizon_steps": 25},
                     {"ga_mutation_rate": -0.01},
                     {"ga_mutation_rate": 1.01},
                     {"ga_mutation_rate": True},
                     {"ga_mutation_rate": "bad"},
-                    {"ga_nn_weight": -0.1},
-                    {"ga_nn_weight": 1.5},
-                    {"ga_nn_weight": False},
-                    {"ga_seed": True},
-                    {"ga_seed": 42.5},
-                    {"ga_seed": ""},
-                    {"ga_seed": "not_int"},
                     {"max_actions_per_hour": 0},
                     {"max_actions_per_hour": -5},
                     {"max_actions_per_hour": True},
@@ -602,13 +581,10 @@ class TestApiAndCommander(unittest.TestCase):
                     json={
                         "command": "update_config",
                         "config": {
-                            "planner_mode": "ga_nn",
+                            "planner_mode": "ai_planner",
                             "ga_population_size": 16,
                             "ga_generations": 4,
-                            "ga_horizon_steps": 3,
                             "ga_mutation_rate": 0.2,
-                            "ga_nn_weight": 0.4,
-                            "ga_seed": 77,
                             "max_actions_per_hour": 12,
                             "allow_raids": True,
                             "allow_fleetsave": True,
@@ -618,11 +594,9 @@ class TestApiAndCommander(unittest.TestCase):
                 )
                 self.assertEqual(good_resp.status_code, 200, good_resp.text)
                 cfg_out = good_resp.json()["config"]
-                self.assertEqual(cfg_out["planner_mode"], "ga_nn")
+                self.assertEqual(cfg_out["planner_mode"], "ai_planner")
                 self.assertEqual(cfg_out["ga_population_size"], 16)
                 self.assertEqual(cfg_out["ga_generations"], 4)
-                self.assertEqual(cfg_out["ga_horizon_steps"], 3)
-                self.assertEqual(cfg_out["ga_seed"], 77)
                 self.assertEqual(cfg_out["max_actions_per_hour"], 12)
                 self.assertEqual(bridge._live_executor.max_actions_per_hour, 12)
                 self.assertEqual(bridge._dry_executor.max_actions_per_hour, 12)
@@ -630,47 +604,18 @@ class TestApiAndCommander(unittest.TestCase):
                 self.assertTrue(bridge._dry_executor.allow_raids)
                 self.assertTrue(bridge._live_executor.allow_fleetsave)
                 self.assertTrue(bridge._dry_executor.allow_fleetsave)
-
-                # ga_seed=None clears seed cleanly
-                clr = requests.post(
-                    f"{base}/command",
-                    json={"command": "update_config", "config": {"ga_seed": None}},
-                    timeout=5,
-                )
-                self.assertEqual(clr.status_code, 200)
-                self.assertIsNone(clr.json()["config"]["ga_seed"])
             finally:
                 server.shutdown()
                 server.server_close()
 
-    def test_plan_override_and_sanitized_optimizer_summary_isolation(self) -> None:
-        from spaceinvasion.api_server import _sanitize_optimizer_summary
-
-        dirty = {
-            "generations": 4,
-            "population_size": 16,
-            "nn_evaluations": 64,
-            "baseline_fitness": float("nan"),
-            "best_fitness": float("inf"),
-            "improvement_pct": 1.25e8,
-            "note": "https://example.invalid/indexInternal.es?sid=SECRET999TOKEN",
-        }
-        cleaned = _sanitize_optimizer_summary(dirty)
-        assert cleaned is not None
-        self.assertEqual(cleaned["baseline_fitness"], 0.0)
-        self.assertEqual(cleaned["best_fitness"], 0.0)
-        self.assertLessEqual(cleaned["improvement_pct"], 1000.0)
-        self.assertGreaterEqual(cleaned["improvement_pct"], -1000.0)
-        self.assertNotIn("SECRET999TOKEN", json.dumps(cleaned))
-        self.assertIn("sid=REDACTED", cleaned["note"])
-
+    def test_plan_override_normalizes_legacy_ga_nn_and_keeps_optimizer_summary_null(self) -> None:
         state = _sample_state()
         fake_client = MagicMock()
         fake_client.__enter__.return_value = fake_client
         fake_client.read_full_snapshot.return_value = state
 
         with tempfile.TemporaryDirectory() as tmp:
-            cfg_path = Path(tmp) / "config.yaml"
+            cfg_path = Path(tmp) / "config.json"
             bridge = GameApiBridge(
                 debug_port=9222,
                 config_path=cfg_path,
@@ -679,18 +624,17 @@ class TestApiAndCommander(unittest.TestCase):
                 ensure_session_fn=lambda: None,
             )
             bridge.handle_command(
-                {"command": "update_config", "config": {"ga_population_size": 8, "ga_generations": 2, "ga_seed": 42}}
+                {"command": "update_config", "config": {"ga_population_size": 8, "ga_generations": 2}}
             )
 
             res_pri = bridge.handle_command({"command": "plan"})
             self.assertEqual(res_pri["planner_mode"], "priority")
             self.assertIsNone(res_pri["optimizer_summary"])
 
-            # Per-request ga_nn override exposes summary without mutating config or leaking into priority dashboard
+            # Legacy ga_nn override normalizes cleanly to priority without mutating config
             res_ga = bridge.handle_command({"command": "plan", "planner_mode": "ga_nn"})
-            self.assertEqual(res_ga["planner_mode"], "ga_nn")
-            self.assertIsInstance(res_ga["optimizer_summary"], dict)
-            self.assertEqual(res_ga["optimizer_summary"]["generations"], 2)
+            self.assertEqual(res_ga["planner_mode"], "priority")
+            self.assertIsNone(res_ga["optimizer_summary"])
             self.assertEqual(bridge.strategy_config.planner_mode, "priority")
 
             with patch("spaceinvasion.api_server.is_debug_port_open", return_value=True):
@@ -698,13 +642,12 @@ class TestApiAndCommander(unittest.TestCase):
             self.assertEqual(dash_pri["planner_mode"], "priority")
             self.assertIsNone(dash_pri["optimizer_summary"])
 
-            # Switching config to ga_nn exposes optimizer_summary on dashboard; switching back clears it
-            bridge.handle_command({"command": "update_config", "config": {"planner_mode": "ga_nn"}})
+            # Switching config to ai_planner updates planner_mode cleanly; optimizer_summary remains None
+            bridge.handle_command({"command": "update_config", "config": {"planner_mode": "ai_planner"}})
             with patch("spaceinvasion.api_server.is_debug_port_open", return_value=True):
-                dash_ga = bridge.dashboard(refresh=False)
-            self.assertEqual(dash_ga["planner_mode"], "ga_nn")
-            self.assertIsInstance(dash_ga["optimizer_summary"], dict)
-            self.assertGreaterEqual(dash_ga["optimizer_summary"]["nn_evaluations"], 1)
+                dash_ai = bridge.dashboard(refresh=False)
+            self.assertEqual(dash_ai["planner_mode"], "ai_planner")
+            self.assertIsNone(dash_ai["optimizer_summary"])
 
             bridge.handle_command({"command": "update_config", "config": {"planner_mode": "priority"}})
             with patch("spaceinvasion.api_server.is_debug_port_open", return_value=True):
@@ -840,7 +783,7 @@ class TestApiAndCommander(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             db_path = tmp_path / "state" / "spaceinvasion.db"
-            cfg_path = tmp_path / "config.yaml"
+            cfg_path = tmp_path / "config.json"
             nav_html = (
                 f'<a href="indexInternal.es?action=internalHome&SID={secret}" '
                 f'onclick="go(\'indexInternal.es?sid={secret}\')">Home</a>'
@@ -891,17 +834,11 @@ class TestApiAndCommander(unittest.TestCase):
 
                 db_res = bridge.handle_command({"command": "db_summary"})
                 self.assertNotIn(secret, json.dumps(db_res))
-
-                menu_res = bridge.handle_command({"command": "menu"})
-                self.assertNotIn(secret, json.dumps(menu_res))
-                self.assertEqual(len(menu_res["items"]), 2)
-                self.assertIn("action=internalBuildings", menu_res["items"][1]["href"])
-                self.assertIn("sid=REDACTED", menu_res["items"][0]["onclick"])
             finally:
                 if bridge._db is not None:
                     bridge._db.close()
 
-    def test_cross_bridge_concurrent_ga_nn_plan_isolation_and_config_cache_clear(self) -> None:
+    def test_cross_bridge_concurrent_plan_and_raid_stats_isolation(self) -> None:
         from dataclasses import replace as dc_replace
         import sys
 
@@ -931,10 +868,10 @@ class TestApiAndCommander(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            cfg_a = tmp_path / "cfg_a.yaml"
-            cfg_b = tmp_path / "cfg_b.yaml"
-            cfg_a.write_text("planner_mode: ga_nn\nga_generations: 1\nga_population_size: 4\nga_seed: 101\nallow_raids: true\n", encoding="utf-8")
-            cfg_b.write_text("planner_mode: ga_nn\nga_generations: 5\nga_population_size: 4\nga_seed: 202\nallow_raids: true\n", encoding="utf-8")
+            cfg_a = tmp_path / "cfg_a.json"
+            cfg_b = tmp_path / "cfg_b.json"
+            cfg_a.write_text('{"planner_mode": "priority", "ga_generations": 1, "ga_population_size": 4, "allow_raids": true}', encoding="utf-8")
+            cfg_b.write_text('{"planner_mode": "priority", "ga_generations": 5, "ga_population_size": 4, "allow_raids": true}', encoding="utf-8")
 
             client_a = MagicMock()
             client_a.__enter__.return_value = client_a
@@ -968,22 +905,21 @@ class TestApiAndCommander(unittest.TestCase):
                 errors: list[str] = []
                 barrier = threading.Barrier(2)
 
-                def _worker(tag: str, br: GameApiBridge, exp_gens: int, exp_seed: int, own_c: str, other_c: str) -> None:
+                def _worker(tag: str, br: GameApiBridge, exp_gens: int, own_c: str, other_c: str) -> None:
                     barrier.wait()
                     for idx in range(25):
-                        res = br.handle_command({"command": "plan", "planner_mode": "ga_nn"})
-                        summ = res.get("optimizer_summary") or {}
-                        pt = ((summ.get("attack_history_stats") or {}).get("per_target") or {})
-                        if summ.get("generations") != exp_gens or summ.get("seed") != exp_seed:
-                            errors.append(f"{tag}[{idx}] gens={summ.get('generations')} seed={summ.get('seed')}")
+                        res = br.handle_command({"command": "plan"})
+                        if not res.get("ok") or br.strategy_config.ga_generations != exp_gens:
+                            errors.append(f"{tag}[{idx}] ok={res.get('ok')} gens={br.strategy_config.ga_generations}")
+                        pt = (br._db.get_raid_stats().get("per_target") or {}) if br._db is not None else {}
                         if own_c not in pt or other_c in pt:
                             errors.append(f"{tag}[{idx}] per_target={list(pt.keys())}")
 
                 old_interval = sys.getswitchinterval()
                 sys.setswitchinterval(1e-6)
                 try:
-                    ta = threading.Thread(target=_worker, args=("A", bridge_a, 1, 101, "02:111:01", "09:222:09"))
-                    tb = threading.Thread(target=_worker, args=("B", bridge_b, 5, 202, "09:222:09", "02:111:01"))
+                    ta = threading.Thread(target=_worker, args=("A", bridge_a, 1, "02:111:01", "09:222:09"))
+                    tb = threading.Thread(target=_worker, args=("B", bridge_b, 5, "09:222:09", "02:111:01"))
                     ta.start()
                     tb.start()
                     ta.join(timeout=30)
@@ -993,9 +929,7 @@ class TestApiAndCommander(unittest.TestCase):
 
                 self.assertEqual(errors, [])
 
-                # Changing GA hyperparameters while _last_state is None clears cached _last_optimizer_summary
                 bridge_a._last_state = None
-                bridge_a._last_optimizer_summary = {"generations": 1, "seed": 101}
                 bridge_a.handle_command({"command": "update_config", "config": {"ga_generations": 3}})
                 with patch("spaceinvasion.api_server.is_debug_port_open", return_value=False):
                     dash_cleared = bridge_a.dashboard(refresh=False)
@@ -1015,7 +949,7 @@ class TestApiAndCommander(unittest.TestCase):
         fake_client.read_full_snapshot.return_value = state
 
         with tempfile.TemporaryDirectory() as tmp:
-            cfg_path = Path(tmp) / "config.yaml"
+            cfg_path = Path(tmp) / "config.json"
             bridge = GameApiBridge(
                 debug_port=9222,
                 config_path=cfg_path,
@@ -1029,9 +963,6 @@ class TestApiAndCommander(unittest.TestCase):
             try:
                 base = f"http://127.0.0.1:{port}"
                 hostile_configs = [
-                    {"ga_seed": 1e308},
-                    {"ga_seed": 2**31},
-                    {"ga_seed": -(2**31) - 1},
                     {"max_actions_per_hour": 1e308},
                     {"max_actions_per_hour": 100_001},
                     {"combat_safety_margin": 1e308},
@@ -1125,7 +1056,7 @@ class TestApiAndCommander(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            cfg_path = tmp_path / "config.yaml"
+            cfg_path = tmp_path / "config.json"
             logs_dir = tmp_path / "logs"
             db_path = tmp_path / "state" / "spaceinvasion.db"
             bridge = GameApiBridge(
@@ -1227,14 +1158,6 @@ class TestApiAndCommander(unittest.TestCase):
                 self.assertNotIn(secret_plain, r_nav.text)
                 self.assertNotIn(secret_enc, r_nav.text)
                 self.assertIn("sid%3DREDACTED", r_nav.json()["html"])
-
-                r_menu = requests.post(f"{base}/command", json={"command": "menu"}, timeout=5)
-                self.assertEqual(r_menu.status_code, 200)
-                self.assertNotIn(secret_plain, r_menu.text)
-                self.assertNotIn(secret_enc, r_menu.text)
-                items = r_menu.json()["items"]
-                self.assertIn("next=foo%3Fsid%3DREDACTED%26bar%3D1", items[0]["href"])
-                self.assertEqual(items[1]["href"], "indexInternal.es?action=internalBuildings")
 
                 # HTTP 429, 503, 500 error strings scrubbed across GET & POST + logs
                 with patch.object(
@@ -1346,7 +1269,7 @@ class TestApiAndCommander(unittest.TestCase):
                 research_offers=(),
                 active_queues=(),
             )
-            cfg_p = Path(tmp) / "cfg.yaml"
+            cfg_p = Path(tmp) / "cfg.json"
             bridge = GameApiBridge(
                 client_factory=lambda _port: MagicMock(),
                 config_path=cfg_p,
@@ -1440,8 +1363,8 @@ class TestApiAndCommander(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            cfg_p = tmp_path / "cfg.yaml"
-            cfg_p.write_text("allow_raids: true\nallow_pvp_in_az: false\n", encoding="utf-8")
+            cfg_p = tmp_path / "cfg.json"
+            cfg_p.write_text('{"allow_raids": true, "allow_pvp_in_az": false}', encoding="utf-8")
             p_own = PlanetState(
                 planet_id=101,
                 name="Home",
@@ -1534,7 +1457,7 @@ class TestApiAndCommander(unittest.TestCase):
                 many_yellow.append(GalaxySlot("09:009:09", 9, "DeepBlue", "VacDeep", "blue"))
                 bridge._db.record_galaxy_slots(many_yellow, ts=2000.0)
                 bridge._db._conn.execute(
-                    "UPDATE spy_targets SET pig_iron='bad', spice=100, "
+                    "UPDATE spy_targets SET pig_iron=0, spice=100, "
                     "fleet_json='{\"s1\": \"bad\"}', defense_json='{\"d1\": \"bad\"}' "
                     "WHERE coords='05:001:01'"
                 )
@@ -1600,9 +1523,9 @@ class TestApiAndCommander(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             tp = Path(tmp)
-            cfg_path = tp / "config.yaml"
+            cfg_path = tp / "config.json"
             cfg_path.write_text(
-                "planner_mode: priority\nallow_raids: true\nallow_pvp_in_az: true\n",
+                '{"planner_mode": "priority", "allow_raids": true, "allow_pvp_in_az": true}',
                 encoding="utf-8",
             )
             exact_pid = 10**18 + 123456789
@@ -1823,8 +1746,8 @@ class TestApiAndCommander(unittest.TestCase):
 
             with tempfile.TemporaryDirectory() as tmp:
                 tp = Path(tmp)
-                cfg_p = tp / "cfg.yaml"
-                cfg_p.write_text("planner_mode: priority\n", encoding="utf-8")
+                cfg_p = tp / "cfg.json"
+                cfg_p.write_text('{"planner_mode": "priority"}', encoding="utf-8")
 
                 for tick1_route, tick1_resp in (
                     ("/state", (502, '["bad"]')),
@@ -2114,7 +2037,7 @@ class TestApiAndCommander(unittest.TestCase):
             tp = Path(tmp)
             bridge = GameApiBridge(
                 debug_port=9222,
-                config_path=tp / "config.yaml",
+                config_path=tp / "config.json",
                 log_dir=tp / "logs",
                 db_path=tp / "test.db",
                 client_factory=lambda _port: fake_client,
@@ -2227,7 +2150,7 @@ class TestApiAndCommander(unittest.TestCase):
             tp = Path(tmp)
             bridge = GameApiBridge(
                 debug_port=9222,
-                config_path=tp / "config.yaml",
+                config_path=tp / "config.json",
                 log_dir=tp / "logs",
                 db_path=tp / "test.db",
                 client_factory=lambda _port: fake_client,
@@ -2308,7 +2231,7 @@ class TestApiAndCommander(unittest.TestCase):
             tp = Path(tmp)
             bridge = GameApiBridge(
                 debug_port=9222,
-                config_path=tp / "config.yaml",
+                config_path=tp / "config.json",
                 log_dir=tp / "logs",
                 db_path=tp / "test.db",
                 client_factory=lambda _port: fake_client,
@@ -2413,13 +2336,13 @@ class TestApiAndCommander(unittest.TestCase):
                 debug_port=0,
                 max_actions_per_hour=0,
                 log_dir=None,
-                config_path=tp / "cfg0.yaml",
+                config_path=tp / "cfg0.json",
             )
             b_huge = GameApiBridge(
                 debug_port=10**5000,
                 max_actions_per_hour=10**5000,
                 log_dir=None,
-                config_path=tp / "cfg1.yaml",
+                config_path=tp / "cfg1.json",
             )
             try:
                 self.assertEqual(b_zero.debug_port, 0)
@@ -2467,7 +2390,7 @@ class TestApiAndCommander(unittest.TestCase):
             b_rl = GameApiBridge(
                 debug_port=0,
                 log_dir=None,
-                config_path=tp / "cfgrl.yaml",
+                config_path=tp / "cfgrl.json",
                 client_factory=_RateLimitedClient,
                 ensure_session_fn=lambda: None,
             )
@@ -2523,7 +2446,7 @@ class TestApiAndCommander(unittest.TestCase):
             bridge = GameApiBridge(
                 debug_port=0,
                 log_dir=None,
-                config_path=tp / "cfg.yaml",
+                config_path=tp / "cfg.json",
                 client_factory=lambda _port: fake_cli,
                 ensure_session_fn=lambda: None,
             )
@@ -2813,7 +2736,7 @@ class TestApiAndCommander(unittest.TestCase):
             bridge = GameApiBridge(
                 debug_port=0,
                 log_dir=None,
-                config_path=tp / "cfg.yaml",
+                config_path=tp / "cfg.json",
                 ensure_session_fn=lambda: None,
             )
             try:
@@ -3095,7 +3018,7 @@ class TestApiAndCommander(unittest.TestCase):
 
             bridge = api_mod.GameApiBridge(
                 db_path=Path(tmp) / "bridge.db",
-                config_path=Path(tmp) / "missing_cfg.yaml",
+                config_path=Path(tmp) / "missing_cfg.json",
                 log_dir=Path(tmp) / "logs",
                 client_factory=_fail_factory,
                 ensure_session_fn=lambda: None,
@@ -3231,7 +3154,7 @@ class TestApiAndCommander(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             bridge = api_mod.GameApiBridge(
                 db_path=Path(tmp) / "sync.db",
-                config_path=Path(tmp) / "cfg.yaml",
+                config_path=Path(tmp) / "cfg.json",
                 log_dir=Path(tmp) / "logs",
                 client_factory=lambda _p: fake_client,
                 ensure_session_fn=lambda: None,
@@ -3349,8 +3272,8 @@ class TestApiAndCommander(unittest.TestCase):
         fake_client.read_full_snapshot.return_value = st_esc
 
         with tempfile.TemporaryDirectory() as tmp:
-            cfg_path = Path(tmp) / "cfg.yaml"
-            cfg_path.write_text("allow_fleetsave: false\nallow_raids: true\nallow_galaxy_scan: true\n", encoding="utf-8")
+            cfg_path = Path(tmp) / "cfg.json"
+            cfg_path.write_text('{"allow_fleetsave": false, "allow_raids": true, "allow_galaxy_scan": true}', encoding="utf-8")
             bridge = api_mod.GameApiBridge(
                 db_path=Path(tmp) / "esc.db",
                 config_path=cfg_path,
@@ -3485,12 +3408,11 @@ class TestApiAndCommander(unittest.TestCase):
         from dataclasses import asdict
         import requests
         from spaceinvasion.config import StrategyConfig, save_strategy_config
-        from spaceinvasion.optimizer import get_last_optimizer_summary, run_optimizer
         from spaceinvasion.state import BuildingOffer, ResearchOffer
 
         with tempfile.TemporaryDirectory(prefix="si_ag_iso_") as tmp:
             tmp_path = Path(tmp)
-            cfg_path = tmp_path / "config.yaml"
+            cfg_path = tmp_path / "config.json"
             db_path = tmp_path / "state" / "spaceinvasion.db"
             log_dir = tmp_path / "logs"
             db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -3501,7 +3423,6 @@ class TestApiAndCommander(unittest.TestCase):
                 playstyle="fleeter",
                 ga_population_size=16,
                 ga_generations=4,
-                ga_horizon_steps=5,
                 allow_raids=False,
                 allow_fleetsave=False,
                 max_actions_per_hour=45,
@@ -3546,10 +3467,6 @@ class TestApiAndCommander(unittest.TestCase):
                 client_calls[0] += 1
                 raise AssertionError("Browser client_factory must NOT be invoked when refresh=False")
 
-            seed_opt_cfg = StrategyConfig(planner_mode="ga_nn", ga_population_size=6, ga_generations=2, ga_horizon_steps=3, ga_seed=5)
-            run_optimizer(st, config=seed_opt_cfg, record_global_summary=True)
-            global_summary_before = json.loads(json.dumps(get_last_optimizer_summary(), allow_nan=False))
-
             bridge = GameApiBridge(
                 client_factory=_counting_factory,
                 config_path=cfg_path,
@@ -3569,12 +3486,10 @@ class TestApiAndCommander(unittest.TestCase):
                     f"{base}/command",
                     json={
                         "command": "action_graph",
-                        "planner_mode": "ga_nn",
+                        "planner_mode": "ai_planner",
                         "config": {
                             "ga_population_size": 8,
                             "ga_generations": 2,
-                            "ga_horizon_steps": 4,
-                            "ga_seed": 42,
                             "playstyle": "miner",
                             "allow_raids": True,
                             "allow_fleetsave": True,
@@ -3589,15 +3504,14 @@ class TestApiAndCommander(unittest.TestCase):
                 body = r_sim.json()
                 self.assertTrue(body["ok"])
                 ag = body["action_graph"]
-                self.assertEqual(ag["mode"], "ga_nn")
+                self.assertEqual(ag["mode"], "ai_planner")
                 self.assertTrue(ag["simulated"])
                 self.assertTrue(ag["is_dirty"])
                 self.assertIn("planner_mode", ag["changed_keys"])
-                self.assertIsNotNone(ag["ga_summary"])
-                self.assertIn("step_outcomes", ag["ga_summary"]["best_simulation"])
+                self.assertIsNone(ag["ga_summary"])
                 self.assertGreater(len(ag["nodes"]), 0)
 
-                # Strict isolation proof: zero browser calls, zero runtime/disk/executor/summary mutation
+                # Strict isolation proof: zero browser calls, zero runtime/disk/executor mutation
                 self.assertEqual(client_calls[0], 0)
                 self.assertEqual(bridge.strategy_config, init_cfg)
                 self.assertEqual(cfg_path.read_text(encoding="utf-8"), disk_before)
@@ -3605,8 +3519,6 @@ class TestApiAndCommander(unittest.TestCase):
                 self.assertFalse(bridge._live_executor.allow_fleetsave)
                 self.assertEqual(bridge._live_executor.max_actions_per_hour, 45)
                 self.assertFalse(bridge._dry_executor.allow_raids)
-                self.assertIsNone(bridge._last_optimizer_summary)
-                self.assertEqual(get_last_optimizer_summary(), global_summary_before)
 
                 r_cfg = requests.post(f"{base}/command", json={"command": "config"}, timeout=5).json()
                 self.assertEqual(r_cfg["config"], asdict(init_cfg))
@@ -3616,26 +3528,22 @@ class TestApiAndCommander(unittest.TestCase):
                 self.assertEqual(r_dash["action_graph"]["mode"], "priority")
                 self.assertFalse(r_dash["action_graph"]["simulated"])
 
-                # Reverse direction: active mode is ga_nn -> simulate priority and tweaked ga_nn without clobbering active summary
+                # Reverse direction: active mode is ai_planner -> simulate priority and tweaked config without clobbering active config
                 requests.post(
                     f"{base}/command",
                     json={
                         "command": "update_config",
                         "config": {
-                            "planner_mode": "ga_nn",
+                            "planner_mode": "ai_planner",
                             "ga_population_size": 6,
                             "ga_generations": 2,
-                            "ga_horizon_steps": 3,
-                            "ga_seed": 11,
                         },
                     },
                     timeout=10,
                 )
-                dash_ga = requests.get(f"{base}/dashboard?refresh=0", timeout=10).json()
-                self.assertEqual(dash_ga["planner_mode"], "ga_nn")
-                active_bridge_sum = json.loads(json.dumps(bridge._last_optimizer_summary, allow_nan=False))
-                active_global_sum = json.loads(json.dumps(get_last_optimizer_summary(), allow_nan=False))
-                self.assertIsNotNone(active_bridge_sum)
+                dash_ai = requests.get(f"{base}/dashboard?refresh=0", timeout=10).json()
+                self.assertEqual(dash_ai["planner_mode"], "ai_planner")
+                self.assertIsNone(dash_ai["optimizer_summary"])
 
                 r_sim_prio = requests.post(
                     f"{base}/command",
@@ -3643,23 +3551,20 @@ class TestApiAndCommander(unittest.TestCase):
                     timeout=10,
                 ).json()
                 self.assertEqual(r_sim_prio["action_graph"]["mode"], "priority")
-                self.assertEqual(bridge._last_optimizer_summary, active_bridge_sum)
-                self.assertEqual(get_last_optimizer_summary(), active_global_sum)
+                self.assertEqual(bridge.strategy_config.planner_mode, "ai_planner")
 
-                r_sim_ga2 = requests.post(
+                r_sim_cfg2 = requests.post(
                     f"{base}/command",
                     json={
                         "command": "action_graph",
-                        "config": {"ga_population_size": 10, "ga_generations": 3, "ga_seed": 99},
+                        "config": {"ga_population_size": 10, "ga_generations": 3},
                         "simulated": True,
                         "refresh": False,
                     },
                     timeout=10,
                 ).json()
-                self.assertEqual(r_sim_ga2["action_graph"]["effective_config"]["ga_population_size"], 10)
+                self.assertEqual(r_sim_cfg2["action_graph"]["effective_config"]["ga_population_size"], 10)
                 self.assertEqual(bridge.strategy_config.ga_population_size, 6)
-                self.assertEqual(bridge._last_optimizer_summary, active_bridge_sum)
-                self.assertEqual(get_last_optimizer_summary(), active_global_sum)
             finally:
                 server.shutdown()
                 server.server_close()
@@ -3671,7 +3576,7 @@ class TestApiAndCommander(unittest.TestCase):
 
         with tempfile.TemporaryDirectory(prefix="si_ag_val_") as tmp:
             tmp_path = Path(tmp)
-            cfg_path = tmp_path / "config.yaml"
+            cfg_path = tmp_path / "config.json"
             db_path = tmp_path / "state" / "spaceinvasion.db"
             log_dir = tmp_path / "logs"
             db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -3719,10 +3624,8 @@ class TestApiAndCommander(unittest.TestCase):
                     {"command": "action_graph", "config": "not_a_dict"},
                     {"command": "action_graph", "config": {"ga_population_size": 0}},
                     {"command": "action_graph", "config": {"ga_generations": 500}},
-                    {"command": "action_graph", "config": {"ga_horizon_steps": 0}},
                     {"command": "action_graph", "config": {"ga_mutation_rate": 2.5}},
                     {"command": "action_graph", "config": {"storage_warn_ratio": 1.5}},
-                    {"command": "action_graph", "config": {"ga_seed": "abc"}},
                     {"command": "action_graph", "config": {"allow_raids": "yes"}},
                     {"command": "action_graph", "config": {"shipyard_targets": {"small-fighter": -3}}},
                     {"command": "action_graph", "config": {"ga_population_size": "1_6"}},
@@ -3757,12 +3660,10 @@ class TestApiAndCommander(unittest.TestCase):
                     json={
                         "command": "update_config",
                         "config": {
-                            "planner_mode": "ga_nn",
+                            "planner_mode": "ai_planner",
                             "playstyle": "hybrid",
                             "ga_population_size": 8,
                             "ga_generations": 2,
-                            "ga_horizon_steps": 4,
-                            "ga_seed": 21,
                             "allow_raids": True,
                             "allow_fleetsave": True,
                             "max_actions_per_hour": 80,
@@ -3774,18 +3675,17 @@ class TestApiAndCommander(unittest.TestCase):
                 )
                 self.assertEqual(r_apply.status_code, 200, r_apply.text)
                 applied = r_apply.json()
-                self.assertEqual(applied["config"]["planner_mode"], "ga_nn")
+                self.assertEqual(applied["config"]["planner_mode"], "ai_planner")
                 self.assertEqual(applied["config"]["shipyard_targets"]["small-fighter"], 28)
                 self.assertEqual(applied["config"]["shipyard_targets"]["spy-probe"], 10)
-                self.assertEqual(applied["action_graph"]["mode"], "ga_nn")
+                self.assertEqual(applied["action_graph"]["mode"], "ai_planner")
                 self.assertFalse(applied["action_graph"]["simulated"])
                 self.assertFalse(applied["action_graph"]["is_dirty"])
                 self.assertEqual(applied["action_graph"]["changed_keys"], [])
 
                 reloaded = load_strategy_config(cfg_path)
-                self.assertEqual(reloaded.planner_mode, "ga_nn")
+                self.assertEqual(reloaded.planner_mode, "ai_planner")
                 self.assertEqual(reloaded.playstyle, "hybrid")
-                self.assertEqual(reloaded.ga_seed, 21)
                 self.assertEqual(reloaded.shipyard_targets["small-fighter"], 28)
                 self.assertEqual(reloaded.shipyard_targets["spy-probe"], 10)
                 self.assertTrue(bridge._live_executor.allow_raids)
@@ -3813,9 +3713,8 @@ class TestApiAndCommander(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             db_path = tmp_path / "state" / "spaceinvasion.db"
-            hist_json_path = tmp_path / "data" / "attack_history.json"
-            cfg_path = tmp_path / "config.yaml"
-            cfg_path.write_text("allow_raids: true\nallow_galaxy_scan: true\n", encoding="utf-8")
+            cfg_path = tmp_path / "config.json"
+            cfg_path.write_text('{"allow_raids": true, "allow_galaxy_scan": true}', encoding="utf-8")
 
             fake_client = MagicMock()
             fake_client.__enter__.return_value = fake_client
@@ -3831,7 +3730,6 @@ class TestApiAndCommander(unittest.TestCase):
             )
             try:
                 assert bridge._db is not None
-                bridge._db.attack_history_path = hist_json_path
                 bridge._db.record_galaxy_slots(
                     [
                         GalaxySlot(
@@ -3872,16 +3770,13 @@ class TestApiAndCommander(unittest.TestCase):
                 self.assertFalse(atk_resp["executed"])
                 self.assertIn("bash protection", atk_resp["message"].lower())
 
-                # Verified persisted in SQLite spy_targets + bash_blocks + attack_history.json
+                # Verified persisted in DB spy_targets + bash_blocks
                 row = bridge._db.get_spy_target_by_coords("02:383:02")
                 self.assertIsNotNone(row)
                 assert row is not None
                 self.assertGreater(row["blocked_until_ts"], time.time() + 50000.0)
                 self.assertEqual(row["bash_hits"], 1)
                 self.assertEqual(bridge._db.summary()["counts"]["bash_blocks"], 1)
-                exported = json.loads(hist_json_path.read_text(encoding="utf-8"))
-                self.assertIn("02:383:02", exported["blocked_targets"])
-                self.assertEqual(len(exported["bash_blocks"]), 1)
 
                 # Subsequent attack command is immediately rejected without touching Selenium
                 atk_again = bridge.handle_command(
@@ -3890,7 +3785,7 @@ class TestApiAndCommander(unittest.TestCase):
                 self.assertFalse(atk_again["executed"])
                 self.assertIn("BashTracker", atk_again["message"])
 
-                # Both priority and ga_nn planners exclude or hold 02:383:02 during cooldown
+                # Priority planner (including legacy ga_nn config fallback) excludes 02:383:02 during cooldown
                 enriched_state = bridge._attach_raid_stats(bridge._merge_economy_rates(state))
                 prio_plan = plan_actions(
                     enriched_state,
@@ -3899,21 +3794,14 @@ class TestApiAndCommander(unittest.TestCase):
                 self.assertFalse(
                     any(a.kind == "ATTACK" and "02:383:02" in a.target_name for a in prio_plan)
                 )
-                ga_plan = plan_actions(
+                legacy_plan = plan_actions(
                     enriched_state,
-                    config=dc_replace(
-                        bridge.strategy_config,
-                        planner_mode="ga_nn",
-                        ga_population_size=6,
-                        ga_generations=1,
-                        ga_horizon_steps=3,
-                        ga_seed=7,
-                    ),
+                    config=dc_replace(bridge.strategy_config, planner_mode="ga_nn"),
                 )
                 self.assertFalse(
                     any(
                         a.kind == "ATTACK" and "02:383:02" in a.target_name and a.executable_now
-                        for a in ga_plan
+                        for a in legacy_plan
                     )
                 )
             finally:
@@ -3985,8 +3873,8 @@ class TestApiAndCommander(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             db_path = tmp_path / "state" / "spaceinvasion.db"
-            cfg_path = tmp_path / "config.yaml"
-            cfg_path.write_text("allow_raids: true\nallow_galaxy_scan: true\n", encoding="utf-8")
+            cfg_path = tmp_path / "config.json"
+            cfg_path.write_text('{"allow_raids": true, "allow_galaxy_scan": true}', encoding="utf-8")
 
             fake_client = MagicMock()
             fake_client.__enter__.return_value = fake_client
@@ -4022,6 +3910,7 @@ class TestApiAndCommander(unittest.TestCase):
                 self.assertIn("02:383:02", rec_actions[0]["target_name"])
 
                 ga_resp = bridge.handle_command({"command": "plan", "planner_mode": "ga_nn"})
+                self.assertEqual(ga_resp["planner_mode"], "priority")
                 self.assertTrue(any(a["kind"] == "RECYCLE" and a["executable_now"] for a in ga_resp["actions"]))
 
                 planned_rec = PlannedAction(
@@ -4074,8 +3963,8 @@ class TestApiAndCommander(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            cfg_path = tmp_path / "config.yaml"
-            cfg_path.write_text("allow_build: true\n", encoding="utf-8")
+            cfg_path = tmp_path / "config.json"
+            cfg_path.write_text('{"allow_build": true}', encoding="utf-8")
             bridge = GameApiBridge(
                 debug_port=9222,
                 config_path=cfg_path,
@@ -4221,7 +4110,7 @@ class TestApiAndCommander(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            cfg_path = tmp_path / "config.yaml"
+            cfg_path = tmp_path / "config.json"
             db_path = tmp_path / "state" / "spaceinvasion.db"
             save_strategy_config(
                 StrategyConfig(action_batch_interval_seconds=180, allow_raids=True, allow_galaxy_scan=True),
@@ -4411,7 +4300,7 @@ class TestApiAndCommander(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            cfg_path = tmp_path / "config.yaml"
+            cfg_path = tmp_path / "config.json"
             db_path = tmp_path / "spaceinvasion.db"
             log_dir = tmp_path / "logs"
             log_dir.mkdir(parents=True, exist_ok=True)
@@ -4528,7 +4417,7 @@ class TestApiAndCommander(unittest.TestCase):
 
         with tempfile.TemporaryDirectory(prefix="si_full_db_") as tmp:
             tmp_path = Path(tmp)
-            cfg_path = tmp_path / "config.yaml"
+            cfg_path = tmp_path / "config.json"
             db_path = tmp_path / "spaceinvasion.db"
             log_dir = tmp_path / "logs"
             log_dir.mkdir(parents=True, exist_ok=True)
@@ -4627,7 +4516,7 @@ class TestApiAndCommander(unittest.TestCase):
                         "command": "update_config",
                         "config": {
                             "action_batch_interval_seconds": 180,
-                            "planner_mode": "ga_nn",
+                            "planner_mode": "ai_planner",
                             "playstyle": "fleeter",
                         },
                     }
@@ -4719,7 +4608,6 @@ class TestApiAndCommander(unittest.TestCase):
                 bridge1._pending_spy_sync = True
                 bridge1._last_spio_sync_at = now_mono - 5.0
                 bridge1._last_url = "https://spaceinvasion.bitmeup.com/indexInternal.es?action=internalBuildings"
-                bridge1._last_optimizer_summary = {"mode": "ga_nn", "improvement_pct": 14.5}
                 bridge1._bot_control["mode_override"] = "dry-run"
                 bridge1._record_antibot_pause(RuntimeError("Cloudflare Turnstile challenge"))
             finally:
@@ -4746,7 +4634,7 @@ class TestApiAndCommander(unittest.TestCase):
             )
             try:
                 self.assertEqual(bridge2.strategy_config.action_batch_interval_seconds, 180)
-                self.assertEqual(bridge2.strategy_config.planner_mode, "ga_nn")
+                self.assertEqual(bridge2.strategy_config.planner_mode, "ai_planner")
                 self.assertEqual(bridge2.strategy_config.playstyle, "fleeter")
                 self.assertTrue(bridge2._bot_control["paused"])
                 self.assertTrue(bridge2._bot_control["captcha_blocked"])
@@ -4799,7 +4687,7 @@ class TestApiAndCommander(unittest.TestCase):
 
         with tempfile.TemporaryDirectory(prefix="si_msg_archive_") as tmp:
             tmp_path = Path(tmp)
-            cfg_path = tmp_path / "config.yaml"
+            cfg_path = tmp_path / "config.json"
             db_path = tmp_path / "spaceinvasion.db"
             log_dir = tmp_path / "logs"
             log_dir.mkdir(parents=True, exist_ok=True)
@@ -4973,13 +4861,12 @@ class TestApiAndCommander(unittest.TestCase):
                 self.assertTrue(all(m["deleted_in_game"] for m in archived))
                 self.assertTrue(all((m["deleted_ts"] or 0.0) > 0.0 for m in archived))
 
-                cmd_msgs = bridge.handle_command({"command": "game_messages", "category": "spy_report"})
-                self.assertTrue(cmd_msgs["ok"])
-                self.assertEqual(cmd_msgs["count"], 1)
-                self.assertEqual(cmd_msgs["messages"][0]["coords"], "02:381:07")
-                self.assertEqual(cmd_msgs["messages"][0]["parsed"]["buildings"].get("b1"), 15)
-                self.assertEqual(cmd_msgs["messages"][0]["parsed"]["researches"].get("r2"), 6)
-                self.assertNotIn("TOPSECRET", cmd_msgs["messages"][0]["raw_html"])
+                spy_msgs = [m for m in archived if m["category"] == "spy_report"]
+                self.assertEqual(len(spy_msgs), 1)
+                self.assertEqual(spy_msgs[0]["coords"], "02:381:07")
+                self.assertEqual(spy_msgs[0]["parsed"]["buildings"].get("b1"), 15)
+                self.assertEqual(spy_msgs[0]["parsed"]["researches"].get("r2"), 6)
+                self.assertNotIn("TOPSECRET", spy_msgs[0]["raw_html"])
 
                 # Battle report set has_debris=True on 02:382:04; Recycle report cleared has_debris=False on 02:380:04
                 t_war = bridge._db.get_spy_target_by_coords("02:382:04")
@@ -5059,7 +4946,7 @@ class TestApiAndCommander(unittest.TestCase):
             bridge = GameApiBridge(
                 debug_port=19999,
                 env_file=td_path / "no.env",
-                config_path=td_path / "c.yaml",
+                config_path=td_path / "c.json",
                 db_path=None,
                 log_dir=None,
                 client_factory=lambda _: MagicMock(),
@@ -5128,7 +5015,7 @@ class TestApiAndCommander(unittest.TestCase):
             bridge2 = GameApiBridge(
                 debug_port=19999,
                 env_file=td2_path / "no.env",
-                config_path=td2_path / "c.yaml",
+                config_path=td2_path / "c.json",
                 db_path=td2_path / "s.db",
                 log_dir=None,
                 client_factory=lambda _: MagicMock(),
@@ -5144,11 +5031,9 @@ class TestApiAndCommander(unittest.TestCase):
 
                 bridge2._last_state = st
                 bridge2.strategy_config = StrategyConfig(
-                    planner_mode="ga_nn",
+                    planner_mode="ai_planner",
                     ga_population_size=6,
                     ga_generations=2,
-                    ga_horizon_steps=3,
-                    ga_seed=42,
                 )
                 bridge2._invalidate_dashboard_cache()
                 with (
@@ -5159,18 +5044,15 @@ class TestApiAndCommander(unittest.TestCase):
                         api_srv, "build_action_graph", wraps=api_srv.build_action_graph
                     ) as mock_bag,
                 ):
-                    cold_ga = bridge2.dashboard(refresh=False)
-                    self.assertEqual(cold_ga["planner_mode"], "ga_nn")
-                    self.assertEqual(mock_persist.call_count, 1)
+                    cold_ai = bridge2.dashboard(refresh=False)
+                    self.assertEqual(cold_ai["planner_mode"], "ai_planner")
+                    self.assertEqual(mock_persist.call_count, 0)
                     self.assertEqual(mock_bag.call_count, 1)
                     for _ in range(3):
-                        warm_ga = bridge2.dashboard(refresh=False)
-                        self.assertEqual(warm_ga["planner_mode"], "ga_nn")
-                        self.assertEqual(
-                            warm_ga["action_graph"]["ga_summary"]["elapsed_ms"],
-                            warm_ga["optimizer_summary"]["elapsed_ms"],
-                        )
-                    self.assertEqual(mock_persist.call_count, 1)
+                        warm_ai = bridge2.dashboard(refresh=False)
+                        self.assertEqual(warm_ai["planner_mode"], "ai_planner")
+                        self.assertIsNone(warm_ai["optimizer_summary"])
+                    self.assertEqual(mock_persist.call_count, 0)
                     self.assertEqual(mock_bag.call_count, 1)
             finally:
                 bridge2.close()
@@ -5179,9 +5061,9 @@ class TestApiAndCommander(unittest.TestCase):
         import requests
         import time
         from spaceinvasion.executor import ExecutionResult
-        from spaceinvasion.optimizer import _LAST_OPTIMIZER_SUMMARY, run_optimizer
+        from spaceinvasion.strategy import plan_actions
 
-        # R3-N1: PlanetState(..., building_offers=None, ship_offers=None, defense_offers=None) safe in run_optimizer
+        # R3-N1: PlanetState(..., building_offers=None, ship_offers=None, defense_offers=None) safe in plan_actions / action_graph
         p_null_offers = PlanetState(
             101,
             "NullOffers",
@@ -5202,21 +5084,8 @@ class TestApiAndCommander(unittest.TestCase):
         self.assertEqual(p_null_offers.ship_offers, ())
         self.assertEqual(p_null_offers.defense_offers, ())
         st_null_opt = GameState(31, 7, "cmdr", 1000.0, (p_null_offers,), active_planet_id=101)
-        prev_global_summary = _LAST_OPTIMIZER_SUMMARY
-        opt_summary = run_optimizer(
-            st_null_opt,
-            config=StrategyConfig(
-                planner_mode="ga_nn",
-                ga_population_size=6,
-                ga_generations=2,
-                ga_horizon_steps=3,
-                ga_seed=19,
-            ),
-            record_global_summary=False,
-        )
-        self.assertIs(_LAST_OPTIMIZER_SUMMARY, prev_global_summary)
-        self.assertIsInstance(opt_summary.actions, tuple)
-        json.dumps(opt_summary.to_dict(), allow_nan=False)
+        null_acts = plan_actions(st_null_opt, config=StrategyConfig(planner_mode="priority"))
+        self.assertIsInstance(null_acts, list)
 
         # R3-UI-1: POST /command {"command": "demolish_building", ...} across dry_run, guards, and live invalidation
         p_main = PlanetState(
@@ -5279,7 +5148,7 @@ class TestApiAndCommander(unittest.TestCase):
             bridge = GameApiBridge(
                 debug_port=19999,
                 env_file=td_path / "no.env",
-                config_path=td_path / "c.yaml",
+                config_path=td_path / "c.json",
                 db_path=td_path / "s.db",
                 log_dir=None,
                 client_factory=lambda _: fake_client,
@@ -5513,9 +5382,9 @@ class TestApiAndCommander(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="si_intel_backfill_") as td:
             td_path = Path(td)
             db_path = td_path / "intel.db"
-            cfg_path = td_path / "config.yaml"
+            cfg_path = td_path / "config.json"
             cfg_path.write_text(
-                "planner_mode: priority\nallow_build: true\nallow_colonize: true\nmin_colony_fields: 300\n",
+                '{"planner_mode": "priority", "allow_build": true, "allow_colonize": true, "min_colony_fields": 300}',
                 encoding="utf-8",
             )
 
@@ -5793,8 +5662,8 @@ class TestApiAndCommander(unittest.TestCase):
 
         with tempfile.TemporaryDirectory(prefix="si_mq_api_") as td:
             td_path = Path(td)
-            cfg_path = td_path / "config.yaml"
-            cfg_path.write_text("planner_mode: priority\nallow_build: true\n", encoding="utf-8")
+            cfg_path = td_path / "config.json"
+            cfg_path.write_text('{"planner_mode": "priority", "allow_build": true}', encoding="utf-8")
             fake_client = MagicMock()
             fake_client.__enter__.return_value = fake_client
             fake_client.driver = MagicMock(current_url="https://spaceinvasion.bitmeup.com/indexGame.es?sid=tok")
@@ -5889,9 +5758,10 @@ class TestApiAndCommander(unittest.TestCase):
                 self.assertTrue(r_canc["canceled"])
                 self.assertEqual(r_canc["manual_queue"], [])
 
-                q_list = requests.post(f"{base_url}/command", json={"command": "queue_list"}, timeout=5).json()
-                self.assertEqual(len(q_list["manual_queue"]), 0)
-                statuses = {h["id"]: h["status"] for h in q_list["history"]}
+                dash_q = requests.get(f"{base_url}/dashboard?refresh=0", timeout=5).json()
+                self.assertEqual(len(dash_q["manual_queue"]), 0)
+                all_q = bridge._db.get_manual_queue(status="all", limit=150)
+                statuses = {h["id"]: h["status"] for h in all_q}
                 self.assertEqual(statuses[qid_bld], "completed")
                 self.assertEqual(statuses[qid_spy], "canceled")
                 self.assertEqual(bridge._db.summary()["counts"]["manual_queue"], 2)
@@ -5915,8 +5785,8 @@ class TestApiAndCommander(unittest.TestCase):
             (fake_ui / "assets" / "chunk-test.js").write_text("export const x = 42;\n", encoding="utf-8")
             (tp / "secret.txt").write_text("TOP_SECRET", encoding="utf-8")
 
-            cfg_path = tp / "config.yaml"
-            cfg_path.write_text("allow_raids: true\nallow_galaxy_scan: true\n", encoding="utf-8")
+            cfg_path = tp / "config.json"
+            cfg_path.write_text('{"allow_raids": true, "allow_galaxy_scan": true}', encoding="utf-8")
             st = _sample_state()
             fake_client = MagicMock()
             fake_client.__enter__.return_value = fake_client
@@ -6162,7 +6032,7 @@ class TestApiAndCommander(unittest.TestCase):
             bridge = GameApiBridge(
                 debug_port=1,
                 client_factory=lambda _port: mock_cli,
-                config_path=tmp_path / "config.yaml",
+                config_path=tmp_path / "config.json",
                 db_path=tmp_path / "state.db",
                 log_dir=tmp_path / "logs",
                 ensure_session_fn=lambda: None,
@@ -6404,7 +6274,7 @@ class TestApiAndCommander(unittest.TestCase):
             bridge = GameApiBridge(
                 debug_port=9222,
                 log_dir=None,
-                config_path=tp / "cfg.yaml",
+                config_path=tp / "cfg.json",
                 db_path=tp / "test.db",
             )
             try:
@@ -6538,7 +6408,7 @@ class TestApiAndCommander(unittest.TestCase):
             tp = Path(tmp)
             bridge = GameApiBridge(
                 debug_port=9222,
-                config_path=tp / "config.yaml",
+                config_path=tp / "config.json",
                 log_dir=tp / "logs",
                 db_path=tp / "test.db",
                 client_factory=lambda _port: fake_client,
@@ -6740,7 +6610,7 @@ class TestApiAndCommander(unittest.TestCase):
             bridge = GameApiBridge(
                 debug_port=19999,
                 env_file=td_path / "no.env",
-                config_path=td_path / "c.yaml",
+                config_path=td_path / "c.json",
                 db_path=None,
                 log_dir=None,
                 client_factory=lambda _: MagicMock(),
@@ -6876,7 +6746,7 @@ class TestApiAndCommander(unittest.TestCase):
             td_path = Path(td)
             db_path = td_path / "planner.db"
             # Seed raid history so SQLite live attack telemetry is populated
-            seed_db = GameDatabase(db_path, attack_history_path="")
+            seed_db = GameDatabase(db_path)
             seed_db.record_raid(
                 "01:100:12",
                 attacked_ts=1500.0,
@@ -6885,9 +6755,9 @@ class TestApiAndCommander(unittest.TestCase):
             )
             seed_db.close()
 
-            cfg_path = td_path / "cfg.yaml"
+            cfg_path = td_path / "cfg.json"
             cfg_path.write_text(
-                "planner_mode: priority\nmax_planets: 11\nallow_raids: false\nallow_transport: true\n",
+                '{"planner_mode": "priority", "max_planets": 11, "allow_raids": false, "allow_transport": true}',
                 encoding="utf-8",
             )
             bridge = GameApiBridge(
@@ -7142,9 +7012,9 @@ class TestApiAndCommander(unittest.TestCase):
         ):
             td_path = Path(td)
             db_path = td_path / "gate.db"
-            cfg_path = td_path / "gate.yaml"
+            cfg_path = td_path / "gate.json"
             cfg_path.write_text(
-                "planner_mode: ai_planner\nmax_planets: 2\nallow_transport: true\nallow_shipyard: true\nallow_transmitter: true\n",
+                '{"planner_mode": "ai_planner", "max_planets": 2, "allow_transport": true, "allow_shipyard": true, "allow_transmitter": true}',
                 encoding="utf-8",
             )
             bridge = GameApiBridge(
@@ -7409,7 +7279,7 @@ class TestApiAndCommander(unittest.TestCase):
             bridge = GameApiBridge(
                 debug_port=19999,
                 env_file=td_path / "no.env",
-                config_path=td_path / "c.yaml",
+                config_path=td_path / "c.json",
                 db_path=td_path / "boot.db",
                 log_dir=None,
                 client_factory=lambda _: MagicMock(),
@@ -7468,8 +7338,8 @@ class TestApiAndCommander(unittest.TestCase):
 
         with tempfile.TemporaryDirectory(prefix="si_rec_verify_") as tmp:
             tmp_path = Path(tmp)
-            cfg_path = tmp_path / "config.yaml"
-            cfg_path.write_text("allow_raids: true\nallow_galaxy_scan: true\n", encoding="utf-8")
+            cfg_path = tmp_path / "config.json"
+            cfg_path.write_text('{"allow_raids": true, "allow_galaxy_scan": true}', encoding="utf-8")
             db_path = tmp_path / "spaceinvasion.db"
 
             base_st = _sample_state()
@@ -7633,8 +7503,8 @@ class TestApiAndCommander(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            cfg_path = tmp_path / "config.yaml"
-            cfg_path.write_text("allow_raids: true\nallow_galaxy_scan: true\n", encoding="utf-8")
+            cfg_path = tmp_path / "config.json"
+            cfg_path.write_text('{"allow_raids": true, "allow_galaxy_scan": true}', encoding="utf-8")
             db_path = tmp_path / "spaceinvasion.db"
 
             base_st = _sample_state()
@@ -7914,15 +7784,10 @@ class TestApiAndCommander(unittest.TestCase):
             tempfile.TemporaryDirectory() as td,
         ):
             td_path = Path(td)
-            cfg_path = td_path / "ai_bf.yaml"
+            cfg_path = td_path / "ai_bf.json"
             cfg_path.write_text(
                 (
-                    "planner_mode: ai_planner\n"
-                    "max_planets: 2\n"
-                    "allow_multi_planet: true\n"
-                    "allow_transport: true\n"
-                    "auto_throttle_blast_furnace: true\n"
-                    "merchant_mode: false\n"
+                    '{"planner_mode": "ai_planner", "max_planets": 2, "allow_multi_planet": true, "allow_transport": true, "auto_throttle_blast_furnace": true, "merchant_mode": false}'
                 ),
                 encoding="utf-8",
             )
@@ -8369,24 +8234,21 @@ class TestApiAndCommander(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as td:
             td_path = Path(td)
-            cfg_path = td_path / "config.yaml"
+            cfg_path = td_path / "config.json"
             cfg_path.write_text(
-                "\n".join(
-                    [
-                        "planner_mode: ai_planner",
-                        "allow_research: true",
-                        "allow_fleet_research: true",
-                        "allow_shipyard: true",
-                        "allow_raids: false",
-                        "allow_galaxy_scan: false",
-                        "allow_fleetsave: false",
-                        "ai_resource_spare_pct: 50.0",
-                        "shipyard_targets:",
-                        "  starcruiser: 6",
-                        "  small-fighter: 10",
-                    ]
-                )
-                + "\n",
+                json.dumps(
+                    {
+                        "planner_mode": "ai_planner",
+                        "allow_research": True,
+                        "allow_fleet_research": True,
+                        "allow_shipyard": True,
+                        "allow_raids": False,
+                        "allow_galaxy_scan": False,
+                        "allow_fleetsave": False,
+                        "ai_resource_spare_pct": 50.0,
+                        "shipyard_targets": {"starcruiser": 6, "small-fighter": 10},
+                    }
+                ),
                 encoding="utf-8",
             )
             bridge = GameApiBridge(
@@ -8551,9 +8413,9 @@ class TestApiAndCommander(unittest.TestCase):
             tempfile.TemporaryDirectory() as td,
         ):
             td_path = Path(td)
-            cfg_path = td_path / "early.yaml"
+            cfg_path = td_path / "early.json"
             cfg_path.write_text(
-                "planner_mode: ai_planner\nmax_planets: 2\nallow_transport: true\nallow_shipyard: false\nallow_raids: false\nallow_galaxy_scan: false\n",
+                '{"planner_mode": "ai_planner", "max_planets": 2, "allow_transport": true, "allow_shipyard": false, "allow_raids": false, "allow_galaxy_scan": false}',
                 encoding="utf-8",
             )
             bridge = GameApiBridge(
@@ -8697,7 +8559,7 @@ class TestApiAndCommander(unittest.TestCase):
         now_ts = _time.time()
         with tempfile.TemporaryDirectory(prefix="si_api_rc_") as tmp:
             db_path = Path(tmp) / "rc.db"
-            cfg_path = Path(tmp) / "config.yaml"
+            cfg_path = Path(tmp) / "config.json"
             bridge = GameApiBridge(
                 db_path=db_path,
                 config_path=cfg_path,
@@ -8998,7 +8860,7 @@ class TestApiAndCommander(unittest.TestCase):
         now_ts = _time.time()
         with tempfile.TemporaryDirectory(prefix="si_api_p100_103_") as tmp:
             db_path = Path(tmp) / "p100_103.db"
-            cfg_path = Path(tmp) / "config.yaml"
+            cfg_path = Path(tmp) / "config.json"
             bridge = GameApiBridge(
                 db_path=db_path,
                 config_path=cfg_path,
@@ -9460,7 +9322,7 @@ class TestApiAndCommander(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             tp = Path(tmp)
-            cfg_path = tp / "config.yaml"
+            cfg_path = tp / "config.json"
             save_strategy_config(
                 StrategyConfig(
                     allow_raids=True,
@@ -9702,7 +9564,7 @@ class TestApiAndCommander(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             tp = Path(tmp)
-            cfg_path = tp / "config.yaml"
+            cfg_path = tp / "config.json"
             db_path = tp / "state.db"
             save_strategy_config(StrategyConfig(planner_mode="ai_planner", max_planets=2), cfg_path)
             bridge = GameApiBridge(
@@ -9963,7 +9825,7 @@ class TestApiAndCommander(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             tp = Path(tmp)
-            cfg_path = tp / "config.yaml"
+            cfg_path = tp / "config.json"
             db_path = tp / "state.db"
             save_strategy_config(
                 StrategyConfig(planner_mode="ai_planner", max_planets=2, ai_adaptive_execution=False),

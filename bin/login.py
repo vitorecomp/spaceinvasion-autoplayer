@@ -22,19 +22,9 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
+from spaceinvasion.core.cli_support import maybe_reexec_venv, safe_cli_str  # noqa: E402
 
-def _maybe_reexec_venv() -> None:
-    """Re-exec with repo `.venv/bin/python3` when invoked via bare system python."""
-    if os.environ.get("SPACEINVASION_NO_REEXEC") == "1":
-        return
-    if sys.prefix != sys.base_prefix:
-        return
-    venv_python = _REPO_ROOT / ".venv" / "bin" / "python3"
-    if venv_python.exists() and os.path.abspath(sys.executable) != os.path.abspath(venv_python):
-        os.execv(str(venv_python), [str(venv_python), *sys.argv])
-
-
-_maybe_reexec_venv()
+maybe_reexec_venv(_REPO_ROOT, skip=os.environ.get("SPACEINVASION_NO_REEXEC") == "1")
 
 from spaceinvasion.core import game_data # noqa: E402
 from spaceinvasion.session.auth import (  # noqa: E402
@@ -163,98 +153,8 @@ def _wait_for_manual_gate(message: str) -> None:
     input("Press Enter here after completing it in the browser...")
 
 
-def _safe_cli_str(
-    val: object,
-    default: str = "",
-    *,
-    max_len: int = 1024,
-    _depth: int = 0,
-    _seen: set[int] | None = None,
-    _budget: list[int] | None = None,
-) -> str:
-    if val is None:
-        return default
-    if isinstance(val, os.PathLike):
-        try:
-            val = os.fspath(val)
-        except Exception:
-            return default
-        if val is None:
-            return default
-        if isinstance(val, os.PathLike):
-            return default
-    if isinstance(val, (bytes, bytearray)):
-        txt = bytes(val).decode("utf-8", errors="replace")
-    elif isinstance(val, BaseException):
-        str_fn = getattr(type(val), "__str__", BaseException.__str__)
-        used_custom_str = False
-        txt = ""
-        if str_fn not in (BaseException.__str__, KeyError.__str__):
-            try:
-                txt = str(val)[:16_384]
-                used_custom_str = True
-            except Exception:
-                txt = ""
-        if not used_custom_str:
-            args = getattr(val, "args", ())
-            if not isinstance(args, (tuple, list)) or not args:
-                txt = "" if str_fn is BaseException.__str__ else type(val).__name__
-            else:
-                seen = _seen if _seen is not None else set()
-                budget = _budget if _budget is not None else [256]
-                vid = id(val)
-                if vid in seen or _depth >= 16 or budget[0] <= 0:
-                    txt = f"<{type(val).__name__}>"
-                else:
-                    budget[0] -= 1
-                    seen.add(vid)
-                    try:
-                        if len(args) == 1:
-                            a0 = args[0]
-                            if isinstance(a0, str):
-                                txt = (repr(a0) if isinstance(val, KeyError) else a0)[:16_384]
-                            else:
-                                txt = _safe_cli_str(
-                                    a0,
-                                    f"<{type(a0).__name__}>",
-                                    max_len=4096,
-                                    _depth=_depth + 1,
-                                    _seen=seen,
-                                    _budget=budget,
-                                )
-                        else:
-                            parts = []
-                            for a in args[:8]:
-                                if budget[0] <= 0:
-                                    parts.append("...")
-                                    break
-                                if isinstance(a, str):
-                                    parts.append(repr(a))
-                                else:
-                                    parts.append(
-                                        _safe_cli_str(
-                                            a,
-                                            f"<{type(a).__name__}>",
-                                            max_len=4096,
-                                            _depth=_depth + 1,
-                                            _seen=seen,
-                                            _budget=budget,
-                                        )
-                                    )
-                            if len(args) > 8:
-                                parts.append(f"...+{len(args) - 8}")
-                            txt = ("(" + ", ".join(parts) + ")")[:4096]
-                    finally:
-                        seen.discard(vid)
-    elif isinstance(val, int) and not isinstance(val, bool):
-        txt = game_data.fmt_compact_int(val) if abs(val).bit_length() >= 12_000 else str(val)
-    else:
-        try:
-            txt = game_data.safe_key(val)
-        except Exception:
-            return default
-    txt = str(redact_sensitive(txt))
-    return txt[:max_len] if len(txt) > max_len else txt
+def _safe_cli_str(val: object, default: str = "", *, max_len: int = 1024) -> str:
+    return safe_cli_str(val, default, max_len=max_len, redact_fn=redact_sensitive)
 
 
 def _coerce_cli_json_key(

@@ -15,29 +15,22 @@ import time
 from typing import Optional
 import urllib.request
 
-
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
+from spaceinvasion.core.cli_support import (  # noqa: E402
+    maybe_reexec_venv,
+    safe_cli_str,
+    terminate_child as _stop_proc,  # noqa: E402
+)
 
-def _maybe_reexec_venv() -> None:
-    if os.environ.get("SPACEINVASION_NO_REEXEC") == "1":
-        return
-    if sys.prefix != sys.base_prefix:
-        return
-    venv_python = _REPO_ROOT / ".venv" / "bin" / "python3"
-    if venv_python.exists() and os.path.abspath(sys.executable) != os.path.abspath(venv_python):
-        os.execv(str(venv_python), [str(venv_python), *sys.argv])
+maybe_reexec_venv(_REPO_ROOT, skip=os.environ.get("SPACEINVASION_NO_REEXEC") == "1")
 
-
-_maybe_reexec_venv()
-
-from spaceinvasion.core import game_data # noqa: E402
+from spaceinvasion.core.logging_utils import redact_sensitive  # noqa: E402
 from spaceinvasion.runtime.api_server import ensure_debug_browser_ready  # noqa: E402
 from spaceinvasion.session.auth import SpaceInvasionAuthError  # noqa: E402
 from spaceinvasion.session.browser import DEFAULT_DEBUG_PORT  # noqa: E402
-from spaceinvasion.core.logging_utils import redact_sensitive  # noqa: E402
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -68,9 +61,9 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--account", default="default", help="Account profile in .env.")
     parser.add_argument(
         "--db-backend",
-        choices=("auto", "postgres", "sqlite"),
+        choices=("auto", "postgres"),
         default=None,
-        help="Database backend ('postgres' on Podman, 'sqlite', or 'auto').",
+        help="Database backend ('postgres' on Podman or 'auto').",
     )
     parser.add_argument(
         "--db-url",
@@ -98,26 +91,6 @@ def _wait_api_health(url: str, timeout: float = 25.0, proc: Optional[subprocess.
     return False
 
 
-def _stop_proc(proc: subprocess.Popen) -> None:
-    if proc.poll() is not None:
-        return
-    try:
-        proc.terminate()
-        proc.wait(timeout=5.0)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        try:
-            proc.wait(timeout=5.0)
-        except (subprocess.TimeoutExpired, OSError):
-            pass
-    except OSError:
-        if proc.poll() is None:
-            try:
-                proc.wait(timeout=0.5)
-            except (subprocess.TimeoutExpired, OSError):
-                pass
-
-
 def _safe_interval(raw: object, default: float = 20.0) -> float:
     if raw is None or isinstance(raw, (bool, dict, list, tuple, set, frozenset)):
         return default
@@ -142,64 +115,8 @@ def _safe_interval(raw: object, default: float = 20.0) -> float:
     return max(0.01, min(86400.0, iv))
 
 
-def _safe_err_text(
-    exc: BaseException,
-    *,
-    _depth: int = 0,
-    _seen: set[int] | None = None,
-    _budget: list[int] | None = None,
-) -> str:
-    if not isinstance(exc, BaseException):
-        return str(redact_sensitive(game_data.safe_key(exc)))
-    seen = _seen if _seen is not None else set()
-    budget = _budget if _budget is not None else [256]
-    str_fn = getattr(type(exc), "__str__", BaseException.__str__)
-    used_custom_str = False
-    txt = ""
-    if str_fn not in (BaseException.__str__, KeyError.__str__):
-        try:
-            txt = str(exc)[:16_384]
-            used_custom_str = True
-        except Exception:
-            txt = ""
-    if not used_custom_str:
-        args = getattr(exc, "args", ())
-        if not isinstance(args, (tuple, list)) or not args:
-            txt = "" if str_fn is BaseException.__str__ else type(exc).__name__
-        else:
-            vid = id(exc)
-            if vid in seen or _depth >= 16 or budget[0] <= 0:
-                txt = f"<{type(exc).__name__}>"
-            else:
-                budget[0] -= 1
-                seen.add(vid)
-                try:
-                    if len(args) == 1:
-                        a0 = args[0]
-                        if isinstance(a0, str):
-                            txt = (repr(a0) if isinstance(exc, KeyError) else a0)[:16_384]
-                        elif isinstance(a0, BaseException):
-                            txt = _safe_err_text(a0, _depth=_depth + 1, _seen=seen, _budget=budget)
-                        else:
-                            txt = game_data.safe_key(a0)
-                    else:
-                        parts = []
-                        for a in args[:8]:
-                            if budget[0] <= 0:
-                                parts.append("...")
-                                break
-                            if isinstance(a, str):
-                                parts.append(repr(a))
-                            elif isinstance(a, BaseException):
-                                parts.append(_safe_err_text(a, _depth=_depth + 1, _seen=seen, _budget=budget))
-                            else:
-                                parts.append(game_data.safe_key(a))
-                        if len(args) > 8:
-                            parts.append(f"...+{len(args) - 8}")
-                        txt = ("(" + ", ".join(parts) + ")")[:4096]
-                finally:
-                    seen.discard(vid)
-    return str(redact_sensitive(txt))
+def _safe_err_text(exc: BaseException) -> str:
+    return safe_cli_str(exc, redact_fn=redact_sensitive)
 
 
 def main(argv: list[str] | None = None) -> int:

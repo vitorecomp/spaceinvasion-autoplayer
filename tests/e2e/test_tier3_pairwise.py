@@ -11,7 +11,6 @@ import commander
 from tests.e2e.fixtures import (
     evaluate_sequence_score,
     make_building_offer,
-    make_ga_nn_config,
     make_game_state,
     make_midgame_state,
     make_planet,
@@ -34,14 +33,6 @@ from spaceinvasion.strategy import (
     PlannedAction,
     plan_actions,
 )
-
-
-def _import_optimizer(test: unittest.TestCase):
-    try:
-        from spaceinvasion.optimizer import optimize_plan_actions
-    except ImportError as exc:
-        test.fail(f"R1 GA+NN optimizer not importable: {exc}")
-    return optimize_plan_actions
 
 
 def _import_eta_helpers(test: unittest.TestCase):
@@ -72,29 +63,24 @@ def _verify_eta_fields(test: unittest.TestCase, obj: dict | PlannedAction) -> No
 
 
 class TestTier3Pairwise(unittest.TestCase):
-    # PW-01: R1 (ga_nn optimizer) x R3 (ETA engine & API)
-    def test_pw_01_ga_nn_optimizer_with_eta_engine_and_api(self) -> None:
+    # PW-01: R1 (planner) x R3 (ETA engine & API)
+    def test_pw_01_planner_with_eta_engine_and_api(self) -> None:
         compute_action_eta, _ = _import_eta_helpers(self)
-        _import_optimizer(self)
-        cfg = make_ga_nn_config(
-            self,
+        cfg = StrategyConfig(
+            planner_mode="priority",
             allow_research=True,
             allow_shipyard=True,
-            ga_population_size=16,
-            ga_generations=8,
-            ga_horizon_steps=6,
-            ga_seed=42,
         )
         p = make_planet(
             buildings={"b1": 4, "b2": 3, "b3": 4, "b4": 2, "b5": 7, "b7": 2, "b8": 1, "b9": 2},
             resources=Resources(9000, 6000, 5000, 2000),
-            researches={"r1": 1, "r2": 1},
+            researches={"r1": 1, "r2": 1, "r4": 1},
             ship_offers=(make_ship_offer(4, owned=2, can_build=True),),
             auto_offers=True,
         )
         state = make_game_state(
             planets=(p,),
-            researches={"r1": 1, "r2": 1},
+            researches={"r1": 1, "r2": 1, "r4": 1},
             research_offers=(make_research_offer("r2", 1, can_research=True),),
             speedup_factor=10.0,
         )
@@ -113,21 +99,25 @@ class TestTier3Pairwise(unittest.TestCase):
         self.assertTrue(ev.legal, f"Illegal GA+NN plan sequence: {ev.violations}")
         self.assertGreater(ev.total_score, 0.0)
 
-        # Verify HTTP API `/command plan` override also returns 9 ETA fields in ga_nn mode
+        # Verify HTTP API `/command plan` override also returns 9 ETA fields in ai_planner mode and legacy ga_nn fallback
         srv = FakeSpaceInvasionServer(speedup_factor=10.0)
-        with E2ETestHarness(server=srv, config=StrategyConfig(planner_mode="priority") if hasattr(StrategyConfig(), "planner_mode") else StrategyConfig()) as h:
-            res = h.api.send_command({"command": "plan", "planner_mode": "ga_nn"})
+        with E2ETestHarness(server=srv, config=StrategyConfig(planner_mode="priority")) as h:
+            res = h.api.send_command({"command": "plan", "planner_mode": "ai_planner"})
             self.assertTrue(res["ok"])
             self.assertGreater(len(res["actions"]), 0)
             for row in res["actions"]:
                 _verify_eta_fields(self, row)
 
-    # PW-02: R1 (ga_nn) x R2 (scan_galaxy + attack + BashTracker) x R3 (ETA)
-    def test_pw_02_ga_nn_with_scan_attack_bash_and_eta(self) -> None:
+            res_legacy = h.api.send_command({"command": "plan", "planner_mode": "ga_nn"})
+            self.assertTrue(res_legacy["ok"])
+            self.assertEqual(res_legacy.get("planner_mode"), "priority")
+            for row in res_legacy["actions"]:
+                _verify_eta_fields(self, row)
+
+    # PW-02: R1 (planner) x R2 (scan_galaxy + attack + BashTracker) x R3 (ETA)
+    def test_pw_02_planner_with_scan_attack_bash_and_eta(self) -> None:
         compute_action_eta, _ = _import_eta_helpers(self)
-        _import_optimizer(self)
-        cfg = make_ga_nn_config(
-            self,
+        cfg = StrategyConfig(
             allow_galaxy_scan=True,
             allow_raids=True,
             allow_pvp_in_az=True,
@@ -169,7 +159,7 @@ class TestTier3Pairwise(unittest.TestCase):
             h.api.send_command({"command": "scan_galaxy", "galaxy": 2, "system": 380, "dry_run": False})
             for coords in ("02:380:04", "02:380:06", "02:380:07"):
                 h.api.send_command({"command": "spy", "target_coords": coords, "probes": 1, "dry_run": False})
-            h.api.send_command({"command": "sync_spy_reports"})
+            h.api.send_command({"command": "sync_messages"})
 
             now = clock.time()
             db = GameDatabase(h.db_path)
@@ -221,10 +211,9 @@ class TestTier3Pairwise(unittest.TestCase):
             blocked06 = h.api.send_command({"command": "attack", "target_coords": "02:380:06", "dry_run": False})
             self.assertFalse(blocked06["executed"])
 
-    # PW-03: R1 (priority vs ga_nn) x R2 (b2 hysteresis) x R3 (blocked Metal ETA)
-    def test_pw_03_priority_vs_ga_nn_b2_hysteresis_and_blocked_metal_eta(self) -> None:
+    # PW-03: R1 (priority & ai_planner) x R2 (b2 hysteresis) x R3 (blocked Metal ETA)
+    def test_pw_03_priority_vs_ai_planner_b2_hysteresis_and_blocked_metal_eta(self) -> None:
         compute_action_eta, _ = _import_eta_helpers(self)
-        _import_optimizer(self)
         p = make_planet(
             buildings={"b1": 12, "b2": 11, "b3": 8, "b4": 4, "b5": 11, "b7": 3},
             resources=Resources(50, 0, 1000, 1000),
@@ -233,8 +222,8 @@ class TestTier3Pairwise(unittest.TestCase):
             auto_offers=True,
         )
         state = make_game_state(planets=(p,), researches={"r1": 1}, speedup_factor=1.0)
-        cfg_prio = make_ga_nn_config(self, planner_mode="priority", auto_throttle_blast_furnace=True)
-        cfg_gann = make_ga_nn_config(self, planner_mode="ga_nn", auto_throttle_blast_furnace=True)
+        cfg_prio = StrategyConfig(planner_mode="priority", auto_throttle_blast_furnace=True)
+        cfg_ai = StrategyConfig(planner_mode="ai_planner", auto_throttle_blast_furnace=True)
 
         # Priority emits Metal-blocked actions with wait_eta='—', eta_bottleneck='metal' while keeping Pig-only finite
         prio_actions = plan_actions(state, config=cfg_prio)
@@ -249,16 +238,16 @@ class TestTier3Pairwise(unittest.TestCase):
         for pa in [a for a in prio_actions if a.cost.metal == 0 and a.missing.pig_iron > 0]:
             self.assertNotEqual(pa.wait_eta, "—")
 
-        # GA+NN preserves 0% hysteresis and never attaches finite Metal ETA
-        gann_actions = plan_actions(state, config=cfg_gann)
-        self.assertGreater(len(gann_actions), 0)
-        self.assertEqual([a for a in gann_actions if a.kind == "THROTTLE_BUILDING" and a.target_level == 100], [])
-        for ma in [a for a in gann_actions if a.cost.metal > 0 and a.missing.metal > 0]:
+        # AI-Planner preserves 0% hysteresis and never attaches finite Metal ETA
+        ai_actions = plan_actions(state, config=cfg_ai)
+        self.assertGreater(len(ai_actions), 0)
+        self.assertEqual([a for a in ai_actions if a.kind == "THROTTLE_BUILDING" and a.target_level == 100], [])
+        for ma in [a for a in ai_actions if a.cost.metal > 0 and a.missing.metal > 0]:
             _verify_eta_fields(self, ma)
-            self.assertEqual(ma.wait_eta, "—", f"[ga_nn] Emitted finite Metal wait_eta while b2=0%: {ma}")
+            self.assertEqual(ma.wait_eta, "—", f"[ai_planner] Emitted finite Metal wait_eta while b2=0%: {ma}")
             self.assertEqual(ma.eta_bottleneck, "metal")
             self.assertEqual(ma.total_eta, "—")
-        for pa in [a for a in gann_actions if a.cost.metal == 0 and a.missing.pig_iron > 0]:
+        for pa in [a for a in ai_actions if a.cost.metal == 0 and a.missing.pig_iron > 0]:
             self.assertNotEqual(pa.wait_eta, "—")
 
         # Live harness verifies throttle_building(2, 0) surfaces blocked Metal ETA on /dashboard
@@ -282,11 +271,10 @@ class TestTier3Pairwise(unittest.TestCase):
             self.assertEqual(dash_met[0]["eta_bottleneck"], "metal")
 
     # PW-04: R1 (merchant_mode + planner_mode) x R3 (Config UI -> API -> Queue UI)
-    def test_pw_04_config_ui_merchant_mode_and_ga_nn_updates_queue_ui(self) -> None:
+    def test_pw_04_config_ui_merchant_mode_and_planner_mode_updates_queue_ui(self) -> None:
         _import_eta_helpers(self)
-        _import_optimizer(self)
         srv = FakeSpaceInvasionServer()
-        cfg = make_ga_nn_config(self, planner_mode="priority", merchant_mode=False)
+        cfg = StrategyConfig(planner_mode="priority", merchant_mode=False)
         with E2ETestHarness(server=srv, config=cfg) as h:
             h.api.get_state(include_buildings=True)
             res = run_ui_in_node(
@@ -331,8 +319,7 @@ class TestTier3Pairwise(unittest.TestCase):
     # PW-05: R1 (Multi-planet + Asteroid + hot s9) x R3 (per-planet ETA & #planet-select)
     def test_pw_05_multi_planet_asteroid_hot_s9_and_per_planet_etas(self) -> None:
         compute_action_eta, _ = _import_eta_helpers(self)
-        _import_optimizer(self)
-        cfg = make_ga_nn_config(self, allow_multi_planet=True, allow_shipyard=True, hot_planet_solar_temp_threshold=80)
+        cfg = StrategyConfig(allow_multi_planet=True, allow_shipyard=True, hot_planet_solar_temp_threshold=80)
         cold_p = make_planet(
             planet_id=101,
             name="ColdSpice",
@@ -506,10 +493,9 @@ class TestTier3Pairwise(unittest.TestCase):
             self.assertTrue(dash_rl["health"]["rate_limited"])
             self.assertTrue(dash_rl["health"]["in_game"])
 
-    # PW-07: R2 (PageViewLimiter + Commander backoff) x R1 (ga_nn) x R3 (ETA logs & SQLite)
-    def test_pw_07_commander_ga_nn_pacer_backoff_update_config_logs_sqlite(self) -> None:
+    # PW-07: R2 (PageViewLimiter + Commander backoff) x R1 (planner) x R3 (ETA logs & SQLite)
+    def test_pw_07_commander_pacer_backoff_update_config_logs_sqlite(self) -> None:
         _import_eta_helpers(self)
-        _import_optimizer(self)
         clock = FakeClock()
         srv = FakeSpaceInvasionServer(
             clock=clock,
@@ -517,11 +503,13 @@ class TestTier3Pairwise(unittest.TestCase):
             server_cooldown_s=45.0,
             rate_limit_on_frame="F_Hauptframe",
         )
-        cfg = make_ga_nn_config(self, allow_galaxy_scan=True, allow_raids=True)
+        cfg = StrategyConfig(allow_galaxy_scan=True, allow_raids=True)
         with E2ETestHarness(server=srv, clock=clock, config=cfg) as h:
-            # 1) Normal ga_nn commander tick
+            # 1) Normal commander ticks (scan + budget-consuming spy)
             res = commander.run_commander_tick(h.api, live=True, max_actions=1, config=cfg)
             self.assertIsNotNone(res)
+            res2 = commander.run_commander_tick(h.api, live=True, max_actions=1, config=cfg)
+            self.assertIsNotNone(res2)
 
             # 2) Rate-limit hit triggers full >=45s backoff and recovery in loop
             clock.advance(10.0)
@@ -655,7 +643,7 @@ class TestTier3Pairwise(unittest.TestCase):
             h.api.send_command({"command": "scan_galaxy", "galaxy": 2, "system": 380, "dry_run": False})
             spy_res = h.api.send_command({"command": "spy", "target_coords": "02:380:04", "planet_id": 12476, "dry_run": False})
             self.assertTrue(spy_res["executed"])
-            sync_res = h.api.send_command({"command": "sync_spy_reports"})
+            sync_res = h.api.send_command({"command": "sync_messages"})
             self.assertGreaterEqual(sync_res["synced_reports"], 1)
 
             sim = h.api.send_command(
@@ -681,10 +669,9 @@ class TestTier3Pairwise(unittest.TestCase):
             self.assertTrue(att_res["executed"])
             self.assertEqual(srv.launched_fleets[-1]["origin_planet_id"], 12477)
 
-    # PW-10: R1 (P0 Hostile Override under ga_nn) x R2 (Escape Flight) x R3 (Ready/Instant ETA)
-    def test_pw_10_p0_hostile_escape_overrides_ga_nn_with_ready_instant_eta(self) -> None:
+    # PW-10: R1 (P0 Hostile Override) x R2 (Escape Flight) x R3 (Ready/Instant ETA)
+    def test_pw_10_p0_hostile_escape_overrides_with_ready_instant_eta(self) -> None:
         compute_action_eta, _ = _import_eta_helpers(self)
-        _import_optimizer(self)
         planets = {
             12476: {
                 "planet_id": 12476,
@@ -724,7 +711,7 @@ class TestTier3Pairwise(unittest.TestCase):
             active_planet_id=12476,
             hostile_alerts=["Hostile Attack detected arriving at 02:380:12 in 00:05:12"],
         )
-        cfg = make_ga_nn_config(self, allow_fleetsave=False, fleet_save_fuel_reserve_spice=1500)
+        cfg = StrategyConfig(allow_fleetsave=False, fleet_save_fuel_reserve_spice=1500)
         with E2ETestHarness(server=srv, config=cfg) as h:
             h.api.get_state(include_buildings=True)
             plan_off = h.api.send_command({"command": "plan"})["actions"]
@@ -855,10 +842,9 @@ class TestTier3Pairwise(unittest.TestCase):
             dash = h.get_dashboard(refresh=0)
             self.assertEqual(dash["state"]["planets"][0]["economy_rates"].get("resource2"), 0)
 
-    # PW-13: R2 (Multi-raid DB + temp attack_history.json sync) x R1 (ga_nn full-history shift) x R3 (API/ETA)
-    def test_pw_13_multi_raid_db_sync_feeds_ga_nn_and_eta_api_payloads(self) -> None:
+    # PW-13: R2 (Multi-raid DB) x R1 (full-history raid scoring) x R3 (API/ETA)
+    def test_pw_13_multi_raid_db_sync_feeds_planner_and_eta_api_payloads(self) -> None:
         _import_eta_helpers(self)
-        _import_optimizer(self)
         gal = {
             (2, 380): [
                 {"position": 4, "name": "FarmGood", "owner": "IdleA", "status_color": "yellow", "has_debris": False, "is_spacia": False, "spy_href": None},
@@ -889,13 +875,13 @@ class TestTier3Pairwise(unittest.TestCase):
             "02:380:05": {"owner": "IdleB", "resources": same_loot_raw, "fleet": {}, "defense": {}},
         }
         srv = FakeSpaceInvasionServer(planets=planets, galaxy_systems=gal, spy_reports=spy_reports)
-        cfg = make_ga_nn_config(self, allow_galaxy_scan=True, allow_raids=True)
+        cfg = StrategyConfig(allow_galaxy_scan=True, allow_raids=True)
         with E2ETestHarness(server=srv, config=cfg) as h:
             h.api.get_state(include_buildings=True)
             h.api.send_command({"command": "scan_galaxy", "galaxy": 2, "system": 380, "dry_run": False})
             for coords in ("02:380:04", "02:380:05"):
                 h.api.send_command({"command": "spy", "target_coords": coords, "probes": 1, "dry_run": False})
-            h.api.send_command({"command": "sync_spy_reports"})
+            h.api.send_command({"command": "sync_messages"})
 
             db = GameDatabase(h.db_path)
             try:
@@ -921,10 +907,12 @@ class TestTier3Pairwise(unittest.TestCase):
                 "Expected full raid_stats / per-target attack_success_rate exposed via HTTP /state",
             )
 
-            plan = h.api.send_command({"command": "plan", "planner_mode": "ga_nn", "refresh": True})["actions"]
+            plan = h.api.send_command({"command": "plan", "planner_mode": "priority", "refresh": True})["actions"]
             atks = [a for a in plan if a["kind"] == "ATTACK" and a["executable_now"]]
             self.assertGreater(len(atks), 0)
-            self.assertIn("02:380:04", atks[0]["target_name"])
+            self.assertTrue(any("02:380:04" in a["target_name"] for a in atks))
+            per_t = (st_json.get("raid_stats") or {}).get("per_target") or {}
+            self.assertGreater(per_t["02:380:04"]["success_rate"], per_t["02:380:05"]["success_rate"])
             for row in plan:
                 _verify_eta_fields(self, row)
 

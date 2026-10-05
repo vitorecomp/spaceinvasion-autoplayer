@@ -1,53 +1,16 @@
-"""Unit tests for run_bot debug-port lifecycle and session recovery."""
+"""Unit tests for run_stack, game_api, login, commander, and logging redaction."""
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 import unittest
 from unittest.mock import MagicMock, patch
 
-import run_bot
-from spaceinvasion.auth import Credentials, SpaceInvasionAuthError
+from spaceinvasion.auth import SpaceInvasionAuthError
 
 
 class TestRunnerDebugPortLifecycle(unittest.TestCase):
-    def test_launches_detached_debug_browser_when_port_closed(self) -> None:
-        creds = Credentials(email="pilot@example.com", password="secret", universe="RETRO")
-        with (
-            patch("run_bot.is_debug_port_open", return_value=False),
-            patch("run_bot.load_credentials", return_value=creds),
-            patch("run_bot.login_with_browser") as mock_login,
-        ):
-            run_bot.ensure_debug_browser_ready(
-                debug_port=9222, env_file=Path(".env"), account="default"
-            )
-        mock_login.assert_called_once()
-        cfg = mock_login.call_args.kwargs["config"]
-        self.assertEqual(cfg.debug_port, 9222)
-        self.assertTrue(cfg.detach)
-        self.assertFalse(cfg.attach)
-
-    def test_recovers_session_via_attach_when_kicked_out_of_game(self) -> None:
-        creds = Credentials(email="pilot@example.com", password="secret", universe="RETRO")
-        fake_client = MagicMock()
-        fake_client.__enter__.return_value = fake_client
-        fake_client.ensure_in_game.side_effect = SpaceInvasionAuthError("not in game")
-
-        with (
-            patch("run_bot.is_debug_port_open", return_value=True),
-            patch("run_bot.GameBrowserClient.attach", return_value=fake_client),
-            patch("run_bot.load_credentials", return_value=creds),
-            patch("run_bot.login_with_browser") as mock_login,
-        ):
-            run_bot.ensure_debug_browser_ready(
-                debug_port=9222, env_file=Path(".env"), account="default"
-            )
-        mock_login.assert_called_once()
-        cfg = mock_login.call_args.kwargs["config"]
-        self.assertEqual(cfg.debug_port, 9222)
-        self.assertTrue(cfg.attach)
-        self.assertTrue(cfg.detach)
-
     def test_run_stack_stop_proc_kills_sigterm_ignoring_child_and_wait_health_early_exit(self) -> None:
         import subprocess
         import sys
@@ -183,8 +146,8 @@ class TestRunnerDebugPortLifecycle(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             tp = Path(tmp)
-            cfg_p = tp / "cfg.yaml"
-            cfg_p.write_text("planner_mode: priority\n", encoding="utf-8")
+            cfg_p = tp / "cfg.json"
+            cfg_p.write_text('{"planner_mode": "priority"}', encoding="utf-8")
             created_bridges: list[GameApiBridge] = []
 
             def _isolated_bridge(*args, **kwargs):
@@ -216,14 +179,12 @@ class TestRunnerDebugPortLifecycle(unittest.TestCase):
                 created_bridges[0]._db._conn.execute("SELECT 1")
             self.assertEqual(signal.getsignal(signal.SIGTERM), before_sig)
 
-    def test_r7_advisor_run_bot_run_stack_and_logging_redaction_and_bounds(self) -> None:
+    def test_r7_run_stack_and_logging_redaction_and_bounds(self) -> None:
         import io
         import json
         import math
         import tempfile
-        import advisor
         import run_stack
-        from spaceinvasion.client import RateLimitError
         from spaceinvasion.logging_utils import append_tick_logs
         from spaceinvasion.state import (
             EnergyBalance,
@@ -277,39 +238,8 @@ class TestRunnerDebugPortLifecycle(unittest.TestCase):
             executable_now=False,
         )
 
-        def _reject_nonfinite(tok: str) -> object:
-            raise ValueError(tok)
-
         with tempfile.TemporaryDirectory() as tmp:
             tp = Path(tmp)
-            snap_out = tp / "adv_snap.json"
-            fake_cli = MagicMock()
-            fake_cli.__enter__.return_value = fake_cli
-            fake_cli.read_full_snapshot.return_value = state
-            out_json = io.StringIO()
-            with (
-                patch("advisor.GameBrowserClient.attach", return_value=fake_cli),
-                patch("advisor.plan_actions", return_value=[act]),
-                patch("sys.stdout", out_json),
-            ):
-                rc_adv_j = advisor.main(["--json", "--snapshot-out", str(snap_out)])
-            self.assertEqual(rc_adv_j, 0)
-            self.assertNotIn(secret, out_json.getvalue())
-            self.assertNotIn(secret, snap_out.read_text(encoding="utf-8"))
-            parsed_j = json.loads(out_json.getvalue(), parse_constant=_reject_nonfinite)
-            self.assertIn("state", parsed_j)
-
-            out_txt = io.StringIO()
-            with (
-                patch("advisor.GameBrowserClient.attach", return_value=fake_cli),
-                patch("advisor.plan_actions", return_value=[act]),
-                patch("sys.stdout", out_txt),
-            ):
-                rc_adv_t = advisor.main([])
-            self.assertEqual(rc_adv_t, 0)
-            self.assertNotIn(secret, out_txt.getvalue())
-            self.assertIn("~1e5000", out_txt.getvalue())
-
             # logging_utils.append_tick_logs handles 10**5000 integer message cleanly
             jl, tl = append_tick_logs(
                 tp / "logs",
@@ -323,21 +253,6 @@ class TestRunnerDebugPortLifecycle(unittest.TestCase):
             )
             self.assertTrue(jl.exists() and tl.exists())
             self.assertNotIn(secret, tl.read_text(encoding="utf-8"))
-
-        # run_bot clamps --interval inf and respects RateLimitError retry_after & redacts sid=
-        sleeps: list[float] = []
-        bot_out = io.StringIO()
-        with (
-            patch("run_bot.ensure_debug_browser_ready", return_value=None),
-            patch("run_bot.GameBrowserClient.attach", side_effect=RateLimitError(f"throttle ?sid={secret}", retry_after=90.0)),
-            patch("run_bot.time.sleep", side_effect=lambda s: sleeps.append(float(s))),
-            patch("sys.stdout", bot_out),
-        ):
-            rc_bot = run_bot.main(["--loop", "--interval", "inf", "--max-ticks", "1"])
-        self.assertEqual(rc_bot, 0)
-        self.assertNotIn(secret, bot_out.getvalue())
-        self.assertTrue(all(math.isfinite(s) and s <= 86400.0 for s in sleeps))
-        self.assertIn(90.0, sleeps)
 
         # run_stack clamps --interval inf before forwarding to commander.py
         popen_cmds: list[list[str]] = []
@@ -417,97 +332,13 @@ class TestRunnerDebugPortLifecycle(unittest.TestCase):
             self.assertTrue(ajl.exists() and atl.exists())
             self.assertIn("-> ~1e5000", atl.read_text(encoding="utf-8"))
 
-    def test_r9_run_bot_rate_limit_and_append_api_log_method_redaction(self) -> None:
-        import io
+    def test_r9_append_api_log_method_redaction(self) -> None:
         import tempfile
-        from spaceinvasion.client import RateLimitError
         from spaceinvasion.logging_utils import append_api_log
 
         secret = "R9_RUNBOT_SID_777"
-        fake_rl = MagicMock()
-        fake_rl.__enter__.return_value = fake_rl
-        fake_rl.ensure_in_game.side_effect = RateLimitError(f"throttle ?sid={secret}", retry_after=55.0)
-
-        with (
-            patch("run_bot.is_debug_port_open", return_value=True),
-            patch("run_bot.GameBrowserClient.attach", return_value=fake_rl),
-            patch("run_bot.load_credentials") as mock_creds,
-            patch("run_bot.login_with_browser") as mock_login,
-        ):
-            with self.assertRaises(RateLimitError):
-                run_bot.ensure_debug_browser_ready(
-                    debug_port=19998, env_file=Path(".env"), account="default"
-                )
-        mock_creds.assert_not_called()
-        mock_login.assert_not_called()
-
-        # Startup RateLimitError in --once returns 1 without login_with_browser
         with tempfile.TemporaryDirectory() as tmp:
             tp = Path(tmp)
-            env_p = tp / "dummy.env"
-            env_p.write_text("", encoding="utf-8")
-            out_once = io.StringIO()
-            with (
-                patch("run_bot.is_debug_port_open", return_value=True),
-                patch("run_bot.GameBrowserClient.attach", return_value=fake_rl),
-                patch("run_bot.login_with_browser") as mock_login_once,
-                patch("sys.stdout", out_once),
-            ):
-                rc_once = run_bot.main(
-                    ["--once", "--debug-port", "19998", "--env-file", str(env_p), "--log-dir", str(tp / "logs")]
-                )
-            self.assertEqual(rc_once, 1)
-            mock_login_once.assert_not_called()
-            self.assertNotIn(secret, out_once.getvalue())
-
-            # Startup RateLimitError in --loop backs off cleanly and recovers on next tick
-            ensure_calls: list[int] = []
-
-            def _ensure_startup_then_ok(**_kwargs: object) -> None:
-                ensure_calls.append(1)
-                if len(ensure_calls) == 1:
-                    raise RateLimitError(f"startup throttle ?sid={secret}", retry_after=52.0)
-
-            sleeps: list[float] = []
-            out_loop = io.StringIO()
-            with (
-                patch("run_bot.ensure_debug_browser_ready", side_effect=_ensure_startup_then_ok),
-                patch("run_bot.GameBrowserClient.attach", side_effect=RateLimitError("tick throttle", retry_after=48.0)),
-                patch("run_bot.time.sleep", side_effect=lambda s: sleeps.append(float(s))),
-                patch("sys.stdout", out_loop),
-            ):
-                rc_loop = run_bot.main(
-                    ["--loop", "--max-ticks", "2", "--interval", "10", "--debug-port", "19998", "--env-file", str(env_p), "--log-dir", str(tp / "logs")]
-                )
-            self.assertEqual(rc_loop, 0)
-            self.assertEqual(len(ensure_calls), 2)
-            self.assertIn(52.0, sleeps)
-            self.assertIn(48.0, sleeps)
-            self.assertNotIn(secret, out_loop.getvalue())
-
-            # Recovery ensure_debug_browser_ready hitting RateLimitError sleeps cleanly instead of crashing
-            rec_sleeps: list[float] = []
-            out_rec = io.StringIO()
-            rec_calls: list[int] = []
-
-            def _ensure_rec(**_kwargs: object) -> None:
-                rec_calls.append(1)
-                if len(rec_calls) >= 2:
-                    raise RateLimitError(f"recovery throttle ?sid={secret}", retry_after=61.0)
-
-            with (
-                patch("run_bot.ensure_debug_browser_ready", side_effect=_ensure_rec),
-                patch("run_bot.GameBrowserClient.attach", side_effect=SpaceInvasionAuthError(f"lost ?sid={secret}")),
-                patch("run_bot.time.sleep", side_effect=lambda s: rec_sleeps.append(float(s))),
-                patch("sys.stdout", out_rec),
-            ):
-                rc_rec = run_bot.main(
-                    ["--loop", "--max-ticks", "1", "--interval", "10", "--debug-port", "19998", "--env-file", str(env_p), "--log-dir", str(tp / "logs")]
-                )
-            self.assertEqual(rc_rec, 0)
-            self.assertIn(61.0, rec_sleeps)
-            self.assertNotIn(secret, out_rec.getvalue())
-
             # logging_utils.append_api_log redacts sid= in method argument on .log as well as .jsonl
             ajl, atl = append_api_log(
                 tp / "api_logs",
@@ -521,77 +352,34 @@ class TestRunnerDebugPortLifecycle(unittest.TestCase):
             self.assertNotIn(secret, atl.read_text(encoding="utf-8"))
             self.assertIn("REDACTED", atl.read_text(encoding="utf-8"))
 
-    def test_r10_runner_stack_advisor_intervals_and_cli_json_redaction(self) -> None:
+    def test_r10_runner_stack_intervals_and_cli_json_redaction(self) -> None:
         import io
         import json
-        import advisor as advisor_cli
         import login as login_cli
         import run_stack
-        from spaceinvasion.client import RateLimitError
-        from spaceinvasion.state import EnergyBalance, GameState, PlanetState, Resources
 
-        self.assertEqual(run_bot._safe_interval(10**5000), 86400.0)
-        self.assertEqual(run_bot._safe_interval(b"5.5"), 5.5)
-        self.assertEqual(run_bot._safe_interval("\u0665"), 20.0)
-        self.assertEqual(run_bot._safe_interval(frozenset({1})), 20.0)
-        rl_huge = RateLimitError("rl")
-        rl_huge.retry_after = 10**5000  # type: ignore[assignment]
-        self.assertEqual(
-            run_bot._safe_retry_after(rl_huge),
-            3600.0,
-        )
         self.assertEqual(run_stack._safe_interval(10**5000), 86400.0)
         self.assertEqual(run_stack._safe_interval(b"7.5"), 7.5)
         self.assertEqual(run_stack._safe_interval("\u0665"), 20.0)
 
-        for fn in (advisor_cli._safe_cli_json, login_cli._safe_cli_json):
-            out = fn(
-                {
-                    "url": Path("https://x/?sid=CLI_PATH_SEC"),
-                    "s": frozenset({b"?sid=CLI_BYTES_SEC"}),
-                    "password": "CLI_PW_SEC",
-                }
-            )
-            parsed = json.loads(out)
-            dumped = json.dumps(parsed, allow_nan=False)
-            for sec in ("CLI_PATH_SEC", "CLI_BYTES_SEC", "CLI_PW_SEC"):
-                self.assertNotIn(sec, dumped)
-
-        p = PlanetState(
-            planet_id=1,
-            name="P",
-            coords="01:001:01",
-            planet_type="normal",
-            temperature=20,
-            fields_used=10,
-            fields_max=200,
-            resources=Resources(10, 10, 10, 10),
-            storage=Resources(100, 100, 100, 100),
-            energy=EnergyBalance(50, 10),
+        out = login_cli._safe_cli_json(
+            {
+                "url": Path("https://x/?sid=CLI_PATH_SEC"),
+                "s": frozenset({b"?sid=CLI_BYTES_SEC"}),
+                "password": "CLI_PW_SEC",
+            }
         )
-        st = GameState(
-            31,
-            1,
-            "u",
-            1000.0,
-            (p,),
-            active_planet_id=1,
-            unread_messages={"?sid=UNREAD_SID_SEC": 3, 10**5000: 2},  # type: ignore[dict-item]
-        )
-        buf = io.StringIO()
-        with patch("sys.stdout", buf):
-            advisor_cli._print_report(st, [])
-        txt = buf.getvalue()
-        self.assertNotIn("UNREAD_SID_SEC", txt)
-        self.assertIn("1" + ("0" * 200), txt)
+        parsed = json.loads(out)
+        dumped = json.dumps(parsed, allow_nan=False)
+        for sec in ("CLI_PATH_SEC", "CLI_BYTES_SEC", "CLI_PW_SEC"):
+            self.assertNotIn(sec, dumped)
 
     def test_r11_pathlike_hashable_keys_unknown_scalars_and_login_cli_redaction(self) -> None:
         import io
         import json
         import tempfile
-        import advisor as advisor_cli
         import login as login_cli
-        from spaceinvasion.auth import LoginResult
+        from spaceinvasion.auth import Credentials, LoginResult
         from spaceinvasion.browser import BrowserLoginResult
         from spaceinvasion.logging_utils import append_api_log, append_tick_logs, redact_sensitive
         from spaceinvasion.state import EnergyBalance, GameState, PlanetState, Resources
@@ -620,10 +408,9 @@ class TestRunnerDebugPortLifecycle(unittest.TestCase):
         for sec in ("KEY_PATH_SEC", "KEY_TUP_SEC", "KEY_FSET_SEC"):
             self.assertNotIn(sec, keyed_str)
 
-        for fn in (advisor_cli._safe_cli_json, login_cli._safe_cli_json):
-            out = fn({"err": RuntimeError("?sid=CLI_EXC_SEC"), "cplx": complex(1, 2), "obj": object()})
-            parsed = json.loads(out)
-            self.assertNotIn("CLI_EXC_SEC", json.dumps(parsed, allow_nan=False))
+        out = login_cli._safe_cli_json({"err": RuntimeError("?sid=CLI_EXC_SEC"), "cplx": complex(1, 2), "obj": object()})
+        parsed = json.loads(out)
+        self.assertNotIn("CLI_EXC_SEC", json.dumps(parsed, allow_nan=False))
 
         p = PlanetState(1, "P", "01:001:01", "normal", 20, 10, 200, Resources(10, 10, 10, 10), Resources(100, 100, 100, 100), EnergyBalance(50, 10))
         st = GameState(31, 1, "u", 1000.0, (p,), active_planet_id=1)
@@ -696,11 +483,8 @@ class TestRunnerDebugPortLifecycle(unittest.TestCase):
                     self.assertNotIn(sec, rendered, f"argv={argv} leaked {sec}")
         self.assertIn("sid=BROWSER_FINAL_SEC", b_res.final_url)
 
-    def test_r12_logging_utils_and_advisor_full_secret_redaction_exceptions_and_broken_path(self) -> None:
-        import io
-        import json
+    def test_r12_logging_utils_full_secret_redaction_exceptions_and_broken_path(self) -> None:
         import tempfile
-        import advisor as advisor_cli
         import game_api as game_api_cli
         import run_stack as run_stack_cli
         from spaceinvasion.logging_utils import redact_sensitive
@@ -753,36 +537,6 @@ class TestRunnerDebugPortLifecycle(unittest.TestCase):
             self.assertNotIn(sec, dumped)
         self.assertIn("authorization: bearer redacted", dumped.lower())
 
-        adv_out = advisor_cli._safe_cli_json(
-            {
-                "speedup_factor": 10**5000,
-                "err": RuntimeError(10**5000, "Authorization: Bearer ADV_BEAR_SEC"),
-                "bad_fs": _RaiseFspath(),
-                "bad_repr": _RaiseStrRepr(),
-            }
-        )
-        parsed_adv = json.loads(adv_out)
-        self.assertNotIn("ADV_BEAR_SEC", adv_out)
-        self.assertIn("speedup_factor", parsed_adv)
-
-        out_buf = io.StringIO()
-        err_buf = io.StringIO()
-        with (
-            patch.object(
-                advisor_cli.GameBrowserClient,
-                "attach",
-                side_effect=RuntimeError(10**5000, "?password=ADV_MAIN_PW"),
-            ),
-            patch("sys.stdout", out_buf),
-            patch("sys.stderr", err_buf),
-        ):
-            rc = advisor_cli.main(["--json"])
-        self.assertEqual(rc, 1)
-        combined = out_buf.getvalue() + err_buf.getvalue()
-        self.assertNotIn("ADV_MAIN_PW", combined)
-        parsed_err = json.loads(out_buf.getvalue())
-        self.assertIn("error", parsed_err)
-
         from spaceinvasion.logging_utils import append_tick_logs
         from spaceinvasion.state import EnergyBalance, GameState, PlanetState, Resources
 
@@ -825,27 +579,18 @@ class TestRunnerDebugPortLifecycle(unittest.TestCase):
                     self.assertNotIn(sec, ltxt)
 
         for err_txt in (
-            run_bot._safe_bot_str(RuntimeError(10**5000, "Authorization: Bearer RB_SEC")),
             run_stack_cli._safe_err_text(RuntimeError(10**5000, "Authorization: Bearer RS_SEC")),
             game_api_cli._safe_err_text(RuntimeError(10**5000, "Authorization: Bearer GA_SEC")),
-            run_bot._safe_bot_str(_RaiseStrRepr()),
         ):
             self.assertIsInstance(err_txt, str)
-            for sec in ("RB_SEC", "RS_SEC", "GA_SEC"):
+            for sec in ("RS_SEC", "GA_SEC"):
                 self.assertNotIn(sec, err_txt)
 
     def test_r13_logging_and_cli_nested_exc_compound_secrets_unicode_and_quoted_bearer(self) -> None:
         import time
-        import advisor as advisor_cli
         import game_api as game_api_cli
         import run_stack as run_stack_cli
         from spaceinvasion.logging_utils import is_secret_dict_key, redact_sensitive
-
-        # 1. Nested >256-char BaseException.args scrubbed before truncation in advisor & cyclic/DAG safety across CLIs
-        exc_300 = RuntimeError(10**5000, {"password": "ADV_300_" + ("X" * 300)})
-        adv_out = advisor_cli._safe_cli_str(exc_300)
-        self.assertNotIn("ADV_300_", adv_out)
-        self.assertIn("REDACTED", adv_out)
 
         cyc = RuntimeError("cyc")
         cyc.args = (10**5000, cyc)
@@ -853,8 +598,6 @@ class TestRunnerDebugPortLifecycle(unittest.TestCase):
         for _ in range(18):
             dag = RuntimeError(10**5000, dag, dag, dag, dag, dag, dag, dag)
         for fn in (
-            advisor_cli._safe_cli_str,
-            run_bot._safe_bot_str,
             run_stack_cli._safe_err_text,
             game_api_cli._safe_err_text,
         ):
@@ -911,9 +654,7 @@ class TestRunnerDebugPortLifecycle(unittest.TestCase):
         import time
         from spaceinvasion import logging_utils as lu
         import login as login_mod
-        import advisor as advisor_mod
         import commander as cmd_mod
-        import run_bot as rb_mod
         import run_stack as rs_mod
         import game_api as ga_mod
 
@@ -959,9 +700,7 @@ class TestRunnerDebugPortLifecycle(unittest.TestCase):
         for fn in (
             lu.redact_sensitive,
             login_mod._safe_cli_str,
-            advisor_mod._safe_cli_str,
             cmd_mod._safe_cmd_str,
-            rb_mod._safe_bot_str,
             rs_mod._safe_err_text,
             ga_mod._safe_err_text,
         ):
@@ -972,7 +711,6 @@ class TestRunnerDebugPortLifecycle(unittest.TestCase):
             self.assertNotIn("LU_DAG_SEC", s_dag)
             self.assertIsInstance(fn(_RaiseFspath()), str)
         self.assertEqual(login_mod._coerce_cli_json_scalars(cyc), ["[Cycle]"])
-        self.assertEqual(advisor_mod._coerce_cli_json_scalars(cyc), ["[Cycle]"])
         self.assertLess((time.perf_counter() - t1) * 1000.0, 150.0)
 
 

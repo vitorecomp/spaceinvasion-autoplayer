@@ -46,7 +46,7 @@ class TestHarnessSelf(unittest.TestCase):
             assert h.tmp_dir is not None
             self.assertTrue(h.config_path.exists())
             self.assertTrue(h.env_file.exists())
-            self.assertNotEqual(h.config_path.resolve(), Path("config.yaml").resolve())
+            self.assertNotEqual(h.config_path.resolve(), Path("config.json").resolve())
             self.assertNotEqual(h.env_file.resolve(), Path(".env").resolve())
 
             health = h.api.health()

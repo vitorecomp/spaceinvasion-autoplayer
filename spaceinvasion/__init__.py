@@ -30,7 +30,6 @@ _SUBMODULE_MAP: dict[str, str] = {
     "fleet": "spaceinvasion.combat.fleet",
     "ranking": "spaceinvasion.combat.ranking",
     "strategy": "spaceinvasion.planner.strategy",
-    "optimizer": "spaceinvasion.planner.optimizer",
     "action_graph": "spaceinvasion.planner.action_graph",
     "migrations": "spaceinvasion.db.migrations",
     "storage": "spaceinvasion.db.storage",

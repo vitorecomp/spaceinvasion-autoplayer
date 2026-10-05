@@ -40,8 +40,6 @@ BUILDING_ID_BY_NAME: dict[str, int] = {
     "quantum array": 21,
 }
 
-_INT_RE = re.compile(r"[\d.]+", re.ASCII)
-
 
 def parse_si_int(raw: Any) -> int:
     """Parse SpaceInvasion dot-grouped integer strings like `'2.000'` -> `2000`."""
@@ -1036,11 +1034,6 @@ def _find_item_card_row(
         if has_req and (has_action or node.name in ("table", "tbody", "tr", "div")):
             return node
     return fallback
-
-
-def _find_card_row(detail_anchor, building_id: int) -> Any:
-    """Backward-compatible wrapper for building card traversal."""
-    return _find_item_card_row(detail_anchor, "building", "buildingID", building_id)
 
 
 _HMS_TIMER_RE = re.compile(

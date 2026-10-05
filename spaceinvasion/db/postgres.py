@@ -9,7 +9,7 @@ Provides:
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Iterator, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Sequence
 import contextlib
 import functools
 import re

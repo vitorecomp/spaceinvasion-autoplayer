@@ -24,33 +24,6 @@ from spaceinvasion.state import (
 )
 
 
-def make_ga_nn_config(test_case: unittest.TestCase, **overrides: Any) -> StrategyConfig:
-    """Construct a `ga_nn` StrategyConfig safely inside tests while enforcing M1 config contract."""
-    payload: dict[str, Any] = {
-        "planner_mode": overrides.pop("planner_mode", "ga_nn"),
-        "ga_population_size": overrides.pop("ga_population_size", 16),
-        "ga_generations": overrides.pop("ga_generations", 8),
-        "ga_horizon_steps": overrides.pop("ga_horizon_steps", 6),
-        "ga_seed": overrides.pop("ga_seed", 42),
-        **overrides,
-    }
-    cfg = strategy_config_from_dict(payload)
-    test_case.assertTrue(
-        hasattr(cfg, "planner_mode"),
-        "StrategyConfig missing 'planner_mode' (M1 R1 contract not yet implemented)",
-    )
-    expected_mode = str(payload["planner_mode"]).strip().lower() or "priority"
-    if expected_mode not in ("priority", "ga_nn"):
-        expected_mode = "priority"
-    test_case.assertEqual(cfg.planner_mode, expected_mode)
-    for attr in ("ga_population_size", "ga_generations", "ga_horizon_steps", "ga_seed"):
-        test_case.assertTrue(
-            hasattr(cfg, attr),
-            f"StrategyConfig missing '{attr}' (M1 R1 contract not yet implemented)",
-        )
-    return cfg
-
-
 def _res_from_dict(raw: Mapping[str, Any]) -> Resources:
     return Resources(
         pig_iron=int(raw.get("pig_iron", 0) or 0),

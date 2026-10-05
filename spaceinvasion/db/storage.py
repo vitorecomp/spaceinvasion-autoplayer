@@ -1,4 +1,4 @@
-"""SQLite persistence layer for SpaceInvasion Autoplayer telemetry, tutorial progress, actions, and intel."""
+"""PostgreSQL persistence layer for SpaceInvasion Autoplayer telemetry, tutorial progress, actions, and intel."""
 
 from __future__ import annotations
 
@@ -10,11 +10,9 @@ import math
 import os
 from pathlib import Path
 import re
-import sqlite3
-import tempfile
-import threading
+from sqlite3 import Error as _SqliteError, OperationalError as _SqliteOperationalError
 import time
-from typing import Any, Iterable, Mapping, Optional, Sequence
+from typing import Any, Iterable, Mapping, Optional, Sequence, cast
 from zoneinfo import ZoneInfo
 
 from spaceinvasion.core import game_data
@@ -30,7 +28,6 @@ from spaceinvasion.combat.fleet import (
     normalize_coords,
 )
 from spaceinvasion.core.logging_utils import (
-    _SECRET_DICT_KEYS,
     _SID_RE as _LOG_SID_RE,
     _sub_sid_kv as _sub_log_sid_kv,
     is_secret_dict_key,
@@ -44,28 +41,14 @@ from spaceinvasion.db.backend import (
     redact_db_url,
 )
 from spaceinvasion.db.migrations import (
-    ATTACK_HISTORY_SCHEMA_VERSION,
     DEFAULT_GAME_MIGRATION_RUNNER,
-    GAME_DB_MIGRATIONS,
     HISTORY_TABLES,
     HOT_TABLES,
-    LATEST_SCHEMA_VERSION,
     PROTECTED_META_KEYS,
-    SCHEMA_LEDGER_DDL,
-    SCHEMA_VERSION,
-    TABLE_TIER_BY_NAME,
     backfill_v012_hot_tables,
     backfill_v014_loot_recycle_hourly,
-    create_sqlite_backup,
-    import_legacy_attack_history_json,
-    import_legacy_config_yaml,
-    import_legacy_rank_history_json,
-    import_legacy_snapshot_json,
 )
 from spaceinvasion.core.state import GameState, game_state_from_dict, normalize_planet_type
-
-DEFAULT_DB_PATH = Path("state") / "spaceinvasion.db"
-DEFAULT_ATTACK_HISTORY_PATH: Optional[Path] = None
 
 
 def server_day_key(ts: Optional[float] = None) -> str:
@@ -231,25 +214,6 @@ def _raw_text(
         return f"<{type(value).__name__}>"
 
 
-_SAFE_STATUS_COLORS: frozenset[str] = frozenset(
-    {
-        "",
-        "free",
-        "yellow",
-        "white",
-        "green",
-        "blue",
-        "red",
-        "purple",
-        "orange",
-        "gray",
-        "grey",
-        "inactive",
-        "vacation",
-        "banned",
-        "spacia",
-    }
-)
 _NORM_GSP_RE = re.compile(r"(\d{2}):(\d{3}):(\d{2})", re.ASCII)
 _ANY_GSP_RE = re.compile(r"(\d+):(\d+):(\d+)", re.ASCII)
 
@@ -566,400 +530,6 @@ def _is_win_outcome(outcome: str, loot_spice_eq: float) -> bool:
         return True
     return bool(s and any(tok in s for tok in _WIN_OUTCOME_TOKENS))
 
-_SCHEMA_SQL = """
-CREATE TABLE IF NOT EXISTS meta (
-    key TEXT PRIMARY KEY,
-    value TEXT NOT NULL,
-    updated_ts REAL NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS rank_snapshots (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    ts REAL NOT NULL,
-    universe_id INTEGER NOT NULL DEFAULT 0,
-    nickname TEXT NOT NULL DEFAULT '',
-    server_points INTEGER,
-    server_rank INTEGER,
-    estimated_points REAL NOT NULL,
-    pts_per_hr REAL NOT NULL,
-    spice_value REAL NOT NULL,
-    planets INTEGER NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_rank_snapshots_ts ON rank_snapshots(ts);
-
-CREATE TABLE IF NOT EXISTS planet_snapshots (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    ts REAL NOT NULL,
-    universe_id INTEGER NOT NULL DEFAULT 0,
-    planet_id INTEGER NOT NULL,
-    coords TEXT NOT NULL,
-    name TEXT NOT NULL,
-    planet_type TEXT NOT NULL,
-    temperature INTEGER NOT NULL,
-    fields_used INTEGER NOT NULL,
-    fields_max INTEGER NOT NULL,
-    pig_iron INTEGER NOT NULL,
-    metal INTEGER NOT NULL,
-    kryptonite INTEGER NOT NULL,
-    spice INTEGER NOT NULL,
-    energy_produced INTEGER NOT NULL,
-    energy_used INTEGER NOT NULL,
-    buildings_json TEXT NOT NULL,
-    ships_json TEXT NOT NULL,
-    defense_json TEXT NOT NULL,
-    economy_rates_json TEXT NOT NULL,
-    researches_json TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_planet_snapshots_pid_ts ON planet_snapshots(planet_id, ts);
-
-CREATE TABLE IF NOT EXISTS state_snapshots (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    ts REAL NOT NULL,
-    source TEXT NOT NULL DEFAULT 'advisor',
-    universe_id INTEGER NOT NULL DEFAULT 0,
-    user_id INTEGER NOT NULL DEFAULT 0,
-    nickname TEXT NOT NULL DEFAULT '',
-    active_planet_id INTEGER NOT NULL DEFAULT 0,
-    planet_count INTEGER NOT NULL DEFAULT 0,
-    planned_action_count INTEGER NOT NULL DEFAULT 0,
-    state_json TEXT NOT NULL DEFAULT '{}',
-    plan_json TEXT NOT NULL DEFAULT '[]'
-);
-CREATE INDEX IF NOT EXISTS idx_state_snapshots_ts ON state_snapshots(ts);
-
-CREATE TABLE IF NOT EXISTS strategy_config_store (
-    id INTEGER PRIMARY KEY CHECK (id = 1),
-    config_json TEXT NOT NULL,
-    updated_ts REAL NOT NULL,
-    source TEXT NOT NULL DEFAULT 'sqlite'
-);
-
-CREATE TABLE IF NOT EXISTS ui_notifications (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    created_ts REAL NOT NULL,
-    updated_ts REAL NOT NULL,
-    severity TEXT NOT NULL DEFAULT 'warning',
-    category TEXT NOT NULL DEFAULT 'action_validation',
-    title TEXT NOT NULL,
-    message TEXT NOT NULL,
-    help_prompt TEXT NOT NULL DEFAULT '',
-    action_kind TEXT NOT NULL DEFAULT '',
-    planet_coords TEXT NOT NULL DEFAULT '',
-    target_name TEXT NOT NULL DEFAULT '',
-    dedupe_key TEXT NOT NULL DEFAULT '',
-    occurrence_count INTEGER NOT NULL DEFAULT 1,
-    status TEXT NOT NULL DEFAULT 'unread',
-    acknowledged_ts REAL,
-    details_json TEXT NOT NULL DEFAULT '{}'
-);
-CREATE INDEX IF NOT EXISTS idx_ui_notifications_status_ts ON ui_notifications(status, updated_ts);
-CREATE INDEX IF NOT EXISTS idx_ui_notifications_dedupe ON ui_notifications(dedupe_key, status);
-
-CREATE TABLE IF NOT EXISTS economy_rates_cache (
-    planet_id INTEGER PRIMARY KEY,
-    coords TEXT NOT NULL,
-    rates_json TEXT NOT NULL,
-    updated_ts REAL NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS tutorial_progress (
-    step INTEGER PRIMARY KEY,
-    total_steps INTEGER NOT NULL,
-    tasks_json TEXT NOT NULL,
-    reward_text TEXT NOT NULL,
-    can_complete INTEGER NOT NULL,
-    first_seen_ts REAL NOT NULL,
-    last_seen_ts REAL NOT NULL,
-    completed_ts REAL
-);
-
-CREATE TABLE IF NOT EXISTS action_history (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    ts REAL NOT NULL,
-    source TEXT NOT NULL,
-    command TEXT NOT NULL,
-    priority TEXT,
-    kind TEXT NOT NULL,
-    planet_id INTEGER,
-    planet_coords TEXT,
-    target_id INTEGER,
-    target_name TEXT,
-    target_level INTEGER,
-    executed INTEGER NOT NULL,
-    dry_run INTEGER NOT NULL,
-    reason TEXT,
-    message TEXT
-);
-CREATE INDEX IF NOT EXISTS idx_action_history_ts ON action_history(ts);
-
-CREATE TABLE IF NOT EXISTS spy_targets (
-    coords TEXT PRIMARY KEY,
-    owner TEXT NOT NULL DEFAULT '',
-    planet_name TEXT NOT NULL DEFAULT '',
-    status_color TEXT NOT NULL DEFAULT 'yellow',
-    is_inactive INTEGER NOT NULL DEFAULT 0,
-    is_spacia INTEGER NOT NULL DEFAULT 0,
-    has_debris INTEGER NOT NULL DEFAULT 0,
-    points INTEGER,
-    pig_iron INTEGER NOT NULL DEFAULT 0,
-    metal INTEGER NOT NULL DEFAULT 0,
-    kryptonite INTEGER NOT NULL DEFAULT 0,
-    spice INTEGER NOT NULL DEFAULT 0,
-    fleet_json TEXT NOT NULL DEFAULT '{}',
-    defense_json TEXT NOT NULL DEFAULT '{}',
-    dug_in INTEGER NOT NULL DEFAULT 0,
-    last_scanned_ts REAL NOT NULL,
-    last_spied_ts REAL NOT NULL DEFAULT 0.0,
-    blocked_until_ts REAL NOT NULL DEFAULT 0.0,
-    block_reason TEXT NOT NULL DEFAULT '',
-    bash_hits INTEGER NOT NULL DEFAULT 0,
-    last_blocked_ts REAL NOT NULL DEFAULT 0.0,
-    uninhabited_fields INTEGER,
-    colonize_min_fields INTEGER,
-    colonize_max_fields INTEGER,
-    temperature INTEGER,
-    spy_count INTEGER NOT NULL DEFAULT 0,
-    is_own_planet INTEGER NOT NULL DEFAULT 0,
-    merged_into TEXT NOT NULL DEFAULT ''
-);
-
-CREATE TABLE IF NOT EXISTS spy_reports (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    ts REAL NOT NULL,
-    target_coords TEXT NOT NULL,
-    owner TEXT NOT NULL DEFAULT '',
-    planet_name TEXT NOT NULL DEFAULT '',
-    is_spacia INTEGER NOT NULL DEFAULT 0,
-    pig_iron INTEGER NOT NULL DEFAULT 0,
-    metal INTEGER NOT NULL DEFAULT 0,
-    kryptonite INTEGER NOT NULL DEFAULT 0,
-    spice INTEGER NOT NULL DEFAULT 0,
-    loot_spice_eq REAL NOT NULL DEFAULT 0.0,
-    buildings_json TEXT NOT NULL DEFAULT '{}',
-    fleet_json TEXT NOT NULL DEFAULT '{}',
-    defense_json TEXT NOT NULL DEFAULT '{}',
-    researches_json TEXT NOT NULL DEFAULT '{}',
-    dug_in INTEGER,
-    uninhabited_fields INTEGER,
-    server_msg_id TEXT NOT NULL DEFAULT '',
-    msg_date_text TEXT NOT NULL DEFAULT '',
-    raw_text TEXT NOT NULL DEFAULT ''
-);
-CREATE INDEX IF NOT EXISTS idx_spy_reports_coords_ts ON spy_reports(target_coords, ts);
-
-CREATE TABLE IF NOT EXISTS game_messages (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    ingested_ts REAL NOT NULL,
-    msg_uid TEXT NOT NULL UNIQUE,
-    server_msg_id TEXT NOT NULL DEFAULT '',
-    folder_type TEXT NOT NULL DEFAULT '',
-    category TEXT NOT NULL DEFAULT 'other',
-    msg_date_text TEXT NOT NULL DEFAULT '',
-    sender TEXT NOT NULL DEFAULT '',
-    subject TEXT NOT NULL DEFAULT '',
-    coords TEXT NOT NULL DEFAULT '',
-    body_text TEXT NOT NULL DEFAULT '',
-    raw_html TEXT NOT NULL DEFAULT '',
-    parsed_json TEXT NOT NULL DEFAULT '{}',
-    deleted_in_game INTEGER NOT NULL DEFAULT 0,
-    deleted_ts REAL
-);
-CREATE INDEX IF NOT EXISTS idx_game_messages_ts ON game_messages(ingested_ts);
-CREATE INDEX IF NOT EXISTS idx_game_messages_coords ON game_messages(coords, ingested_ts);
-CREATE INDEX IF NOT EXISTS idx_game_messages_cat ON game_messages(category, ingested_ts);
-
-CREATE TABLE IF NOT EXISTS galaxy_scans (
-    galaxy INTEGER NOT NULL,
-    system INTEGER NOT NULL,
-    last_scanned_ts REAL NOT NULL,
-    occupied_count INTEGER NOT NULL DEFAULT 0,
-    target_count INTEGER NOT NULL DEFAULT 0,
-    free_count INTEGER NOT NULL DEFAULT 0,
-    PRIMARY KEY (galaxy, system)
-);
-CREATE INDEX IF NOT EXISTS idx_galaxy_scans_ts ON galaxy_scans(last_scanned_ts);
-
-CREATE TABLE IF NOT EXISTS galaxy_scan_history (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    ts REAL NOT NULL,
-    galaxy INTEGER NOT NULL,
-    system INTEGER NOT NULL,
-    occupied_count INTEGER NOT NULL DEFAULT 0,
-    target_count INTEGER NOT NULL DEFAULT 0,
-    free_count INTEGER NOT NULL DEFAULT 0,
-    debris_count INTEGER NOT NULL DEFAULT 0,
-    asteroid_count INTEGER NOT NULL DEFAULT 0
-);
-CREATE INDEX IF NOT EXISTS idx_galaxy_scan_history_sys_ts ON galaxy_scan_history(galaxy, system, ts);
-
-CREATE TABLE IF NOT EXISTS galaxy_slots (
-    coords TEXT PRIMARY KEY,
-    galaxy INTEGER NOT NULL,
-    system INTEGER NOT NULL,
-    position INTEGER NOT NULL,
-    planet_name TEXT NOT NULL DEFAULT '',
-    owner TEXT NOT NULL DEFAULT '',
-    status_color TEXT NOT NULL DEFAULT 'free',
-    is_inactive INTEGER NOT NULL DEFAULT 0,
-    is_spacia INTEGER NOT NULL DEFAULT 0,
-    has_debris INTEGER NOT NULL DEFAULT 0,
-    last_scanned_ts REAL NOT NULL,
-    colonize_min_fields INTEGER,
-    colonize_max_fields INTEGER,
-    temperature INTEGER
-);
-CREATE INDEX IF NOT EXISTS idx_galaxy_slots_sys ON galaxy_slots(galaxy, system, position);
-
-CREATE TABLE IF NOT EXISTS galaxy_slot_history (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    ts REAL NOT NULL,
-    coords TEXT NOT NULL,
-    galaxy INTEGER NOT NULL,
-    system INTEGER NOT NULL,
-    position INTEGER NOT NULL,
-    planet_name TEXT NOT NULL DEFAULT '',
-    owner TEXT NOT NULL DEFAULT '',
-    status_color TEXT NOT NULL DEFAULT 'free',
-    is_inactive INTEGER NOT NULL DEFAULT 0,
-    is_spacia INTEGER NOT NULL DEFAULT 0,
-    has_debris INTEGER NOT NULL DEFAULT 0,
-    has_asteroid INTEGER NOT NULL DEFAULT 0,
-    colonize_min_fields INTEGER,
-    colonize_max_fields INTEGER,
-    temperature INTEGER
-);
-CREATE INDEX IF NOT EXISTS idx_galaxy_slot_history_coords_ts ON galaxy_slot_history(coords, ts);
-
-CREATE TABLE IF NOT EXISTS config_history (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    ts REAL NOT NULL,
-    config_json TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_config_history_ts ON config_history(ts);
-
-CREATE TABLE IF NOT EXISTS raid_history (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    target_coords TEXT NOT NULL,
-    attacked_ts REAL NOT NULL,
-    is_exempt INTEGER NOT NULL DEFAULT 0,
-    outcome TEXT NOT NULL DEFAULT '',
-    loot_json TEXT NOT NULL DEFAULT '{}'
-);
-CREATE INDEX IF NOT EXISTS idx_raid_history_coords_ts ON raid_history(target_coords, attacked_ts);
-
-CREATE TABLE IF NOT EXISTS bash_blocks (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    target_coords TEXT NOT NULL,
-    blocked_ts REAL NOT NULL,
-    blocked_until_ts REAL NOT NULL,
-    cooldown_seconds REAL NOT NULL DEFAULT 0.0,
-    is_bash INTEGER NOT NULL DEFAULT 1,
-    reason TEXT NOT NULL DEFAULT ''
-);
-CREATE INDEX IF NOT EXISTS idx_bash_blocks_coords_ts ON bash_blocks(target_coords, blocked_ts);
-
-CREATE TABLE IF NOT EXISTS battle_reports (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    ts REAL NOT NULL,
-    msg_uid TEXT NOT NULL UNIQUE,
-    server_msg_id TEXT NOT NULL DEFAULT '',
-    battle_id TEXT NOT NULL DEFAULT '',
-    msg_date_text TEXT NOT NULL DEFAULT '',
-    target_coords TEXT NOT NULL DEFAULT '',
-    attacker TEXT NOT NULL DEFAULT '',
-    defender TEXT NOT NULL DEFAULT '',
-    outcome TEXT NOT NULL DEFAULT 'win',
-    rounds INTEGER NOT NULL DEFAULT 0,
-    pig_iron INTEGER NOT NULL DEFAULT 0,
-    metal INTEGER NOT NULL DEFAULT 0,
-    kryptonite INTEGER NOT NULL DEFAULT 0,
-    spice INTEGER NOT NULL DEFAULT 0,
-    loot_spice_eq REAL NOT NULL DEFAULT 0.0,
-    attacker_lost_spice INTEGER NOT NULL DEFAULT 0,
-    defender_lost_spice INTEGER NOT NULL DEFAULT 0,
-    debris_pig_iron INTEGER NOT NULL DEFAULT 0,
-    debris_metal INTEGER NOT NULL DEFAULT 0,
-    debris_spice_eq REAL NOT NULL DEFAULT 0.0,
-    raw_text TEXT NOT NULL DEFAULT ''
-);
-CREATE INDEX IF NOT EXISTS idx_battle_reports_coords_ts ON battle_reports(target_coords, ts);
-
-CREATE TABLE IF NOT EXISTS recycle_reports (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    ts REAL NOT NULL,
-    msg_uid TEXT NOT NULL UNIQUE,
-    server_msg_id TEXT NOT NULL DEFAULT '',
-    msg_date_text TEXT NOT NULL DEFAULT '',
-    coords TEXT NOT NULL DEFAULT '',
-    recycler_count INTEGER NOT NULL DEFAULT 0,
-    cargo_capacity INTEGER NOT NULL DEFAULT 0,
-    debris_avail_pig INTEGER NOT NULL DEFAULT 0,
-    debris_avail_metal INTEGER NOT NULL DEFAULT 0,
-    harvested_pig_iron INTEGER NOT NULL DEFAULT 0,
-    harvested_metal INTEGER NOT NULL DEFAULT 0,
-    harvested_kryptonite INTEGER NOT NULL DEFAULT 0,
-    harvested_spice INTEGER NOT NULL DEFAULT 0,
-    harvested_spice_eq REAL NOT NULL DEFAULT 0.0,
-    raw_text TEXT NOT NULL DEFAULT ''
-);
-CREATE INDEX IF NOT EXISTS idx_recycle_reports_coords_ts ON recycle_reports(coords, ts);
-
-CREATE TABLE IF NOT EXISTS manual_queue (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    created_ts REAL NOT NULL,
-    updated_ts REAL NOT NULL,
-    status TEXT NOT NULL DEFAULT 'pending',
-    priority TEXT NOT NULL DEFAULT 'P1',
-    sort_rank INTEGER NOT NULL DEFAULT 1000,
-    kind TEXT NOT NULL,
-    planet_id INTEGER NOT NULL DEFAULT 0,
-    planet_coords TEXT NOT NULL DEFAULT '',
-    target_id INTEGER,
-    target_name TEXT NOT NULL DEFAULT '',
-    target_coords TEXT NOT NULL DEFAULT '',
-    target_level INTEGER,
-    note TEXT NOT NULL DEFAULT '',
-    completed_ts REAL,
-    canceled_ts REAL,
-    result_message TEXT NOT NULL DEFAULT ''
-);
-CREATE INDEX IF NOT EXISTS idx_manual_queue_status_prio_rank
-    ON manual_queue(status, priority, sort_rank, id);
-
-CREATE TABLE IF NOT EXISTS manual_queue_events (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    ts REAL NOT NULL,
-    queue_id INTEGER NOT NULL,
-    event_type TEXT NOT NULL,
-    details_json TEXT NOT NULL DEFAULT '{}'
-);
-CREATE INDEX IF NOT EXISTS idx_manual_queue_events_qid_ts
-    ON manual_queue_events(queue_id, ts);
-
-CREATE TABLE IF NOT EXISTS colony_attempts (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    ts REAL NOT NULL,
-    event_type TEXT NOT NULL,
-    target_coords TEXT NOT NULL,
-    origin_coords TEXT NOT NULL DEFAULT '',
-    planet_id INTEGER,
-    fields_rolled INTEGER,
-    min_fields_target INTEGER NOT NULL DEFAULT 300,
-    expected_min_fields INTEGER,
-    expected_max_fields INTEGER,
-    temperature INTEGER,
-    grade TEXT NOT NULL DEFAULT '',
-    score INTEGER,
-    status_message TEXT NOT NULL DEFAULT '',
-    details_json TEXT NOT NULL DEFAULT '{}'
-);
-CREATE INDEX IF NOT EXISTS idx_colony_attempts_coords_ts
-    ON colony_attempts(target_coords, ts);
-CREATE INDEX IF NOT EXISTS idx_colony_attempts_ts
-    ON colony_attempts(ts);
-""" + SCHEMA_LEDGER_DDL
-
-
 def _stringify_keys(
     obj: Any,
     *,
@@ -1016,122 +586,53 @@ def _json_dumps(obj: Any) -> str:
         )
 
 
-def _resolve_attack_history_path(
-    attack_history_path: Optional[Path | str],
-    *,
-    is_memory: bool,
-    db_path: Path,
-) -> Optional[Path]:
-    if attack_history_path is not None:
-        raw_txt = _raw_text(attack_history_path, "").strip()
-        if not raw_txt or raw_txt == ".":
-            return None
-        cand = Path(raw_txt) if isinstance(attack_history_path, (str, bytes, bytearray)) else attack_history_path
-        if _raw_text(cand, "").strip() in ("", "."):
-            return None
-        return cand if isinstance(cand, Path) else Path(raw_txt)
-    if is_memory:
-        return None
-    if db_path.resolve() == DEFAULT_DB_PATH.resolve():
-        return DEFAULT_ATTACK_HISTORY_PATH
-    return None
-
-
 class GameDatabase:
     """Thread-safe PostgreSQL (pooled MVCC) or SQLite (WAL) store for empire telemetry, actions, and intel."""
 
     def __init__(
         self,
-        db_path: Path | str = DEFAULT_DB_PATH,
+        db_path: Optional[Path | str] = None,
         *,
         backend: Optional[str] = None,
         postgres_url: Optional[str] = None,
         pool_min_size: int = 2,
         pool_max_size: int = 16,
-        legacy_rank_json: Optional[Path] = None,
-        attack_history_path: Optional[Path | str] = None,
         target_schema_version: Optional[int] = None,
         backup_on_upgrade: Optional[bool] = None,
     ) -> None:
-        raw_path = _raw_text(db_path, "")
-        want_pg = is_postgres_dsn(raw_path) or (
-            backend is not None and normalize_backend_name(backend, "sqlite") == "postgres"
+        from spaceinvasion.db.postgres import PostgresPoolBackend
+
+        if backend is not None and str(backend).strip().lower() not in ("", "auto"):
+            normalize_backend_name(backend)
+        raw_path = _raw_text(db_path, "") if db_path is not None else ""
+        eff_dsn = (
+            raw_path.strip()
+            if is_postgres_dsn(raw_path)
+            else (
+                str(postgres_url).strip()
+                if (postgres_url and is_postgres_dsn(postgres_url))
+                else build_default_postgres_url()
+            )
         )
-        self._is_postgres = bool(want_pg)
-        self.backend_name = "postgres" if self._is_postgres else "sqlite"
-        self.postgres_url: str = ""
-        self._pg_backend: Any = None
-
-        if self._is_postgres:
-            from spaceinvasion.db.postgres import PostgresPoolBackend
-
-            eff_dsn = (
-                raw_path.strip()
-                if is_postgres_dsn(raw_path)
-                else (
-                    str(postgres_url).strip()
-                    if (postgres_url and is_postgres_dsn(postgres_url))
-                    else build_default_postgres_url()
-                )
-            )
-            self.postgres_url = eff_dsn
-            self._is_memory = False
-            self.db_path = (
-                db_path
-                if (isinstance(db_path, Path) and not is_postgres_dsn(str(db_path)))
-                else DEFAULT_DB_PATH
-            )
-            self.attack_history_path: Optional[Path] = _resolve_attack_history_path(
-                attack_history_path,
-                is_memory=True,
-                db_path=self.db_path,
-            )
-            self._pg_backend = PostgresPoolBackend(
-                eff_dsn,
-                min_size=pool_min_size,
-                max_size=pool_max_size,
-            )
-            self._lock: Any = self._pg_backend.session_lock
-            self._conn: Any = self._pg_backend.conn_proxy
-        else:
-            self._is_memory = ":memory:" in raw_path or "mode=memory" in raw_path
-            if self._is_memory:
-                self.db_path = Path(":memory:")
-                self.attack_history_path = _resolve_attack_history_path(
-                    attack_history_path,
-                    is_memory=True,
-                    db_path=self.db_path,
-                )
-                conn_target = raw_path
-                use_uri = raw_path.startswith("file:")
-            else:
-                self.db_path = db_path if isinstance(db_path, Path) else Path(raw_path)
-                self.db_path.parent.mkdir(parents=True, exist_ok=True)
-                self.attack_history_path = _resolve_attack_history_path(
-                    attack_history_path,
-                    is_memory=False,
-                    db_path=self.db_path,
-                )
-                conn_target = str(self.db_path)
-                use_uri = False
-
-            self._lock = threading.Lock()
-            self._conn = sqlite3.connect(
-                conn_target,
-                uri=use_uri,
-                timeout=10.0,
-                check_same_thread=False,
-            )
+        self._is_postgres = True
+        self.backend_name = "postgres"
+        self._is_memory = False
+        self.postgres_url: str = eff_dsn
+        self.db_path = (
+            db_path
+            if (isinstance(db_path, Path) and not is_postgres_dsn(str(db_path)))
+            else Path("state") / "postgres"
+        )
+        self._pg_backend: Any = PostgresPoolBackend(
+            eff_dsn,
+            min_size=pool_min_size,
+            max_size=pool_max_size,
+        )
+        self._lock: Any = self._pg_backend.session_lock
+        self._conn: Any = cast(Any, self._pg_backend.conn_proxy)
 
         try:
-            if not self._is_postgres:
-                self._conn.row_factory = sqlite3.Row
             with self._lock:
-                if not self._is_postgres:
-                    if not self._is_memory:
-                        self._conn.execute("PRAGMA journal_mode=WAL;")
-                        self._conn.execute("PRAGMA synchronous=NORMAL;")
-                    self._conn.execute("PRAGMA foreign_keys=ON;")
                 self._last_slot_history_sig: Optional[tuple[float, tuple[str, ...]]] = None
                 self._summary_cache_ver: Optional[tuple[int, int, int]] = None
                 self._summary_cache_json: Optional[str] = None
@@ -1150,70 +651,24 @@ class GameDatabase:
                 now_ts = time.time()
                 self._migration_result = DEFAULT_GAME_MIGRATION_RUNNER.migrate(
                     self._conn,
-                    db_path=None if (self._is_memory or self._is_postgres) else self.db_path,
-                    is_memory=(self._is_memory or self._is_postgres),
+                    db_path=None,
+                    is_memory=True,
                     target_version=target_schema_version,
-                    backup=(
-                        False
-                        if self._is_postgres
-                        else (bool(backup_on_upgrade) if backup_on_upgrade is not None else False)
-                    ),
-                    auto_backup_default_db=(
-                        False
-                        if self._is_postgres
-                        else (True if backup_on_upgrade is None else bool(backup_on_upgrade))
-                    ),
+                    backup=False,
+                    auto_backup_default_db=False,
                     now_ts=now_ts,
                 )
                 self._repair_spy_targets_locked()
-                if legacy_rank_json is not None and legacy_rank_json.exists():
-                    self._migrate_legacy_rank_json(legacy_rank_json)
-                if (
-                    not self._is_postgres
-                    and not self._is_memory
-                    and self.db_path.resolve() == DEFAULT_DB_PATH.resolve()
-                ):
-                    if DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "raid_history"):
-                        legacy_atk = self.db_path.parent.parent / "data" / "attack_history.json"
-                        if legacy_atk.is_file():
-                            import_legacy_attack_history_json(
-                                self._conn, legacy_atk, now_ts=now_ts, remove_after_import=True
-                            )
-                    if DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "rank_snapshots"):
-                        legacy_rk = self.db_path.parent / "rank_history.json"
-                        if legacy_rk.is_file():
-                            import_legacy_rank_history_json(
-                                self._conn, legacy_rk, now_ts=now_ts, remove_after_import=True
-                            )
-                    if DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "state_snapshots"):
-                        legacy_snap = self.db_path.parent / "snapshot.json"
-                        if legacy_snap.is_file():
-                            import_legacy_snapshot_json(
-                                self._conn, legacy_snap, now_ts=now_ts, remove_after_import=True
-                            )
-                    if DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "strategy_config_store"):
-                        legacy_cfg = self.db_path.parent.parent / "config.yaml"
-                        if legacy_cfg.is_file():
-                            import_legacy_config_yaml(
-                                self._conn, legacy_cfg, now_ts=now_ts, remove_after_import=True
-                            )
                 if DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "game_messages"):
                     self._backfill_reports_from_game_messages_locked(now_ts)
                 self._conn.commit()
         except Exception:
-            if self._pg_backend is not None:
-                self._pg_backend.close()
-            else:
-                self._conn.close()
+            self._pg_backend.close()
             raise
 
     @property
     def display_target(self) -> str:
-        if self._is_postgres:
-            return redact_db_url(self.postgres_url)
-        if self._is_memory:
-            return ":memory:"
-        return _sanitize_text(self.db_path)
+        return redact_db_url(self.postgres_url)
 
     def _backfill_reports_from_game_messages_locked(self, now_ts: float) -> None:
         """Non-destructively re-parse existing `game_messages` rows to populate `battle_reports`, `recycle_reports`, and `spy_reports`."""
@@ -1507,42 +962,19 @@ class GameDatabase:
             (str(max_id), now_ts),
         )
 
-    def _migrate_legacy_rank_json(self, legacy_path: Path) -> None:
-        if not DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "rank_snapshots"):
-            return
-        import_legacy_rank_history_json(
-            self._conn,
-            legacy_path,
-            now_ts=time.time(),
-            remove_after_import=False,
-        )
-
     def close(self) -> None:
-        if self._pg_backend is not None:
-            self._pg_backend.close()
-        else:
-            with self._lock:
-                self._conn.close()
+        self._pg_backend.close()
 
     def change_token(self) -> tuple[int, int, int]:
         """Return a fast `(instance_id, local_changes, external_data_version)` cache token."""
-        if self._pg_backend is not None:
-            return (
-                id(self),
-                int(self._pg_backend.total_changes),
-                int(self._pg_backend.get_data_version()),
-            )
-        with self._lock:
-            dv_row = self._conn.execute("PRAGMA data_version").fetchone()
-            dv = int(dv_row[0]) if dv_row is not None else 0
-            return (id(self), int(self._conn.total_changes), dv)
+        return (
+            id(self),
+            int(self._pg_backend.total_changes),
+            int(self._pg_backend.get_data_version()),
+        )
 
     def _db_version_locked(self) -> tuple[int, int]:
-        if self._pg_backend is not None:
-            return (int(self._pg_backend.total_changes), int(self._pg_backend.get_data_version()))
-        dv_row = self._conn.execute("PRAGMA data_version").fetchone()
-        dv = int(dv_row[0]) if dv_row is not None else 0
-        return (int(self._conn.total_changes), dv)
+        return (int(self._pg_backend.total_changes), int(self._pg_backend.get_data_version()))
 
     def _invalidate_hot_caches_locked(self) -> None:
         self._galaxy_intel_base_ver = None
@@ -2529,17 +1961,6 @@ class GameDatabase:
         raw.pop("raid_targets", None)
         self._save_meta_json_locked("latest_game_state", raw, now_ts)
 
-    def save_latest_game_state(
-        self,
-        state: GameState | Mapping[str, Any],
-        *,
-        ts: Optional[float] = None,
-    ) -> None:
-        now_ts = _safe_float(ts, time.time()) if ts is not None else time.time()
-        with self._lock:
-            self._save_latest_game_state_locked(state, now_ts)
-            self._conn.commit()
-
     def load_latest_game_state(self) -> Optional[GameState]:
         raw = self.load_meta_json("latest_game_state")
         if not isinstance(raw, Mapping):
@@ -2731,7 +2152,7 @@ class GameDatabase:
         return val if 0 < val <= 2**62 else None
 
     @staticmethod
-    def _row_to_notification(r: sqlite3.Row) -> dict[str, Any]:
+    def _row_to_notification(r: Any) -> dict[str, Any]:
         try:
             det_obj = json.loads(_raw_text(r["details_json"], "{}"))
         except ValueError:
@@ -3456,7 +2877,7 @@ class GameDatabase:
         try:
             cols = {r["name"] for r in self._conn.execute(f"PRAGMA table_info({table})").fetchall()}
             return column in cols
-        except sqlite3.Error:
+        except _SqliteError:
             return False
 
     def _upsert_galaxy_slot_locked(
@@ -5019,7 +4440,7 @@ class GameDatabase:
         return out
 
     @staticmethod
-    def _row_to_spy_target_dict(r: sqlite3.Row) -> dict[str, Any]:
+    def _row_to_spy_target_dict(r: Any) -> dict[str, Any]:
         spied_ts = _safe_float(r["last_spied_ts"], 0.0)
         raw_c = _raw_text(r["coords"], "").strip()
         norm_c = normalize_coords(raw_c) if raw_c else ""
@@ -5376,7 +4797,7 @@ class GameDatabase:
                         dm = game_data.cap_json_int(max(0, _safe_int(br["debris_metal"], 0)))
                         if dp + dm > 0:
                             debris_lookup[nc] = (dp, dm, 0, 0)
-            except sqlite3.Error:
+            except _SqliteError:
                 pass
         missing_deb = [c for c in debris_coords if c not in debris_lookup]
         if missing_deb:
@@ -5412,7 +4833,7 @@ class GameDatabase:
                         dm = max(0, _safe_int(rr["debris_avail_metal"], 0) - _safe_int(rr["harvested_metal"], 0))
                         if dp + dm > 0:
                             debris_lookup[nc] = (game_data.cap_json_int(dp), game_data.cap_json_int(dm), 0, 0)
-            except sqlite3.Error:
+            except _SqliteError:
                 pass
         return debris_lookup
 
@@ -5523,7 +4944,7 @@ class GameDatabase:
             ).fetchall()
             # Rank raw rows BEFORE calling `_row_to_spy_target_dict` (which runs deep JSON
             # parsing & redaction) so we only materialize the top `lim` winners instead of 2,000 rows.
-            raw_items: list[tuple[Optional[tuple[str, int, int, int]], str, float, sqlite3.Row]] = []
+            raw_items: list[tuple[Optional[tuple[str, int, int, int]], str, float, Any]] = []
             debris_coords: list[str] = []
             for r in rows:
                 nc = normalize_coords(_raw_text(r["coords"], ""))
@@ -5535,7 +4956,7 @@ class GameDatabase:
             debris_lookup = self._build_debris_lookup_locked(debris_coords)
 
             def _debris_raw_sort_key(
-                entry: tuple[Optional[tuple[str, int, int, int]], str, float, sqlite3.Row]
+                entry: tuple[Optional[tuple[str, int, int, int]], str, float, Any]
             ) -> tuple[int, int, int, int, int, float]:
                 p_t, nc, ts_scan, _r = entry
                 d_tup = debris_lookup.get(nc)
@@ -6526,91 +5947,6 @@ class GameDatabase:
         graded.sort(key=_sort_key)
         return graded[:eff_limit]
 
-    def get_galaxy_slot_history(
-        self,
-        *,
-        coords: Optional[str] = None,
-        galaxy: Optional[int] = None,
-        system: Optional[int] = None,
-        limit: int = 500,
-    ) -> list[dict[str, Any]]:
-        clauses: list[str] = []
-        params: list[Any] = []
-        if coords is not None:
-            clauses.append("coords = ?")
-            params.append(normalize_coords(_raw_text(coords, "").strip()))
-        if galaxy is not None:
-            clauses.append("galaxy = ?")
-            params.append(_sql_int(galaxy, 0))
-        if system is not None:
-            clauses.append("system = ?")
-            params.append(_sql_int(system, 0))
-        where_sql = ("WHERE " + " AND ".join(clauses)) if clauses else ""
-        params.append(max(1, _sql_int(limit, 500)))
-        with self._lock:
-            rows = self._conn.execute(
-                f"""
-                SELECT id, ts, coords, galaxy, system, position, planet_name, owner,
-                       status_color, is_inactive, is_spacia, has_debris, has_asteroid
-                FROM galaxy_slot_history
-                {where_sql}
-                ORDER BY ts DESC, id DESC
-                LIMIT ?
-                """,
-                params,
-            ).fetchall()
-        return [
-            _sanitize_obj(
-                {
-                    "id": game_data.cap_json_int(_safe_int(r["id"], 0)),
-                    "ts": _safe_float(r["ts"], 0.0),
-                    "coords": normalize_coords(_raw_text(r["coords"], "")),
-                    "galaxy": game_data.cap_json_int(_safe_int(r["galaxy"], 0)),
-                    "system": game_data.cap_json_int(_safe_int(r["system"], 0)),
-                    "position": game_data.cap_json_int(_safe_int(r["position"], 0)),
-                    "planet_name": _sanitize_text(r["planet_name"]),
-                    "owner": _sanitize_text(r["owner"]),
-                    "status_color": _sanitize_text(r["status_color"]),
-                    "is_inactive": bool(r["is_inactive"]),
-                    "is_spacia": bool(r["is_spacia"]),
-                    "has_debris": bool(r["has_debris"]),
-                    "has_asteroid": bool(r["has_asteroid"]),
-                }
-            )
-            for r in rows
-        ]
-
-    def get_galaxy_scan_history(
-        self,
-        *,
-        galaxy: Optional[int] = None,
-        system: Optional[int] = None,
-        limit: int = 200,
-    ) -> list[dict[str, Any]]:
-        clauses: list[str] = []
-        params: list[Any] = []
-        if galaxy is not None:
-            clauses.append("galaxy = ?")
-            params.append(_sql_int(galaxy, 0))
-        if system is not None:
-            clauses.append("system = ?")
-            params.append(_sql_int(system, 0))
-        where_sql = ("WHERE " + " AND ".join(clauses)) if clauses else ""
-        params.append(max(1, _sql_int(limit, 200)))
-        with self._lock:
-            rows = self._conn.execute(
-                f"""
-                SELECT id, ts, galaxy, system, occupied_count, target_count,
-                       free_count, debris_count, asteroid_count
-                FROM galaxy_scan_history
-                {where_sql}
-                ORDER BY ts DESC, id DESC
-                LIMIT ?
-                """,
-                params,
-            ).fetchall()
-        return [_sanitize_obj(dict(r)) for r in rows]
-
     def set_target_debris(self, target_coords: str, has_debris: bool) -> None:
         raw_c = _raw_text(target_coords, "").strip()
         norm_c = normalize_coords(raw_c)
@@ -6741,7 +6077,6 @@ class GameDatabase:
             if parsed_blk is not None and 1 <= parsed_blk[1] <= 14 and 1 <= parsed_blk[2] <= 400:
                 self._refresh_galaxy_sectors_hot_locked(((parsed_blk[1], parsed_blk[2]),), now_val)
             self._conn.commit()
-            self._sync_attack_history_file_locked()
 
     def record_raid(
         self,
@@ -6781,7 +6116,6 @@ class GameDatabase:
             if int(cur_upd.rowcount or 0) > 0:
                 self._refresh_colony_candidates_hot_locked((norm_coords,), ts_val)
             self._conn.commit()
-            self._sync_attack_history_file_locked()
 
     @staticmethod
     def _aggregate_raid_rows(
@@ -7019,7 +6353,7 @@ class GameDatabase:
                     ORDER BY ts ASC, id ASC
                     """
                 ).fetchall()
-            except sqlite3.OperationalError:
+            except _SqliteOperationalError:
                 p_rows = self._conn.execute(
                     """
                     SELECT ts, planet_id, coords, planet_type, fields_used, fields_max,
@@ -7245,10 +6579,6 @@ class GameDatabase:
         self._full_history_cache_json = json.dumps(out_full, allow_nan=False)
         return out_full
 
-    def get_full_history_summary(self) -> dict[str, Any]:
-        with self._lock:
-            return self._get_full_history_summary_locked()
-
     def _get_raid_stats_locked(
         self,
         *,
@@ -7405,60 +6735,6 @@ class GameDatabase:
                 include_telemetry_summary=include_telemetry_summary,
             )
 
-    def _sync_attack_history_file_locked(self) -> Optional[Path]:
-        if self.attack_history_path is None:
-            return None
-        raw_str = _raw_text(self.attack_history_path, "").strip()
-        if not raw_str or raw_str == ".":
-            return None
-        target = Path(raw_str)
-        if target.exists() and target.is_dir():
-            return None
-        target.parent.mkdir(parents=True, exist_ok=True)
-        stats = self._get_raid_stats_locked()
-        payload = _sanitize_obj(
-            {
-                "version": 1,
-                "schema_version": ATTACK_HISTORY_SCHEMA_VERSION,
-                "db_schema_version": LATEST_SCHEMA_VERSION,
-                "updated_at": round(time.time(), 3),
-                "overall": stats["overall"],
-                "per_target": stats["per_target"],
-                "history": stats["history"],
-                "bash_blocks": stats["bash_blocks"],
-                "blocked_targets": stats["blocked_targets"],
-                "telemetry_summary": stats["telemetry_summary"],
-            }
-        )
-        tmp_path: Optional[Path] = None
-        try:
-            with tempfile.NamedTemporaryFile(
-                mode="w",
-                encoding="utf-8",
-                dir=str(target.parent),
-                prefix=f".{target.stem}.",
-                suffix=".tmp",
-                delete=False,
-            ) as tf:
-                tmp_path = Path(tf.name)
-                json.dump(payload, tf, indent=2, sort_keys=True, allow_nan=False)
-                tf.write("\n")
-                tf.flush()
-                os.fsync(tf.fileno())
-            os.replace(tmp_path, target)
-            return target
-        except Exception:
-            if tmp_path is not None:
-                try:
-                    tmp_path.unlink(missing_ok=True)
-                except OSError:
-                    pass
-            raise
-
-    def sync_attack_history_file(self) -> Optional[Path]:
-        with self._lock:
-            return self._sync_attack_history_file_locked()
-
     def load_bash_tracker(self, *, now: Optional[float] = None) -> BashTracker:
         ref = _safe_float(now, time.time()) if now is not None else time.time()
         cutoff = ref - 24 * 3600
@@ -7512,35 +6788,6 @@ class GameDatabase:
             ).fetchall()
         return [_sanitize_obj(dict(r)) for r in rows]
 
-    def get_planet_history(self, planet_id: int, *, limit: int = 50) -> list[dict[str, Any]]:
-        with self._lock:
-            rows = self._conn.execute(
-                """
-                SELECT ts, planet_id, coords, name, pig_iron, metal, kryptonite, spice,
-                       energy_produced, energy_used, buildings_json, economy_rates_json
-                FROM planet_snapshots WHERE planet_id = ? ORDER BY id DESC LIMIT ?
-                """,
-                (_sql_int(planet_id, 0), max(1, _sql_int(limit, 50))),
-            ).fetchall()
-        out = []
-        for r in rows:
-            item = {
-                "ts": _safe_float(r["ts"], 0.0),
-                "planet_id": game_data.cap_json_int(_safe_int(r["planet_id"], 0)),
-                "coords": _sanitize_text(_raw_text(r["coords"], "")),
-                "name": _sanitize_text(_raw_text(r["name"], "")),
-                "pig_iron": game_data.cap_json_int(_safe_int(r["pig_iron"], 0)),
-                "metal": game_data.cap_json_int(_safe_int(r["metal"], 0)),
-                "kryptonite": game_data.cap_json_int(_safe_int(r["kryptonite"], 0)),
-                "spice": game_data.cap_json_int(_safe_int(r["spice"], 0)),
-                "energy_produced": game_data.cap_json_int(_safe_int(r["energy_produced"], 0)),
-                "energy_used": game_data.cap_json_int(_safe_int(r["energy_used"], 0)),
-                "buildings": _safe_json_dict(r["buildings_json"]),
-                "economy_rates": _safe_json_dict(r["economy_rates_json"]),
-            }
-            out.append(_sanitize_obj(item))
-        return out
-
     def get_tutorial_history(self) -> list[dict[str, Any]]:
         with self._lock:
             rows = self._conn.execute(
@@ -7568,7 +6815,7 @@ class GameDatabase:
         return s if s in ("P0", "P1", "P2", "P3") else default
 
     @staticmethod
-    def _row_to_manual_queue_dict(r: sqlite3.Row) -> dict[str, Any]:
+    def _row_to_manual_queue_dict(r: Any) -> dict[str, Any]:
         tid = _safe_optional_int(r["target_id"])
         tlvl = _safe_optional_int(r["target_level"])
         comp_ts = _safe_optional_float(r["completed_ts"])
@@ -7621,7 +6868,7 @@ class GameDatabase:
             ),
         )
 
-    def _ordered_pending_queue_rows_locked(self) -> list[sqlite3.Row]:
+    def _ordered_pending_queue_rows_locked(self) -> list[Any]:
         return self._conn.execute(
             """
             SELECT *
@@ -8022,7 +7269,7 @@ class GameDatabase:
 
         with self._lock:
             pending_rows = self._ordered_pending_queue_rows_locked()
-            matched: Optional[sqlite3.Row] = None
+            matched: Optional[Any] = None
             for r in pending_rows:
                 if _raw_text(r["kind"], "").upper() != norm_kind:
                     continue
@@ -8114,7 +7361,7 @@ class GameDatabase:
         with self._lock:
             st = DEFAULT_GAME_MIGRATION_RUNNER.inspect(
                 self._conn,
-                db_path=None if self._is_memory else self.db_path,
+                db_path=self.display_target,
                 include_events=False,
             )
         return _sanitize_obj(
@@ -8144,7 +7391,7 @@ class GameDatabase:
         with self._lock:
             st = DEFAULT_GAME_MIGRATION_RUNNER.inspect(
                 self._conn,
-                db_path=self.display_target if self._is_postgres else (None if self._is_memory else self.db_path),
+                db_path=self.display_target,
                 include_events=include_events,
                 event_limit=event_limit,
             )
@@ -8161,24 +7408,23 @@ class GameDatabase:
     ) -> dict[str, Any]:
         """Run pending forward migrations up to `target_version` (or preview with `dry_run=True`)."""
         bkp_pg_path: Optional[Path] = None
-        if self._is_postgres and backup and not dry_run:
+        if backup and not dry_run:
             bkp_pg_path = create_postgres_backup(self, label="manual_migrate", backup_dir=backup_dir)
         with self._lock:
             res = DEFAULT_GAME_MIGRATION_RUNNER.migrate(
                 self._conn,
-                db_path=None if (self._is_memory or self._is_postgres) else self.db_path,
-                is_memory=(self._is_memory or self._is_postgres),
+                db_path=None,
+                is_memory=True,
                 target_version=target_version,
                 dry_run=dry_run,
-                backup=False if self._is_postgres else backup,
+                backup=False,
                 auto_backup_default_db=False,
                 backup_dir=backup_dir,
             )
-            if self._is_postgres:
-                res["backend"] = "postgres"
-                res["db_path"] = self.display_target
-                if bkp_pg_path is not None:
-                    res["backup_path"] = str(bkp_pg_path)
+            res["backend"] = "postgres"
+            res["db_path"] = self.display_target
+            if bkp_pg_path is not None:
+                res["backup_path"] = str(bkp_pg_path)
             if not dry_run and DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "game_messages"):
                 self._backfill_reports_from_game_messages_locked(time.time())
                 self._conn.commit()
@@ -8190,56 +7436,16 @@ class GameDatabase:
         label: str = "manual",
         backup_dir: Optional[Path] = None,
     ) -> dict[str, Any]:
-        """Create an online backup snapshot (`pg_dump`/JSONL for PostgreSQL, WAL `.backup` for SQLite)."""
-        if self._is_memory:
-            raise ValueError("Cannot create file backup of an in-memory SQLite database.")
-        if self._is_postgres:
-            with self._lock:
-                st = DEFAULT_GAME_MIGRATION_RUNNER.inspect(
-                    self._conn,
-                    db_path=self.display_target,
-                    include_events=False,
-                )
-                ver = int(st["version"])
-            bkp_path = create_postgres_backup(self, label=label, backup_dir=backup_dir)
-            with self._lock:
-                DEFAULT_GAME_MIGRATION_RUNNER._ensure_ledger_tables(self._conn)
-                DEFAULT_GAME_MIGRATION_RUNNER._record_event(
-                    self._conn,
-                    ts=time.time(),
-                    event_type="backup_created",
-                    from_version=ver,
-                    to_version=ver,
-                    backup_path=str(bkp_path),
-                    details={"label": _sanitize_text(label)[:40], "backend": "postgres"},
-                )
-                self._conn.commit()
-            return _sanitize_obj(
-                {
-                    "ok": True,
-                    "backend": "postgres",
-                    "db_path": self.display_target,
-                    "backup_path": _sanitize_text(bkp_path),
-                    "size_bytes": bkp_path.stat().st_size if bkp_path.exists() else 0,
-                    "version": ver,
-                    "version_tag": f"V{ver:03d}",
-                }
-            )
+        """Create an online PostgreSQL backup snapshot (`pg_dump` or JSONL)."""
         with self._lock:
             st = DEFAULT_GAME_MIGRATION_RUNNER.inspect(
                 self._conn,
-                db_path=self.db_path,
+                db_path=self.display_target,
                 include_events=False,
             )
             ver = int(st["version"])
-            bkp_path = create_sqlite_backup(
-                self._conn,
-                self.db_path,
-                from_version=ver,
-                to_version=ver,
-                label=label,
-                backup_dir=backup_dir,
-            )
+        bkp_path = create_postgres_backup(self, label=label, backup_dir=backup_dir)
+        with self._lock:
             DEFAULT_GAME_MIGRATION_RUNNER._ensure_ledger_tables(self._conn)
             DEFAULT_GAME_MIGRATION_RUNNER._record_event(
                 self._conn,
@@ -8248,14 +7454,14 @@ class GameDatabase:
                 from_version=ver,
                 to_version=ver,
                 backup_path=str(bkp_path),
-                details={"label": _sanitize_text(label)[:40], "backend": "sqlite"},
+                details={"label": _sanitize_text(label)[:40], "backend": "postgres"},
             )
             self._conn.commit()
         return _sanitize_obj(
             {
                 "ok": True,
-                "backend": "sqlite",
-                "db_path": _sanitize_text(self.db_path),
+                "backend": "postgres",
+                "db_path": self.display_target,
                 "backup_path": _sanitize_text(bkp_path),
                 "size_bytes": bkp_path.stat().st_size if bkp_path.exists() else 0,
                 "version": ver,
@@ -8268,33 +7474,19 @@ class GameDatabase:
         with self._lock:
             res = DEFAULT_GAME_MIGRATION_RUNNER.verify(
                 self._conn,
-                db_path=self.display_target if self._is_postgres else (None if self._is_memory else self.db_path),
+                db_path=self.display_target,
                 full_integrity=full_integrity,
             )
             res["backend"] = self.backend_name
         return _sanitize_obj(res)
 
     def summary(self) -> dict[str, Any]:
-        if self._pg_backend is not None:
-            tc = int(self._pg_backend.total_changes)
-            dv = int(self._pg_backend.get_data_version())
-            cur_ver_pg = (tc, dv, 0)
-            if self._summary_cache_json is not None and self._summary_cache_ver == cur_ver_pg:
-                return json.loads(self._summary_cache_json)
-            size_bytes = self._pg_backend.database_size_bytes()
-            cur_ver = (tc, dv, 0)
-        else:
-            size_bytes = (
-                self.db_path.stat().st_size
-                if (not self._is_memory and self.db_path.exists())
-                else 0
-            )
-            with self._lock:
-                data_ver_row = self._conn.execute("PRAGMA data_version").fetchone()
-                data_ver = int(data_ver_row[0]) if data_ver_row is not None else 0
-                cur_ver = (int(self._conn.total_changes), data_ver, int(size_bytes))
-                if self._summary_cache_json is not None and self._summary_cache_ver == cur_ver:
-                    return json.loads(self._summary_cache_json)
+        tc = int(self._pg_backend.total_changes)
+        dv = int(self._pg_backend.get_data_version())
+        cur_ver = (tc, dv, 0)
+        if self._summary_cache_json is not None and self._summary_cache_ver == cur_ver:
+            return json.loads(self._summary_cache_json)
+        size_bytes = self._pg_backend.database_size_bytes()
         tables = (
             "latest_state_hot",
             "empire_planets_hot",
@@ -8342,23 +7534,10 @@ class GameDatabase:
                 str(r[0])
                 for r in self._conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
             }
-            if self._pg_backend is not None:
-                all_cnts = self._pg_backend.fast_table_counts((*tables, "meta"), existing_tables)
-                for tbl in tables:
-                    counts[tbl] = all_cnts.get(tbl, 0)
-                meta_row_cnt = all_cnts.get("meta", 0)
-            else:
-                for tbl in tables:
-                    counts[tbl] = (
-                        int(self._conn.execute(f"SELECT COUNT(*) FROM {tbl}").fetchone()[0])
-                        if tbl in existing_tables
-                        else 0
-                    )
-                meta_row_cnt = (
-                    int(self._conn.execute("SELECT COUNT(*) FROM meta").fetchone()[0])
-                    if "meta" in existing_tables
-                    else 0
-                )
+            all_cnts = self._pg_backend.fast_table_counts((*tables, "meta"), existing_tables)
+            for tbl in tables:
+                counts[tbl] = all_cnts.get(tbl, 0)
+            meta_row_cnt = all_cnts.get("meta", 0)
             hot_counts = {
                 tbl: (meta_row_cnt if tbl == "meta" else counts.get(tbl, 0))
                 for tbl in HOT_TABLES
@@ -8387,7 +7566,7 @@ class GameDatabase:
             )
             mig_info = DEFAULT_GAME_MIGRATION_RUNNER.inspect(
                 self._conn,
-                db_path=self.display_target if self._is_postgres else (None if self._is_memory else self.db_path),
+                db_path=self.display_target,
                 include_events=False,
             )
         tut_rows = self.get_tutorial_history() if "tutorial_progress" in existing_tables else []
@@ -8729,7 +7908,7 @@ class GameDatabase:
                 for ok, ov in own_researches.items():
                     eff_own_map[_raw_text(ok, "").strip()] = max(0, _sql_int(ov, 0))
 
-            prev_rows_by_key: dict[str, sqlite3.Row] = {}
+            prev_rows_by_key: dict[str, Any] = {}
             if DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "universe_research_max"):
                 for pr in self._conn.execute("SELECT * FROM universe_research_max").fetchall():
                     prev_rows_by_key[str(pr["research_key"])] = pr
@@ -8946,7 +8125,7 @@ class GameDatabase:
         return out
 
     @staticmethod
-    def _row_to_colony_attempt_dict(r: sqlite3.Row) -> dict[str, Any]:
+    def _row_to_colony_attempt_dict(r: Any) -> dict[str, Any]:
         raw_tc = _raw_text(r["target_coords"], "").strip()
         norm_tc = normalize_coords(raw_tc) if raw_tc else ""
         raw_oc = _raw_text(r["origin_coords"], "").strip()
@@ -9846,7 +9025,7 @@ class GameDatabase:
         return out
 
     @staticmethod
-    def _row_to_field_conflict_dict(r: sqlite3.Row) -> dict[str, Any]:
+    def _row_to_field_conflict_dict(r: Any) -> dict[str, Any]:
         resolved_ts_raw = r["resolved_ts"]
         return _sanitize_obj(
             {
@@ -10544,14 +9723,6 @@ class GameDatabase:
         if eff_now <= 0.0:
             eff_now = time.time()
         return backfill_v014_loot_recycle_hourly(self._conn, eff_now)
-
-    def refresh_loot_recycle_hourly(self, *, ts: Optional[float] = None) -> dict[str, Any]:
-        """Re-aggregate battle_reports and recycle_reports into `loot_recycle_hourly` via upsert."""
-        with self._lock:
-            counts = self._refresh_loot_recycle_hourly_locked(ts=ts)
-            if counts.get("loot_recycle_hourly", 0) > 0:
-                self._conn.commit()
-            return counts
 
     def get_loot_recycle_hourly(
         self,

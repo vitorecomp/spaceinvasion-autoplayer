@@ -13,7 +13,6 @@ from spaceinvasion.fleet import (
     parse_galaxy_system_html,
     parse_spy_messages_html,
     parse_spy_report_html,
-    pick_colony_candidates,
     plan_escape_flight,
     score_raid_target,
     simulate_raid_outcome,
@@ -101,26 +100,6 @@ class TestFleetAndCombat(unittest.TestCase):
         pvp_rep = SpyReport("02:380:06", owner="PlayerX", resources=rep.resources, defense=rep.defense, is_spacia=False)
         self.assertIsNone(score_raid_target("02:380:12", pvp_slot, pvp_rep, {"s7": 5, "s3": 2}, allow_pvp_in_az=False))
         self.assertIsNotNone(score_raid_target("02:380:12", pvp_slot, pvp_rep, {"s7": 5, "s3": 2}, allow_pvp_in_az=True))
-
-        # Colony filtering respects >230 field strategy vs cold_spice
-        free_slots = (
-            GalaxySlot("02:380:04", 4, status_color="free"),
-            GalaxySlot("02:380:09", 9, status_color="free"),
-            GalaxySlot("02:380:15", 15, status_color="free"),
-        )
-        small_rep = SpyReport("02:380:04", uninhabited_fields=170)
-        large_rep = SpyReport("02:380:09", uninhabited_fields=265)
-        large_ranked = pick_colony_candidates(
-            free_slots,
-            goal="large_fields",
-            min_fields_target=230,
-            uninhabited_reports={"02:380:04": small_rep, "02:380:09": large_rep},
-        )
-        self.assertEqual(large_ranked[0].position, 9)
-        self.assertNotIn(4, [s.position for s in large_ranked])
-
-        cold_ranked = pick_colony_candidates(free_slots, goal="cold_spice")
-        self.assertEqual(cold_ranked[0].position, 15)
 
     def test_parse_galaxy_system_html_handles_real_dom_variations_and_coords(self) -> None:
         html = """

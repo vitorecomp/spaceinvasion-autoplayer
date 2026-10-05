@@ -5,7 +5,6 @@ from __future__ import annotations
 from collections import deque
 import contextlib
 from dataclasses import replace
-import inspect
 import math
 import random
 import re
@@ -25,6 +24,7 @@ from selenium.common.exceptions import (
 from selenium.webdriver.common.by import By
 
 from spaceinvasion.core import game_data
+from spaceinvasion.core.cli_support import call_with_optional_priority as _call_with_optional_priority
 from spaceinvasion.session.auth import AntiBotChallengeError, SpaceInvasionAuthError, detect_antibot_challenge
 from spaceinvasion.core.logging_utils import append_crash_debug_log
 from spaceinvasion.session.browser import (
@@ -49,7 +49,6 @@ from spaceinvasion.core.state import (
     parse_daily_login_bonus,
     parse_economy_rates,
     parse_home_metadata,
-    parse_menu_messages,
     parse_menu_status,
     parse_planets_overview_json,
     parse_research_page,
@@ -244,11 +243,6 @@ class PageViewLimiter:
         self._throttle_recovery_in_flight: bool = False
         self._throttle_recovery_token: int = 0
         self._throttle_recovery_generation: int = 0
-
-    @property
-    def last_view_at(self) -> float:
-        with self._lock:
-            return float(self._last_view_at or 0.0)
 
     @property
     def rate_limit_hits(self) -> int:
@@ -576,35 +570,6 @@ def reset_default_page_view_limiter() -> None:
     _DEFAULT_PAGE_VIEW_LIMITER.reset()
 
 
-def _call_with_optional_priority(
-    fn: Callable[..., Any],
-    *args: Any,
-    priority: str = "normal",
-    **kwargs: Any,
-) -> Any:
-    call_kwargs = dict(kwargs)
-    targets: list[Any] = [fn]
-    for attr in ("side_effect", "_mock_wraps"):
-        wrapped = getattr(fn, attr, None)
-        if callable(wrapped) and not isinstance(wrapped, type):
-            targets.append(wrapped)
-    accepts_priority = True
-    for target in targets:
-        try:
-            sig = inspect.signature(target)
-        except (TypeError, ValueError):
-            accepts_priority = False
-            break
-        if "priority" not in sig.parameters and not any(
-            p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()
-        ):
-            accepts_priority = False
-            break
-    if accepts_priority:
-        call_kwargs["priority"] = priority
-    return fn(*args, **call_kwargs)
-
-
 def _normalize_sid_query(raw_sid: str) -> str:
     cleaned = str(raw_sid or "").strip().lstrip("?&")
     if not cleaned:
@@ -678,10 +643,6 @@ class GameBrowserClient:
         self.last_home_daily_bonus_present: Optional[bool] = None
         self._driver_lock = threading.RLock()
         self._dom_healthy_epoch: int = 0
-
-    @property
-    def _last_nav_at(self) -> float:
-        return self.page_limiter.last_view_at
 
     @classmethod
     def attach(
@@ -3350,14 +3311,6 @@ class GameBrowserClient:
             html = self.driver.page_source or ""
         return parse_menu_status(html)
 
-    def read_unread_messages(self) -> dict[str, int]:
-        """Read unread message category counters from `F_Navi`."""
-        drv_lock = getattr(self, "_driver_lock", None)
-        with (drv_lock if drv_lock is not None else contextlib.nullcontext()):
-            self._switch_frame("F_Navi")
-            html = self.driver.page_source or ""
-        return parse_menu_messages(html)
-
     @staticmethod
     def _extract_selected_planet_id(html: str, url: str = "") -> Optional[int]:
         if not html or "internalfleet" in (url or "").lower() or "newplanet=" not in html.lower():
@@ -3378,11 +3331,6 @@ class GameBrowserClient:
                         return int(pid_s)
                     return None
         return None
-
-    def read_economy_rates(self, *, priority: str = "normal") -> dict[str, int]:
-        """Navigate to `internalEconomy` and extract active planet `resource1`..`resource6` rates."""
-        html = self.navigate_menu("internalEconomy", priority=priority)
-        return parse_economy_rates(html)
 
     def read_full_snapshot(
         self,

@@ -30,7 +30,6 @@ import numpy as np
 import pandas as pd
 
 from spaceinvasion import game_data
-from spaceinvasion.optimizer import run_optimizer
 from spaceinvasion.ranking import compute_action_eta
 from spaceinvasion.state import (
     BuildingOffer,
@@ -445,7 +444,7 @@ def _build_full_planner_workspace(
     `universe_research` adds what `_add_universe_research` records about other players' research.
     """
     (root / "state").mkdir(parents=True)
-    db = GameDatabase(root / "state" / "spaceinvasion.db", legacy_rank_json=None)
+    db = GameDatabase(root / "state" / "spaceinvasion.db")
     try:
         if with_attacks:
             db.record_state_snapshot(state if state is not None else _sample_snapshot_state())
