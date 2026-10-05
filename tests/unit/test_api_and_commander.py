@@ -211,10 +211,8 @@ class TestApiAndCommander(unittest.TestCase):
             self.assertTrue(sim_cmd["ok"])
             self.assertTrue(sim_cmd["simulation"]["safe_to_attack"])
 
-            rnk_cmd = api.send_command({"command": "ranking_evolution"})
-            self.assertTrue(rnk_cmd["ok"])
-            self.assertIn("current", rnk_cmd["ranking"])
-            self.assertGreater(rnk_cmd["ranking"]["current"]["estimated_points"], 0)
+            self.assertIn("current", dash["ranking"])
+            self.assertGreater(dash["ranking"]["current"]["estimated_points"], 0)
 
             with tempfile.TemporaryDirectory() as tmp_cfg:
                 bridge.config_path = Path(tmp_cfg) / "config.json"
@@ -846,12 +844,6 @@ class TestApiAndCommander(unittest.TestCase):
 
                 db_res = bridge.handle_command({"command": "db_summary"})
                 self.assertNotIn(secret, json.dumps(db_res))
-
-                menu_res = bridge.handle_command({"command": "menu"})
-                self.assertNotIn(secret, json.dumps(menu_res))
-                self.assertEqual(len(menu_res["items"]), 2)
-                self.assertIn("action=internalBuildings", menu_res["items"][1]["href"])
-                self.assertIn("sid=REDACTED", menu_res["items"][0]["onclick"])
             finally:
                 if bridge._db is not None:
                     bridge._db.close()
@@ -1176,14 +1168,6 @@ class TestApiAndCommander(unittest.TestCase):
                 self.assertNotIn(secret_plain, r_nav.text)
                 self.assertNotIn(secret_enc, r_nav.text)
                 self.assertIn("sid%3DREDACTED", r_nav.json()["html"])
-
-                r_menu = requests.post(f"{base}/command", json={"command": "menu"}, timeout=5)
-                self.assertEqual(r_menu.status_code, 200)
-                self.assertNotIn(secret_plain, r_menu.text)
-                self.assertNotIn(secret_enc, r_menu.text)
-                items = r_menu.json()["items"]
-                self.assertIn("next=foo%3Fsid%3DREDACTED%26bar%3D1", items[0]["href"])
-                self.assertEqual(items[1]["href"], "indexInternal.es?action=internalBuildings")
 
                 # HTTP 429, 503, 500 error strings scrubbed across GET & POST + logs
                 with patch.object(
@@ -4887,13 +4871,12 @@ class TestApiAndCommander(unittest.TestCase):
                 self.assertTrue(all(m["deleted_in_game"] for m in archived))
                 self.assertTrue(all((m["deleted_ts"] or 0.0) > 0.0 for m in archived))
 
-                cmd_msgs = bridge.handle_command({"command": "game_messages", "category": "spy_report"})
-                self.assertTrue(cmd_msgs["ok"])
-                self.assertEqual(cmd_msgs["count"], 1)
-                self.assertEqual(cmd_msgs["messages"][0]["coords"], "02:381:07")
-                self.assertEqual(cmd_msgs["messages"][0]["parsed"]["buildings"].get("b1"), 15)
-                self.assertEqual(cmd_msgs["messages"][0]["parsed"]["researches"].get("r2"), 6)
-                self.assertNotIn("TOPSECRET", cmd_msgs["messages"][0]["raw_html"])
+                spy_msgs = [m for m in archived if m["category"] == "spy_report"]
+                self.assertEqual(len(spy_msgs), 1)
+                self.assertEqual(spy_msgs[0]["coords"], "02:381:07")
+                self.assertEqual(spy_msgs[0]["parsed"]["buildings"].get("b1"), 15)
+                self.assertEqual(spy_msgs[0]["parsed"]["researches"].get("r2"), 6)
+                self.assertNotIn("TOPSECRET", spy_msgs[0]["raw_html"])
 
                 # Battle report set has_debris=True on 02:382:04; Recycle report cleared has_debris=False on 02:380:04
                 t_war = bridge._db.get_spy_target_by_coords("02:382:04")
@@ -5785,9 +5768,10 @@ class TestApiAndCommander(unittest.TestCase):
                 self.assertTrue(r_canc["canceled"])
                 self.assertEqual(r_canc["manual_queue"], [])
 
-                q_list = requests.post(f"{base_url}/command", json={"command": "queue_list"}, timeout=5).json()
-                self.assertEqual(len(q_list["manual_queue"]), 0)
-                statuses = {h["id"]: h["status"] for h in q_list["history"]}
+                dash_q = requests.get(f"{base_url}/dashboard?refresh=0", timeout=5).json()
+                self.assertEqual(len(dash_q["manual_queue"]), 0)
+                all_q = bridge._db.get_manual_queue(status="all", limit=150)
+                statuses = {h["id"]: h["status"] for h in all_q}
                 self.assertEqual(statuses[qid_bld], "completed")
                 self.assertEqual(statuses[qid_spy], "canceled")
                 self.assertEqual(bridge._db.summary()["counts"]["manual_queue"], 2)

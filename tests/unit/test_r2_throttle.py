@@ -548,7 +548,7 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
                     ts=1100.0,
                 )
                 # Sync spy reports via API command (calls record_spy_report with defaults)
-                sync_res = bridge.handle_command({"command": "sync_spy_reports"})
+                sync_res = bridge.handle_command({"command": "sync_messages"})
                 self.assertEqual(sync_res["synced_reports"], 1)
 
                 targets = bridge._db.get_spy_targets()
@@ -2642,7 +2642,7 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
                 self.assertFalse(ctx_plan.exception.server_throttle)
                 self.assertEqual(limiter.views_last_60s(), 18)
 
-                sync_res = bridge.handle_command({"command": "sync_spy_reports"})
+                sync_res = bridge.handle_command({"command": "sync_messages"})
                 self.assertTrue(sync_res["ok"])
                 self.assertEqual(sync_res["synced_reports"], 1)
                 self.assertEqual(limiter.views_last_60s(), 19)

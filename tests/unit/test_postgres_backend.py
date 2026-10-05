@@ -426,8 +426,8 @@ class TestPostgresDialectAndBackendControl(unittest.TestCase):
                         ensure_session_fn=lambda: None,
                     )
                     try:
-                        st0 = bridge_sq.handle_command({"command": "db_backend_status"})
-                        self.assertEqual(st0["db_backend"]["backend"], "sqlite")
+                        st0 = bridge_sq._build_db_backend_status(include_ping=True)
+                        self.assertEqual(st0["backend"], "sqlite")
                     finally:
                         bridge_sq.close()
 
@@ -448,8 +448,8 @@ class TestPostgresDialectAndBackendControl(unittest.TestCase):
                     ensure_session_fn=lambda: None,
                 )
                 try:
-                    st_pg = bridge_pg.handle_command({"command": "db_backend_status"})
-                    self.assertEqual(st_pg["db_backend"]["backend"], "postgres")
+                    st_pg = bridge_pg._build_db_backend_status(include_ping=True)
+                    self.assertEqual(st_pg["backend"], "postgres")
                     assert bridge_pg._db is not None
                     q3 = bridge_pg._db.enqueue_manual_command(
                         kind="BUILD_SHIP",

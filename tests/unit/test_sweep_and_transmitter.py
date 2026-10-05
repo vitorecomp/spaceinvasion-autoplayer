@@ -874,9 +874,8 @@ class TestSweepAndTransmitter(unittest.TestCase):
                 self.assertEqual(len(after_disc["candidates"]), len(before_coords) - 1)
                 self.assertEqual(after_disc["discarded_count"], 1)
 
-                rest = bridge.handle_command({"command": "restore_colony_candidate", "target_coords": "02:380:08"})
-                self.assertTrue(rest["ok"])
-                self.assertEqual(rest["discarded_count"], 0)
+                assert bridge._db is not None
+                self.assertTrue(bridge._db.restore_colony_candidate("02:380:08"))
                 after_rest = bridge.handle_command({"command": "colony_candidates"})
                 self.assertIn("02:380:08", [c["coords"] for c in after_rest["candidates"]])
                 self.assertEqual(len(after_rest["candidates"]), len(before_coords))

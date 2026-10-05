@@ -885,7 +885,6 @@ def append_api_log(
             "planner_jobs_status",
             "notifications_list",
             "db_summary",
-            "db_backend_status",
             "config_optimizer_get",
             "ai_planner_get",
             "fleet_planner_get",
@@ -895,8 +894,6 @@ def append_api_log(
             "colony_candidates",
             "attack_results",
             "recycler_results",
-            "ranking_evolution",
-            "game_messages",
             "universe_research_max",
         }
         if int(status) >= 400 or cmd_label not in noisy_poll_cmds:

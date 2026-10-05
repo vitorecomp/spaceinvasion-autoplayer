@@ -458,7 +458,7 @@ class TestTier4Workflows(unittest.TestCase):
 
             # 3) Spy recon & Combat simulation (>= 1.4x with Stealth bomber first-strike)
             self.assertTrue(h.api.send_command({"command": "spy", "target_coords": "02:380:04", "planet_id": 12476, "dry_run": False})["executed"])
-            sync_res = h.api.send_command({"command": "sync_spy_reports"})
+            sync_res = h.api.send_command({"command": "sync_messages"})
             self.assertGreaterEqual(sync_res["synced_reports"], 1)
 
             sim = h.api.send_command(
@@ -688,8 +688,9 @@ class TestTier4Workflows(unittest.TestCase):
             self.assertTrue(h.api.send_command({"command": "throttle_building", "building_id": 2, "percentage": 0, "dry_run": False})["executed"])
             self.assertTrue(h.api.send_command({"command": "scan_galaxy", "galaxy": 2, "system": 380, "dry_run": False})["executed"])
             self.assertTrue(h.api.send_command({"command": "attack", "target_coords": "02:380:04", "dry_run": False})["executed"])
-            rnk1 = h.api.send_command({"command": "ranking_evolution"})
-            self.assertTrue(rnk1["ok"])
+            dash1 = requests.get(f"{h.base_url}/dashboard?refresh=0", timeout=5.0).json()
+            self.assertTrue(dash1["ok"])
+            self.assertIn("ranking", dash1)
             plan1 = h.api.send_command({"command": "plan"})["actions"]
             _verify_eta_fields(self, plan1[0])
 

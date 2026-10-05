@@ -310,7 +310,7 @@ class TestDatabaseMigrationsAndVersioning(unittest.TestCase):
             self.assertEqual(rc_v, 0)
             self.assertTrue(json.loads(buf_ver.getvalue())["ok"])
 
-            # HTTP API commands: db_migrations, db_migrate, db_backup, db_verify
+            # HTTP API command: db_verify + direct DB snapshots verification
             cfg_path = root / "config.json"
             cfg_path.write_text('{"planner_mode": "priority"}', encoding="utf-8")
             p_home = PlanetState(
@@ -367,31 +367,6 @@ class TestDatabaseMigrationsAndVersioning(unittest.TestCase):
             base_url = f"http://127.0.0.1:{server.server_address[1]}"
             threading.Thread(target=server.serve_forever, daemon=True).start()
             try:
-                r_migs = requests.post(
-                    f"{base_url}/command",
-                    json={"command": "db_migrations", "include_all_stores": True},
-                    timeout=5,
-                ).json()
-                self.assertTrue(r_migs["ok"])
-                self.assertEqual(r_migs["migrations"]["version"], LATEST_SCHEMA_VERSION)
-                self.assertIn("archive", r_migs["stores"]["databases"])
-
-                r_dry = requests.post(
-                    f"{base_url}/command",
-                    json={"command": "db_migrate", "dry_run": True},
-                    timeout=5,
-                ).json()
-                self.assertTrue(r_dry["ok"])
-                self.assertTrue(r_dry["migration"]["dry_run"])
-
-                r_bkp = requests.post(
-                    f"{base_url}/command",
-                    json={"command": "db_backup", "label": "api_test"},
-                    timeout=5,
-                ).json()
-                self.assertTrue(r_bkp["ok"])
-                self.assertTrue(Path(r_bkp["backup"]["backup_path"]).exists())
-
                 r_ver = requests.post(
                     f"{base_url}/command",
                     json={"command": "db_verify", "full_integrity": True},
@@ -400,14 +375,9 @@ class TestDatabaseMigrationsAndVersioning(unittest.TestCase):
                 self.assertTrue(r_ver["ok"])
                 self.assertTrue(r_ver["verification"]["sqlite_integrity_ok"])
 
-                r_snaps = requests.post(
-                    f"{base_url}/command",
-                    json={"command": "state_snapshots", "include_payload": True},
-                    timeout=5,
-                ).json()
-                self.assertTrue(r_snaps["ok"])
-                self.assertEqual(r_snaps["count"], 1)
-                self.assertNotIn("secret1234567890", json.dumps(r_snaps, allow_nan=False))
+                snaps = bridge._db.get_state_snapshots(limit=20, include_payload=True)
+                self.assertEqual(len(snaps), 1)
+                self.assertNotIn("secret1234567890", json.dumps(snaps, allow_nan=False))
             finally:
                 server.shutdown()
                 server.server_close()

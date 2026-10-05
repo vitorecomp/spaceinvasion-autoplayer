@@ -26,8 +26,6 @@ import time
 from typing import Any, Callable, Deque, Optional, Sequence
 from urllib.parse import parse_qs, urlparse
 
-from bs4 import BeautifulSoup
-
 from spaceinvasion.core import game_data
 from spaceinvasion.planner.action_graph import (
     build_action_graph,
@@ -127,7 +125,6 @@ from spaceinvasion.db.backend import (
     resolve_database_config,
     sync_database_stores,
 )
-from spaceinvasion.db.migrations import DatabaseMigrationRegistry, LATEST_SCHEMA_VERSION
 from spaceinvasion.db.storage import GameDatabase, server_day_key
 from spaceinvasion.planner.strategy import (
     AI_INFRA_CARGO_TAG,
@@ -11740,30 +11737,21 @@ class GameApiBridge:
             "notification_get",
             "notification_ack",
             "notifications_ack_all",
-            "queue_list",
             "queue_add",
             "queue_update",
             "queue_cancel",
             "queue_clear",
             "config",
             "db_summary",
-            "db_backend_status",
-            "db_migrations",
-            "db_migrate",
-            "db_backup",
             "db_verify",
-            "state_snapshots",
-            "game_messages",
             "espionage_intel",
             "scanned_sectors",
             "colony_candidates",
             "discard_colony_candidate",
-            "restore_colony_candidate",
             "universe_research_max",
             "attack_results",
             "recycler_results",
             "bot_control",
-            "bot_resume",
             "update_config",
             "action_graph",
             "galaxy_sweep",
@@ -11784,13 +11772,10 @@ class GameApiBridge:
             "buildings_eta",
             "combat_overview",
             "plan",
-            "ranking_evolution",
             "tick_once",
-            "menu",
             "navigate",
             "scan_galaxy",
             "activate_transmitter",
-            "sync_spy_reports",
             "sync_messages",
             "spy",
             "recycle",
@@ -11937,31 +11922,6 @@ class GameApiBridge:
                         "updated_count": int(changed),
                         "notifications": self._get_notifications_summary_locked(),
                     }
-                )
-
-        if cmd == "queue_list":
-            limit = _parse_command_int("limit", payload.get("limit", 150), min_val=1, max_val=500) or 150
-            with self._lock:
-                pending = (
-                    self._db.get_manual_queue(status="pending", limit=int(limit))
-                    if self._db is not None
-                    else []
-                )
-                all_items = (
-                    self._db.get_manual_queue(status="all", limit=int(limit))
-                    if self._db is not None
-                    else []
-                )
-                history = [x for x in all_items if x.get("status") != "pending"][:50]
-                return _sanitize_finite_json(
-                    _redact_api_payload(
-                        {
-                            "ok": True,
-                            "command": cmd,
-                            "manual_queue": pending,
-                            "history": history,
-                        }
-                    )
                 )
 
         if cmd == "queue_add":
@@ -12214,86 +12174,6 @@ class GameApiBridge:
                     }
                 )
 
-        if cmd == "db_migrations":
-            ev_limit = _parse_command_int(
-                "limit",
-                payload.get("limit", 50),
-                min_val=1,
-                max_val=500,
-            ) or 50
-            include_all = bool(payload.get("include_all_stores", False))
-            with self._lock:
-                if self._db is None:
-                    return _sanitize_finite_json(
-                        {
-                            "ok": True,
-                            "command": cmd,
-                            "latest_schema_version": LATEST_SCHEMA_VERSION,
-                            "migrations": None,
-                        }
-                    )
-                status = self._db.get_migration_status(include_events=True, event_limit=ev_limit)
-                resp: dict[str, Any] = {
-                    "ok": True,
-                    "command": cmd,
-                    "latest_schema_version": LATEST_SCHEMA_VERSION,
-                    "migrations": _redact_api_payload(status),
-                }
-                if include_all:
-                    root_dir = (
-                        self._db.db_path.parent.parent
-                        if str(self._db.db_path) != ":memory:"
-                        else Path(".")
-                    )
-                    reg = DatabaseMigrationRegistry(root_dir)
-                    if str(self._db.db_path) != ":memory:":
-                        reg.register_database("primary", self._db.db_path, schema_family="game")
-                    resp["stores"] = _redact_api_payload(reg.status_all(include_events=False))
-                return _sanitize_finite_json(resp)
-
-        if cmd == "db_migrate":
-            dry_run_flag = bool(payload.get("dry_run", False))
-            backup_flag = bool(payload.get("backup", False))
-            tgt_ver = _parse_command_int(
-                "target_version",
-                payload.get("target_version"),
-                allow_none=True,
-                min_val=1,
-                max_val=LATEST_SCHEMA_VERSION,
-            )
-            with self._lock:
-                if self._db is None:
-                    raise ApiRequestError("Database is not configured on this API bridge.")
-                res = self._db.run_migrations(
-                    target_version=tgt_ver,
-                    dry_run=dry_run_flag,
-                    backup=backup_flag,
-                )
-                return _sanitize_finite_json(
-                    {
-                        "ok": True,
-                        "command": cmd,
-                        "migration": _redact_api_payload(res),
-                    }
-                )
-
-        if cmd == "db_backup":
-            raw_lbl = _bounded_api_str(payload.get("label") or "manual", default="manual")[:40]
-            with self._lock:
-                if self._db is None:
-                    raise ApiRequestError("Database is not configured on this API bridge.")
-                try:
-                    bkp = self._db.create_backup(label=raw_lbl)
-                except ValueError as exc:
-                    raise ApiRequestError(str(exc)) from exc
-                return _sanitize_finite_json(
-                    {
-                        "ok": True,
-                        "command": cmd,
-                        "backup": _redact_api_payload(bkp),
-                    }
-                )
-
         if cmd == "db_verify":
             full_chk = bool(payload.get("full_integrity", False))
             with self._lock:
@@ -12305,73 +12185,6 @@ class GameApiBridge:
                         "ok": bool(ver.get("ok", False)),
                         "command": cmd,
                         "verification": _redact_api_payload(ver),
-                    }
-                )
-
-        if cmd == "db_backend_status":
-            with self._intel_read_lock:
-                st_out = self._build_db_backend_status(include_ping=True)
-                if self._db is not None:
-                    st_out["summary"] = self._get_db_summary_cached_locked()
-                return _sanitize_finite_json(
-                    {
-                        "ok": True,
-                        "command": cmd,
-                        "db_backend": _redact_api_payload(st_out),
-                    }
-                )
-
-        if cmd == "state_snapshots":
-            snap_limit = _parse_command_int(
-                "limit",
-                payload.get("limit", 20),
-                min_val=1,
-                max_val=200,
-            ) or 20
-            inc_payload = bool(payload.get("include_payload", False))
-            with self._lock:
-                snaps = (
-                    self._db.get_state_snapshots(limit=snap_limit, include_payload=inc_payload)
-                    if self._db is not None
-                    else []
-                )
-                return _sanitize_finite_json(
-                    {
-                        "ok": True,
-                        "command": cmd,
-                        "count": len(snaps),
-                        "snapshots": _redact_api_payload(snaps),
-                    }
-                )
-
-        if cmd == "game_messages":
-            limit = _parse_command_int(
-                "limit",
-                payload.get("limit", 100),
-                min_val=1,
-                max_val=1000,
-            )
-            cat = payload.get("category")
-            cat_str = str(cat).strip() if isinstance(cat, str) and cat.strip() else None
-            coords_raw = payload.get("coords")
-            coords_str = str(coords_raw).strip() if isinstance(coords_raw, str) and coords_raw.strip() else None
-            with self._intel_read_lock:
-                db_snap = self._db
-                msgs = (
-                    db_snap.get_game_messages(
-                        category=cat_str,
-                        coords=coords_str,
-                        limit=int(limit or 100),
-                    )
-                    if db_snap is not None
-                    else []
-                )
-                return _sanitize_finite_json(
-                    {
-                        "ok": True,
-                        "command": cmd,
-                        "count": len(msgs),
-                        "messages": _redact_api_payload(msgs),
                     }
                 )
 
@@ -13133,7 +12946,7 @@ class GameApiBridge:
                     )
                 )
 
-        if cmd in ("discard_colony_candidate", "restore_colony_candidate"):
+        if cmd == "discard_colony_candidate":
             raw_tc = payload.get("target_coords") if payload.get("target_coords") is not None else payload.get("coords")
             if not isinstance(raw_tc, str) or not raw_tc.strip():
                 raise ApiRequestError(f"{cmd!r} requires 'target_coords' formatted as GG:SSS:PP.")
@@ -13144,24 +12957,19 @@ class GameApiBridge:
             with self._lock:
                 if self._db is None:
                     raise ApiRequestError("Database is not configured on this API bridge.")
-                is_discard = cmd == "discard_colony_candidate"
-                if is_discard:
-                    changed = bool(self._db.discard_colony_candidate(norm_tc))
-                else:
-                    changed = bool(self._db.restore_colony_candidate(norm_tc))
+                changed = bool(self._db.discard_colony_candidate(norm_tc))
                 self._invalidate_dashboard_cache()
                 discarded_count = len(self._db.get_discarded_colony_coords())
-                verb = "Discarded" if is_discard else "Restored"
                 return _sanitize_finite_json(
                     _redact_api_payload(
                         {
                             "ok": True,
                             "command": cmd,
                             "target_coords": norm_tc,
-                            "discarded": is_discard,
+                            "discarded": True,
                             "changed": changed,
                             "discarded_count": discarded_count,
-                            "message": f"{verb} colony candidate {norm_tc}.",
+                            "message": f"Discarded colony candidate {norm_tc}.",
                         }
                     )
                 )
@@ -13451,11 +13259,9 @@ class GameApiBridge:
                     )
                 )
 
-        if cmd in ("bot_control", "bot_resume"):
+        if cmd == "bot_control":
             with self._lock:
-                if cmd == "bot_resume" and "paused" not in payload:
-                    paused_in: Optional[bool] = False
-                elif "paused" in payload:
+                if "paused" in payload:
                     paused_in = bool(payload["paused"])
                 else:
                     paused_in = None
@@ -15008,7 +14814,6 @@ class GameApiBridge:
                             "action_graph",
                             "buildings_eta",
                             "combat_overview",
-                            "ranking_evolution",
                             "fleetsave_plan",
                         ):
                             self._last_live_command_mono = time.monotonic()
@@ -15400,21 +15205,6 @@ class GameApiBridge:
                             }
                         )
 
-                    if cmd == "ranking_evolution":
-                        state = _cached_or_fetch(
-                            include_buildings=False,
-                            include_research=False,
-                            include_shipyard=False,
-                            priority="normal",
-                        )
-                        return _sanitize_finite_json(
-                            {
-                                "ok": True,
-                                "command": cmd,
-                                "ranking": _redact_api_payload(build_ranking_evolution(state, self._rank_samples)),
-                            }
-                        )
-
                     if cmd == "tick_once":
                         client = _get_client()
                         inc_r = (
@@ -15467,39 +15257,6 @@ class GameApiBridge:
                                 )
                             )
                         return self._execute_and_summarize(client, state, cmd, ready, dry_run)
-
-                    if cmd == "menu":
-                        client = _get_client()
-                        self._call_with_optional_priority(client.ensure_in_game, priority="interactive")
-                        client._switch_frame("F_Navi")
-                        nav_soup = BeautifulSoup(client.driver.page_source or "", "html.parser")
-                        items = [
-                            {
-                                "text": _redact_api_payload(a.get_text(" ", strip=True)),
-                                "href": _redact_api_payload(
-                                    re.sub(
-                                        r"(?i)([?&;])sid(?:=|%3d)(?:(?!%26|%23)[^&\s\"'<>#)])*(&?)",
-                                        lambda m: (
-                                            "?"
-                                            if (m.group(1) == "?" and m.group(2))
-                                            else ("" if m.group(1) == "?" else m.group(2))
-                                        ),
-                                        str(a.get("href") or ""),
-                                    ).rstrip("?&;")
-                                ),
-                                "onclick": _redact_api_payload(str(a.get("onclick") or "")),
-                            }
-                            for a in nav_soup.find_all("a", href=True)
-                        ]
-                        return _sanitize_finite_json(
-                            _redact_api_payload(
-                                {
-                                    "ok": True,
-                                    "command": cmd,
-                                    "items": items,
-                                }
-                            )
-                        )
 
                     if cmd == "sync_planet_names":
                         snap_state = self._get_planner_state_locked()
@@ -16010,7 +15767,7 @@ class GameApiBridge:
                             res_out["transmitter_status"] = self._get_transmitter_status_locked()
                         return res_out
 
-                    if cmd in ("sync_spy_reports", "sync_messages"):
+                    if cmd == "sync_messages":
                         client = _get_client()
                         self._call_with_optional_priority(client.ensure_in_game, priority="interactive")
                         own_coords = self._own_planet_coords()
@@ -16033,106 +15790,78 @@ class GameApiBridge:
                             for ftype, _href, ucnt, tot in folder_links
                             if ftype
                         }
-                        if cmd == "sync_messages":
-                            spio_rem = folder_counts.get("spio", {}).get("total", 0)
-                            if del_ok and spio_rem > 0 and self.rate_limit_remaining() <= 0.0:
-                                spio2_html = self._call_with_optional_priority(
-                                    client.open_messages,
-                                    "spio",
-                                    priority="interactive",
-                                )
-                                rep2, ing2, del2, spio_post2 = self._ingest_and_delete_page_messages(
-                                    client,
-                                    spio2_html,
-                                    folder_type="spio",
-                                    own_coords=own_coords,
-                                    priority="interactive",
-                                    always_persist_spy=True,
-                                )
-                                if rep2:
-                                    reports.extend(rep2)
-                                ingested_cnt += ing2
-                                del_ok = del_ok or del2
-                                for ft2, _h2, u2, t2 in extract_message_folder_links(spio_post2 or spio2_html):
-                                    if ft2:
-                                        folder_counts[ft2] = {"unread": int(u2), "total": int(t2)}
-                            if not folder_links and not reports and ingested_cnt == 0:
-                                inbox_html = self._call_with_optional_priority(
-                                    client.open_messages,
-                                    "",
-                                    priority="interactive",
-                                )
-                                inb_reports, inb_cnt, inb_del, inb_post = self._ingest_and_delete_page_messages(
-                                    client,
-                                    inbox_html,
-                                    folder_type="inbox",
-                                    own_coords=own_coords,
-                                    priority="interactive",
-                                    always_persist_spy=True,
-                                )
-                                if inb_reports:
-                                    reports.extend(inb_reports)
-                                ingested_cnt += inb_cnt
-                                del_ok = del_ok or inb_del
-                                for ft_i, _hi, ui, ti in extract_message_folder_links(inb_post or inbox_html):
-                                    if ft_i:
-                                        folder_counts[ft_i] = {"unread": int(ui), "total": int(ti)}
-                            for ftype in ("battle", "fleet", "normal", "alliance", "admin"):
-                                ft_tot = folder_counts.get(ftype, {}).get("total", 0)
-                                if ft_tot <= 0 or self.rate_limit_remaining() > 0.0:
-                                    continue
-                                for _pass in range(2 if ft_tot > 12 else 1):
-                                    if self.rate_limit_remaining() > 0.0:
-                                        break
-                                    f_html = self._call_with_optional_priority(
-                                        client.open_messages,
-                                        ftype,
-                                        priority="interactive",
-                                    )
-                                    f_rep, f_ing, f_del, f_post = self._ingest_and_delete_page_messages(
-                                        client,
-                                        f_html,
-                                        folder_type=ftype,
-                                        own_coords=own_coords,
-                                        priority="interactive",
-                                        always_persist_spy=True,
-                                    )
-                                    if f_rep:
-                                        reports.extend(f_rep)
-                                    ingested_cnt += f_ing
-                                    del_ok = del_ok or f_del
-                                    for ftu, _hu, uu, tu in extract_message_folder_links(f_post or f_html):
-                                        if ftu == ftype:
-                                            folder_counts[ftype] = {"unread": int(uu), "total": int(tu)}
-                                    if not f_del or folder_counts.get(ftype, {}).get("total", 0) <= 0:
-                                        break
-                        else:
-                            last_unread = (
-                                (self._last_state.unread_messages or {})
-                                if self._last_state is not None
-                                else {}
+                        spio_rem = folder_counts.get("spio", {}).get("total", 0)
+                        if del_ok and spio_rem > 0 and self.rate_limit_remaining() <= 0.0:
+                            spio2_html = self._call_with_optional_priority(
+                                client.open_messages,
+                                "spio",
+                                priority="interactive",
                             )
-                            should_check_inbox = (
-                                _safe_api_int(last_unread.get("spio", 0)) <= 0
-                                and _safe_api_int(last_unread.get("total", 0)) > 0
+                            rep2, ing2, del2, spio_post2 = self._ingest_and_delete_page_messages(
+                                client,
+                                spio2_html,
+                                folder_type="spio",
+                                own_coords=own_coords,
+                                priority="interactive",
+                                always_persist_spy=True,
                             )
-                            if not reports and ingested_cnt == 0 and should_check_inbox:
-                                inbox_html = self._call_with_optional_priority(
+                            if rep2:
+                                reports.extend(rep2)
+                            ingested_cnt += ing2
+                            del_ok = del_ok or del2
+                            for ft2, _h2, u2, t2 in extract_message_folder_links(spio_post2 or spio2_html):
+                                if ft2:
+                                    folder_counts[ft2] = {"unread": int(u2), "total": int(t2)}
+                        if not folder_links and not reports and ingested_cnt == 0:
+                            inbox_html = self._call_with_optional_priority(
+                                client.open_messages,
+                                "",
+                                priority="interactive",
+                            )
+                            inb_reports, inb_cnt, inb_del, inb_post = self._ingest_and_delete_page_messages(
+                                client,
+                                inbox_html,
+                                folder_type="inbox",
+                                own_coords=own_coords,
+                                priority="interactive",
+                                always_persist_spy=True,
+                            )
+                            if inb_reports:
+                                reports.extend(inb_reports)
+                            ingested_cnt += inb_cnt
+                            del_ok = del_ok or inb_del
+                            for ft_i, _hi, ui, ti in extract_message_folder_links(inb_post or inbox_html):
+                                if ft_i:
+                                    folder_counts[ft_i] = {"unread": int(ui), "total": int(ti)}
+                        for ftype in ("battle", "fleet", "normal", "alliance", "admin"):
+                            ft_tot = folder_counts.get(ftype, {}).get("total", 0)
+                            if ft_tot <= 0 or self.rate_limit_remaining() > 0.0:
+                                continue
+                            for _pass in range(2 if ft_tot > 12 else 1):
+                                if self.rate_limit_remaining() > 0.0:
+                                    break
+                                f_html = self._call_with_optional_priority(
                                     client.open_messages,
-                                    "",
+                                    ftype,
                                     priority="interactive",
                                 )
-                                inb_reports, inb_cnt, inb_del, _ = self._ingest_and_delete_page_messages(
+                                f_rep, f_ing, f_del, f_post = self._ingest_and_delete_page_messages(
                                     client,
-                                    inbox_html,
-                                    folder_type="inbox",
+                                    f_html,
+                                    folder_type=ftype,
                                     own_coords=own_coords,
                                     priority="interactive",
                                     always_persist_spy=True,
                                 )
-                                reports = inb_reports
-                                ingested_cnt += inb_cnt
-                                del_ok = del_ok or inb_del
+                                if f_rep:
+                                    reports.extend(f_rep)
+                                ingested_cnt += f_ing
+                                del_ok = del_ok or f_del
+                                for ftu, _hu, uu, tu in extract_message_folder_links(f_post or f_html):
+                                    if ftu == ftype:
+                                        folder_counts[ftype] = {"unread": int(uu), "total": int(tu)}
+                                if not f_del or folder_counts.get(ftype, {}).get("total", 0) <= 0:
+                                    break
                         if del_ok:
                             self._last_synced_unread_total = 0
                         if self._last_state is not None:

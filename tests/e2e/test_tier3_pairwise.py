@@ -159,7 +159,7 @@ class TestTier3Pairwise(unittest.TestCase):
             h.api.send_command({"command": "scan_galaxy", "galaxy": 2, "system": 380, "dry_run": False})
             for coords in ("02:380:04", "02:380:06", "02:380:07"):
                 h.api.send_command({"command": "spy", "target_coords": coords, "probes": 1, "dry_run": False})
-            h.api.send_command({"command": "sync_spy_reports"})
+            h.api.send_command({"command": "sync_messages"})
 
             now = clock.time()
             db = GameDatabase(h.db_path)
@@ -643,7 +643,7 @@ class TestTier3Pairwise(unittest.TestCase):
             h.api.send_command({"command": "scan_galaxy", "galaxy": 2, "system": 380, "dry_run": False})
             spy_res = h.api.send_command({"command": "spy", "target_coords": "02:380:04", "planet_id": 12476, "dry_run": False})
             self.assertTrue(spy_res["executed"])
-            sync_res = h.api.send_command({"command": "sync_spy_reports"})
+            sync_res = h.api.send_command({"command": "sync_messages"})
             self.assertGreaterEqual(sync_res["synced_reports"], 1)
 
             sim = h.api.send_command(
@@ -881,7 +881,7 @@ class TestTier3Pairwise(unittest.TestCase):
             h.api.send_command({"command": "scan_galaxy", "galaxy": 2, "system": 380, "dry_run": False})
             for coords in ("02:380:04", "02:380:05"):
                 h.api.send_command({"command": "spy", "target_coords": coords, "probes": 1, "dry_run": False})
-            h.api.send_command({"command": "sync_spy_reports"})
+            h.api.send_command({"command": "sync_messages"})
 
             db = GameDatabase(h.db_path)
             try:

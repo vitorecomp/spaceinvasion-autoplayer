@@ -1549,7 +1549,6 @@ class TestTier5Adversarial(unittest.TestCase):
 
                 for cmd_payload in (
                     {"command": "buildings_eta"},
-                    {"command": "ranking_evolution"},
                     {"command": "plan"},
                 ):
                     cmd_resp = requests.post(f"{h.base_url}/command", json=cmd_payload, timeout=5.0)

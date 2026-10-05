@@ -377,7 +377,7 @@ class TestTier1R2(unittest.TestCase):
             )
             self.assertTrue(spy_res["ok"])
             self.assertTrue(spy_res["executed"])
-            sync_res = h.api.send_command({"command": "sync_spy_reports"})
+            sync_res = h.api.send_command({"command": "sync_messages"})
             self.assertGreaterEqual(sync_res.get("synced_reports", 0), 1)
 
             targets = {t["coords"]: t for t in h.api.send_command({"command": "db_summary"})["db"]["spy_targets"]}

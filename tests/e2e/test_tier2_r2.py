@@ -153,7 +153,7 @@ class TestTier2R2(unittest.TestCase):
             h.api.send_command({"command": "scan_galaxy", "galaxy": 2, "system": 380, "dry_run": False})
             spy_res = h.api.send_command({"command": "spy", "target_coords": "02:380:04", "probes": 1, "dry_run": False})
             self.assertTrue(spy_res["executed"])
-            h.api.send_command({"command": "sync_spy_reports"})
+            h.api.send_command({"command": "sync_messages"})
 
             h.api.send_command({"command": "scan_galaxy", "galaxy": 2, "system": 380, "dry_run": False})
             targets = {t["coords"]: t for t in h.api.send_command({"command": "db_summary"})["db"]["spy_targets"]}
@@ -498,7 +498,7 @@ class TestTier2R2(unittest.TestCase):
             h.api.send_command({"command": "scan_galaxy", "galaxy": 2, "system": 380, "dry_run": False})
             for coords in ("02:380:04", "02:380:06", "02:380:09"):
                 h.api.send_command({"command": "spy", "target_coords": coords, "probes": 1, "dry_run": False})
-            h.api.send_command({"command": "sync_spy_reports"})
+            h.api.send_command({"command": "sync_messages"})
 
             # 3 real live attacks on active light_red 02:380:06
             for _ in range(3):
@@ -586,7 +586,7 @@ class TestTier2R2(unittest.TestCase):
             h.api.send_command({"command": "scan_galaxy", "galaxy": 2, "system": 380, "dry_run": False})
             spy_res = h.api.send_command({"command": "spy", "target_coords": "02:380:04", "probes": 1, "dry_run": False})
             self.assertTrue(spy_res["executed"])
-            h.api.send_command({"command": "sync_spy_reports"})
+            h.api.send_command({"command": "sync_messages"})
 
             res = h.api.send_command({"command": "attack", "target_coords": "02:380:04", "dry_run": False})
             self.assertFalse(res["executed"])
@@ -668,7 +668,7 @@ class TestTier2R2(unittest.TestCase):
             h.api.send_command({"command": "scan_galaxy", "galaxy": 2, "system": 380, "dry_run": False})
             for coords in ("02:380:04", "02:380:06", "02:380:07", "02:380:08", "02:380:10"):
                 h.api.send_command({"command": "spy", "target_coords": coords, "probes": 1, "dry_run": False})
-            h.api.send_command({"command": "sync_spy_reports"})
+            h.api.send_command({"command": "sync_messages"})
             plan_off = h.api.send_command({"command": "plan", "refresh": True})["actions"]
             atks_off = [a["target_name"] for a in plan_off if a["kind"] == "ATTACK"]
             self.assertTrue(any("02:380:04" in t for t in atks_off), f"Expected yellow 02:380:04 in {atks_off}")
