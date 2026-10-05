@@ -7,19 +7,17 @@ import io
 import json
 from pathlib import Path
 import re
-import shutil
-import sqlite3
+from sqlite3 import DatabaseError, OperationalError
 import tempfile
 import threading
 import time
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import requests
 
 from spaceinvasion.api_server import GameApiBridge, create_api_server
 from spaceinvasion.migrations import (
-    DEFAULT_GAME_MIGRATION_RUNNER,
     GAME_DB_MIGRATIONS,
     GAME_REQUIRED_TABLES,
     HISTORY_TABLES,
@@ -27,7 +25,6 @@ from spaceinvasion.migrations import (
     LATEST_SCHEMA_VERSION,
     SCHEMA_VERSION,
     TABLE_TIER_BY_NAME,
-    DatabaseMigrationRegistry,
     Migration,
     MigrationRunner,
     main as migrations_cli_main,
@@ -35,6 +32,7 @@ from spaceinvasion.migrations import (
 from spaceinvasion.state import EnergyBalance, GameState, PlanetState, Resources
 from spaceinvasion.storage import GameDatabase
 from spaceinvasion.strategy import PlannedAction
+from tests.pg_harness import get_shared_pg_harness
 
 
 class TestDatabaseMigrationsAndVersioning(unittest.TestCase):
@@ -90,124 +88,56 @@ class TestDatabaseMigrationsAndVersioning(unittest.TestCase):
             finally:
                 db_v2.close()
 
-    def test_legacy_v1_database_upgrades_nondestructively_and_preserves_all_rows(self) -> None:
-        with tempfile.TemporaryDirectory(prefix="si_mig_legacy_") as tmp:
-            db_path = Path(tmp) / "legacy_v1.db"
-            with contextlib.closing(sqlite3.connect(str(db_path))) as conn:
-                # Minimal pre-V002 schema with older narrow spy_targets, spy_reports, and recycle_reports
-                conn.executescript(
-                    """
-                    CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_ts REAL NOT NULL);
-                    INSERT INTO meta VALUES ('schema_version', '1', 1700000000.0);
+    def test_v002_database_upgrades_nondestructively_and_preserves_all_rows(self) -> None:
+        from spaceinvasion.combat.fleet import SpyReport
 
-                    CREATE TABLE rank_snapshots (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        ts REAL NOT NULL,
-                        universe_id INTEGER NOT NULL DEFAULT 0,
-                        nickname TEXT NOT NULL DEFAULT '',
-                        server_points INTEGER,
-                        server_rank INTEGER,
-                        estimated_points REAL NOT NULL,
-                        pts_per_hr REAL NOT NULL,
-                        spice_value REAL NOT NULL,
-                        planets INTEGER NOT NULL
-                    );
-                    INSERT INTO rank_snapshots(ts, nickname, server_points, server_rank, estimated_points, pts_per_hr, spice_value, planets)
-                    VALUES (1700000100.0, 'ventkx86', 4500, 120, 4500.0, 80.0, 90000.0, 3);
+        dsn = get_shared_pg_harness().create_database(prefix="mig_v2", from_template=False)
+        db = GameDatabase(dsn, target_schema_version=2)
+        try:
+            self.assertEqual(db.get_schema_version()["version"], 2)
+            db._conn.execute(
+                "INSERT INTO rank_snapshots(ts, nickname, server_points, server_rank, estimated_points, pts_per_hr, spice_value, planets) "
+                "VALUES (1700000100.0, 'ventkx86', 4500, 120, 4500.0, 80.0, 90000.0, 3)"
+            )
+            db._conn.commit()
+            db.record_spy_report(
+                SpyReport(
+                    target_coords="02:380:08",
+                    owner="OldFarm",
+                    resources=Resources(12000, 8000, 5000, 2000),
+                    uninhabited_fields=325,
+                ),
+                ts=1700000205.0,
+            )
 
-                    CREATE TABLE spy_targets (
-                        coords TEXT PRIMARY KEY,
-                        owner TEXT NOT NULL DEFAULT '',
-                        is_inactive INTEGER NOT NULL DEFAULT 0,
-                        is_spacia INTEGER NOT NULL DEFAULT 0,
-                        points INTEGER,
-                        pig_iron INTEGER NOT NULL DEFAULT 0,
-                        metal INTEGER NOT NULL DEFAULT 0,
-                        kryptonite INTEGER NOT NULL DEFAULT 0,
-                        spice INTEGER NOT NULL DEFAULT 0,
-                        fleet_json TEXT NOT NULL DEFAULT '{}',
-                        defense_json TEXT NOT NULL DEFAULT '{}',
-                        dug_in INTEGER NOT NULL DEFAULT 0,
-                        last_scanned_ts REAL NOT NULL
-                    );
-                    INSERT INTO spy_targets(coords, owner, is_inactive, pig_iron, metal, kryptonite, spice, last_scanned_ts)
-                    VALUES ('02:380:08', 'OldFarm', 1, 12000, 8000, 5000, 2000, 1700000200.0);
+            with tempfile.TemporaryDirectory(prefix="si_mig_bkp_") as bdir:
+                mig = db.run_migrations(target_version=LATEST_SCHEMA_VERSION, backup=True, backup_dir=Path(bdir))
+                self.assertEqual(mig["version"], LATEST_SCHEMA_VERSION)
+                self.assertTrue(mig["up_to_date"])
+                self.assertTrue(Path(mig["backup_path"]).exists())
 
-                    CREATE TABLE spy_reports (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        ts REAL NOT NULL,
-                        target_coords TEXT NOT NULL,
-                        owner TEXT NOT NULL DEFAULT '',
-                        is_spacia INTEGER NOT NULL DEFAULT 0,
-                        pig_iron INTEGER NOT NULL DEFAULT 0,
-                        metal INTEGER NOT NULL DEFAULT 0,
-                        kryptonite INTEGER NOT NULL DEFAULT 0,
-                        spice INTEGER NOT NULL DEFAULT 0,
-                        loot_spice_eq REAL NOT NULL DEFAULT 0.0,
-                        fleet_json TEXT NOT NULL DEFAULT '{}',
-                        defense_json TEXT NOT NULL DEFAULT '{}',
-                        dug_in INTEGER,
-                        uninhabited_fields INTEGER
-                    );
-                    INSERT INTO spy_reports(ts, target_coords, owner, pig_iron, uninhabited_fields)
-                    VALUES (1700000205.0, '02:380:08', 'OldFarm', 12000, 325);
+            sv = db.get_schema_version()
+            self.assertEqual(sv["version"], LATEST_SCHEMA_VERSION)
+            self.assertEqual(sv["meta_schema_version"], SCHEMA_VERSION)
+            self.assertTrue(sv["up_to_date"])
 
-                    CREATE TABLE recycle_reports (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        ts REAL NOT NULL,
-                        msg_uid TEXT NOT NULL UNIQUE,
-                        server_msg_id TEXT NOT NULL DEFAULT '',
-                        msg_date_text TEXT NOT NULL DEFAULT '',
-                        coords TEXT NOT NULL DEFAULT '',
-                        recycler_count INTEGER NOT NULL DEFAULT 0,
-                        cargo_capacity INTEGER NOT NULL DEFAULT 0,
-                        debris_avail_pig INTEGER NOT NULL DEFAULT 0,
-                        debris_avail_metal INTEGER NOT NULL DEFAULT 0,
-                        harvested_pig_iron INTEGER NOT NULL DEFAULT 0,
-                        harvested_metal INTEGER NOT NULL DEFAULT 0,
-                        harvested_spice_eq REAL NOT NULL DEFAULT 0.0,
-                        raw_text TEXT NOT NULL DEFAULT ''
-                    );
-                    INSERT INTO recycle_reports(ts, msg_uid, coords, harvested_pig_iron, harvested_metal, harvested_spice_eq)
-                    VALUES (1700000210.0, 'rec:legacy:1', '02:380:08', 6000, 2500, 2000.0);
-                    """
-                )
-                conn.commit()
+            # Zero row loss across upgraded tables + new columns populated with safe defaults
+            self.assertEqual(len(db.get_rank_samples()), 1)
+            targets = db.get_spy_targets()
+            self.assertEqual(len(targets), 1)
+            self.assertEqual(targets[0]["coords"], "02:380:08")
+            self.assertEqual(targets[0]["resources"]["pig_iron"], 12000)
 
-            db = GameDatabase(db_path, backup_on_upgrade=True)
-            try:
-                sv = db.get_schema_version()
-                self.assertEqual(sv["version"], LATEST_SCHEMA_VERSION)
-                self.assertEqual(sv["meta_schema_version"], SCHEMA_VERSION)
-                self.assertEqual(sv["user_version"], LATEST_SCHEMA_VERSION)
-                self.assertTrue(sv["up_to_date"])
-
-                # Pre-upgrade backup was created in backups/ and contains the original v1 state
-                backups = list((Path(tmp) / "backups").glob("*.db"))
-                self.assertEqual(len(backups), 1)
-                with contextlib.closing(sqlite3.connect(str(backups[0]))) as bconn:
-                    b_ver = bconn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0]
-                    self.assertEqual(b_ver, "1")
-
-                # Zero row loss across upgraded tables + new columns populated with safe defaults
-                self.assertEqual(len(db.get_rank_samples()), 1)
-                targets = db.get_spy_targets()
-                self.assertEqual(len(targets), 1)
-                self.assertEqual(targets[0]["coords"], "02:380:08")
-                self.assertEqual(targets[0]["resources"]["pig_iron"], 12000)
-
-                sreps = db.get_spy_reports(coords="02:380:08")
-                self.assertEqual(len(sreps), 1)
-                self.assertEqual(sreps[0]["uninhabited_fields"], 325)
-
-                rreps = db.get_recycle_reports()
-                self.assertEqual(len(rreps), 1)
-                self.assertEqual(rreps[0]["harvested"]["pig_iron"], 6000)
-                self.assertEqual(rreps[0]["harvested"]["kryptonite"], 0)
-            finally:
-                db.close()
+            sreps = db.get_spy_reports(coords="02:380:08")
+            self.assertEqual(len(sreps), 1)
+            self.assertEqual(sreps[0]["uninhabited_fields"], 325)
+            self.assertEqual(db.get_recycle_reports(), [])
+        finally:
+            db.close()
 
     def test_savepoint_rollback_on_failed_migration_and_checksum_drift_and_future_version_guard(self) -> None:
+        from spaceinvasion.db.postgres import PostgresPoolBackend
+
         # 1) Savepoint rollback: V001 succeeds, V002 fails mid-script -> V002 partial table rolled back completely
         bad_runner = MigrationRunner(
             (
@@ -227,90 +157,97 @@ class TestDatabaseMigrationsAndVersioning(unittest.TestCase):
             schema_family="custom_test",
             required_tables=("meta", "sample_a"),
         )
-        with contextlib.closing(sqlite3.connect(":memory:")) as conn:
-            res1 = bad_runner.migrate(conn, is_memory=True, target_version=1)
-            self.assertEqual(res1["version"], 1)
-            with self.assertRaises(sqlite3.OperationalError):
-                bad_runner.migrate(conn, is_memory=True, target_version=2)
-            tables = {
-                str(r[0])
-                for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
-            }
-            self.assertIn("sample_a", tables)
-            self.assertNotIn("partial_should_rollback", tables)
-            self.assertEqual(bad_runner.inspect(conn)["version"], 1)
+        sp_dsn = get_shared_pg_harness().create_database(prefix="mig_sp", from_template=False)
+        pg_sp = PostgresPoolBackend(sp_dsn, min_size=1, max_size=2)
+        try:
+            with pg_sp.session_lock:
+                conn = pg_sp.conn_proxy
+                res1 = bad_runner.migrate(conn, is_memory=True, target_version=1)
+                self.assertEqual(res1["version"], 1)
+                with self.assertRaises((OperationalError, DatabaseError)):
+                    bad_runner.migrate(conn, is_memory=True, target_version=2)
+                tables = {
+                    str(r[0])
+                    for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+                }
+                self.assertIn("sample_a", tables)
+                self.assertNotIn("partial_should_rollback", tables)
+                self.assertEqual(bad_runner.inspect(conn)["version"], 1)
+        finally:
+            pg_sp.close()
 
         # 2) Checksum drift detection + future-version guard (never clobbers newer DB downwards)
-        with tempfile.TemporaryDirectory(prefix="si_mig_drift_") as tmp:
-            db_path = Path(tmp) / "drift.db"
-            db = GameDatabase(db_path)
+        drift_dsn = get_shared_pg_harness().create_database(prefix="mig_drift", from_template=True)
+        db = GameDatabase(drift_dsn)
+        try:
+            db._conn.execute("UPDATE schema_migrations SET checksum = 'tampered_sha256' WHERE version = 2")
+            db._conn.commit()
+        finally:
             db.close()
 
-            with contextlib.closing(sqlite3.connect(str(db_path))) as conn:
-                conn.execute("UPDATE schema_migrations SET checksum = 'tampered_sha256' WHERE version = 2")
-                conn.commit()
+        db2 = GameDatabase(drift_dsn)
+        try:
+            chk = db2.verify_schema()
+            self.assertFalse(chk["ok"])
+            self.assertEqual(len(chk["checksum_drift"]), 1)
+            self.assertEqual(chk["checksum_drift"][0]["version"], 2)
+            self.assertEqual(chk["checksum_drift"][0]["reason"], "checksum_mismatch")
+        finally:
+            db2.close()
 
-            db2 = GameDatabase(db_path)
-            try:
-                chk = db2.verify_schema()
-                self.assertFalse(chk["ok"])
-                self.assertEqual(len(chk["checksum_drift"]), 1)
-                self.assertEqual(chk["checksum_drift"][0]["version"], 2)
-                self.assertEqual(chk["checksum_drift"][0]["reason"], "checksum_mismatch")
-            finally:
-                db2.close()
+        # Future DB (e.g. V099 from a newer release) is never downgraded
+        fut_dsn = get_shared_pg_harness().create_database(prefix="mig_fut", from_template=True)
+        db_seed_fut = GameDatabase(fut_dsn)
+        try:
+            db_seed_fut._conn.execute("PRAGMA user_version = 99;")
+            db_seed_fut._conn.execute("UPDATE meta SET value = '99' WHERE key = 'schema_version'")
+            db_seed_fut._conn.commit()
+        finally:
+            db_seed_fut.close()
+        db_fut = GameDatabase(fut_dsn)
+        try:
+            sv_fut = db_fut.get_schema_version()
+            self.assertEqual(sv_fut["version"], 99)
+            self.assertTrue(sv_fut["newer_than_code"])
+        finally:
+            db_fut.close()
 
-            # Future DB (e.g. V099 from a newer release) is never downgraded
-            future_path = Path(tmp) / "future.db"
-            shutil.copy2(db_path, future_path)
-            with contextlib.closing(sqlite3.connect(str(future_path))) as conn:
-                conn.execute("PRAGMA user_version = 99;")
-                conn.execute("UPDATE meta SET value = '99' WHERE key = 'schema_version'")
-                conn.commit()
-            db_fut = GameDatabase(future_path)
-            try:
-                sv_fut = db_fut.get_schema_version()
-                self.assertEqual(sv_fut["version"], 99)
-                self.assertTrue(sv_fut["newer_than_code"])
-            finally:
-                db_fut.close()
+    def test_pg_cli_status_migrate_verify_and_http_api_commands(self) -> None:
+        cli_dsn = get_shared_pg_harness().create_database(prefix="mig_cli", from_template=False)
+        seed_db = GameDatabase(cli_dsn, target_schema_version=2)
+        seed_db.close()
 
-    def test_multi_database_registry_cli_and_http_api_commands(self) -> None:
+        # CLI status --json detects pending migrations (V002)
+        buf_st = io.StringIO()
+        with contextlib.redirect_stdout(buf_st):
+            rc = migrations_cli_main(["--db-url", cli_dsn, "--json", "status"])
+        self.assertEqual(rc, 0)
+        st_payload = json.loads(buf_st.getvalue())
+        self.assertEqual(st_payload["version"], 2)
+        self.assertFalse(st_payload["up_to_date"])
+
         with tempfile.TemporaryDirectory(prefix="si_mig_reg_") as tmp:
             root = Path(tmp)
-            (root / "state").mkdir()
-
-            # Secondary SQLite DB in state/archive.db pinned at V002
-            sec_db = GameDatabase(root / "state" / "archive.db", target_schema_version=2)
-            sec_db.close()
-
-            # CLI status --json detects missing primary and pending archive.db (V002)
-            buf_st = io.StringIO()
-            with contextlib.redirect_stdout(buf_st):
-                rc = migrations_cli_main(["--root", str(root), "--json", "status"])
-            self.assertEqual(rc, 0)
-            st_payload = json.loads(buf_st.getvalue())
-            self.assertFalse(st_payload["ok"])
-            self.assertEqual(st_payload["databases"]["archive"]["version"], 2)
-
-            # CLI migrate --all --create --backup creates primary + upgrades archive.db to latest!
+            # CLI migrate --backup upgrades to latest!
             buf_mig = io.StringIO()
             with contextlib.redirect_stdout(buf_mig):
-                rc_m = migrations_cli_main(["--root", str(root), "--json", "migrate", "--all", "--create", "--backup"])
+                rc_m = migrations_cli_main(["--root", str(root), "--db-url", cli_dsn, "--json", "migrate", "--backup"])
             self.assertEqual(rc_m, 0)
             mig_payload = json.loads(buf_mig.getvalue())
-            self.assertTrue(mig_payload["ok"])
-            self.assertEqual(mig_payload["databases"]["primary"]["version"], LATEST_SCHEMA_VERSION)
-            self.assertEqual(mig_payload["databases"]["archive"]["version"], LATEST_SCHEMA_VERSION)
+            self.assertTrue(mig_payload["up_to_date"])
+            self.assertEqual(mig_payload["version"], LATEST_SCHEMA_VERSION)
+            self.assertTrue(Path(mig_payload["backup_path"]).exists())
 
-            # CLI verify --full-integrity & backup
+            # CLI verify --full-integrity
             buf_ver = io.StringIO()
             with contextlib.redirect_stdout(buf_ver):
-                rc_v = migrations_cli_main(["--root", str(root), "--json", "verify", "--full-integrity"])
+                rc_v = migrations_cli_main(["--db-url", cli_dsn, "--json", "verify", "--full-integrity"])
             self.assertEqual(rc_v, 0)
-            self.assertTrue(json.loads(buf_ver.getvalue())["ok"])
+            ver_payload = json.loads(buf_ver.getvalue())
+            self.assertTrue(ver_payload["ok"])
+            self.assertTrue(ver_payload["integrity_ok"])
 
-            # HTTP API command: db_verify + direct DB snapshots verification
+            # HTTP API command: db_summary + direct DB snapshots verification
             cfg_path = root / "config.json"
             cfg_path.write_text('{"planner_mode": "priority"}', encoding="utf-8")
             p_home = PlanetState(
@@ -342,7 +279,7 @@ class TestDatabaseMigrationsAndVersioning(unittest.TestCase):
                 debug_port=19999,
                 env_file=root / "no.env",
                 config_path=cfg_path,
-                db_path=root / "state" / "spaceinvasion.db",
+                db_path=cli_dsn,
                 log_dir=None,
                 client_factory=lambda _port: fake_client,
                 ensure_session_fn=lambda: None,
@@ -367,13 +304,13 @@ class TestDatabaseMigrationsAndVersioning(unittest.TestCase):
             base_url = f"http://127.0.0.1:{server.server_address[1]}"
             threading.Thread(target=server.serve_forever, daemon=True).start()
             try:
-                r_ver = requests.post(
+                r_sum = requests.post(
                     f"{base_url}/command",
-                    json={"command": "db_verify", "full_integrity": True},
+                    json={"command": "db_summary"},
                     timeout=5,
                 ).json()
-                self.assertTrue(r_ver["ok"])
-                self.assertTrue(r_ver["verification"]["sqlite_integrity_ok"])
+                self.assertTrue(r_sum["ok"])
+                self.assertEqual(r_sum["db"]["backend"], "postgres")
 
                 snaps = bridge._db.get_state_snapshots(limit=20, include_payload=True)
                 self.assertEqual(len(snaps), 1)
@@ -679,36 +616,36 @@ class TestDatabaseMigrationsAndVersioning(unittest.TestCase):
         self.assertTrue(v13_hist.issubset(set(HISTORY_TABLES)))
         self.assertTrue((v13_hot | v13_hist).issubset(set(GAME_REQUIRED_TABLES)))
 
+        dsn_v13 = get_shared_pg_harness().create_database(prefix="mig_v13", from_template=False)
+        # Seed a DB pinned at V012
+        db_v12 = GameDatabase(dsn_v13, target_schema_version=12)
+        try:
+            sv12 = db_v12.get_migration_status(include_events=False)
+            self.assertEqual(sv12["version"], 12)
+            self.assertEqual(sv12["version_tag"], "V012")
+            self.assertFalse(sv12["up_to_date"])
+            self.assertEqual(sv12["pending_count"], LATEST_SCHEMA_VERSION - 12)
+            self.assertEqual(sv12["pending_migrations"][0]["version"], 13)
+
+            # All V013 GameDatabase methods degrade safely when DB is pinned at V012
+            self.assertEqual(db_v12.record_config_optimizer_run({"summary": {}}), 0)
+            self.assertIsNone(db_v12.get_active_config_optimizer())
+            self.assertEqual(db_v12.list_config_optimizer_runs(), [])
+            self.assertEqual(db_v12.get_reserved_building_floors(), {})
+            self.assertEqual(db_v12.update_reserved_building_floor("101", "b6", 4), {})
+            self.assertEqual(db_v12.record_ai_planner_run({"summary": {}}), 0)
+            self.assertIsNone(db_v12.get_active_ai_planner())
+            self.assertEqual(db_v12.list_ai_planner_runs(), [])
+            self.assertEqual(db_v12.list_field_conflict_prompts(), [])
+            self.assertIsNone(db_v12.resolve_field_conflict_prompt("101:b1:15", "demolish"))
+        finally:
+            db_v12.close()
+
         with tempfile.TemporaryDirectory(prefix="si_mig_v13_") as tmp:
-            db_path = Path(tmp) / "v12_to_v13.db"
-            # Seed a DB pinned at V012
-            db_v12 = GameDatabase(db_path, target_schema_version=12)
-            try:
-                sv12 = db_v12.get_migration_status(include_events=False)
-                self.assertEqual(sv12["version"], 12)
-                self.assertEqual(sv12["version_tag"], "V012")
-                self.assertFalse(sv12["up_to_date"])
-                self.assertEqual(sv12["pending_count"], LATEST_SCHEMA_VERSION - 12)
-                self.assertEqual(sv12["pending_migrations"][0]["version"], 13)
-
-                # All V013 GameDatabase methods degrade safely when DB is pinned at V012
-                self.assertEqual(db_v12.record_config_optimizer_run({"summary": {}}), 0)
-                self.assertIsNone(db_v12.get_active_config_optimizer())
-                self.assertEqual(db_v12.list_config_optimizer_runs(), [])
-                self.assertEqual(db_v12.get_reserved_building_floors(), {})
-                self.assertEqual(db_v12.update_reserved_building_floor("101", "b6", 4), {})
-                self.assertEqual(db_v12.record_ai_planner_run({"summary": {}}), 0)
-                self.assertIsNone(db_v12.get_active_ai_planner())
-                self.assertEqual(db_v12.list_ai_planner_runs(), [])
-                self.assertEqual(db_v12.list_field_conflict_prompts(), [])
-                self.assertIsNone(db_v12.resolve_field_conflict_prompt("101:b1:15", "demolish"))
-            finally:
-                db_v12.close()
-
             # Upgrade V012 -> LATEST via CLI entrypoint with online backup + full integrity verify
             buf_mig = io.StringIO()
             with contextlib.redirect_stdout(buf_mig):
-                rc_m = migrations_cli_main(["--db", str(db_path), "--json", "migrate", "--backup"])
+                rc_m = migrations_cli_main(["--root", tmp, "--db-url", dsn_v13, "--json", "migrate", "--backup"])
             self.assertEqual(rc_m, 0)
             mig_res = json.loads(buf_mig.getvalue())
             self.assertEqual(mig_res["from_version"], 12)
@@ -720,18 +657,18 @@ class TestDatabaseMigrationsAndVersioning(unittest.TestCase):
 
             buf_ver = io.StringIO()
             with contextlib.redirect_stdout(buf_ver):
-                rc_v = migrations_cli_main(["--db", str(db_path), "--json", "verify", "--full-integrity"])
+                rc_v = migrations_cli_main(["--db-url", dsn_v13, "--json", "verify", "--full-integrity"])
             self.assertEqual(rc_v, 0)
             ver_res = json.loads(buf_ver.getvalue())
             self.assertTrue(ver_res["ok"], ver_res)
-            self.assertTrue(ver_res["sqlite_integrity_ok"])
+            self.assertTrue(ver_res["integrity_ok"])
             self.assertEqual(ver_res["missing_tables"], [])
             self.assertEqual(ver_res["checksum_drift"], [])
             self.assertEqual(ver_res["table_tiers"]["hot_count"], 19)
             self.assertEqual(ver_res["table_tiers"]["history_count"], 21)
 
             # Verify V013 checksum & table usability on reopened GameDatabase
-            db_v13 = GameDatabase(db_path)
+            db_v13 = GameDatabase(dsn_v13)
             try:
                 v13_spec = next(m for m in GAME_DB_MIGRATIONS if m.version == 13)
                 applied_v13 = next(
@@ -754,9 +691,9 @@ class TestDatabaseMigrationsAndVersioning(unittest.TestCase):
         self.assertEqual(TABLE_TIER_BY_NAME["hourly_production_history"], "history")
 
         base_hr = 1_760_000_000 // 3600 * 3600
+        dsn_v14 = get_shared_pg_harness().create_database(prefix="mig_v14", from_template=False)
         with tempfile.TemporaryDirectory(prefix="si_mig_v14_") as tmp:
-            db_path = Path(tmp) / "v13_to_v14.db"
-            db_v13 = GameDatabase(db_path, target_schema_version=13)
+            db_v13 = GameDatabase(dsn_v14, target_schema_version=13)
             try:
                 sv13 = db_v13.get_migration_status(include_events=False)
                 self.assertEqual(sv13["version"], 13)
@@ -826,7 +763,7 @@ class TestDatabaseMigrationsAndVersioning(unittest.TestCase):
 
             buf_mig = io.StringIO()
             with contextlib.redirect_stdout(buf_mig):
-                rc_m = migrations_cli_main(["--db", str(db_path), "--json", "migrate", "--backup"])
+                rc_m = migrations_cli_main(["--root", tmp, "--db-url", dsn_v14, "--json", "migrate", "--backup"])
             self.assertEqual(rc_m, 0)
             mig_res = json.loads(buf_mig.getvalue())
             self.assertEqual(mig_res["from_version"], 13)
@@ -837,14 +774,14 @@ class TestDatabaseMigrationsAndVersioning(unittest.TestCase):
 
             buf_ver = io.StringIO()
             with contextlib.redirect_stdout(buf_ver):
-                rc_v = migrations_cli_main(["--db", str(db_path), "--json", "verify", "--full-integrity"])
+                rc_v = migrations_cli_main(["--db-url", dsn_v14, "--json", "verify", "--full-integrity"])
             self.assertEqual(rc_v, 0)
             ver_res = json.loads(buf_ver.getvalue())
             self.assertTrue(ver_res["ok"], ver_res)
             self.assertEqual(ver_res["table_tiers"]["hot_count"], 19)
             self.assertEqual(ver_res["table_tiers"]["history_count"], 21)
 
-            db_v14 = GameDatabase(db_path)
+            db_v14 = GameDatabase(dsn_v14)
             try:
                 v14_spec = next(m for m in GAME_DB_MIGRATIONS if m.version == 14)
                 applied_v14 = next(

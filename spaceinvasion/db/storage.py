@@ -1,4 +1,4 @@
-"""SQLite persistence layer for SpaceInvasion Autoplayer telemetry, tutorial progress, actions, and intel."""
+"""PostgreSQL persistence layer for SpaceInvasion Autoplayer telemetry, tutorial progress, actions, and intel."""
 
 from __future__ import annotations
 
@@ -10,10 +10,9 @@ import math
 import os
 from pathlib import Path
 import re
-import sqlite3
-import threading
+from sqlite3 import Error as _SqliteError, OperationalError as _SqliteOperationalError
 import time
-from typing import Any, Iterable, Mapping, Optional, Sequence
+from typing import Any, Iterable, Mapping, Optional, Sequence, cast
 from zoneinfo import ZoneInfo
 
 from spaceinvasion.core import game_data
@@ -48,11 +47,8 @@ from spaceinvasion.db.migrations import (
     PROTECTED_META_KEYS,
     backfill_v012_hot_tables,
     backfill_v014_loot_recycle_hourly,
-    create_sqlite_backup,
 )
 from spaceinvasion.core.state import GameState, game_state_from_dict, normalize_planet_type
-
-DEFAULT_DB_PATH = Path("state") / "spaceinvasion.db"
 
 
 def server_day_key(ts: Optional[float] = None) -> str:
@@ -595,7 +591,7 @@ class GameDatabase:
 
     def __init__(
         self,
-        db_path: Path | str = DEFAULT_DB_PATH,
+        db_path: Optional[Path | str] = None,
         *,
         backend: Optional[str] = None,
         postgres_url: Optional[str] = None,
@@ -604,70 +600,39 @@ class GameDatabase:
         target_schema_version: Optional[int] = None,
         backup_on_upgrade: Optional[bool] = None,
     ) -> None:
-        raw_path = _raw_text(db_path, "")
-        want_pg = is_postgres_dsn(raw_path) or (
-            backend is not None and normalize_backend_name(backend, "sqlite") == "postgres"
+        from spaceinvasion.db.postgres import PostgresPoolBackend
+
+        if backend is not None and str(backend).strip().lower() not in ("", "auto"):
+            normalize_backend_name(backend)
+        raw_path = _raw_text(db_path, "") if db_path is not None else ""
+        eff_dsn = (
+            raw_path.strip()
+            if is_postgres_dsn(raw_path)
+            else (
+                str(postgres_url).strip()
+                if (postgres_url and is_postgres_dsn(postgres_url))
+                else build_default_postgres_url()
+            )
         )
-        self._is_postgres = bool(want_pg)
-        self.backend_name = "postgres" if self._is_postgres else "sqlite"
-        self.postgres_url: str = ""
-        self._pg_backend: Any = None
-
-        if self._is_postgres:
-            from spaceinvasion.db.postgres import PostgresPoolBackend
-
-            eff_dsn = (
-                raw_path.strip()
-                if is_postgres_dsn(raw_path)
-                else (
-                    str(postgres_url).strip()
-                    if (postgres_url and is_postgres_dsn(postgres_url))
-                    else build_default_postgres_url()
-                )
-            )
-            self.postgres_url = eff_dsn
-            self._is_memory = False
-            self.db_path = (
-                db_path
-                if (isinstance(db_path, Path) and not is_postgres_dsn(str(db_path)))
-                else DEFAULT_DB_PATH
-            )
-            self._pg_backend = PostgresPoolBackend(
-                eff_dsn,
-                min_size=pool_min_size,
-                max_size=pool_max_size,
-            )
-            self._lock: Any = self._pg_backend.session_lock
-            self._conn: Any = self._pg_backend.conn_proxy
-        else:
-            self._is_memory = ":memory:" in raw_path or "mode=memory" in raw_path
-            if self._is_memory:
-                self.db_path = Path(":memory:")
-                conn_target = raw_path
-                use_uri = raw_path.startswith("file:")
-            else:
-                self.db_path = db_path if isinstance(db_path, Path) else Path(raw_path)
-                self.db_path.parent.mkdir(parents=True, exist_ok=True)
-                conn_target = str(self.db_path)
-                use_uri = False
-
-            self._lock = threading.Lock()
-            self._conn = sqlite3.connect(
-                conn_target,
-                uri=use_uri,
-                timeout=10.0,
-                check_same_thread=False,
-            )
+        self._is_postgres = True
+        self.backend_name = "postgres"
+        self._is_memory = False
+        self.postgres_url: str = eff_dsn
+        self.db_path = (
+            db_path
+            if (isinstance(db_path, Path) and not is_postgres_dsn(str(db_path)))
+            else Path("state") / "postgres"
+        )
+        self._pg_backend: Any = PostgresPoolBackend(
+            eff_dsn,
+            min_size=pool_min_size,
+            max_size=pool_max_size,
+        )
+        self._lock: Any = self._pg_backend.session_lock
+        self._conn: Any = cast(Any, self._pg_backend.conn_proxy)
 
         try:
-            if not self._is_postgres:
-                self._conn.row_factory = sqlite3.Row
             with self._lock:
-                if not self._is_postgres:
-                    if not self._is_memory:
-                        self._conn.execute("PRAGMA journal_mode=WAL;")
-                        self._conn.execute("PRAGMA synchronous=NORMAL;")
-                    self._conn.execute("PRAGMA foreign_keys=ON;")
                 self._last_slot_history_sig: Optional[tuple[float, tuple[str, ...]]] = None
                 self._summary_cache_ver: Optional[tuple[int, int, int]] = None
                 self._summary_cache_json: Optional[str] = None
@@ -686,19 +651,11 @@ class GameDatabase:
                 now_ts = time.time()
                 self._migration_result = DEFAULT_GAME_MIGRATION_RUNNER.migrate(
                     self._conn,
-                    db_path=None if (self._is_memory or self._is_postgres) else self.db_path,
-                    is_memory=(self._is_memory or self._is_postgres),
+                    db_path=None,
+                    is_memory=True,
                     target_version=target_schema_version,
-                    backup=(
-                        False
-                        if self._is_postgres
-                        else (bool(backup_on_upgrade) if backup_on_upgrade is not None else False)
-                    ),
-                    auto_backup_default_db=(
-                        False
-                        if self._is_postgres
-                        else (True if backup_on_upgrade is None else bool(backup_on_upgrade))
-                    ),
+                    backup=False,
+                    auto_backup_default_db=False,
                     now_ts=now_ts,
                 )
                 self._repair_spy_targets_locked()
@@ -706,19 +663,12 @@ class GameDatabase:
                     self._backfill_reports_from_game_messages_locked(now_ts)
                 self._conn.commit()
         except Exception:
-            if self._pg_backend is not None:
-                self._pg_backend.close()
-            else:
-                self._conn.close()
+            self._pg_backend.close()
             raise
 
     @property
     def display_target(self) -> str:
-        if self._is_postgres:
-            return redact_db_url(self.postgres_url)
-        if self._is_memory:
-            return ":memory:"
-        return _sanitize_text(self.db_path)
+        return redact_db_url(self.postgres_url)
 
     def _backfill_reports_from_game_messages_locked(self, now_ts: float) -> None:
         """Non-destructively re-parse existing `game_messages` rows to populate `battle_reports`, `recycle_reports`, and `spy_reports`."""
@@ -1013,31 +963,18 @@ class GameDatabase:
         )
 
     def close(self) -> None:
-        if self._pg_backend is not None:
-            self._pg_backend.close()
-        else:
-            with self._lock:
-                self._conn.close()
+        self._pg_backend.close()
 
     def change_token(self) -> tuple[int, int, int]:
         """Return a fast `(instance_id, local_changes, external_data_version)` cache token."""
-        if self._pg_backend is not None:
-            return (
-                id(self),
-                int(self._pg_backend.total_changes),
-                int(self._pg_backend.get_data_version()),
-            )
-        with self._lock:
-            dv_row = self._conn.execute("PRAGMA data_version").fetchone()
-            dv = int(dv_row[0]) if dv_row is not None else 0
-            return (id(self), int(self._conn.total_changes), dv)
+        return (
+            id(self),
+            int(self._pg_backend.total_changes),
+            int(self._pg_backend.get_data_version()),
+        )
 
     def _db_version_locked(self) -> tuple[int, int]:
-        if self._pg_backend is not None:
-            return (int(self._pg_backend.total_changes), int(self._pg_backend.get_data_version()))
-        dv_row = self._conn.execute("PRAGMA data_version").fetchone()
-        dv = int(dv_row[0]) if dv_row is not None else 0
-        return (int(self._conn.total_changes), dv)
+        return (int(self._pg_backend.total_changes), int(self._pg_backend.get_data_version()))
 
     def _invalidate_hot_caches_locked(self) -> None:
         self._galaxy_intel_base_ver = None
@@ -2215,7 +2152,7 @@ class GameDatabase:
         return val if 0 < val <= 2**62 else None
 
     @staticmethod
-    def _row_to_notification(r: sqlite3.Row) -> dict[str, Any]:
+    def _row_to_notification(r: Any) -> dict[str, Any]:
         try:
             det_obj = json.loads(_raw_text(r["details_json"], "{}"))
         except ValueError:
@@ -2940,7 +2877,7 @@ class GameDatabase:
         try:
             cols = {r["name"] for r in self._conn.execute(f"PRAGMA table_info({table})").fetchall()}
             return column in cols
-        except sqlite3.Error:
+        except _SqliteError:
             return False
 
     def _upsert_galaxy_slot_locked(
@@ -4503,7 +4440,7 @@ class GameDatabase:
         return out
 
     @staticmethod
-    def _row_to_spy_target_dict(r: sqlite3.Row) -> dict[str, Any]:
+    def _row_to_spy_target_dict(r: Any) -> dict[str, Any]:
         spied_ts = _safe_float(r["last_spied_ts"], 0.0)
         raw_c = _raw_text(r["coords"], "").strip()
         norm_c = normalize_coords(raw_c) if raw_c else ""
@@ -4860,7 +4797,7 @@ class GameDatabase:
                         dm = game_data.cap_json_int(max(0, _safe_int(br["debris_metal"], 0)))
                         if dp + dm > 0:
                             debris_lookup[nc] = (dp, dm, 0, 0)
-            except sqlite3.Error:
+            except _SqliteError:
                 pass
         missing_deb = [c for c in debris_coords if c not in debris_lookup]
         if missing_deb:
@@ -4896,7 +4833,7 @@ class GameDatabase:
                         dm = max(0, _safe_int(rr["debris_avail_metal"], 0) - _safe_int(rr["harvested_metal"], 0))
                         if dp + dm > 0:
                             debris_lookup[nc] = (game_data.cap_json_int(dp), game_data.cap_json_int(dm), 0, 0)
-            except sqlite3.Error:
+            except _SqliteError:
                 pass
         return debris_lookup
 
@@ -5007,7 +4944,7 @@ class GameDatabase:
             ).fetchall()
             # Rank raw rows BEFORE calling `_row_to_spy_target_dict` (which runs deep JSON
             # parsing & redaction) so we only materialize the top `lim` winners instead of 2,000 rows.
-            raw_items: list[tuple[Optional[tuple[str, int, int, int]], str, float, sqlite3.Row]] = []
+            raw_items: list[tuple[Optional[tuple[str, int, int, int]], str, float, Any]] = []
             debris_coords: list[str] = []
             for r in rows:
                 nc = normalize_coords(_raw_text(r["coords"], ""))
@@ -5019,7 +4956,7 @@ class GameDatabase:
             debris_lookup = self._build_debris_lookup_locked(debris_coords)
 
             def _debris_raw_sort_key(
-                entry: tuple[Optional[tuple[str, int, int, int]], str, float, sqlite3.Row]
+                entry: tuple[Optional[tuple[str, int, int, int]], str, float, Any]
             ) -> tuple[int, int, int, int, int, float]:
                 p_t, nc, ts_scan, _r = entry
                 d_tup = debris_lookup.get(nc)
@@ -6416,7 +6353,7 @@ class GameDatabase:
                     ORDER BY ts ASC, id ASC
                     """
                 ).fetchall()
-            except sqlite3.OperationalError:
+            except _SqliteOperationalError:
                 p_rows = self._conn.execute(
                     """
                     SELECT ts, planet_id, coords, planet_type, fields_used, fields_max,
@@ -6878,7 +6815,7 @@ class GameDatabase:
         return s if s in ("P0", "P1", "P2", "P3") else default
 
     @staticmethod
-    def _row_to_manual_queue_dict(r: sqlite3.Row) -> dict[str, Any]:
+    def _row_to_manual_queue_dict(r: Any) -> dict[str, Any]:
         tid = _safe_optional_int(r["target_id"])
         tlvl = _safe_optional_int(r["target_level"])
         comp_ts = _safe_optional_float(r["completed_ts"])
@@ -6931,7 +6868,7 @@ class GameDatabase:
             ),
         )
 
-    def _ordered_pending_queue_rows_locked(self) -> list[sqlite3.Row]:
+    def _ordered_pending_queue_rows_locked(self) -> list[Any]:
         return self._conn.execute(
             """
             SELECT *
@@ -7332,7 +7269,7 @@ class GameDatabase:
 
         with self._lock:
             pending_rows = self._ordered_pending_queue_rows_locked()
-            matched: Optional[sqlite3.Row] = None
+            matched: Optional[Any] = None
             for r in pending_rows:
                 if _raw_text(r["kind"], "").upper() != norm_kind:
                     continue
@@ -7424,7 +7361,7 @@ class GameDatabase:
         with self._lock:
             st = DEFAULT_GAME_MIGRATION_RUNNER.inspect(
                 self._conn,
-                db_path=None if self._is_memory else self.db_path,
+                db_path=self.display_target,
                 include_events=False,
             )
         return _sanitize_obj(
@@ -7454,7 +7391,7 @@ class GameDatabase:
         with self._lock:
             st = DEFAULT_GAME_MIGRATION_RUNNER.inspect(
                 self._conn,
-                db_path=self.display_target if self._is_postgres else (None if self._is_memory else self.db_path),
+                db_path=self.display_target,
                 include_events=include_events,
                 event_limit=event_limit,
             )
@@ -7471,24 +7408,23 @@ class GameDatabase:
     ) -> dict[str, Any]:
         """Run pending forward migrations up to `target_version` (or preview with `dry_run=True`)."""
         bkp_pg_path: Optional[Path] = None
-        if self._is_postgres and backup and not dry_run:
+        if backup and not dry_run:
             bkp_pg_path = create_postgres_backup(self, label="manual_migrate", backup_dir=backup_dir)
         with self._lock:
             res = DEFAULT_GAME_MIGRATION_RUNNER.migrate(
                 self._conn,
-                db_path=None if (self._is_memory or self._is_postgres) else self.db_path,
-                is_memory=(self._is_memory or self._is_postgres),
+                db_path=None,
+                is_memory=True,
                 target_version=target_version,
                 dry_run=dry_run,
-                backup=False if self._is_postgres else backup,
+                backup=False,
                 auto_backup_default_db=False,
                 backup_dir=backup_dir,
             )
-            if self._is_postgres:
-                res["backend"] = "postgres"
-                res["db_path"] = self.display_target
-                if bkp_pg_path is not None:
-                    res["backup_path"] = str(bkp_pg_path)
+            res["backend"] = "postgres"
+            res["db_path"] = self.display_target
+            if bkp_pg_path is not None:
+                res["backup_path"] = str(bkp_pg_path)
             if not dry_run and DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "game_messages"):
                 self._backfill_reports_from_game_messages_locked(time.time())
                 self._conn.commit()
@@ -7500,56 +7436,16 @@ class GameDatabase:
         label: str = "manual",
         backup_dir: Optional[Path] = None,
     ) -> dict[str, Any]:
-        """Create an online backup snapshot (`pg_dump`/JSONL for PostgreSQL, WAL `.backup` for SQLite)."""
-        if self._is_memory:
-            raise ValueError("Cannot create file backup of an in-memory SQLite database.")
-        if self._is_postgres:
-            with self._lock:
-                st = DEFAULT_GAME_MIGRATION_RUNNER.inspect(
-                    self._conn,
-                    db_path=self.display_target,
-                    include_events=False,
-                )
-                ver = int(st["version"])
-            bkp_path = create_postgres_backup(self, label=label, backup_dir=backup_dir)
-            with self._lock:
-                DEFAULT_GAME_MIGRATION_RUNNER._ensure_ledger_tables(self._conn)
-                DEFAULT_GAME_MIGRATION_RUNNER._record_event(
-                    self._conn,
-                    ts=time.time(),
-                    event_type="backup_created",
-                    from_version=ver,
-                    to_version=ver,
-                    backup_path=str(bkp_path),
-                    details={"label": _sanitize_text(label)[:40], "backend": "postgres"},
-                )
-                self._conn.commit()
-            return _sanitize_obj(
-                {
-                    "ok": True,
-                    "backend": "postgres",
-                    "db_path": self.display_target,
-                    "backup_path": _sanitize_text(bkp_path),
-                    "size_bytes": bkp_path.stat().st_size if bkp_path.exists() else 0,
-                    "version": ver,
-                    "version_tag": f"V{ver:03d}",
-                }
-            )
+        """Create an online PostgreSQL backup snapshot (`pg_dump` or JSONL)."""
         with self._lock:
             st = DEFAULT_GAME_MIGRATION_RUNNER.inspect(
                 self._conn,
-                db_path=self.db_path,
+                db_path=self.display_target,
                 include_events=False,
             )
             ver = int(st["version"])
-            bkp_path = create_sqlite_backup(
-                self._conn,
-                self.db_path,
-                from_version=ver,
-                to_version=ver,
-                label=label,
-                backup_dir=backup_dir,
-            )
+        bkp_path = create_postgres_backup(self, label=label, backup_dir=backup_dir)
+        with self._lock:
             DEFAULT_GAME_MIGRATION_RUNNER._ensure_ledger_tables(self._conn)
             DEFAULT_GAME_MIGRATION_RUNNER._record_event(
                 self._conn,
@@ -7558,14 +7454,14 @@ class GameDatabase:
                 from_version=ver,
                 to_version=ver,
                 backup_path=str(bkp_path),
-                details={"label": _sanitize_text(label)[:40], "backend": "sqlite"},
+                details={"label": _sanitize_text(label)[:40], "backend": "postgres"},
             )
             self._conn.commit()
         return _sanitize_obj(
             {
                 "ok": True,
-                "backend": "sqlite",
-                "db_path": _sanitize_text(self.db_path),
+                "backend": "postgres",
+                "db_path": self.display_target,
                 "backup_path": _sanitize_text(bkp_path),
                 "size_bytes": bkp_path.stat().st_size if bkp_path.exists() else 0,
                 "version": ver,
@@ -7578,33 +7474,19 @@ class GameDatabase:
         with self._lock:
             res = DEFAULT_GAME_MIGRATION_RUNNER.verify(
                 self._conn,
-                db_path=self.display_target if self._is_postgres else (None if self._is_memory else self.db_path),
+                db_path=self.display_target,
                 full_integrity=full_integrity,
             )
             res["backend"] = self.backend_name
         return _sanitize_obj(res)
 
     def summary(self) -> dict[str, Any]:
-        if self._pg_backend is not None:
-            tc = int(self._pg_backend.total_changes)
-            dv = int(self._pg_backend.get_data_version())
-            cur_ver_pg = (tc, dv, 0)
-            if self._summary_cache_json is not None and self._summary_cache_ver == cur_ver_pg:
-                return json.loads(self._summary_cache_json)
-            size_bytes = self._pg_backend.database_size_bytes()
-            cur_ver = (tc, dv, 0)
-        else:
-            size_bytes = (
-                self.db_path.stat().st_size
-                if (not self._is_memory and self.db_path.exists())
-                else 0
-            )
-            with self._lock:
-                data_ver_row = self._conn.execute("PRAGMA data_version").fetchone()
-                data_ver = int(data_ver_row[0]) if data_ver_row is not None else 0
-                cur_ver = (int(self._conn.total_changes), data_ver, int(size_bytes))
-                if self._summary_cache_json is not None and self._summary_cache_ver == cur_ver:
-                    return json.loads(self._summary_cache_json)
+        tc = int(self._pg_backend.total_changes)
+        dv = int(self._pg_backend.get_data_version())
+        cur_ver = (tc, dv, 0)
+        if self._summary_cache_json is not None and self._summary_cache_ver == cur_ver:
+            return json.loads(self._summary_cache_json)
+        size_bytes = self._pg_backend.database_size_bytes()
         tables = (
             "latest_state_hot",
             "empire_planets_hot",
@@ -7652,23 +7534,10 @@ class GameDatabase:
                 str(r[0])
                 for r in self._conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
             }
-            if self._pg_backend is not None:
-                all_cnts = self._pg_backend.fast_table_counts((*tables, "meta"), existing_tables)
-                for tbl in tables:
-                    counts[tbl] = all_cnts.get(tbl, 0)
-                meta_row_cnt = all_cnts.get("meta", 0)
-            else:
-                for tbl in tables:
-                    counts[tbl] = (
-                        int(self._conn.execute(f"SELECT COUNT(*) FROM {tbl}").fetchone()[0])
-                        if tbl in existing_tables
-                        else 0
-                    )
-                meta_row_cnt = (
-                    int(self._conn.execute("SELECT COUNT(*) FROM meta").fetchone()[0])
-                    if "meta" in existing_tables
-                    else 0
-                )
+            all_cnts = self._pg_backend.fast_table_counts((*tables, "meta"), existing_tables)
+            for tbl in tables:
+                counts[tbl] = all_cnts.get(tbl, 0)
+            meta_row_cnt = all_cnts.get("meta", 0)
             hot_counts = {
                 tbl: (meta_row_cnt if tbl == "meta" else counts.get(tbl, 0))
                 for tbl in HOT_TABLES
@@ -7697,7 +7566,7 @@ class GameDatabase:
             )
             mig_info = DEFAULT_GAME_MIGRATION_RUNNER.inspect(
                 self._conn,
-                db_path=self.display_target if self._is_postgres else (None if self._is_memory else self.db_path),
+                db_path=self.display_target,
                 include_events=False,
             )
         tut_rows = self.get_tutorial_history() if "tutorial_progress" in existing_tables else []
@@ -8039,7 +7908,7 @@ class GameDatabase:
                 for ok, ov in own_researches.items():
                     eff_own_map[_raw_text(ok, "").strip()] = max(0, _sql_int(ov, 0))
 
-            prev_rows_by_key: dict[str, sqlite3.Row] = {}
+            prev_rows_by_key: dict[str, Any] = {}
             if DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "universe_research_max"):
                 for pr in self._conn.execute("SELECT * FROM universe_research_max").fetchall():
                     prev_rows_by_key[str(pr["research_key"])] = pr
@@ -8256,7 +8125,7 @@ class GameDatabase:
         return out
 
     @staticmethod
-    def _row_to_colony_attempt_dict(r: sqlite3.Row) -> dict[str, Any]:
+    def _row_to_colony_attempt_dict(r: Any) -> dict[str, Any]:
         raw_tc = _raw_text(r["target_coords"], "").strip()
         norm_tc = normalize_coords(raw_tc) if raw_tc else ""
         raw_oc = _raw_text(r["origin_coords"], "").strip()
@@ -9156,7 +9025,7 @@ class GameDatabase:
         return out
 
     @staticmethod
-    def _row_to_field_conflict_dict(r: sqlite3.Row) -> dict[str, Any]:
+    def _row_to_field_conflict_dict(r: Any) -> dict[str, Any]:
         resolved_ts_raw = r["resolved_ts"]
         return _sanitize_obj(
             {

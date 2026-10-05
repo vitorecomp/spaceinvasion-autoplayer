@@ -1162,42 +1162,46 @@ class ConfigOptimizerUnitTests(unittest.TestCase):
             debug_port=9222,
             client_factory=lambda _port: fake_client_cm,
             ensure_session_fn=lambda: None,
-            db_path=None,
+            db_path=":memory:",
+            log_dir=None,
         )
-        bridge._last_state = state
-        bridge._live_executor = executor
+        try:
+            bridge._last_state = state
+            bridge._live_executor = executor
 
-        ren_out = bridge.handle_command({"command": "rename_planet", "planet_id": 602, "name": "Starforge II"})
-        self.assertTrue(ren_out["ok"])
-        self.assertEqual(ren_out["name"], "Starforge II")
-        self.assertEqual(ren_out["game_name"], "Colony")
+            ren_out = bridge.handle_command({"command": "rename_planet", "planet_id": 602, "name": "Starforge II"})
+            self.assertTrue(ren_out["ok"])
+            self.assertEqual(ren_out["name"], "Starforge II")
+            self.assertEqual(ren_out["game_name"], "Colony")
 
-        upd_out = bridge.handle_command(
-            {
-                "command": "config_optimizer_update_planet",
-                "slot": 2,
-                "planet_id": 602,
-                "planet_name": "Starforge II",
-                "locked_specialization": "spice_shipyard",
-                "target_buildings": {"b4": 25, "b5": 24, "b9": 13, "b17": 1},
-                "auto_replan_ai": False,
-            }
-        )
-        self.assertTrue(upd_out["ok"])
-        # Before in-game sync, game_name remains "Colony" while display name is "Starforge II"
-        self.assertEqual(upd_out["result"]["planets"][1]["name"], "Starforge II")
-        self.assertEqual(upd_out["result"]["planets"][1]["game_name"], "Colony")
+            upd_out = bridge.handle_command(
+                {
+                    "command": "config_optimizer_update_planet",
+                    "slot": 2,
+                    "planet_id": 602,
+                    "planet_name": "Starforge II",
+                    "locked_specialization": "spice_shipyard",
+                    "target_buildings": {"b4": 25, "b5": 24, "b9": 13, "b17": 1},
+                    "auto_replan_ai": False,
+                }
+            )
+            self.assertTrue(upd_out["ok"])
+            # Before in-game sync, game_name remains "Colony" while display name is "Starforge II"
+            self.assertEqual(upd_out["result"]["planets"][1]["name"], "Starforge II")
+            self.assertEqual(upd_out["result"]["planets"][1]["game_name"], "Colony")
 
-        proj_out = bridge.handle_command({"command": "config_optimizer_yearly_projection", "horizon_years": 3})
-        self.assertTrue(proj_out["ok"])
-        self.assertEqual(len(proj_out["projection"]["years"]), 3)
+            proj_out = bridge.handle_command({"command": "config_optimizer_yearly_projection", "horizon_years": 3})
+            self.assertTrue(proj_out["ok"])
+            self.assertEqual(len(proj_out["projection"]["years"]), 3)
 
-        sync_api_out = bridge.handle_command({"command": "sync_planet_names"})
-        self.assertTrue(sync_api_out["ok"])
-        self.assertEqual(sync_api_out["synced_count"], 1)
-        co_get_after = bridge.handle_command({"command": "config_optimizer_get"})
-        self.assertEqual(co_get_after["active"]["result"]["planets"][1]["name"], "Starforge II")
-        self.assertEqual(co_get_after["active"]["result"]["planets"][1]["game_name"], "Starforge II")
+            sync_api_out = bridge.handle_command({"command": "sync_planet_names"})
+            self.assertTrue(sync_api_out["ok"])
+            self.assertEqual(sync_api_out["synced_count"], 1)
+            co_get_after = bridge.handle_command({"command": "config_optimizer_get"})
+            self.assertEqual(co_get_after["active"]["result"]["planets"][1]["name"], "Starforge II")
+            self.assertEqual(co_get_after["active"]["result"]["planets"][1]["game_name"], "Starforge II")
+        finally:
+            bridge.close()
 
 
 if __name__ == "__main__":

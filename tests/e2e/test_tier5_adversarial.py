@@ -279,7 +279,7 @@ class TestTier5Adversarial(unittest.TestCase):
                 for mem_uri in (":memory:", "file::memory:?cache=shared"):
                     db = GameDatabase(mem_uri)
                     try:
-                        self.assertTrue(db._is_memory)
+                        self.assertTrue(db._is_postgres)
                         db.record_raid(
                             "2:380:4",
                             attacked_ts=float("nan"),
@@ -807,15 +807,10 @@ class TestTier5Adversarial(unittest.TestCase):
             )
             self.assertEqual(extracted.target_coords, "2:380:4")
             h.bridge._db.record_spy_report(extracted)
-            import sqlite3
-
-            con = sqlite3.connect(str(h.db_path))
-            try:
-                stored_rows = con.execute(
+            with h.bridge._db._lock:
+                stored_rows = h.bridge._db._conn.execute(
                     "SELECT coords FROM spy_targets ORDER BY coords"
                 ).fetchall()
-            finally:
-                con.close()
             self.assertIn("02:380:04", [str(r[0]) for r in stored_rows])
             self.assertNotIn("2:380:4", [str(r[0]) for r in stored_rows])
 
@@ -1131,14 +1126,16 @@ class TestTier5Adversarial(unittest.TestCase):
             )
             h.bridge._db._conn.execute(
                 "INSERT INTO rank_snapshots(ts, universe_id, estimated_points, pts_per_hr, spice_value, planets) "
-                "VALUES('bad_ts', 31, 'bad_pts', 0.0, 0.0, 1)"
+                "VALUES(?, 31, ?, 0.0, 0.0, 1)",
+                (float("nan"), float("inf")),
             )
             h.bridge._db._conn.execute(
                 "INSERT INTO planet_snapshots(ts, universe_id, planet_id, coords, name, planet_type, "
                 "temperature, fields_used, fields_max, pig_iron, metal, kryptonite, spice, "
                 "energy_produced, energy_used, buildings_json, ships_json, defense_json, "
                 "economy_rates_json, researches_json) "
-                "VALUES('bad_ts', 31, 12476, '02:380:12', 'Home', 'normal', 31, 10, 230, 0, 0, 0, 0, 0, 0, '{}', '{}', '{}', '{}', '{}')"
+                "VALUES(?, 31, 12476, '02:380:12', 'Home', 'normal', 31, 10, 230, 0, 0, 0, 0, 0, 0, '{}', '{}', '{}', '{}', '{}')",
+                (float("nan"),),
             )
             h.bridge._db._conn.commit()
             h.bridge._db.record_galaxy_slots(
@@ -2622,12 +2619,12 @@ async (url, opts, fullUrl, nativeFetch) => {
                 sec = "T5_R10_BLOB_SID"
                 db._conn.execute(
                     "INSERT INTO planet_snapshots(ts, universe_id, planet_id, coords, name, planet_type, temperature, fields_used, fields_max, pig_iron, metal, kryptonite, spice, energy_produced, energy_used, buildings_json, ships_json, defense_json, economy_rates_json, researches_json) "
-                    "VALUES('nan', 31, 7, ?, ?, 'normal', 20, 0, 200, 1, 1, 1, 1, 10, 5, ?, '{}', '{}', '{}', '{}')",
-                    (b"02:380:04", f"?sid={sec}".encode("utf-8"), json.dumps({"sid": sec, "b1": 5}, allow_nan=False)),
+                    "VALUES(?, 31, 7, ?, ?, 'normal', 20, 0, 200, 1, 1, 1, 1, 10, 5, ?, '{}', '{}', '{}', '{}')",
+                    (float("nan"), "02:380:04", f"?sid={sec}", json.dumps({"sid": sec, "b1": 5}, allow_nan=False)),
                 )
                 db._conn.execute(
                     "INSERT INTO raid_history(target_coords, attacked_ts, is_exempt, outcome, loot_json) VALUES(?, 1000.0, 0, ?, ?)",
-                    (b"02:380:04", f"?sid={sec}".encode("utf-8"), json.dumps({"sid": sec, "pig_iron": 500}, allow_nan=False)),
+                    ("02:380:04", f"?sid={sec}", json.dumps({"sid": sec, "pig_iron": 500}, allow_nan=False)),
                 )
                 db._conn.commit()
                 self.assertEqual(db.load_bash_tracker(now=1000.0).attacks_last_24h("02:380:04", timestamp=1000.0), 1)

@@ -277,7 +277,7 @@ class TestApiAndCommander(unittest.TestCase):
                 server.shutdown()
                 server.server_close()
 
-            self.assertTrue((Path(tmp) / "state" / "spaceinvasion.db").exists())
+            self.assertTrue((Path(tmp) / "state" / "postgres").exists())
             self.assertIsNotNone(bridge._db)
             summary = bridge._db.summary()
             bridge._db.close()
@@ -424,16 +424,10 @@ class TestApiAndCommander(unittest.TestCase):
 
     def test_bridge_limiter_wait_defaults_and_dynamic_raid_stats_isolated_from_repo_file(self) -> None:
         from dataclasses import replace as dc_replace
-        import sqlite3
         from spaceinvasion.storage import GameDatabase
 
         repo_hist = Path("data") / "attack_history.json"
         self.assertFalse(repo_hist.exists())
-        repo_db = Path("state") / "spaceinvasion.db"
-        before_raids = 0
-        if repo_db.is_file():
-            with sqlite3.connect(f"file:{repo_db}?mode=ro", uri=True) as rconn:
-                before_raids = int(rconn.execute("SELECT COUNT(*) FROM raid_history").fetchone()[0])
 
         state = _sample_state()
         p = state.planets[0]
@@ -504,10 +498,6 @@ class TestApiAndCommander(unittest.TestCase):
                     bridge._db.close()
 
         self.assertFalse(repo_hist.exists())
-        if repo_db.is_file():
-            with sqlite3.connect(f"file:{repo_db}?mode=ro", uri=True) as rconn:
-                after_raids = int(rconn.execute("SELECT COUNT(*) FROM raid_history").fetchone()[0])
-            self.assertEqual(after_raids, before_raids)
 
     def test_update_config_validation_and_executor_sync(self) -> None:
         import requests
@@ -1467,7 +1457,7 @@ class TestApiAndCommander(unittest.TestCase):
                 many_yellow.append(GalaxySlot("09:009:09", 9, "DeepBlue", "VacDeep", "blue"))
                 bridge._db.record_galaxy_slots(many_yellow, ts=2000.0)
                 bridge._db._conn.execute(
-                    "UPDATE spy_targets SET pig_iron='bad', spice=100, "
+                    "UPDATE spy_targets SET pig_iron=0, spice=100, "
                     "fleet_json='{\"s1\": \"bad\"}', defense_json='{\"d1\": \"bad\"}' "
                     "WHERE coords='05:001:01'"
                 )

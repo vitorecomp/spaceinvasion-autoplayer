@@ -69,13 +69,13 @@ def _build_parser() -> argparse.ArgumentParser:
         "--config",
         type=Path,
         default=None,
-        help="Optional strategy config path (.db SQLite or .json; defaults to active DB).",
+        help="Optional strategy config JSON path (defaults to active PostgreSQL database).",
     )
     parser.add_argument(
         "--db-backend",
-        choices=("auto", "postgres", "sqlite"),
+        choices=("auto", "postgres"),
         default=None,
-        help="Database backend to use ('postgres' via Podman, 'sqlite', or 'auto').",
+        help="Database backend to use ('postgres' via Podman, or 'auto').",
     )
     parser.add_argument(
         "--db-url",

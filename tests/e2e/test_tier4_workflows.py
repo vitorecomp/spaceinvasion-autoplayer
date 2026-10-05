@@ -7,7 +7,6 @@ import json
 import os
 from pathlib import Path
 import shutil
-import sqlite3
 import sys
 import tempfile
 import unittest
@@ -726,10 +725,10 @@ class TestTier4Workflows(unittest.TestCase):
 
             db2 = h.api.send_command({"command": "db_summary"})["db"]
             self.assertTrue(any(t["coords"] == "02:380:04" for t in db2["spy_targets"]))
-            assert h.db_path is not None
-            with contextlib.closing(sqlite3.connect(h.db_path)) as conn:
-                raids2 = conn.execute("SELECT COUNT(*) FROM raid_history").fetchone()[0]
-                snaps2 = conn.execute("SELECT COUNT(*) FROM rank_snapshots").fetchone()[0]
+            assert h.bridge._db is not None
+            with h.bridge._db._lock:
+                raids2 = h.bridge._db._conn.execute("SELECT COUNT(*) FROM raid_history").fetchone()[0]
+                snaps2 = h.bridge._db._conn.execute("SELECT COUNT(*) FROM rank_snapshots").fetchone()[0]
             self.assertGreaterEqual(raids2, 1)
             self.assertGreaterEqual(snaps2, 1)
 

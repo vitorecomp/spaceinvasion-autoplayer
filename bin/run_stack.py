@@ -61,9 +61,9 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--account", default="default", help="Account profile in .env.")
     parser.add_argument(
         "--db-backend",
-        choices=("auto", "postgres", "sqlite"),
+        choices=("auto", "postgres"),
         default=None,
-        help="Database backend ('postgres' on Podman, 'sqlite', or 'auto').",
+        help="Database backend ('postgres' on Podman or 'auto').",
     )
     parser.add_argument(
         "--db-url",

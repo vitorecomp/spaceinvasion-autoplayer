@@ -85,7 +85,6 @@ from spaceinvasion.combat.ranking import (
     build_ranking_evolution,
     estimate_hourly_economy,
     estimate_planet_hourly_economy,
-    load_rank_history,
     record_rank_snapshot,
     simulate_combat_matchup,
 )
@@ -120,10 +119,10 @@ from spaceinvasion.db.backend import (
     get_podman_postgres_status,
     is_container_runtime,
     is_postgres_dsn,
+    normalize_backend_name,
     ping_postgres,
     redact_db_url,
     resolve_database_config,
-    sync_database_stores,
 )
 from spaceinvasion.db.storage import GameDatabase, server_day_key
 from spaceinvasion.planner.strategy import (
@@ -131,7 +130,6 @@ from spaceinvasion.planner.strategy import (
     PlannedAction,
     _tutorial_colonize_task,
     compute_spare_ship_budget,
-    filter_shipyard_actions_by_spare_budget,
     merge_manual_queue_actions,
     plan_actions,
     plan_ai_blast_furnace_throttles,
@@ -1649,8 +1647,10 @@ class GameApiBridge:
         self._last_dashboard_payload: Optional[dict[str, Any]] = None
         self._rank_history_path: Optional[Path] = None
         self._db_selection_source: str = "explicit"
-        self._resolved_sqlite_path: Path = REPO_ROOT_DIR / "state" / "spaceinvasion.db"
         self._resolved_postgres_url: str = build_default_postgres_url()
+
+        if db_backend is not None and str(db_backend).strip().lower() not in ("", "auto"):
+            normalize_backend_name(db_backend)
 
         is_live_repo_default_db = False
         if db_path is None and (db_backend is not None or db_url is not None or is_container_runtime()):
@@ -1672,30 +1672,21 @@ class GameApiBridge:
                 root_dir=REPO_ROOT_DIR,
             )
             self._db_selection_source = resolved_cfg.selection_source
-            self._resolved_sqlite_path = resolved_cfg.sqlite_path
             self._resolved_postgres_url = resolved_cfg.postgres_url
-            if resolved_cfg.backend == "postgres":
-                ensure_postgres_container_ready(
-                    resolved_cfg.postgres_url,
-                    root_dir=REPO_ROOT_DIR,
-                    auto_start=resolved_cfg.auto_start_podman,
-                )
-                self._db = GameDatabase(
-                    resolved_cfg.postgres_url,
-                    backend="postgres",
-                )
-                self._maybe_initial_sync_sqlite_to_postgres(resolved_cfg.sqlite_path)
-            else:
-                self._db = GameDatabase(resolved_cfg.sqlite_path)
-        else:
-            resolved_db = (
-                Path(db_path) if isinstance(db_path, (Path, str)) and str(db_path) != ":memory:" and not str(db_path).startswith("file:") else db_path
-                if db_path is not None
-                else ((log_dir.parent / "state" / "spaceinvasion.db") if log_dir is not None else None)
+            ensure_postgres_container_ready(
+                resolved_cfg.postgres_url,
+                root_dir=REPO_ROOT_DIR,
+                auto_start=resolved_cfg.auto_start_podman,
             )
-            if isinstance(resolved_db, Path):
-                self._resolved_sqlite_path = resolved_db
-            self._db = GameDatabase(resolved_db) if resolved_db is not None else None
+            self._db = GameDatabase(resolved_cfg.postgres_url, backend="postgres")
+        elif db_path is not None or log_dir is not None:
+            eff_path = db_path if db_path is not None else (log_dir.parent / "state" / "postgres")  # type: ignore[union-attr]
+            self._db = GameDatabase(eff_path)
+            pg_dsn = getattr(self._db, "postgres_url", "")
+            if is_postgres_dsn(pg_dsn):
+                self._resolved_postgres_url = pg_dsn
+        else:
+            self._db = None
         if self._db is not None:
             self._rank_samples = self._db.get_rank_samples()
             self._economy_rates.update(self._db.get_all_economy_rates())
@@ -1913,66 +1904,16 @@ class GameApiBridge:
             setattr(err, "_recorded_limiter_id", id(self._page_limiter))
             raise err
 
-    def _maybe_initial_sync_sqlite_to_postgres(self, sqlite_path: Path) -> None:
-        """Automatically migrate existing `state/spaceinvasion.db` rows into PostgreSQL on first boot."""
-        if self._db is None or getattr(self._db, "backend_name", "sqlite") != "postgres":
-            return
-        if not sqlite_path.is_file():
-            return
-        try:
-            marker = self._db.load_meta_json("initial_sqlite_sync_v1")
-            if marker is not None:
-                return
-            # Check if PostgreSQL already received the bulk sync (> 1,000 history rows)
-            with self._db._lock:
-                cnt_row = self._db._conn.execute("SELECT COUNT(*) FROM galaxy_slot_history").fetchone()
-                existing_hist = int(cnt_row[0] or 0) if cnt_row is not None else 0
-            if existing_hist > 100:
-                self._db.save_meta_json(
-                    "initial_sqlite_sync_v1",
-                    {"synced_ts": round(time.time(), 3), "already_populated": True, "galaxy_slot_history": existing_hist},
-                )
-                return
-            sq_db = GameDatabase(sqlite_path)
-            try:
-                res = sync_database_stores(sq_db, self._db)
-            finally:
-                sq_db.close()
-            self._db.save_meta_json(
-                "initial_sqlite_sync_v1",
-                {
-                    "synced_ts": round(time.time(), 3),
-                    "rows_processed": int(res.get("rows_processed", 0)),
-                    "tables_synced": int(res.get("tables_synced", 0)),
-                },
-            )
-            print(
-                f"[API] Migrated {res.get('rows_processed', 0)} rows across "
-                f"{res.get('tables_synced', 0)} tables from SQLite -> PostgreSQL in {res.get('elapsed_ms', 0)}ms.",
-                flush=True,
-            )
-        except Exception as exc:
-            print(
-                f"[API] Initial SQLite -> PostgreSQL sync warning: {redact_sensitive(str(exc))}",
-                file=sys.stderr,
-                flush=True,
-            )
-
     def _build_db_backend_status(self, *, include_ping: bool = False) -> dict[str, Any]:
         db = self._db
-        backend = str(getattr(db, "backend_name", "sqlite")) if db is not None else "none"
+        backend = str(getattr(db, "backend_name", "postgres")) if db is not None else "none"
         target = str(getattr(db, "display_target", "")) if db is not None else ""
-        sqlite_exists = self._resolved_sqlite_path.is_file()
-        sqlite_size = self._resolved_sqlite_path.stat().st_size if sqlite_exists else 0
         out: dict[str, Any] = {
             "backend": backend,
             "target": target,
             "selection_source": self._db_selection_source,
             "container_mode": is_container_runtime(),
             "postgres_target": redact_db_url(self._resolved_postgres_url),
-            "sqlite_target": str(self._resolved_sqlite_path),
-            "sqlite_exists": sqlite_exists,
-            "sqlite_size_bytes": sqlite_size,
         }
         if include_ping:
             podman_info = get_podman_postgres_status(force=False)

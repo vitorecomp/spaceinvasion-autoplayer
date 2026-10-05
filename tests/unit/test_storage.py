@@ -18,7 +18,6 @@ from spaceinvasion.state import (
     TutorialStatus,
     TutorialTask,
 )
-import spaceinvasion.storage as storage_mod
 from spaceinvasion.storage import GameDatabase
 from spaceinvasion.strategy import PlannedAction
 
@@ -328,7 +327,9 @@ class TestGameDatabase(unittest.TestCase):
             tmp_path = Path(tmp)
             db_mem = GameDatabase(":memory:")
             try:
-                self.assertEqual(db_mem.summary()["db_path"], ":memory:")
+                mem_sum = db_mem.summary()
+                self.assertEqual(mem_sum["backend"], "postgres")
+                self.assertTrue(str(mem_sum["db_path"]).startswith("postgresql://"))
             finally:
                 db_mem.close()
             db_tmp = GameDatabase(tmp_path / "spaceinvasion.db")
@@ -382,8 +383,7 @@ class TestGameDatabase(unittest.TestCase):
 
     def test_memory_uris_no_disk_ddl_close_on_error_and_corrupt_cells(self) -> None:
         import os
-        import sqlite3
-        from unittest.mock import patch
+        from sqlite3 import OperationalError as _SqliteOperationalError
 
         with tempfile.TemporaryDirectory(prefix="si_mem_") as tmp:
             tmp_root = Path(tmp)
@@ -395,7 +395,7 @@ class TestGameDatabase(unittest.TestCase):
                 for mem_uri in (":memory:", "file::memory:?cache=shared"):
                     db = GameDatabase(mem_uri)
                     try:
-                        self.assertTrue(db._is_memory)
+                        self.assertTrue(db._is_postgres)
                         db.record_raid(
                             "2:380:4",
                             attacked_ts=float("inf"),
@@ -447,63 +447,61 @@ class TestGameDatabase(unittest.TestCase):
             finally:
                 db_c.close()
 
-            # DDL error after connect closes _conn without leaking ResourceWarning
-            real_conn = sqlite3.connect(":memory:")
+            # DDL error after connect closes PG pool backend without leaking connections
+            from spaceinvasion.db.postgres import PostgresPoolBackend
+
             closed_flags: list[bool] = []
+            orig_close = PostgresPoolBackend.close
 
-            class _ProxyConn:
-                def __init__(self, conn: sqlite3.Connection) -> None:
-                    object.__setattr__(self, "_c", conn)
+            def _tracked_close(self_pg: PostgresPoolBackend) -> None:
+                closed_flags.append(True)
+                orig_close(self_pg)
 
-                def __getattr__(self, name: str):
-                    return getattr(object.__getattribute__(self, "_c"), name)
-
-                def __setattr__(self, name: str, value) -> None:
-                    setattr(object.__getattribute__(self, "_c"), name, value)
-
-                def executescript(self, _sql: str):
-                    raise sqlite3.OperationalError("boom")
-
-                def close(self) -> None:
-                    closed_flags.append(True)
-                    object.__getattribute__(self, "_c").close()
-
-            with patch("spaceinvasion.storage.sqlite3.connect", return_value=_ProxyConn(real_conn)):
-                with self.assertRaises(sqlite3.OperationalError):
-                    GameDatabase(tmp_root / "broken_ddl.db")
+            with patch.object(PostgresPoolBackend, "close", _tracked_close):
+                with patch(
+                    "spaceinvasion.db.storage.DEFAULT_GAME_MIGRATION_RUNNER.migrate",
+                    side_effect=_SqliteOperationalError("boom"),
+                ):
+                    with self.assertRaises(_SqliteOperationalError):
+                        GameDatabase(tmp_root / "broken_ddl.db")
             self.assertEqual(closed_flags, [True])
 
     def test_corrupt_numeric_cells_in_readers_and_spy_report_coord_normalization(self) -> None:
         with tempfile.TemporaryDirectory(prefix="si_stor_adv_") as tmp:
             db = GameDatabase(Path(tmp) / "adv.db")
             try:
-                # 1. Corrupt non-numeric cells in rank_snapshots, galaxy_scans, action_history, planet_snapshots
+                # 1. Corrupt non-finite / out-of-range numeric cells in rank_snapshots, galaxy_scans, action_history, planet_snapshots
                 db._conn.execute(
                     "INSERT INTO rank_snapshots(ts, universe_id, nickname, server_points, server_rank, "
                     "estimated_points, pts_per_hr, spice_value, planets) "
-                    "VALUES('bad_ts', 31, 'u', 'bad_pts', 'bad_rank', 'bad_est', 'bad_pph', 'bad_sp', 'bad_pl')"
+                    "VALUES(?, 31, 'u', NULL, NULL, ?, ?, ?, -1)",
+                    (float("nan"), float("nan"), float("inf"), float("-inf")),
                 )
                 db._conn.execute(
-                    "INSERT INTO galaxy_scans(galaxy, system, last_scanned_ts) VALUES('bad_g', 10, 100.0)"
+                    "INSERT INTO galaxy_scans(galaxy, system, last_scanned_ts) VALUES(0, 10, 100.0)"
                 )
                 db._conn.execute(
-                    "INSERT INTO galaxy_scans(galaxy, system, last_scanned_ts) VALUES(2, 380, 'bad_ts')"
+                    "INSERT INTO galaxy_scans(galaxy, system, last_scanned_ts) VALUES(2, 380, ?)",
+                    (float("nan"),),
                 )
                 db._conn.execute(
                     "INSERT INTO action_history(ts, source, command, kind, planet_id, target_id, executed, dry_run) "
-                    "VALUES('bad_ts', 'api', 'throttle', 'THROTTLE_BUILDING', 'bad_pid', 2, 1, 0)"
+                    "VALUES(?, 'api', 'throttle', 'THROTTLE_BUILDING', 0, 2, 1, 0)",
+                    (float("nan"),),
                 )
                 db._conn.execute(
                     "INSERT INTO action_history(ts, source, command, kind, planet_id, target_id, executed, dry_run) "
-                    "VALUES('bad_ts', 'api', 'throttle', 'THROTTLE_BUILDING', 101, 2, 1, 0)"
+                    "VALUES(?, 'api', 'throttle', 'THROTTLE_BUILDING', 101, 2, 1, 0)",
+                    (float("nan"),),
                 )
                 db._conn.execute(
                     "INSERT INTO planet_snapshots(ts, universe_id, planet_id, coords, name, planet_type, "
                     "temperature, fields_used, fields_max, pig_iron, metal, kryptonite, spice, "
                     "energy_produced, energy_used, buildings_json, ships_json, defense_json, "
                     "economy_rates_json, researches_json) "
-                    "VALUES('bad_ts', 31, 1, '01:001:01', 'P', 'normal', 20, 10, 200, 0, 0, 0, 0, 0, 0, "
-                    "'{}', '{}', '{}', '{}', '{}')"
+                    "VALUES(?, 31, 1, '01:001:01', 'P', 'normal', 20, 10, 200, 0, 0, 0, 0, 0, 0, "
+                    "'{}', '{}', '{}', '{}', '{}')",
+                    (float("nan"),),
                 )
                 db._conn.commit()
 
@@ -514,7 +512,7 @@ class TestGameDatabase(unittest.TestCase):
                 self.assertIsNone(rk[0]["server_rank"])
 
                 scans = db.get_galaxy_scans()
-                self.assertNotIn("bad_g", str(scans))
+                self.assertNotIn("00:010", scans)
                 self.assertEqual(scans.get("02:380"), 0.0)
 
                 throttles = db.get_last_throttle_timestamps()
@@ -581,18 +579,20 @@ class TestGameDatabase(unittest.TestCase):
                 self.assertEqual(merged["resources"]["pig_iron"], 9999)
                 self.assertEqual(merged["last_spied_ts"], 800.0)
 
-                # Caveat: pre-existing corrupt non-numeric snapshot timestamps/points do not crash record_state_snapshot
+                # Caveat: pre-existing non-finite snapshot timestamps/points do not crash record_state_snapshot
                 db._conn.execute(
                     "INSERT INTO rank_snapshots(ts, universe_id, estimated_points, pts_per_hr, spice_value, planets) "
-                    "VALUES('bad_ts', 31, 'bad_pts', 0.0, 0.0, 1)"
+                    "VALUES(?, 31, ?, 0.0, 0.0, 1)",
+                    (float("nan"), float("nan")),
                 )
                 db._conn.execute(
                     "INSERT INTO planet_snapshots(ts, universe_id, planet_id, coords, name, planet_type, "
                     "temperature, fields_used, fields_max, pig_iron, metal, kryptonite, spice, "
                     "energy_produced, energy_used, buildings_json, ships_json, defense_json, "
                     "economy_rates_json, researches_json) "
-                    "VALUES('bad_ts', 31, 12476, '02:380:12', 'Colony', 'normal', 31, 55, 230, 0, 0, 0, 0, 0, 0, "
-                    "'{}', '{}', '{}', '{}', '{}')"
+                    "VALUES(?, 31, 12476, '02:380:12', 'Colony', 'normal', 31, 55, 230, 0, 0, 0, 0, 0, 0, "
+                    "'{}', '{}', '{}', '{}', '{}')",
+                    (float("nan"),),
                 )
                 db._conn.commit()
                 db.record_state_snapshot(_sample_db_state(ts=2000.0))
@@ -729,16 +729,17 @@ class TestGameDatabase(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             db = GameDatabase(Path(tmp) / "r10.db")
             try:
-                blob_url = f"https://x/?sid={s1}".encode("utf-8")
+                sid_url = f"https://x/?sid={s1}"
                 fleet_json = json.dumps({"sid": s2, "password": pw, "s4": 3}, allow_nan=False)
-                huge_num_s = "1" + ("0" * 5000)
+                huge_num = 10**12
                 db._conn.execute(
                     "INSERT INTO planet_snapshots(ts, universe_id, planet_id, coords, name, planet_type, temperature, fields_used, fields_max, pig_iron, metal, kryptonite, spice, energy_produced, energy_used, buildings_json, ships_json, defense_json, economy_rates_json, researches_json) "
-                    "VALUES('nan', 31, 42, ?, ?, 'normal', 20, 10, 200, ?, 1, 1, 1, 50, 10, ?, ?, '{}', ?, '{}')",
+                    "VALUES(?, 31, 42, ?, ?, 'normal', 20, 10, 200, ?, 1, 1, 1, 50, 10, ?, ?, '{}', ?, '{}')",
                     (
-                        b"01:001:01",
-                        blob_url,
-                        huge_num_s,
+                        float("nan"),
+                        "01:001:01",
+                        sid_url,
+                        huge_num,
                         fleet_json,
                         '{"b1": 100}',
                         json.dumps({"sid": s2, "resource1": 100}, allow_nan=False),
@@ -746,13 +747,13 @@ class TestGameDatabase(unittest.TestCase):
                 )
                 db._conn.execute(
                     "INSERT INTO spy_targets(coords, owner, planet_name, status_color, points, pig_iron, fleet_json, defense_json, last_scanned_ts) "
-                    "VALUES(?, ?, ?, 'yellow', ?, 'nan', ?, ?, 1000.0)",
-                    (b"02:380:04", blob_url, blob_url, huge_num_s, fleet_json, fleet_json),
+                    "VALUES(?, ?, ?, 'yellow', ?, 0, ?, ?, 1000.0)",
+                    ("02:380:04", sid_url, sid_url, huge_num, fleet_json, fleet_json),
                 )
                 db._conn.execute(
                     "INSERT INTO rank_snapshots(ts, server_points, server_rank, estimated_points, pts_per_hr, spice_value, planets) "
-                    "VALUES(1000.0, ?, 10, 'nan', 1.0, 2.0, ?)",
-                    (huge_num_s, huge_num_s),
+                    "VALUES(1000.0, ?, 10, ?, 1.0, 2.0, ?)",
+                    (huge_num, float("nan"), 12),
                 )
                 db._conn.execute(
                     "INSERT INTO economy_rates_cache(planet_id, coords, rates_json, updated_ts) VALUES(?, '01:001:01', ?, 1000.0)",
@@ -760,14 +761,14 @@ class TestGameDatabase(unittest.TestCase):
                 )
                 db._conn.execute(
                     "INSERT INTO raid_history(target_coords, attacked_ts, is_exempt, outcome, loot_json) VALUES(?, 1000.0, 0, ?, ?)",
-                    (b"02:380:04", blob_url, fleet_json),
+                    ("02:380:04", sid_url, fleet_json),
                 )
                 db._conn.commit()
 
                 rs = db.get_rank_samples()
                 er = db.get_all_economy_rates()
                 st_list = db.get_spy_targets()
-                st_one = db.get_spy_target_by_coords(b"2:380:4")  # type: ignore[arg-type]
+                st_one = db.get_spy_target_by_coords("2:380:4")
                 bash = db.load_bash_tracker(now=1000.0)
                 full_sum = db.get_raid_stats()["telemetry_summary"]
                 tot_sum = db.summary()
@@ -1679,7 +1680,6 @@ class TestGameDatabase(unittest.TestCase):
 
     def test_hot_read_caches_telemetry_toggle_blocked_expiry_and_cte_snapshot_parity(self) -> None:
         import time
-        from unittest.mock import patch
         from spaceinvasion.combat.fleet import GalaxySlot
 
         db = GameDatabase(":memory:")

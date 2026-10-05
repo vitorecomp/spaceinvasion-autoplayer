@@ -3,21 +3,15 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-import contextlib
 from dataclasses import asdict, dataclass, field
 import json
 import math
 import os
 from pathlib import Path
 import re
-import shutil
-import sqlite3
-import tempfile
 import time
 from typing import Any, Optional
 from urllib.parse import quote
-
-DEFAULT_CONFIG_DB_PATH: Path = Path("state") / "spaceinvasion.db"
 
 VALID_PLANNER_MODES: tuple[str, ...] = ("priority", "ai_planner")
 
@@ -1130,130 +1124,10 @@ def strategy_config_from_dict(data: Any) -> StrategyConfig:
     )
 
 
-def _is_sqlite_config_path(path: Path) -> bool:
-    if path.suffix.lower() in {".db", ".sqlite", ".sqlite3"}:
-        return True
-    if not path.is_file():
-        return False
-    try:
-        with path.open("rb") as fh:
-            return fh.read(16) == b"SQLite format 3\x00"
-    except OSError:
-        return False
-
-
-def load_strategy_config_from_sqlite(db_path: Path = DEFAULT_CONFIG_DB_PATH) -> Optional[StrategyConfig]:
-    """Load persisted `StrategyConfig` from SQLite (`strategy_config_store` or `meta['strategy_config']`)."""
-    if not db_path.is_file():
-        return None
-    raw_json: Optional[str] = None
-    try:
-        with tempfile.TemporaryDirectory(prefix="si_cfg_ro_") as tmp_dir:
-            tmp_db = Path(tmp_dir) / db_path.name
-            shutil.copy2(db_path, tmp_db)
-            for suffix in ("-wal", "-shm", "-journal"):
-                sidecar = Path(f"{db_path}{suffix}")
-                if sidecar.is_file():
-                    with contextlib.suppress(OSError):
-                        shutil.copy2(sidecar, Path(f"{tmp_db}{suffix}"))
-            with contextlib.closing(sqlite3.connect(str(tmp_db), timeout=5.0)) as conn:
-                has_store = conn.execute(
-                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='strategy_config_store' LIMIT 1"
-                ).fetchone()
-                if has_store is not None:
-                    row = conn.execute(
-                        "SELECT config_json FROM strategy_config_store WHERE id = 1"
-                    ).fetchone()
-                    if row is not None and isinstance(row[0], str) and row[0].strip():
-                        raw_json = row[0]
-                if raw_json is None:
-                    has_meta = conn.execute(
-                        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='meta' LIMIT 1"
-                    ).fetchone()
-                    if has_meta is not None:
-                        mrow = conn.execute(
-                            "SELECT value FROM meta WHERE key = 'strategy_config'"
-                        ).fetchone()
-                        if mrow is not None and isinstance(mrow[0], str) and mrow[0].strip():
-                            raw_json = mrow[0]
-    except (OSError, sqlite3.Error):
-        return None
-    if not raw_json:
-        return None
-    try:
-        parsed = _sanitize_cfg_json_tree(json.loads(raw_json))
-    except (ValueError, TypeError):
-        return None
-    if not isinstance(parsed, Mapping):
-        return None
-    return strategy_config_from_dict(parsed)
-
-
 def _serialize_strategy_config_json(cfg: StrategyConfig, *, indent: Optional[int] = None) -> str:
     clean_cfg = strategy_config_from_dict(asdict(cfg))
     cfg_dict = _sanitize_cfg_json_tree(asdict(clean_cfg))
     return json.dumps(cfg_dict, indent=indent, sort_keys=True, allow_nan=False)
-
-
-def save_strategy_config_to_sqlite(
-    cfg: StrategyConfig,
-    db_path: Path = DEFAULT_CONFIG_DB_PATH,
-    *,
-    source: str = "sqlite",
-) -> Path:
-    """Persist `StrategyConfig` into SQLite (`strategy_config_store`, `meta`, and `config_history`)."""
-    cfg_json = _serialize_strategy_config_json(cfg)
-    now_ts = round(time.time(), 3)
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    with contextlib.closing(sqlite3.connect(str(db_path), timeout=10.0)) as conn:
-        conn.execute("PRAGMA journal_mode=WAL;")
-        conn.execute("PRAGMA synchronous=NORMAL;")
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS strategy_config_store (
-                id INTEGER PRIMARY KEY CHECK (id = 1),
-                config_json TEXT NOT NULL,
-                updated_ts REAL NOT NULL,
-                source TEXT NOT NULL DEFAULT 'sqlite'
-            )
-            """
-        )
-        conn.execute(
-            """
-            INSERT INTO strategy_config_store(id, config_json, updated_ts, source)
-            VALUES (1, ?, ?, ?)
-            ON CONFLICT(id) DO UPDATE SET
-                config_json = excluded.config_json,
-                updated_ts = excluded.updated_ts,
-                source = excluded.source
-            """,
-            (cfg_json, now_ts, str(source or "sqlite")[:32]),
-        )
-        has_meta = conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='meta' LIMIT 1"
-        ).fetchone()
-        if has_meta is not None:
-            conn.execute(
-                """
-                INSERT INTO meta(key, value, updated_ts) VALUES ('strategy_config', ?, ?)
-                ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_ts = excluded.updated_ts
-                """,
-                (cfg_json, now_ts),
-            )
-        has_hist = conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='config_history' LIMIT 1"
-        ).fetchone()
-        if has_hist is not None:
-            last_row = conn.execute(
-                "SELECT config_json FROM config_history ORDER BY id DESC LIMIT 1"
-            ).fetchone()
-            if last_row is None or last_row[0] != cfg_json:
-                conn.execute(
-                    "INSERT INTO config_history(ts, config_json) VALUES (?, ?)",
-                    (now_ts, cfg_json),
-                )
-        conn.commit()
-    return db_path
 
 
 def load_strategy_config_from_postgres(dsn: str) -> Optional[StrategyConfig]:
@@ -1347,57 +1221,35 @@ def save_strategy_config_to_postgres(
     return target_dsn
 
 
-def _resolve_default_config_target() -> tuple[str, str | Path]:
-    """Pure-stdlib resolver for default `StrategyConfig` storage (`postgres` in Docker, `sqlite` on host)."""
+def _resolve_default_config_target() -> tuple[str, str]:
+    """Pure-stdlib resolver for default `StrategyConfig` storage (`postgres` exclusively)."""
     env = os.environ
-    in_container = str(env.get("SPACEINVASION_CONTAINER") or "").strip().lower() in (
-        "1",
-        "true",
-        "yes",
-        "on",
-    )
     env_url = str(env.get("SPACEINVASION_DB_URL") or "").strip()
-    env_backend = str(env.get("SPACEINVASION_DB_BACKEND") or "").strip().lower()
-
-    def _pg_dsn() -> str:
-        if env_url.lower().startswith(("postgresql://", "postgres://")):
-            return env_url
-        host = str(env.get("SPACEINVASION_PG_HOST") or "127.0.0.1").strip() or "127.0.0.1"
-        try:
-            port = max(1, min(65535, int(str(env.get("SPACEINVASION_PG_PORT") or "5433").strip())))
-        except ValueError:
-            port = 5433
-        dbn = str(env.get("SPACEINVASION_PG_DB") or "spaceinvasion").strip() or "spaceinvasion"
-        usr = str(env.get("SPACEINVASION_PG_USER") or "spaceinvasion").strip() or "spaceinvasion"
-        pw = str(env.get("SPACEINVASION_PG_PASSWORD") or "spaceinvasion")
-        return f"postgresql://{quote(usr, safe='')}:{quote(pw, safe='')}@{host}:{port}/{quote(dbn, safe='')}"
-
-    if (
-        in_container
-        or env_backend in ("pg", "postgres", "postgresql")
-        or env_url.lower().startswith(("postgresql://", "postgres://"))
-    ):
-        return ("postgres", _pg_dsn())
-    return ("sqlite", DEFAULT_CONFIG_DB_PATH)
+    if env_url.lower().startswith(("postgresql://", "postgres://")):
+        return ("postgres", env_url)
+    host = str(env.get("SPACEINVASION_PG_HOST") or "127.0.0.1").strip() or "127.0.0.1"
+    try:
+        port = max(1, min(65535, int(str(env.get("SPACEINVASION_PG_PORT") or "5433").strip())))
+    except ValueError:
+        port = 5433
+    dbn = str(env.get("SPACEINVASION_PG_DB") or "spaceinvasion").strip() or "spaceinvasion"
+    usr = str(env.get("SPACEINVASION_PG_USER") or "spaceinvasion").strip() or "spaceinvasion"
+    pw = str(env.get("SPACEINVASION_PG_PASSWORD") or "spaceinvasion")
+    dsn = f"postgresql://{quote(usr, safe='')}:{quote(pw, safe='')}@{host}:{port}/{quote(dbn, safe='')}"
+    return ("postgres", dsn)
 
 
 def load_strategy_config(path: Optional[Path | str] = None) -> StrategyConfig:
-    """Load `StrategyConfig` from active database (`postgres` in Docker, `sqlite` on host), or explicit test path."""
+    """Load `StrategyConfig` from PostgreSQL, or an explicit JSON file path."""
     if path is None:
-        backend, target = _resolve_default_config_target()
-        if backend == "postgres":
-            from_pg = load_strategy_config_from_postgres(str(target))
-            return from_pg if from_pg is not None else StrategyConfig()
-        from_db = load_strategy_config_from_sqlite(Path(target))
-        return from_db if from_db is not None else StrategyConfig()
+        _backend, target = _resolve_default_config_target()
+        from_pg = load_strategy_config_from_postgres(str(target))
+        return from_pg if from_pg is not None else StrategyConfig()
     if isinstance(path, str) and path.strip().lower().startswith(("postgresql://", "postgres://")):
         from_pg = load_strategy_config_from_postgres(path)
         return from_pg if from_pg is not None else StrategyConfig()
     if isinstance(path, str):
         path = Path(path)
-    if _is_sqlite_config_path(path):
-        from_db = load_strategy_config_from_sqlite(path)
-        return from_db if from_db is not None else StrategyConfig()
     if not path.exists():
         return StrategyConfig()
     try:
@@ -1416,12 +1268,10 @@ def load_strategy_config(path: Optional[Path | str] = None) -> StrategyConfig:
 
 
 def save_strategy_config(cfg: StrategyConfig, path: Optional[Path | str] = None) -> Path | str:
-    """Persist `StrategyConfig` to active database (`postgres` in Docker, `sqlite` on host), or explicit JSON test path."""
+    """Persist `StrategyConfig` to PostgreSQL, or an explicit JSON file path."""
     if path is None:
-        backend, target = _resolve_default_config_target()
-        if backend == "postgres":
-            return save_strategy_config_to_postgres(cfg, str(target))
-        return save_strategy_config_to_sqlite(cfg, Path(target))
+        _backend, target = _resolve_default_config_target()
+        return save_strategy_config_to_postgres(cfg, str(target))
     if isinstance(path, str) and path.strip().lower().startswith(("postgresql://", "postgres://")):
         return save_strategy_config_to_postgres(cfg, path)
     if not isinstance(path, Path):
@@ -1429,8 +1279,6 @@ def save_strategy_config(cfg: StrategyConfig, path: Optional[Path | str] = None)
         if not ok_fsp:
             raise TypeError("Expected Path, str, or os.PathLike for config path.")
         path = Path(os.fsdecode(fsp_val))
-    if _is_sqlite_config_path(path):
-        return save_strategy_config_to_sqlite(cfg, path)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(_serialize_strategy_config_json(cfg, indent=2) + "\n", encoding="utf-8")
     return path

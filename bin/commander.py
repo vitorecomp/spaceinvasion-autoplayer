@@ -168,7 +168,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--config",
         type=Path,
         default=None,
-        help="Optional strategy config path (.db SQLite or .json; defaults to state/spaceinvasion.db).",
+        help="Optional strategy config JSON path (defaults to active PostgreSQL database).",
     )
     parser.add_argument(
         "--log-dir",
