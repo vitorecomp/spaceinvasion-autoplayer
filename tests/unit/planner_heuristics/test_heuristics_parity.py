@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+from collections.abc import Sequence
 from dataclasses import asdict
 import json
 from pathlib import Path
@@ -19,7 +20,7 @@ from spaceinvasion.core.state import (
     PlanetState,
     QueueJob,
     Resources,
-    TutorialState,
+    TutorialStatus,
     TutorialTask,
 )
 from spaceinvasion.planner import heuristics as new_heur
@@ -31,7 +32,7 @@ _HEUR_DIR = _REPO_ROOT / "spaceinvasion" / "planner" / "heuristics"
 _GOLDENS_DIR = _REPO_ROOT / "tests" / "goldens" / "reference" / "planner"
 
 
-def _norm_actions(actions: list[object]) -> list[dict[str, object]]:
+def _norm_actions(actions: Sequence[object]) -> list[dict[str, object]]:
     return [asdict(a) for a in actions]  # type: ignore[call-overload]
 
 
@@ -104,6 +105,10 @@ def test_plan_v4_e1_empire_smelting_arm_parity() -> None:
         planet_id=901,
         name="Needy",
         coords="02:380:04",
+        planet_type="normal",
+        temperature=20,
+        fields_used=50,
+        fields_max=300,
         resources=Resources(pig_iron=80_000, metal=0, kryptonite=50_000, spice=20_000),
         storage=Resources(2_000_000, 2_000_000, 2_000_000, 2_000_000),
         energy=EnergyBalance(produced=2000, used=500),
@@ -114,6 +119,10 @@ def test_plan_v4_e1_empire_smelting_arm_parity() -> None:
         planet_id=902,
         name="Helper",
         coords="02:380:08",
+        planet_type="normal",
+        temperature=20,
+        fields_used=50,
+        fields_max=300,
         resources=Resources(pig_iron=120_000, metal=10_000, kryptonite=50_000, spice=20_000),
         storage=Resources(2_000_000, 2_000_000, 2_000_000, 2_000_000),
         energy=EnergyBalance(produced=2000, used=500),
@@ -169,6 +178,10 @@ def test_plan_v4_e3_loans_and_e4_infra_transport_targets_parity() -> None:
         planet_id=101,
         name="C1",
         coords="02:380:04",
+        planet_type="normal",
+        temperature=20,
+        fields_used=50,
+        fields_max=300,
         resources=Resources(pig_iron=10_000, metal=10_000, kryptonite=10_000, spice=5_000),
         storage=Resources(2_000_000, 2_000_000, 2_000_000, 2_000_000),
         energy=EnergyBalance(produced=2000, used=1000),
@@ -179,6 +192,10 @@ def test_plan_v4_e3_loans_and_e4_infra_transport_targets_parity() -> None:
         planet_id=102,
         name="C2",
         coords="02:380:08",
+        planet_type="normal",
+        temperature=20,
+        fields_used=50,
+        fields_max=300,
         resources=Resources(pig_iron=100_000, metal=120_000, kryptonite=100_000, spice=50_000),
         storage=Resources(2_000_000, 2_000_000, 2_000_000, 2_000_000),
         energy=EnergyBalance(produced=2000, used=1000),
@@ -210,7 +227,7 @@ def test_plan_v4_e3_loans_and_e4_infra_transport_targets_parity() -> None:
 
     pending_new = [
         new_heur.PlannedAction(
-            "P2",
+            "P1",
             "WAIT_RESOURCES",
             101,
             "02:380:04",
@@ -222,7 +239,7 @@ def test_plan_v4_e3_loans_and_e4_infra_transport_targets_parity() -> None:
             missing=Resources(0, 80_000, 0, 0),
         ),
         new_heur.PlannedAction(
-            "P2",
+            "P1",
             "WAIT_RESOURCES",
             102,
             "02:380:08",
@@ -236,7 +253,7 @@ def test_plan_v4_e3_loans_and_e4_infra_transport_targets_parity() -> None:
     ]
     pending_old = [
         legacy_strategy.PlannedAction(
-            "P2",
+            "P1",
             "WAIT_RESOURCES",
             101,
             "02:380:04",
@@ -248,7 +265,7 @@ def test_plan_v4_e3_loans_and_e4_infra_transport_targets_parity() -> None:
             missing=Resources(0, 80_000, 0, 0),
         ),
         legacy_strategy.PlannedAction(
-            "P2",
+            "P1",
             "WAIT_RESOURCES",
             102,
             "02:380:08",
@@ -260,8 +277,30 @@ def test_plan_v4_e3_loans_and_e4_infra_transport_targets_parity() -> None:
             missing=Resources(0, 180_000, 0, 0),
         ),
     ]
-    got_tr = new_heur.plan_interplanet_transports(st, pending_new, cfg)
-    exp_tr = legacy_strategy.plan_interplanet_transports(st, pending_old, cfg)
+    needs: dict[int, dict[str, object]] = {
+        101: {
+            "pig_iron": 0,
+            "metal": 80_000,
+            "kryptonite": 0,
+            "spice": 0,
+            "label": "Development center L10",
+            "need_by_sec": 0.0,
+            "lead_sec": 600.0,
+            "storage_cap_ratio": 0.85,
+        },
+        102: {
+            "pig_iron": 0,
+            "metal": 180_000,
+            "kryptonite": 0,
+            "spice": 0,
+            "label": "Development center L11",
+            "need_by_sec": 0.0,
+            "lead_sec": 600.0,
+            "storage_cap_ratio": 0.85,
+        },
+    }
+    got_tr = new_heur.plan_interplanet_transports(st, cfg, pending_new, priority_resource_need=needs)
+    exp_tr = legacy_strategy.plan_interplanet_transports(st, cfg, pending_old, priority_resource_need=needs)
     assert _norm_actions(got_tr) == _norm_actions(exp_tr)
     assert any(new_heur.AI_PLAN_ORDER_LOAN_TAG in a.reason for a in got_tr)
 
@@ -271,6 +310,10 @@ def test_classic_tutorial_fusion_bucket4_invariant() -> None:
         planet_id=501,
         name="Home",
         coords="01:010:05",
+        planet_type="normal",
+        temperature=20,
+        fields_used=10,
+        fields_max=300,
         resources=Resources(50_000, 50_000, 50_000, 10_000),
         storage=Resources(500_000, 500_000, 500_000, 500_000),
         energy=EnergyBalance(produced=400, used=100),
@@ -280,7 +323,7 @@ def test_classic_tutorial_fusion_bucket4_invariant() -> None:
             BuildingOffer(5, "Fusion plant", 2, 3, Resources(100, 50, 0, 0), True, "Build", "href_b5"),
         ),
     )
-    tut = TutorialState(
+    tut = TutorialStatus(
         step=2,
         total_steps=11,
         can_complete=False,
@@ -288,19 +331,19 @@ def test_classic_tutorial_fusion_bucket4_invariant() -> None:
         tasks=(
             TutorialTask(
                 description="Fusion plant level 3",
-                completed=False,
-                category="building",
+                building_name="Fusion plant",
                 building_id=5,
                 current=2,
                 target=3,
+                category="building",
             ),
             TutorialTask(
                 description="Pig iron mine level 3",
-                completed=False,
-                category="building",
+                building_name="Pig iron mine",
                 building_id=1,
                 current=2,
                 target=3,
+                category="building",
             ),
         ),
     )
@@ -327,7 +370,12 @@ def test_seeded_differential_fuzz_plan_actions_parity() -> None:
                     f"B{k[1:]}",
                     lvl,
                     lvl + 1,
-                    Resources(rng.randint(100, 5000), rng.randint(50, 4000), rng.randint(0, 2000), rng.randint(0, 500)),
+                    Resources(
+                        rng.randint(100, 5000),
+                        rng.randint(50, 4000),
+                        rng.randint(0, 2000),
+                        rng.randint(0, 500),
+                    ),
                     rng.random() < 0.65,
                     "Build",
                     f"href_{k}" if rng.random() < 0.7 else None,
@@ -380,8 +428,8 @@ def test_seeded_differential_fuzz_plan_actions_parity() -> None:
             allow_shipyard=rng.random() < 0.5,
             allow_transport=rng.random() < 0.5,
             allow_galaxy_scan=rng.random() < 0.4,
-            allow_spying=rng.random() < 0.4,
-            allow_attacks=rng.random() < 0.4,
+            allow_raids=rng.random() < 0.4,
+            allow_colonize=rng.random() < 0.3,
             auto_throttle_blast_furnace=rng.random() < 0.6,
             merchant_mode=rng.random() < 0.3,
         )

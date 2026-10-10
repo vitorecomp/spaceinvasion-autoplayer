@@ -63,8 +63,7 @@ from spaceinvasion.planner.heuristics.tutorial import _plan_tutorial_fleet_miles
 
 def attach_action_etas(state: GameState, actions: Sequence[PlannedAction]) -> list[PlannedAction]:
     """Attach computed ETA fields to heuristic `PlannedAction` entries."""
-    out: list[PlannedAction] = _attach_etas_impl(state, list(actions))
-    return out
+    return [a for a in _attach_etas_impl(state, list(actions)) if isinstance(a, PlannedAction)]
 
 
 def _append_post_economy_phases(
