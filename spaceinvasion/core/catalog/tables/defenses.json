@@ -1,0 +1,440 @@
+{
+  "heavy-graviton-cannon": {
+    "slug": "heavy-graviton-cannon",
+    "name": "Heavy graviton cannon",
+    "url": "https://spaceinvasion.bitmeup.com/wiki/en/defense/heavy-graviton-cannon",
+    "base_cost": {
+      "pig_iron": 0,
+      "metal": 5000,
+      "kryptonite": 2000,
+      "spice": 0
+    },
+    "requirements": [
+      {
+        "category": "buildings",
+        "slug": "weapons-factory",
+        "name": "Weapons factory",
+        "level": 5
+      },
+      {
+        "category": "research",
+        "slug": "targeting-systems",
+        "name": "Targeting systems",
+        "level": 5
+      },
+      {
+        "category": "research",
+        "slug": "graviton-technology",
+        "name": "Graviton technology",
+        "level": 6
+      }
+    ],
+    "required_for": [],
+    "base_build_time_s": 2633.333,
+    "build_time_factors": {
+      "formula": "b9 b9msb uni",
+      "control": "uni"
+    },
+    "stats": {
+      "hull": 7000,
+      "shield": 60,
+      "attack": 115
+    }
+  },
+  "interval-cannon": {
+    "slug": "interval-cannon",
+    "name": "Interval cannon",
+    "url": "https://spaceinvasion.bitmeup.com/wiki/en/defense/interval-cannon",
+    "base_cost": {
+      "pig_iron": 0,
+      "metal": 15000,
+      "kryptonite": 15000,
+      "spice": 1500
+    },
+    "requirements": [
+      {
+        "category": "buildings",
+        "slug": "weapons-factory",
+        "name": "Weapons factory",
+        "level": 7
+      },
+      {
+        "category": "research",
+        "slug": "particle-analyzer",
+        "name": "Particle analyzer",
+        "level": 4
+      },
+      {
+        "category": "research",
+        "slug": "targeting-systems",
+        "name": "Targeting systems",
+        "level": 10
+      }
+    ],
+    "required_for": [],
+    "base_build_time_s": 8500.0,
+    "build_time_factors": {
+      "formula": "b9 b9msb uni",
+      "control": "uni"
+    },
+    "stats": {
+      "hull": 30000,
+      "shield": 100,
+      "attack": 900
+    }
+  },
+  "ion-cannon": {
+    "slug": "ion-cannon",
+    "name": "Ion cannon",
+    "url": "https://spaceinvasion.bitmeup.com/wiki/en/defense/ion-cannon",
+    "base_cost": {
+      "pig_iron": 0,
+      "metal": 2000,
+      "kryptonite": 8000,
+      "spice": 0
+    },
+    "requirements": [
+      {
+        "category": "buildings",
+        "slug": "weapons-factory",
+        "name": "Weapons factory",
+        "level": 5
+      },
+      {
+        "category": "research",
+        "slug": "targeting-systems",
+        "name": "Targeting systems",
+        "level": 4
+      }
+    ],
+    "required_for": [],
+    "base_build_time_s": 1533.333,
+    "build_time_factors": {
+      "formula": "b9 b9msb uni",
+      "control": "uni"
+    },
+    "stats": {
+      "hull": 10000,
+      "shield": 125,
+      "attack": 125
+    }
+  },
+  "large-shield-dome": {
+    "slug": "large-shield-dome",
+    "name": "Large shield dome",
+    "url": "https://spaceinvasion.bitmeup.com/wiki/en/defense/large-shield-dome",
+    "base_cost": {
+      "pig_iron": 0,
+      "metal": 25000,
+      "kryptonite": 15000,
+      "spice": 8000
+    },
+    "requirements": [
+      {
+        "category": "buildings",
+        "slug": "weapons-factory",
+        "name": "Weapons factory",
+        "level": 6
+      },
+      {
+        "category": "research",
+        "slug": "energy-technology",
+        "name": "Energy technology",
+        "level": 8
+      },
+      {
+        "category": "research",
+        "slug": "shield-technology",
+        "name": "Shield technology",
+        "level": 4
+      }
+    ],
+    "required_for": [],
+    "base_build_time_s": 13500.0,
+    "build_time_factors": {
+      "formula": "b9 b9msb uni",
+      "control": "uni"
+    },
+    "stats": {
+      "hull": 40000,
+      "shield": 30000,
+      "attack": 0
+    }
+  },
+  "laser-cannon-battery": {
+    "slug": "laser-cannon-battery",
+    "name": "Laser cannon battery",
+    "url": "https://spaceinvasion.bitmeup.com/wiki/en/defense/laser-cannon-battery",
+    "base_cost": {
+      "pig_iron": 0,
+      "metal": 20000,
+      "kryptonite": 20000,
+      "spice": 500
+    },
+    "requirements": [
+      {
+        "category": "buildings",
+        "slug": "weapons-factory",
+        "name": "Weapons factory",
+        "level": 8
+      },
+      {
+        "category": "research",
+        "slug": "targeting-systems",
+        "name": "Targeting systems",
+        "level": 10
+      },
+      {
+        "category": "research",
+        "slug": "energy-technology",
+        "name": "Energy technology",
+        "level": 8
+      }
+    ],
+    "required_for": [],
+    "base_build_time_s": 11333.333,
+    "build_time_factors": {
+      "formula": "b9 b9msb uni",
+      "control": "uni"
+    },
+    "stats": {
+      "hull": 40000,
+      "shield": 400,
+      "attack": 1000
+    }
+  },
+  "light-graviton-cannon": {
+    "slug": "light-graviton-cannon",
+    "name": "Light graviton cannon",
+    "url": "https://spaceinvasion.bitmeup.com/wiki/en/defense/light-graviton-cannon",
+    "base_cost": {
+      "pig_iron": 0,
+      "metal": 2000,
+      "kryptonite": 1000,
+      "spice": 0
+    },
+    "requirements": [
+      {
+        "category": "buildings",
+        "slug": "weapons-factory",
+        "name": "Weapons factory",
+        "level": 3
+      },
+      {
+        "category": "research",
+        "slug": "energy-technology",
+        "name": "Energy technology",
+        "level": 3
+      },
+      {
+        "category": "research",
+        "slug": "graviton-technology",
+        "name": "Graviton technology",
+        "level": 2
+      }
+    ],
+    "required_for": [],
+    "base_build_time_s": 1066.667,
+    "build_time_factors": {
+      "formula": "b9 b9msb uni",
+      "control": "uni"
+    },
+    "stats": {
+      "hull": 3000,
+      "shield": 25,
+      "attack": 50
+    }
+  },
+  "mortar": {
+    "slug": "mortar",
+    "name": "Mortar",
+    "url": "https://spaceinvasion.bitmeup.com/wiki/en/defense/mortar",
+    "base_cost": {
+      "pig_iron": 0,
+      "metal": 2000,
+      "kryptonite": 0,
+      "spice": 0
+    },
+    "requirements": [
+      {
+        "category": "buildings",
+        "slug": "weapons-factory",
+        "name": "Weapons factory",
+        "level": 1
+      }
+    ],
+    "required_for": [],
+    "base_build_time_s": 1000.0,
+    "build_time_factors": {
+      "formula": "b9 b9msb uni",
+      "control": "uni"
+    },
+    "stats": {
+      "hull": 2000,
+      "shield": 15,
+      "attack": 35
+    }
+  },
+  "positron-lighter": {
+    "slug": "positron-lighter",
+    "name": "Positron lighter",
+    "url": "https://spaceinvasion.bitmeup.com/wiki/en/defense/positron-lighter",
+    "base_cost": {
+      "pig_iron": 0,
+      "metal": 10000,
+      "kryptonite": 30000,
+      "spice": 100
+    },
+    "requirements": [
+      {
+        "category": "buildings",
+        "slug": "weapons-factory",
+        "name": "Weapons factory",
+        "level": 6
+      },
+      {
+        "category": "research",
+        "slug": "targeting-systems",
+        "name": "Targeting systems",
+        "level": 8
+      },
+      {
+        "category": "research",
+        "slug": "defense-systems",
+        "name": "Defense systems",
+        "level": 6
+      }
+    ],
+    "required_for": [],
+    "base_build_time_s": 7000.0,
+    "build_time_factors": {
+      "formula": "b9 b9msb uni",
+      "control": "uni"
+    },
+    "stats": {
+      "hull": 40000,
+      "shield": 200,
+      "attack": 700
+    }
+  },
+  "small-shield-dome": {
+    "slug": "small-shield-dome",
+    "name": "Small shield dome",
+    "url": "https://spaceinvasion.bitmeup.com/wiki/en/defense/small-shield-dome",
+    "base_cost": {
+      "pig_iron": 0,
+      "metal": 8000,
+      "kryptonite": 5000,
+      "spice": 3000
+    },
+    "requirements": [
+      {
+        "category": "buildings",
+        "slug": "weapons-factory",
+        "name": "Weapons factory",
+        "level": 4
+      },
+      {
+        "category": "research",
+        "slug": "energy-technology",
+        "name": "Energy technology",
+        "level": 4
+      },
+      {
+        "category": "research",
+        "slug": "shield-technology",
+        "name": "Shield technology",
+        "level": 2
+      }
+    ],
+    "required_for": [],
+    "base_build_time_s": 4333.333,
+    "build_time_factors": {
+      "formula": "b9 b9msb uni",
+      "control": "uni"
+    },
+    "stats": {
+      "hull": 13000,
+      "shield": 3000,
+      "attack": 0
+    }
+  },
+  "solar-cannon": {
+    "slug": "solar-cannon",
+    "name": "Solar cannon",
+    "url": "https://spaceinvasion.bitmeup.com/wiki/en/defense/solar-cannon",
+    "base_cost": {
+      "pig_iron": 0,
+      "metal": 40000,
+      "kryptonite": 80000,
+      "spice": 8000
+    },
+    "requirements": [
+      {
+        "category": "buildings",
+        "slug": "weapons-factory",
+        "name": "Weapons factory",
+        "level": 10
+      },
+      {
+        "category": "research",
+        "slug": "targeting-systems",
+        "name": "Targeting systems",
+        "level": 10
+      },
+      {
+        "category": "research",
+        "slug": "energy-technology",
+        "name": "Energy technology",
+        "level": 10
+      }
+    ],
+    "required_for": [],
+    "base_build_time_s": 25333.333,
+    "build_time_factors": {
+      "formula": "b9 b9msb uni",
+      "control": "uni"
+    },
+    "stats": {
+      "hull": 120000,
+      "shield": 1000,
+      "attack": 2000
+    }
+  },
+  "turboflak": {
+    "slug": "turboflak",
+    "name": "Turboflak",
+    "url": "https://spaceinvasion.bitmeup.com/wiki/en/defense/turboflak",
+    "base_cost": {
+      "pig_iron": 0,
+      "metal": 10000,
+      "kryptonite": 2000,
+      "spice": 0
+    },
+    "requirements": [
+      {
+        "category": "buildings",
+        "slug": "weapons-factory",
+        "name": "Weapons factory",
+        "level": 6
+      },
+      {
+        "category": "research",
+        "slug": "energy-technology",
+        "name": "Energy technology",
+        "level": 6
+      }
+    ],
+    "required_for": [],
+    "base_build_time_s": 5133.333,
+    "build_time_factors": {
+      "formula": "b9 b9msb uni",
+      "control": "uni"
+    },
+    "stats": {
+      "hull": 12000,
+      "shield": 80,
+      "attack": 220
+    }
+  }
+}
