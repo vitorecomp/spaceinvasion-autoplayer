@@ -334,6 +334,59 @@ def test_wave_b_galaxy_batch_scan_changed_history_and_g1_g14_coverage(
         assert c_intel.count <= 4
 
 
+def test_wave_b_galaxy_full_sync_is_strictly_constant_for_1_vs_15_slots(
+    pg_harness: DisposablePostgresServer,
+) -> None:
+    """Full-sync `record_system_scan` executes the exact same SQL count for 1 slot vs 15 slots (O(1))."""
+    dsn = pg_harness.create_database(prefix="wave_b_o1_scan", from_template=True)
+    ts = 1700031000.0
+
+    def _occ(gal: int, sys_n: int, n: int) -> list[GalaxySlotInput]:
+        return [
+            GalaxySlotInput(f"{gal:02d}:{sys_n:03d}:{p:02d}", p, f"P{p}", f"O{p}", "yellow") for p in range(1, n + 1)
+        ]
+
+    def _mix(gal: int, sys_n: int, n_occ: int, n_probed: int, n_free: int) -> list[GalaxySlotInput]:
+        occ = [
+            GalaxySlotInput(
+                f"{gal:02d}:{sys_n:03d}:{p:02d}",
+                p,
+                f"M{p}",
+                f"MO{p}",
+                "yellow",
+                has_debris=(p == 1),
+                debris_pig_iron=500 if p == 1 else 0,
+            )
+            for p in range(1, n_occ + 1)
+        ]
+        prb = [
+            GalaxySlotInput(f"{gal:02d}:{sys_n:03d}:{p:02d}", p, status_color="free", colonize_max_fields=330)
+            for p in range(n_occ + 1, n_occ + n_probed + 1)
+        ]
+        fre = [
+            GalaxySlotInput(f"{gal:02d}:{sys_n:03d}:{p:02d}", p, status_color="free")
+            for p in range(n_occ + n_probed + 1, n_occ + n_probed + n_free + 1)
+        ]
+        return occ + prb + fre
+
+    with DatabaseEngine.from_dsn(dsn, pool_size=2, max_overflow=0) as db:
+        with db_uow(db) as session:
+            SnapshotsRepository(session).sync_empire_planets_hot(
+                [PlanetSnapshotInput(planet_id=901, coords="01:001:01", name="Home")], universe_id=1, ts=ts
+            )
+
+        def _count_scan(gal: int, sys_n: int, slots: list[GalaxySlotInput]) -> int:
+            with count_statements(db) as cnt:
+                with db_uow(db) as session:
+                    GalaxyRepository(session).record_system_scan(
+                        gal, sys_n, slots, sync_spy_targets=True, refresh_hot=True, ts=ts
+                    )
+            return cnt.count
+
+        assert _count_scan(4, 100, _occ(4, 100, 1)) == _count_scan(4, 101, _occ(4, 101, 15))
+        assert _count_scan(5, 200, _mix(5, 200, 1, 1, 1)) == _count_scan(5, 201, _mix(5, 201, 5, 5, 5))
+
+
 def test_all_40_tables_covered_and_wave_b_standards() -> None:
     """All 40 ORM tables are covered across Wave A + Wave B + schema ledger, and all modules obey Section 4."""
     covered = set(WAVE_A_TABLES) | set(WAVE_B_TABLES) | {"schema_migrations", "schema_migration_events"}

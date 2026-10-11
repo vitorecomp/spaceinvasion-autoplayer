@@ -14,6 +14,14 @@ from spaceinvasion.db.dto.combat import (
     RecycleReportRecord,
     TargetRaidStats,
 )
+from spaceinvasion.db.dto.dashboard import (
+    ConfigOptimizerGoalsRecord,
+    DashboardTimeSeriesRecord,
+    DbSummaryRecord,
+    DbVerifyRecord,
+    PlanetBuildingGoalsRecord,
+    TableTiersSummary,
+)
 from spaceinvasion.db.dto.ops import (
     AiPlannerActiveRecord,
     AiPlannerRunRecord,
@@ -71,7 +79,11 @@ __all__ = [
     "ColonyCandidateRecord",
     "ConfigHistoryRecord",
     "ConfigOptimizerActiveRecord",
+    "ConfigOptimizerGoalsRecord",
     "ConfigOptimizerRunRecord",
+    "DashboardTimeSeriesRecord",
+    "DbSummaryRecord",
+    "DbVerifyRecord",
     "EconomyRatesRecord",
     "EmpirePlanetHotRecord",
     "FieldConflictEventRecord",
@@ -93,6 +105,7 @@ __all__ = [
     "ManualQueueRecord",
     "MetaRecord",
     "NotificationRecord",
+    "PlanetBuildingGoalsRecord",
     "PlanetSnapshotRecord",
     "RaidHistoryRecord",
     "RaidStatsSummary",
@@ -105,6 +118,7 @@ __all__ = [
     "SpyTargetRecord",
     "StateSnapshotRecord",
     "StrategyConfigRecord",
+    "TableTiersSummary",
     "TargetRaidStats",
     "TutorialProgressRecord",
     "UniverseResearchMaxRecord",
