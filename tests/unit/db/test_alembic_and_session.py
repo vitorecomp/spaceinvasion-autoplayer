@@ -13,6 +13,7 @@ from sqlalchemy.exc import OperationalError
 
 from spaceinvasion.db.alembic_migrations import (
     BASELINE_REVISION,
+    NO_BACKUP,
     SchemaDriftError,
     build_alembic_config,
     compute_revision_checksum,
@@ -78,6 +79,12 @@ def test_fresh_upgrade_matches_si_template_and_records_audit_and_backup(
 
     with DatabaseEngine.from_dsn(fresh_dsn, pool_size=2, max_overflow=0) as db:
         assert get_current_revision(db) is None
+        # Omitting backup_fn or passing None is rejected so live upgrades cannot skip backup.
+        with pytest.raises(TypeError):
+            upgrade_database(db, "head")  # type: ignore[call-arg]
+        with pytest.raises(TypeError, match="NO_BACKUP"):
+            upgrade_database(db, "head", backup_fn=None)  # type: ignore[arg-type]
+
         result = upgrade_database(db, "head", backup_fn=_fake_backup)
 
         assert result.previous_revision is None
@@ -108,18 +115,21 @@ def test_fresh_upgrade_matches_si_template_and_records_audit_and_backup(
         assert verify_models_match_migrations(db) == []
         assert verify_schema_against_models(fresh_dsn) == []
 
-        # Audit row appended in schema_migration_events.
+        # Audit row appended in schema_migration_events (legacy int columns stay 0/None on fresh DB).
         with db_uow(db) as session:
             events = list(session.execute(select(SchemaMigrationEvent)).scalars().all())
             assert len(events) == 1
             ev = events[0]
             assert ev.event_type == "APPLY"
-            assert ev.version == 1
-            assert ev.to_version == 1
+            assert ev.from_version == 0
+            assert ev.to_version == 0
+            assert ev.version is None
+            assert ev.name == "0001_baseline_schema"
             assert ev.checksum == applied.checksum
             assert ev.backup_path == "/tmp/fake_pre_upgrade_0001.dump"
             details = json.loads(ev.details_json)
             assert details["revision"] == BASELINE_REVISION
+            assert details["legacy_schema_version"] == 0
             assert details["engine"] == "alembic"
             assert details["elapsed_ms"] >= 0.0
 
@@ -128,11 +138,11 @@ def test_fresh_upgrade_matches_si_template_and_records_audit_and_backup(
         assert second.applied_revisions == ()
         assert backup_calls == ["/tmp/fake_pre_upgrade_0001.dump"]
 
-        # Verify downgrade('base') + re-upgrade round-trip works cleanly.
+        # Verify downgrade('base') + explicit NO_BACKUP re-upgrade round-trip works cleanly.
         with db.engine.begin() as conn:
             command.downgrade(build_alembic_config(connection=conn), "base")
         assert get_current_revision(db) is None
-        re_upgraded = upgrade_database(db, "head")
+        re_upgraded = upgrade_database(db, "head", backup_fn=NO_BACKUP)
         assert re_upgraded.current_revision == BASELINE_REVISION
         assert verify_models_match_migrations(db) == []
 
@@ -190,9 +200,17 @@ def test_stamp_baseline_on_migrated_db_zero_table_ddl_and_preserves_rows(
                 .all()
             )
             assert len(stamp_events) == 1
-            assert stamp_events[0].checksum == compute_revision_checksum(BASELINE_REVISION)
-            details = json.loads(stamp_events[0].details_json)
+            stamp_ev = stamp_events[0]
+            # Integer columns stay in the legacy V001..V014 scheme (14->14, version=None),
+            # while Alembic revision IDs live in `name` and `details_json`.
+            assert stamp_ev.from_version == 14
+            assert stamp_ev.to_version == 14
+            assert stamp_ev.version is None
+            assert stamp_ev.name == "0001_baseline_schema"
+            assert stamp_ev.checksum == compute_revision_checksum(BASELINE_REVISION)
+            details = json.loads(stamp_ev.details_json)
             assert details["revision"] == BASELINE_REVISION
+            assert details["legacy_schema_version"] == 14
             assert details["elapsed_ms"] >= 0.0
 
         # Mutate schema intentionally -> verify_models_match_migrations & stamp detect drift.

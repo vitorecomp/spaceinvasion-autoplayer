@@ -15,7 +15,12 @@ from alembic.runtime.migration import MigrationContext
 from alembic.script import ScriptDirectory
 from sqlalchemy import Connection, Engine, insert, inspect, text
 
-from spaceinvasion.db.alembic_migrations.backup import BackupCallback, make_pg_dump_backup_fn
+from spaceinvasion.db.alembic_migrations.backup import (
+    NO_BACKUP,
+    BackupCallback,
+    BackupOption,
+    make_pg_dump_backup_fn,
+)
 from spaceinvasion.db.models import Base, SchemaMigrationEvent
 from spaceinvasion.db.session import DatabaseEngine, create_db_engine, normalize_sqlalchemy_dsn
 
@@ -69,11 +74,13 @@ def _include_object(
     return not (type_ == "table" and name in IGNORED_METADATA_TABLES)
 
 
-def _revision_int(revision: str | None) -> int | None:
-    if revision is None:
-        return None
-    stripped = revision.strip()
-    return int(stripped) if stripped.isdigit() else None
+def _read_legacy_schema_version(conn: Connection) -> int:
+    """Return `MAX(schema_migrations.version)` in the legacy V001..V014 integer scheme, or `0`."""
+    tables = set(inspect(conn).get_table_names(schema="public"))
+    if "schema_migrations" not in tables:
+        return 0
+    row: object = conn.execute(text("SELECT MAX(version) FROM schema_migrations")).scalar_one_or_none()
+    return row if isinstance(row, int) else 0
 
 
 def _script_name(revision_id: str, path: str) -> str:
@@ -159,6 +166,7 @@ def _append_migration_event(
     conn: Connection,
     *,
     event_type: str,
+    legacy_version: int,
     from_rev: str | None,
     to_rev: str,
     name: str,
@@ -173,6 +181,7 @@ def _append_migration_event(
             "revision": to_rev,
             "previous_revision": from_rev,
             "down_revision": down_revision,
+            "legacy_schema_version": legacy_version,
             "elapsed_ms": round(elapsed_ms, 3),
         },
         sort_keys=True,
@@ -181,9 +190,9 @@ def _append_migration_event(
     stmt = insert(SchemaMigrationEvent).values(
         ts=round(time.time(), 3),
         event_type=event_type,
-        from_version=_revision_int(from_rev) or 0,
-        to_version=_revision_int(to_rev) or 0,
-        version=_revision_int(to_rev),
+        from_version=legacy_version,
+        to_version=legacy_version,
+        version=None,
         name=name[:128],
         checksum=checksum[:128],
         backup_path=backup_path[:512],
@@ -220,9 +229,12 @@ def upgrade_database(
     engine: Engine | DatabaseEngine,
     revision: str = "head",
     *,
-    backup_fn: BackupCallback | None = None,
+    backup_fn: BackupOption,
 ) -> MigrationResult:
-    """Upgrade PostgreSQL to `revision`, invoking `backup_fn` and auditing every applied step."""
+    """Upgrade PostgreSQL to `revision`, requiring `backup_fn` (or explicit `NO_BACKUP`)."""
+    if backup_fn is not NO_BACKUP and not callable(backup_fn):
+        raise TypeError("upgrade_database requires a callable `backup_fn` or explicit `NO_BACKUP` opt-out")
+
     sa_engine = _unwrap_engine(engine)
     previous_rev = get_current_revision(sa_engine)
     script_dir = ScriptDirectory.from_config(build_alembic_config())
@@ -236,7 +248,7 @@ def upgrade_database(
         )
 
     backup_path = ""
-    if backup_fn is not None:
+    if callable(backup_fn):
         raw_backup = backup_fn()
         backup_path = str(raw_backup) if raw_backup is not None else ""
 
@@ -249,9 +261,11 @@ def upgrade_database(
             cfg = build_alembic_config(connection=conn)
             command.upgrade(cfg, rev_id)
             elapsed_ms = round((time.perf_counter() - t0) * 1000.0, 3)
+            legacy_ver = _read_legacy_schema_version(conn)
             _append_migration_event(
                 conn,
                 event_type="APPLY",
+                legacy_version=legacy_ver,
                 from_rev=cur_rev,
                 to_rev=rev_id,
                 name=rev_name,
@@ -292,11 +306,7 @@ def stamp_baseline_database(
         existing_tables = set(inspect(conn).get_table_names(schema="public"))
         if "schema_migration_events" not in existing_tables:
             raise RuntimeError("Cannot stamp an uninitialized database missing `schema_migration_events`")
-        legacy_ver_row: object = (
-            conn.execute(text("SELECT MAX(version) FROM schema_migrations")).scalar_one_or_none()
-            if "schema_migrations" in existing_tables
-            else None
-        )
+        legacy_ver = _read_legacy_schema_version(conn)
 
     if verify_schema:
         diffs = verify_models_match_migrations(sa_engine)
@@ -318,11 +328,11 @@ def stamp_baseline_database(
         cfg = build_alembic_config(connection=conn)
         command.stamp(cfg, rev_obj.revision)
         elapsed_ms = round((time.perf_counter() - t0) * 1000.0, 3)
-        from_marker = previous_rev or (str(legacy_ver_row) if isinstance(legacy_ver_row, int) else None)
         _append_migration_event(
             conn,
             event_type="STAMP_BASELINE",
-            from_rev=from_marker,
+            legacy_version=legacy_ver,
+            from_rev=previous_rev,
             to_rev=rev_obj.revision,
             name=rev_name,
             checksum=checksum,
@@ -351,8 +361,10 @@ __all__ = [
     "ALEMBIC_SCRIPT_LOCATION",
     "BASELINE_REVISION",
     "IGNORED_METADATA_TABLES",
+    "NO_BACKUP",
     "AppliedRevision",
     "BackupCallback",
+    "BackupOption",
     "MigrationResult",
     "SchemaDriftError",
     "build_alembic_config",

@@ -15,6 +15,17 @@ from spaceinvasion.db.session import normalize_sqlalchemy_dsn
 BackupCallback = Callable[[], str | Path | None]
 
 
+class _NoBackupSentinel:
+    """Explicit opt-out sentinel for tests upgrading disposable databases without pg_dump."""
+
+    def __repr__(self) -> str:
+        return "NO_BACKUP"
+
+
+NO_BACKUP: _NoBackupSentinel = _NoBackupSentinel()
+BackupOption = BackupCallback | _NoBackupSentinel
+
+
 def _query_str(value: str | tuple[str, ...] | None) -> str | None:
     if isinstance(value, str) and value:
         return value
@@ -69,4 +80,4 @@ def make_pg_dump_backup_fn(
     return _run_pg_dump
 
 
-__all__ = ["BackupCallback", "make_pg_dump_backup_fn"]
+__all__ = ["NO_BACKUP", "BackupCallback", "BackupOption", "make_pg_dump_backup_fn"]
