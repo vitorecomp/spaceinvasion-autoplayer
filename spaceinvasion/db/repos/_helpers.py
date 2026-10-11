@@ -192,20 +192,120 @@ def to_int(raw: object, default: int = 0) -> int:
     return default
 
 
+RESOURCE_KEYS: tuple[str, ...] = ("pig_iron", "metal", "kryptonite", "spice")
+_LOSS_TOKENS: tuple[str, ...] = (
+    "loss",
+    "lost",
+    "defeat",
+    "fail",
+    "abort",
+    "draw",
+    "destroy",
+    "repel",
+    "blocked",
+    "error",
+    "timeout",
+    "intercept",
+)
+_WIN_TOKENS: tuple[str, ...] = (
+    "win",
+    "won",
+    "vict",
+    "succ",
+    "loot",
+    "plunder",
+    "captur",
+    "ok",
+    "dispatch",
+)
+
+
+def spice_equivalent_from_counts(pig_iron: int, metal: int, kryptonite: int, spice: int) -> float:
+    """Convert resource counts into Spice equivalents using fixed Classic Merchant parity."""
+    total = (
+        max(0, int(pig_iron)) / 6.0
+        + max(0, int(metal)) / 2.5
+        + max(0, int(kryptonite)) / 3.0
+        + float(max(0, int(spice)))
+    )
+    return total if math.isfinite(total) else 0.0
+
+
+def normalize_loot_dict(raw: Mapping[str, object] | str | None) -> dict[str, int]:
+    """Normalize a 4-resource loot dict or JSON string into non-negative `BIGINT` counts."""
+    parsed: Mapping[str, object] = {}
+    if isinstance(raw, str):
+        parsed = loads_json_dict(raw)
+    elif isinstance(raw, Mapping):
+        parsed = raw
+    return {rk: clamp_int64(max(0, to_int(parsed.get(rk, 0), 0))) for rk in RESOURCE_KEYS}
+
+
+def is_win_outcome(outcome: str, loot_spice_eq: float) -> bool:
+    """Classify whether a raid outcome counts as a win matching `storage.py`."""
+    low = outcome.strip().lower()
+    if low and any(tok in low for tok in _LOSS_TOKENS):
+        return False
+    if float(loot_spice_eq) > 0.0:
+        return True
+    return bool(low and any(tok in low for tok in _WIN_TOKENS))
+
+
+def dumps_json_unsorted(payload: object) -> str:
+    """Serialize `payload` to compact UTF-8 JSON preserving insertion order (for hot sector caches)."""
+    clean = _sanitize_json_value(payload)
+    return json.dumps(clean, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
+
+
+def loads_json_list(raw: str) -> list[object]:
+    """Parse a JSON string into a list, returning `[]` on invalid input."""
+    stripped = raw.strip()
+    if not stripped:
+        return []
+    try:
+        parsed: object = json.loads(stripped)
+    except ValueError:
+        return []
+    return list(parsed) if isinstance(parsed, list) else []
+
+
+def to_opt_int(raw: object) -> int | None:
+    """Parse an optional integer value safely, returning `None` when absent/invalid."""
+    if raw is None or isinstance(raw, bool):
+        return None
+    if isinstance(raw, int):
+        return clamp_int64(raw)
+    if isinstance(raw, float) and math.isfinite(raw):
+        return clamp_int64(int(raw))
+    if isinstance(raw, str) and raw.strip():
+        try:
+            return clamp_int64(int(float(raw.strip())))
+        except ValueError:
+            return None
+    return None
+
+
 __all__ = [
     "PROTECTED_META_KEYS",
+    "RESOURCE_KEYS",
     "affected_rows",
     "as_str_dict",
     "clamp_int64",
     "coord_query_variants",
     "dumps_json",
+    "dumps_json_unsorted",
+    "is_win_outcome",
     "loads_json_dict",
+    "loads_json_list",
     "normalize_building_key",
     "normalize_coords",
+    "normalize_loot_dict",
     "parse_coords_gsp",
     "redact_text",
     "round_ts",
     "sanitize_text",
+    "spice_equivalent_from_counts",
     "to_float",
     "to_int",
+    "to_opt_int",
 ]

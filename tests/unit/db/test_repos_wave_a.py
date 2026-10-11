@@ -31,10 +31,10 @@ from tests.unit.db.reference_workload import (
 
 _REPO_ROOT: Path = Path(__file__).resolve().parents[3]
 _WAVE_A_DIRS: tuple[Path, ...] = (
+    _REPO_ROOT / "spaceinvasion" / "db" / "dto",
     _REPO_ROOT / "spaceinvasion" / "db" / "repos",
     _REPO_ROOT / "spaceinvasion" / "db" / "queries",
 )
-_DTO_PATH: Path = _REPO_ROOT / "spaceinvasion" / "db" / "dto.py"
 _FORBIDDEN_IMPORTS: frozenset[str] = frozenset(
     {
         "bin",
@@ -298,8 +298,8 @@ def _audit_module_standards(path: Path) -> None:
 
 
 def test_wave_a_modules_obey_section_4_standards() -> None:
-    """All Wave A DTO, repository, and query modules satisfy Section 4 limits and layering."""
-    targets = [_DTO_PATH]
+    """All DTO, repository, and query modules satisfy Section 4 limits and layering."""
+    targets: list[Path] = []
     for directory in _WAVE_A_DIRS:
         targets.extend(sorted(directory.rglob("*.py")))
     assert len(targets) >= 12
