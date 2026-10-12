@@ -152,7 +152,7 @@ def _tutorial_from_mapping(raw_tut: object) -> TutorialStatus | None:
 
 
 def _queues_and_offers_from_mapping(
-    data: Mapping[object, object],
+    data: Mapping[str, object],
 ) -> tuple[tuple[QueueJob, ...], tuple[FleetAlert, ...], tuple[ResearchOffer, ...]]:
     queues: list[QueueJob] = []
     for q in safe_sequence(data.get("active_queues")):
@@ -214,7 +214,7 @@ def _queues_and_offers_from_mapping(
     return tuple(queues), alerts, tuple(res_offers)
 
 
-def game_state_from_dict(data: Mapping[object, object]) -> GameState:
+def game_state_from_dict(data: Mapping[str, object]) -> GameState:
     """Reconstruct a typed ``GameState`` from serialized JSON (e.g. ``GET /state``)."""
     if not isinstance(data, Mapping):
         data = {}

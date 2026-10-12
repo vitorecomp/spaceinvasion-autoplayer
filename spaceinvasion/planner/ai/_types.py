@@ -2,13 +2,39 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 import json
 import re
-from typing import Protocol, runtime_checkable
 
 from spaceinvasion.core.coercion import coerce_finite_float, coerce_int, coerce_optional_int
 from spaceinvasion.core.model import BUILDING_ID_BY_NAME, Resources
+from spaceinvasion.planner.ai._protocols import (
+    BuildingOfferLike as BuildingOfferLike,
+)
+from spaceinvasion.planner.ai._protocols import (
+    ConfigLike as ConfigLike,
+)
+from spaceinvasion.planner.ai._protocols import (
+    EnergyLike as EnergyLike,
+)
+from spaceinvasion.planner.ai._protocols import (
+    GameStateLike as GameStateLike,
+)
+from spaceinvasion.planner.ai._protocols import (
+    HostileFlagged as HostileFlagged,
+)
+from spaceinvasion.planner.ai._protocols import (
+    PlanetLike as PlanetLike,
+)
+from spaceinvasion.planner.ai._protocols import (
+    QueueJobLike as QueueJobLike,
+)
+from spaceinvasion.planner.ai._protocols import (
+    ResearchOfferLike as ResearchOfferLike,
+)
+from spaceinvasion.planner.ai._protocols import (
+    ResourcesLike as ResourcesLike,
+)
 
 PATH_FLOW_BUILDING_KEYS: tuple[str, ...] = ("b1", "b2", "b3", "b4", "b5", "b6")
 PATH_MINE_KEYS: tuple[str, ...] = ("b1", "b2", "b3", "b4")
@@ -96,21 +122,21 @@ WARM_GENE_DEFAULTS: dict[str, float] = {
 AI_FILL_REASON_PREFIX: str = "AI-Planner fill"
 AI_FILL_MIN_PATIENCE: float = 0.25
 AI_FILL_MAX_PATIENCE: float = 0.75
-AI_FILL_POOL_LEAD_HOURS: float = 1.0
+AI_FILL_POOL_LEAD_HOURS: float = 1.0 / 3.0
 AI_FILL_NEVER_HOURS: float = 1e9
-AI_STEP_SEQ_RE: re.Pattern[str] = re.compile(r"^AI-Planner(?:\s+fill)?\s+#(\d+)\b", re.ASCII)
+AI_STEP_SEQ_RE: re.Pattern[str] = re.compile(r"^AI-Planner #(\d+):", re.ASCII)
 
 AI_COLONY_IDLE_STATES: tuple[str, ...] = (
     "building",
-    "ready_to_build",
-    "waiting_inbound",
-    "waiting_transport",
-    "waiting_local_resources",
-    "waiting_research_prereq",
-    "waiting_build_prereq",
-    "blocked_fields",
-    "plan_complete",
-    "unmatched",
+    "ready_not_started",
+    "field_conflict",
+    "storage_blocked",
+    "transport_inbound",
+    "waiting_metal",
+    "waiting_pig_iron",
+    "waiting_kryptonite",
+    "waiting_spice",
+    "idle_complete",
 )
 
 RESOURCE_DISPLAY_LABELS: dict[str, str] = {
@@ -121,10 +147,10 @@ RESOURCE_DISPLAY_LABELS: dict[str, str] = {
 }
 
 RESOURCE_TIE_PRIORITY: dict[str, int] = {
-    "metal": 0,
-    "kryptonite": 1,
+    "metal": 4,
+    "kryptonite": 3,
     "spice": 2,
-    "pig_iron": 3,
+    "pig_iron": 1,
 }
 
 COORDS_RE: re.Pattern[str] = re.compile(r"^\d{1,2}:\d{1,3}:\d{1,2}$", re.ASCII)
@@ -141,122 +167,6 @@ ACTIVE_CONSTRUCTION_TOKENS: tuple[str, ...] = (
     "constructing",
     "under construction",
 )
-
-
-@runtime_checkable
-class ResourcesLike(Protocol):
-    """Structural protocol satisfied by both ``core.model.Resources`` and legacy ``core.state.Resources``."""
-
-    pig_iron: int
-    metal: int
-    kryptonite: int
-    spice: int
-
-
-@runtime_checkable
-class EnergyLike(Protocol):
-    """Structural protocol for planetary energy balance."""
-
-    produced: int
-    used: int
-
-
-@runtime_checkable
-class BuildingOfferLike(Protocol):
-    """Structural protocol for a parsed building card."""
-
-    building_id: int
-    name: str
-    current_level: int
-    target_level: int
-    cost: ResourcesLike
-    can_build: bool
-    status_text: str
-    build_href: str | None
-
-
-@runtime_checkable
-class ResearchOfferLike(Protocol):
-    """Structural protocol for a parsed research card."""
-
-    research_id: int
-    research_key: str
-    name: str
-    current_level: int
-    target_level: int
-    cost: ResourcesLike
-    can_research: bool
-    status_text: str
-    research_href: str | None
-    active: bool
-
-
-@runtime_checkable
-class QueueJobLike(Protocol):
-    """Structural protocol for an active queue job."""
-
-    category: str
-    name: str
-    building_id: int | None
-    target_level: int | None
-    remaining_text: str
-    remaining_seconds: float | None
-    finish_ts: float | None
-    detail: str
-    origin_coords: str
-    cargo: object
-
-
-@runtime_checkable
-class HostileFlagged(Protocol):
-    """Optional ``hostile`` marker on synthetic fleet queue entries."""
-
-    hostile: object
-
-
-@runtime_checkable
-class PlanetLike(Protocol):
-    """Structural protocol satisfied by ``core.model.PlanetState`` and ``core.state.PlanetState``."""
-
-    planet_id: int
-    name: str
-    coords: str
-    planet_type: str
-    temperature: int
-    fields_used: int
-    fields_max: int
-    resources: ResourcesLike
-    storage: ResourcesLike
-    energy: EnergyLike
-    buildings: Mapping[str, int]
-    ships: Mapping[str, int]
-    economy_rates: Mapping[str, int]
-    building_offers: Sequence[BuildingOfferLike]
-
-    def building_level(self, building_id: int) -> int: ...
-
-
-@runtime_checkable
-class GameStateLike(Protocol):
-    """Structural protocol satisfied by ``core.model.GameState`` and ``core.state.GameState``."""
-
-    timestamp: float
-    planets: Sequence[PlanetLike]
-    active_planet_id: int | None
-    researches: Mapping[str, int]
-    active_queues: Sequence[QueueJobLike]
-    research_offers: Sequence[ResearchOfferLike]
-    speedup_factor: float | None
-
-    def active_planet(self) -> PlanetLike | None: ...
-
-
-@runtime_checkable
-class ConfigLike(Protocol):
-    """Structural protocol for planner strategy configuration flags."""
-
-    allow_multi_planet: bool
-    ai_adaptive_execution: bool
 
 
 def parse_json_dict(raw: object) -> dict[str, object]:
