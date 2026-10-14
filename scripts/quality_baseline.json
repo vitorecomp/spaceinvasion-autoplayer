@@ -230,7 +230,7 @@
       "spaceinvasion/planner/config_optimizer.py": 4591,
       "spaceinvasion/planner/strategy.py": 8793,
       "spaceinvasion/runtime/api_server.py": 17648,
-      "spaceinvasion/session/auth.py": 828,
+      "spaceinvasion/session/auth.py": 824,
       "spaceinvasion/session/browser.py": 1092,
       "spaceinvasion/session/client.py": 3618,
       "spaceinvasion/session/executor.py": 4761
@@ -323,6 +323,7 @@
     },
     "spaceinvasion/core/logging_utils.py": {
       "BLE001": 6,
+      "I001": 1,
       "S110": 1
     },
     "spaceinvasion/core/state.py": {
@@ -386,6 +387,9 @@
       "BLE001": 1,
       "S110": 1,
       "T201": 3
+    },
+    "spaceinvasion/session/auth.py": {
+      "I001": 1
     },
     "spaceinvasion/session/browser.py": {
       "BLE001": 26,

@@ -244,12 +244,14 @@ def test_fuzz_mission_banner_parser_parity(kind: str) -> None:
         "<div>Angriff (verboten): Bash-Schutz aktiv. Reset in 1:02:03</div>",
         "<div>Attack (forbidden):</div><div>Reset in 00:00:30</div>",
     )
+    from spaceinvasion.parsing.fleet_page import parse_send_fleet_mission_block
+
     for html in variants:
 
         def _run_legacy(h: str = html) -> object:
             return legacy_fleet.parse_send_fleet_mission_block(h, kind)
 
         def _run_new(h: str = html) -> object:
-            return flight.parse_send_fleet_mission_block(h, kind)
+            return parse_send_fleet_mission_block(h, kind)
 
         _assert_same(f"parse_send_fleet_mission_block[{kind}]", _run_legacy, _run_new)

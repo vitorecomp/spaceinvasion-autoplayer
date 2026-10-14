@@ -13,17 +13,11 @@ import sys
 from typing import Any, Optional, Sequence
 
 from spaceinvasion.core import game_data
-from spaceinvasion.core.cli_support import (
+from spaceinvasion.core.redaction import (
     _SID_RE as _SID_RE,
-)
-from spaceinvasion.core.cli_support import (
     _sub_sid_kv as _sub_sid_kv,
-)
-from spaceinvasion.core.cli_support import (
     is_secret_dict_key,
-)
-from spaceinvasion.core.cli_support import (
-    redact_secret_tokens as _redact_text,
+    redact_text as _redact_text,
 )
 from spaceinvasion.core.state import GameState
 from spaceinvasion.planner.strategy import PlannedAction

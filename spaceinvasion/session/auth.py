@@ -16,13 +16,9 @@ from dotenv import dotenv_values
 import requests
 
 from spaceinvasion.core import game_data
-from spaceinvasion.core.cli_support import (
+from spaceinvasion.session.http_pools import (
     close_http_response as _close_http_response,
-)
-from spaceinvasion.core.cli_support import (
     close_http_session as _close_http_session,
-)
-from spaceinvasion.core.cli_support import (
     configure_http_session_pools as _configure_http_session_pools,
 )
 

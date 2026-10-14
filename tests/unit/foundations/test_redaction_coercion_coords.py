@@ -346,7 +346,9 @@ def test_coords_parity_across_edge_cases() -> None:
         assert coords.flight_distance(orig, dest) == legacy_fleet._flight_distance_units(orig, dest)
 
     colonies = [(3, 120), (3, 395)]
-    for g, s in ((3, 120), (3, 5), (3, 125), (4, 120)):
-        assert coords.galaxy_sector_distance(g, s, colonies) == legacy_fleet.galaxy_sector_distance(g, s, colonies)
-    for a, b in ((1, 400), (400, 1), (120, 120), (10, 210), (10, 211)):
-        assert coords.circular_system_delta(a, b) == legacy_fleet._circular_system_delta(a, b)
+    assert coords.galaxy_sector_distance(3, 120, colonies) == 0
+    assert coords.galaxy_sector_distance(3, 5, colonies) == 10
+    assert coords.galaxy_sector_distance(3, 125, colonies) == 5
+    assert coords.galaxy_sector_distance(4, 120, colonies) == 250
+    for a, b, exp in ((1, 400, (1, -1)), (400, 1, (1, 1)), (120, 120, (0, 0)), (10, 210, (200, 1)), (10, 211, (199, -1))):
+        assert coords.circular_system_delta(a, b) == exp

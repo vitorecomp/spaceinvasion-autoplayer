@@ -26,7 +26,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import Select
 
 from spaceinvasion.core import game_data
-from spaceinvasion.core.cli_support import call_with_optional_priority
+from spaceinvasion.session._call_utils import call_with_optional_priority
 from spaceinvasion.session.client import GameBrowserClient, PageViewLimiter
 from spaceinvasion.combat.fleet import (
     GalaxySlot,

@@ -164,6 +164,10 @@ def _sub_secret(match: re.Match[str], p: str, mode: str) -> str:
     return f"{head}{_fmt_val(match, p)}"
 
 
+def _sub_sid_kv(match: re.Match[str]) -> str:
+    return _sub_secret(match, "sid", "sid")
+
+
 _TEXT_RULES: tuple[tuple[re.Pattern[str], str, str], ...] = (
     (_JSON_KV_RE, "j", "quoted"),
     (_URLENC_JSON_RE, "uj", "urlenc"),

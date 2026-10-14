@@ -7,11 +7,11 @@ import math
 from typing import Any, Optional
 import requests
 
-from spaceinvasion.core.cli_support import (
+from spaceinvasion.runtime.cli_support import safe_cli_str
+from spaceinvasion.session.http_pools import (
     close_http_response as _close_http_response,
     close_http_session as _close_http_session,
     configure_http_session_pools as _configure_http_session_pools,
-    safe_cli_str,
 )
 from spaceinvasion.core.logging_utils import redact_sensitive
 from spaceinvasion.core.state import GameState, game_state_from_dict

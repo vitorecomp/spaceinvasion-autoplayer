@@ -9,8 +9,9 @@ testpaths = ["tests"]
 markers = [
     "notebooks: slow Jupyter notebook parity tests",
     "invariants: core SpaceInvasion game and security invariants that must never break",
+    "live_backup: tests verifying against a live pg_dump backup when SPACEINVASION_LIVE_BACKUP_DUMP is set",
 ]
-addopts = "-m 'not notebooks'"
+addopts = "-m 'not notebooks and not live_backup'"
 
 [tool.coverage.run]
 source = ["spaceinvasion", "bin", "scripts"]

@@ -461,6 +461,40 @@ class TestPostgresDialectAndBackendControl(unittest.TestCase):
             finally:
                 db2.close()
 
+    def test_stale_harness_container_and_tempdir_reaper(self) -> None:
+        from types import SimpleNamespace
+        from tests.pg_harness import _is_pid_alive, _reap_stale_harness_containers
+
+        self.assertTrue(_is_pid_alive(os.getpid()))
+        self.assertFalse(_is_pid_alive(999_999_999))
+
+        with tempfile.TemporaryDirectory(prefix="si_pg_harness_") as stale_dir_raw:
+            stale_dir = Path(stale_dir_raw)
+            pgdata_dir = stale_dir / "pgdata"
+            pgdata_dir.mkdir(parents=True, exist_ok=True)
+            calls: list[list[str]] = []
+
+            def _fake_run(cmd: list[str], **_kwargs: object) -> SimpleNamespace:
+                calls.append(cmd)
+                if "ps" in cmd:
+                    return SimpleNamespace(
+                        returncode=0,
+                        stdout=f"deadcid123\tsi_test_pg_999999999_deadbeef\nlivecid456\tsi_test_pg_{os.getpid()}_12345678\n",
+                        stderr="",
+                    )
+                if "inspect" in cmd:
+                    return SimpleNamespace(returncode=0, stdout=f"{pgdata_dir}\n", stderr="")
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+            with patch("tests.pg_harness.subprocess.run", side_effect=_fake_run):
+                reaped = _reap_stale_harness_containers("/usr/bin/podman")
+
+            self.assertEqual(reaped, ["si_test_pg_999999999_deadbeef"])
+            self.assertFalse(stale_dir.exists())
+            rm_calls = [c for c in calls if "rm" in c]
+            self.assertEqual(len(rm_calls), 1)
+            self.assertIn("deadcid123", rm_calls[0])
+
 
 if __name__ == "__main__":
     unittest.main()

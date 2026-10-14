@@ -1,110 +1,34 @@
-"""Safe numeric coercion, ratio scaling, and compact integer formatting helpers.
-
-Pure stdlib helpers extracted from `spaceinvasion.core.game_data` with strict
-type annotations and bounded resource guards.
-"""
+"""Ratio scaling and catalog numeric helpers delegating primitive coercion to `spaceinvasion.core.coercion`."""
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 import math
-from typing import SupportsFloat, SupportsIndex, SupportsInt
 
-MAX_JSON_SAFE_INT = 10**200
-_MAX_FORMAT_INT_BITS = 12_000
-_LOG10_2 = 0.3010299956639812
-
-_NON_NUMERIC_TOKENS: frozenset[str] = frozenset(
-    {
-        "null",
-        "none",
-        "~",
-        "nan",
-        "inf",
-        "+inf",
-        "-inf",
-        "infinity",
-        "+infinity",
-        "-infinity",
-    }
+from spaceinvasion.core.coercion import (
+    MAX_JSON_SAFE_INT,
+    cap_json_int,
+    fmt_compact_int,
 )
-_COERCE_ERRORS = (ValueError, TypeError, OverflowError, RuntimeError, RecursionError)
+from spaceinvasion.core.coercion import (
+    coerce_finite_float as safe_finite_float,
+)
+from spaceinvasion.core.coercion import (
+    coerce_int as safe_int,
+)
+from spaceinvasion.core.coercion import (
+    coerce_optional_int as safe_optional_int,
+)
 
-
-def _coerce_optional_int(value: object) -> int | None:
-    if value is None or isinstance(value, (bool, Mapping, list, tuple, set, frozenset)):
-        return None
-    if isinstance(value, int):
-        return value
-    if isinstance(value, float):
-        return int(value) if math.isfinite(value) else None
-    raw: object = value
-    if isinstance(raw, (bytes, bytearray)):
-        raw = bytes(raw).decode("utf-8", errors="replace")
-    if isinstance(raw, str):
-        txt = raw.strip()
-        if not txt or not txt.isascii() or txt.lower() in _NON_NUMERIC_TOKENS:
-            return None
-        raw = txt
-    if isinstance(raw, (str, SupportsInt, SupportsIndex)):
-        try:
-            return int(raw)
-        except _COERCE_ERRORS:
-            pass
-    if isinstance(raw, (str, SupportsFloat, SupportsIndex)):
-        try:
-            f = float(raw)
-        except _COERCE_ERRORS:
-            return None
-        return int(f) if math.isfinite(f) else None
-    return None
-
-
-def safe_int(value: object, default: int = 0) -> int:
-    """Coerce an arbitrary value to `int`, returning `default` on non-finite or invalid input."""
-    parsed = _coerce_optional_int(value)
-    return default if parsed is None else parsed
-
-
-def safe_optional_int(value: object, default: int | None = None) -> int | None:
-    """Coerce an arbitrary value to `int | None`, preserving `default` on failure."""
-    parsed = _coerce_optional_int(value)
-    return default if parsed is None else parsed
-
-
-def safe_finite_float(value: object, default: float = 0.0) -> float:
-    """Coerce an arbitrary value to a finite `float`, returning `default` on invalid input."""
-    if value is None or isinstance(value, (bool, Mapping, list, tuple, set, frozenset)):
-        return default
-    raw: object = value
-    if isinstance(raw, (bytes, bytearray)):
-        raw = bytes(raw).decode("utf-8", errors="replace")
-    if isinstance(raw, str):
-        txt = raw.strip()
-        if not txt or not txt.isascii() or txt.lower() in ("null", "none", "~"):
-            return default
-        raw = txt
-    if not isinstance(raw, (str, SupportsFloat, SupportsIndex)):
-        return default
-    try:
-        f = float(raw)
-    except OverflowError:
-        if isinstance(raw, int):
-            return 1e300 if raw > 0 else -1e300
-        return default
-    except (ValueError, TypeError, RuntimeError, RecursionError):
-        return default
-    return f if math.isfinite(f) else default
-
-
-def cap_json_int(value: object, *, limit: int = MAX_JSON_SAFE_INT, default: int = 0) -> int:
-    """Clamp an integer (or coercible value) to `[-limit, limit]` for safe JSON serialization."""
-    v = value if (isinstance(value, int) and not isinstance(value, bool)) else safe_int(value, default)
-    if v > limit:
-        return limit
-    if v < -limit:
-        return -limit
-    return v
+__all__ = [
+    "MAX_JSON_SAFE_INT",
+    "cap_json_int",
+    "fmt_compact_int",
+    "safe_big_ratio",
+    "safe_finite_float",
+    "safe_int",
+    "safe_optional_int",
+    "safe_scale_round_int",
+]
 
 
 def _to_mant_exp2(val: int | float) -> tuple[float, int]:
@@ -211,26 +135,3 @@ def safe_scale_round_int(
     if max_result is not None:
         return min(res, max(0, int(max_result)))
     return res
-
-
-def fmt_compact_int(
-    value: object,
-    *,
-    signed: bool = False,
-    grouped: bool = False,
-    default: int = 0,
-) -> str:
-    """Format an integer safely without triggering Python's str-to-int digit limit."""
-    v = safe_int(value, default)
-    av = abs(v)
-    if av.bit_length() >= _MAX_FORMAT_INT_BITS:
-        sign = "-" if v < 0 else ("+" if signed and v > 0 else "")
-        exp = int(av.bit_length() * _LOG10_2)
-        return f"{sign}~1e{exp}"
-    if signed and grouped:
-        return f"{v:+,}"
-    if signed:
-        return f"{v:+d}"
-    if grouped:
-        return f"{v:,}"
-    return str(v)

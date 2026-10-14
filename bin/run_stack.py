@@ -19,7 +19,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from spaceinvasion.core.cli_support import (  # noqa: E402
+from spaceinvasion.runtime.cli_support import (  # noqa: E402
     maybe_reexec_venv,
     safe_cli_str,
     terminate_child as _stop_proc,  # noqa: E402

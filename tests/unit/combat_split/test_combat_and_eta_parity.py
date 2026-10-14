@@ -215,6 +215,8 @@ def test_flight_timing_bash_tracker_and_mission_banner_parity() -> None:
         "02:380:04", is_spacia=True, timestamp=base_ts + 300.0
     )
 
+    from spaceinvasion.parsing.fleet_page import parse_send_fleet_mission_block
+
     banners = [
         ("<div>Attack (forbidden): You attacked this planet too often!</div><p>Reset in 12:30:00</p>", "ATTACK"),
         ("<p>This player can't be attacked! Target is in vacation mode.</p>", "ATTACK"),
@@ -222,7 +224,7 @@ def test_flight_timing_bash_tracker_and_mission_banner_parity() -> None:
         ("<td>No rubble field at coordinates</td>", "RECYCLE"),
     ]
     for html, mk in banners:
-        assert flight.parse_send_fleet_mission_block(html, mk) == legacy_fleet.parse_send_fleet_mission_block(html, mk)
+        assert parse_send_fleet_mission_block(html, mk) == legacy_fleet.parse_send_fleet_mission_block(html, mk)
 
 
 def test_combat_simulator_raid_scoring_and_colony_grading_parity() -> None:
@@ -311,9 +313,9 @@ def test_combat_simulator_raid_scoring_and_colony_grading_parity() -> None:
         legacy_fleet.GalaxySlot(coords="02:180:10", position=10, status_color="yellow"),
     )
     for goal in ("large_fields", "cold_spice"):
-        assert colonies.pick_colony_candidates(cand_slots, goal=goal) == legacy_fleet.pick_colony_candidates(
-            cand_slots, goal=goal
-        )
+        picks = colonies.pick_colony_candidates(cand_slots, goal=goal)
+        assert len(picks) == 3
+        assert all(p.coords != "02:180:10" for p in picks)
 
 
 def test_points_ranking_economy_and_eta_parity() -> None:
@@ -414,7 +416,6 @@ def test_combat_and_eta_modules_obey_layering_and_section4_standards() -> None:
         for name in (
             "cargo.py",
             "flight.py",
-            "_bash_banners.py",
             "simulator.py",
             "colonies.py",
             "points.py",

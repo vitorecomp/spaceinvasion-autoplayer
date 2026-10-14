@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
-import importlib
 import math
 
 from spaceinvasion.core import catalog
@@ -245,31 +244,19 @@ def _run_pre_throttle_plan(
     cfg: StrategyConfig,
     pre_throttle_plan_fn: PreThrottlePlanFn | None,
 ) -> list[PlannedAction] | None:
-    """Invoke explicit or lazily resolved `_build_pre_throttle_plan` without cyclic imports."""
-    if pre_throttle_plan_fn is not None:
-        post_plan, _ = pre_throttle_plan_fn(
-            post_state,
-            warn_ratio=warn_ratio,
-            cfg=cfg,
-            include_combat=False,
-        )
-        return post_plan
-    try:
-        assembly_mod = importlib.import_module("spaceinvasion.planner.heuristics.assembly")
-    except ModuleNotFoundError:
-        return None
-    fn = getattr(assembly_mod, "_build_pre_throttle_plan", None)
-    if not callable(fn):
-        return None
-    result = fn(
+    """Invoke explicit or static `_build_pre_throttle_plan` without cyclic imports."""
+    plan_fn = pre_throttle_plan_fn
+    if plan_fn is None:
+        from spaceinvasion.planner.heuristics._assembly_plan import _build_pre_throttle_plan
+
+        plan_fn = _build_pre_throttle_plan
+    post_plan, _ = plan_fn(
         post_state,
         warn_ratio=warn_ratio,
         cfg=cfg,
         include_combat=False,
     )
-    if isinstance(result, tuple) and len(result) >= 1 and isinstance(result[0], list):
-        return [act for act in result[0] if isinstance(act, PlannedAction)]
-    return None
+    return post_plan
 
 
 def _build_post_throttle_state(

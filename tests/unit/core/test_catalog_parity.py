@@ -184,7 +184,11 @@ def test_catalog_imports_stdlib_only_and_meets_size_standards() -> None:
                     assert top in stdlib, f"{path.name} imports non-stdlib module {alias.name}"
             elif isinstance(node, ast.ImportFrom) and node.module:
                 top = node.module.split(".")[0]
-                allowed = top in stdlib or node.module.startswith("spaceinvasion.core.catalog")
+                allowed = (
+                    top in stdlib
+                    or node.module.startswith("spaceinvasion.core.catalog")
+                    or node.module == "spaceinvasion.core.coercion"
+                )
                 assert allowed, f"{path.name} imports forbidden module {node.module}"
         line_count = len(src.splitlines())
         assert line_count <= 400, f"Catalog module {path.name} exceeds 400 LOC ({line_count})"

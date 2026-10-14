@@ -8,7 +8,6 @@ import math
 import re
 import time
 
-from spaceinvasion.combat._bash_banners import parse_send_fleet_mission_block
 from spaceinvasion.core.catalog import (
     SHIP_SLUG_BY_KEY,
     fmt_compact_int,
@@ -16,6 +15,15 @@ from spaceinvasion.core.catalog import (
     safe_finite_float,
     safe_int,
     safe_key,
+)
+from spaceinvasion.core.coords import (
+    coords_distance as parse_coords_distance,
+)
+from spaceinvasion.core.coords import (
+    flight_distance as flight_distance_units,
+)
+from spaceinvasion.core.coords import (
+    normalize_coords,
 )
 
 __all__ = [
@@ -30,7 +38,6 @@ __all__ = [
     "format_station_ships_spec",
     "normalize_coords",
     "parse_coords_distance",
-    "parse_send_fleet_mission_block",
     "parse_station_ships_spec",
     "ship_effective_speed",
 ]
@@ -43,72 +50,7 @@ ENGINE_RESEARCH_BY_NAME: dict[str, str] = {
 
 DEFAULT_UNKNOWN_DEBRIS_RESOURCES: int = 25_000
 
-_COORDS_NORM_RE = re.compile(
-    r"^\s*\[?\s*(\d{1,2})\s*[:/\-]\s*(\d{1,3})\s*[:/\-]\s*(\d{1,2})\s*\]?\s*$",
-    re.ASCII,
-)
-
 _STATION_SHIP_TOKEN_RE = re.compile(r"\b(\d{1,9})\s*x\s*(s\d{1,3})\b", re.IGNORECASE | re.ASCII)
-
-
-def normalize_coords(coords: object) -> str:
-    """Normalize SpaceInvasion coordinates like `'2:380:4'` to `'02:380:04'`."""
-    if type(coords) is str and isinstance(coords, str):
-        if (
-            len(coords) == 9
-            and coords[2] == ":"
-            and coords[6] == ":"
-            and coords[0:2].isascii()
-            and coords[0:2].isdigit()
-            and coords[3:6].isascii()
-            and coords[3:6].isdigit()
-            and coords[7:9].isascii()
-            and coords[7:9].isdigit()
-        ):
-            return coords
-        raw = coords.strip()
-    else:
-        raw = safe_key(coords).strip() if coords is not None else ""
-    m = _COORDS_NORM_RE.match(raw)
-    if m:
-        return f"{int(m.group(1)):02d}:{int(m.group(2)):03d}:{int(m.group(3)):02d}"
-    return raw
-
-
-def _extract_coord_triple(raw: object) -> list[int]:
-    txt = safe_key(raw) if raw is not None else ""
-    return [min(999_999, int(tok[:9])) for tok in re.findall(r"\d+", txt, re.ASCII)[:3]]
-
-
-def parse_coords_distance(a: object, b: object) -> float:
-    """Heuristic coordinate distance used for raid & colony scoring."""
-    pa = _extract_coord_triple(a)
-    pb = _extract_coord_triple(b)
-    if len(pa) < 3 or len(pb) < 3:
-        return 100.0
-    if pa[0] != pb[0]:
-        return 20000.0 * abs(pa[0] - pb[0])
-    if pa[1] != pb[1]:
-        return 2700.0 + 95.0 * abs(pa[1] - pb[1])
-    return 1000.0 + 5.0 * abs(pa[2] - pb[2])
-
-
-def flight_distance_units(origin_coords: object, target_coords: object) -> float:
-    """SpaceInvasion Classic linear flight distance calibrated to live RETRO timings."""
-    pa = _extract_coord_triple(origin_coords)
-    pb = _extract_coord_triple(target_coords)
-    if len(pa) < 3 or len(pb) < 3:
-        return 1000.0
-    dg = abs(pa[0] - pb[0])
-    if dg > 0:
-        return 20_000.0 * dg
-    ds = abs(pa[1] - pb[1])
-    if ds > 0:
-        return 1000.0 + 175.0 * ds
-    dp = abs(pa[2] - pb[2])
-    if dp > 0:
-        return 1000.0 + 5.0 * dp
-    return 500.0
 
 
 def ship_effective_speed(

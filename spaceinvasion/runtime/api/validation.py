@@ -4,14 +4,12 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import MISSING, dataclass, fields, is_dataclass
-import math
 from types import UnionType
 from typing import TypeVar, Union, get_args, get_origin, get_type_hints
 
-P = TypeVar("P")
+from spaceinvasion.core.coercion import parse_strict_ascii_int, parse_strict_finite_float
 
-_MAX_INT_DIGITS = 4000
-_MAX_SAFE_FLOAT_INT = (1 << 53) - 1
+P = TypeVar("P")
 
 
 class ApiRequestError(ValueError):
@@ -66,41 +64,16 @@ def parse_strict_int(
     max_val: int | None = None,
 ) -> int | None:
     """Parse an integer strictly, rejecting booleans, Unicode digits, NaN/Inf, and bounds errors."""
-    if allow_none and val is None:
-        return None
-    if isinstance(val, bool) or val is None or isinstance(val, (Mapping, list, tuple, set, frozenset)):
-        raise ApiRequestError(f"Command parameter {name!r} must be an integer.", field=name)
-    if isinstance(val, int):
-        parsed = val
-    elif isinstance(val, float):
-        if not math.isfinite(val) or not val.is_integer() or abs(val) > _MAX_SAFE_FLOAT_INT:
-            raise ApiRequestError(
-                f"Command parameter {name!r} must be a safe finite integer.",
-                field=name,
-            )
-        parsed = int(val)
-    elif isinstance(val, str):
-        txt = val.strip()
-        if not txt or not txt.isascii():
-            raise ApiRequestError(f"Command parameter {name!r} must be an integer.", field=name)
-        digits = txt[1:] if txt[0] in ("+", "-") else txt
-        if not digits or not digits.isdigit():
-            raise ApiRequestError(f"Command parameter {name!r} must be an integer.", field=name)
-        trimmed = digits.lstrip("0") or "0"
-        if len(trimmed) > _MAX_INT_DIGITS:
-            raise ApiRequestError(
-                f"Command parameter {name!r} integer is out of range.",
-                field=name,
-            )
-        parsed = -int(trimmed) if txt[0] == "-" else int(trimmed)
-    else:
-        raise ApiRequestError(f"Command parameter {name!r} must be an integer.", field=name)
-
-    if min_val is not None and parsed < min_val:
-        raise ApiRequestError(f"Command parameter {name!r} must be >= {min_val}.", field=name)
-    if max_val is not None and parsed > max_val:
-        raise ApiRequestError(f"Command parameter {name!r} must be <= {max_val}.", field=name)
-    return parsed
+    try:
+        return parse_strict_ascii_int(
+            val,
+            name=name,
+            allow_none=allow_none,
+            min_val=min_val,
+            max_val=max_val,
+        )
+    except ValueError as exc:
+        raise ApiRequestError(f"Command parameter {exc}", field=name) from exc
 
 
 def parse_strict_float(
@@ -114,33 +87,10 @@ def parse_strict_float(
     """Parse a finite float strictly, rejecting booleans, Unicode digits, underscores, and NaN/Inf."""
     if allow_none and val is None:
         return None
-    if isinstance(val, bool) or val is None or isinstance(val, (Mapping, list, tuple, set, frozenset)):
-        raise ApiRequestError(f"Command parameter {name!r} must be a finite number.", field=name)
-    raw: int | float | str
-    if isinstance(val, (int, float)):
-        raw = val
-    elif isinstance(val, str):
-        txt = val.strip()
-        if not txt or not txt.isascii() or "_" in txt:
-            raise ApiRequestError(f"Command parameter {name!r} must be a finite number.", field=name)
-        raw = txt
-    else:
-        raise ApiRequestError(f"Command parameter {name!r} must be a finite number.", field=name)
-
     try:
-        parsed = float(raw)
-    except (ValueError, TypeError, OverflowError) as exc:
-        raise ApiRequestError(
-            f"Command parameter {name!r} must be a finite number.",
-            field=name,
-        ) from exc
-    if not math.isfinite(parsed):
-        raise ApiRequestError(f"Command parameter {name!r} must be a finite number.", field=name)
-    if min_val is not None and parsed < min_val:
-        raise ApiRequestError(f"Command parameter {name!r} must be >= {min_val}.", field=name)
-    if max_val is not None and parsed > max_val:
-        raise ApiRequestError(f"Command parameter {name!r} must be <= {max_val}.", field=name)
-    return parsed
+        return parse_strict_finite_float(val, name=name, min_val=min_val, max_val=max_val)
+    except ValueError as exc:
+        raise ApiRequestError(f"Command parameter {exc}", field=name) from exc
 
 
 def parse_strict_bool(name: str, val: object, *, allow_none: bool = False) -> bool | None:

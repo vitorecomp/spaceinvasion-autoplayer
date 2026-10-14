@@ -30,7 +30,7 @@ import subprocess
 import tempfile
 import threading
 import time
-from typing import Any, Iterator, Optional
+from typing import Any, Optional
 import uuid
 import weakref
 
@@ -318,6 +318,70 @@ def _select_postgres_image(podman_bin: str) -> str:
     )
 
 
+_HARNESS_NAME_PID_RE = re.compile(r"^si_test_pg_(\d+)_[0-9a-f]+$")
+
+
+def _is_pid_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+
+
+def _reap_stale_harness_containers(podman_bin: str) -> list[str]:
+    """Remove orphaned `spaceinvasion.test_harness=1` containers whose owner PID has exited."""
+    reaped: list[str] = []
+    ps_proc = subprocess.run(
+        [podman_bin, "ps", "-a", "--filter", "label=spaceinvasion.test_harness=1", "--format", "{{.ID}}\t{{.Names}}"],
+        capture_output=True,
+        text=True,
+        timeout=10.0,
+        check=False,
+    )
+    if ps_proc.returncode != 0:
+        return reaped
+    tmp_root = Path(tempfile.gettempdir()).resolve()
+    for raw_line in (ps_proc.stdout or "").splitlines():
+        parts = raw_line.strip().split("\t", 1)
+        if len(parts) != 2:
+            continue
+        cid, cname = parts[0].strip(), parts[1].strip()
+        m_pid = _HARNESS_NAME_PID_RE.match(cname)
+        if not cid or m_pid is None:
+            continue
+        owner_pid = int(m_pid.group(1))
+        if _is_pid_alive(owner_pid):
+            continue
+        mount_dirs: list[Path] = []
+        insp = subprocess.run(
+            [podman_bin, "inspect", "-f", "{{range .Mounts}}{{.Source}}\n{{end}}", cid],
+            capture_output=True,
+            text=True,
+            timeout=5.0,
+            check=False,
+        )
+        if insp.returncode == 0:
+            for msrc in (insp.stdout or "").splitlines():
+                src = msrc.strip()
+                if not src:
+                    continue
+                cand = Path(src).resolve().parent
+                if cand.name.startswith("si_pg_harness_") and cand.parent == tmp_root:
+                    mount_dirs.append(cand)
+        subprocess.run([podman_bin, "rm", "-f", cid], capture_output=True, text=True, timeout=10.0, check=False)
+        for mdir in mount_dirs:
+            shutil.rmtree(mdir, ignore_errors=True)
+        reaped.append(cname)
+    return reaped
+
+
 class DisposablePostgresServer:
     """Throwaway Unix-socket-only PostgreSQL 16 server running in an isolated Podman container.
 
@@ -382,6 +446,7 @@ class DisposablePostgresServer:
             podman_bin = shutil.which("podman")
             if not podman_bin:
                 raise RuntimeError("`podman` binary not found; cannot start disposable PostgreSQL server.")
+            _reap_stale_harness_containers(podman_bin)
             image = _select_postgres_image(podman_bin)
 
             tmp_dir = Path(tempfile.mkdtemp(prefix="si_pg_harness_"))
