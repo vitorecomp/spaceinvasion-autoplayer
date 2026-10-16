@@ -7,7 +7,7 @@ from collections.abc import Mapping
 from spaceinvasion.combat.colonies import grade_colony_candidate
 from spaceinvasion.core import catalog
 from spaceinvasion.core.config import StrategyConfig
-from spaceinvasion.core.state import GameState, PlanetState
+from spaceinvasion.core.model import GameState, PlanetState
 from spaceinvasion.planner.heuristics._common import (
     _norm_planet_type,
     _parse_gal_sys_pos,

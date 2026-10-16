@@ -10,6 +10,7 @@ from spaceinvasion.core.coercion import coerce_int
 from spaceinvasion.parsing._common import attr_str, attr_tokens, tag_text
 from spaceinvasion.parsing._galaxy_status import classify_slot_status, extract_slot_attr_blobs
 from spaceinvasion.parsing.galaxy_coords import (
+    ARROW_NAV_MAX_DISTANCE,
     extract_galaxy_coords_from_html,
     extract_galaxy_system_coords,
     extract_galaxy_universe_bounds,
@@ -302,6 +303,7 @@ def parse_galaxy_system_html(
 
 
 __all__ = [
+    "ARROW_NAV_MAX_DISTANCE",
     "extract_galaxy_coords_from_html",
     "extract_galaxy_system_coords",
     "extract_galaxy_universe_bounds",

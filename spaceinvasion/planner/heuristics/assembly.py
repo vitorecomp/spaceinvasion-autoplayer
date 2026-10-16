@@ -6,7 +6,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import replace
 
 from spaceinvasion.core.config import StrategyConfig
-from spaceinvasion.core.state import GameState
+from spaceinvasion.core.model import GameState
 from spaceinvasion.planner.eta import attach_action_etas as _attach_etas_impl
 from spaceinvasion.planner.heuristics._actions import _plan_transmitter_action
 from spaceinvasion.planner.heuristics._assembly_guards import append_hostile_escape_actions

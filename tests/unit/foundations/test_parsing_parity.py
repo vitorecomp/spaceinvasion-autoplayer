@@ -12,8 +12,6 @@ from types import ModuleType
 import pytest
 
 from spaceinvasion import parsing
-from spaceinvasion.combat import fleet as legacy_fleet
-from spaceinvasion.core import state as legacy_state
 from spaceinvasion.session.executor import ActionExecutor
 from tests.goldens.scenarios import GOLDEN_EPOCH
 
@@ -222,11 +220,11 @@ def test_parsing_package_reproduces_golden_byte_for_byte(case_name: str) -> None
 
 def test_additional_parser_parity_beyond_goldens() -> None:
     """Verify edge cases not directly covered by the 23 golden HTML pages."""
-    # Station spec parsing/formatting parity
+    # Station spec parsing/formatting roundtrip
     spec = "Station -> [03:120:07] [15x s11, 6x s4, 2x s9]"
-    assert parsing.parse_station_ships_spec(spec) == legacy_fleet.parse_station_ships_spec(spec)
     ships = {"s11": 15, "s4": 6, "s9": 2}
-    assert parsing.format_station_ships_spec(ships) == legacy_fleet.format_station_ships_spec(ships)
+    assert parsing.parse_station_ships_spec(spec) == ships
+    assert parsing.format_station_ships_spec(ships) == "15x Recycler, 6x Small fighter, 2x Solar cells"
 
     # Fleet planet coords extraction parity
     fleet_hdr = '<div id="planet-coords">[3:120:7]</div>'
@@ -238,16 +236,13 @@ def test_additional_parser_parity_beyond_goldens() -> None:
         fleet_only
     ) == ActionExecutor._extract_internal_fleet_planet_coords(fleet_only)
 
-    # Non-spy & non-recycle notice classifiers parity
-    notices = [
-        "Your fleet is returning from duty [03:120:07]",
-        "Espionage report on Quiet Rock [03:120:03]",
-        "Your fleet was re-stationed with 5 Recycler",
-        "Space rubble [03:120:03] recycling report: harvested 1000 Metal",
-    ]
-    for txt in notices:
-        assert parsing.is_non_spy_notice_text(txt) == legacy_fleet.is_non_spy_notice_text(txt)
-        assert parsing.is_non_recycle_fleet_notice_text(txt) == legacy_fleet.is_non_recycle_fleet_notice_text(txt)
+    # Non-spy & non-recycle notice classifiers
+    assert parsing.is_non_spy_notice_text("Your fleet is returning from duty [03:120:07]")
+    assert not parsing.is_non_spy_notice_text("Espionage report on Quiet Rock [03:120:03]")
+    assert parsing.is_non_recycle_fleet_notice_text("Your fleet was re-stationed with 5 Recycler")
+    assert not parsing.is_non_recycle_fleet_notice_text(
+        "Space rubble [03:120:03] recycling report: harvested 1000 Metal"
+    )
 
     # Galaxy #json-element rubblefield1 precedence over stale rubblefield
     rubble_html = """
@@ -261,12 +256,12 @@ def test_additional_parser_parity_beyond_goldens() -> None:
       }
     }</div>
     """
-    capture = _load_capture_module()
-    assert capture.render(parsing.parse_galaxy_system_html(rubble_html)) == capture.render(
-        legacy_fleet.parse_galaxy_system_html(rubble_html)
-    )
+    slots = parsing.parse_galaxy_system_html(rubble_html)
+    slot_map = {s.position: s for s in slots}
+    assert not slot_map[2].has_debris
+    assert slot_map[5].has_debris
 
-    # Home faData outbound+return pairing + cargo parity
+    # Home faData outbound+return pairing + cargo
     fadata_html = """
     <script>
     var faData = [
@@ -279,6 +274,30 @@ def test_additional_parser_parity_beyond_goldens() -> None:
     ];
     </script>
     """
-    assert capture.render(
-        parsing.parse_home_metadata(fadata_html, now_ts=GOLDEN_EPOCH, origin_coords=OWN_COORDS)
-    ) == capture.render(legacy_state.parse_home_metadata(fadata_html, now_ts=GOLDEN_EPOCH, origin_coords=OWN_COORDS))
+    _pid, _sp, _nb, queues, _alerts = parsing.parse_home_metadata(
+        fadata_html, now_ts=GOLDEN_EPOCH, origin_coords=OWN_COORDS
+    )
+    assert len(queues) == 2
+    assert queues[0].cargo is not None and queues[0].cargo.pig_iron == 5000 and queues[0].cargo.metal == 2000
+
+
+def test_incomplete_spy_report_with_resources_retained() -> None:
+    """Pin the legacy combat/fleet.py:3405 fix: unexpanded spy report with nonzero resources yields a SpyReport."""
+    unexpanded_spy_html = """
+    <tr class="message">
+      <td>System</td>
+      <td>Espionage report on Quiet Rock [03:120:04]</td>
+      <td>
+        <a onclick="showSpionageReport(42)">Show report</a>
+        Espionage report on Quiet Rock [03:120:04]:
+        Pig iron: 12.500 Metal: 8.000 Kryptonite: 4.000 Spice: 1.500
+      </td>
+    </tr>
+    """
+    msgs = parsing.parse_inbox_messages_html(unexpanded_spy_html, folder_type="inbox", exclude_coords=(OWN_COORDS,))
+    assert len(msgs) == 1
+    msg = msgs[0]
+    assert msg.category == "spy_report"
+    assert not msg.body_complete
+    assert msg.spy_report is not None
+    assert msg.spy_report.resources.total() == 26_000

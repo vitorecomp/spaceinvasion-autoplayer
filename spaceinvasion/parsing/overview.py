@@ -20,7 +20,7 @@ from spaceinvasion.core.coercion import (
     sanitize_json_tree,
 )
 from spaceinvasion.core.coords import normalize_coord_triple
-from spaceinvasion.core.state import (
+from spaceinvasion.core.model import (
     BUILDING_ID_BY_NAME,
     EnergyBalance,
     FleetAlert,

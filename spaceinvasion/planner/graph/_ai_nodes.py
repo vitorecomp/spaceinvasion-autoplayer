@@ -6,7 +6,7 @@ from collections.abc import Mapping, Sequence
 
 from spaceinvasion.combat.flight import normalize_coords
 from spaceinvasion.core.catalog import BUILDING_BY_ID, RESEARCH_BY_ID
-from spaceinvasion.core.state import GameState, PlanetState
+from spaceinvasion.core.model import GameState, PlanetState
 from spaceinvasion.planner.graph._ai_edges import StepDict, dominant_cost_resource
 from spaceinvasion.planner.graph.common import (
     RESOURCE_KEYS,

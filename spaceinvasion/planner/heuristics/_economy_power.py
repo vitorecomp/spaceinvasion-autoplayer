@@ -7,7 +7,7 @@ from dataclasses import replace
 
 from spaceinvasion.core import catalog
 from spaceinvasion.core.config import StrategyConfig
-from spaceinvasion.core.state import BuildingOffer, GameState, PlanetState, UnitOffer
+from spaceinvasion.core.model import BuildingOffer, GameState, PlanetState, UnitOffer
 from spaceinvasion.planner.heuristics._actions import _make_build_action, _pick_best_power_building
 from spaceinvasion.planner.heuristics._common import (
     _apply_queue_cap_if_full,

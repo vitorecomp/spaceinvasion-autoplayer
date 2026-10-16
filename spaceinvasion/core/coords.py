@@ -20,6 +20,7 @@ _COORDS_SEARCH_RE: re.Pattern[str] = re.compile(r"(\d{1,2}):(\d{1,3}):(\d{1,2})"
 _GAL_SYS_PAIR_RE: re.Pattern[str] = re.compile(r"(\d{1,2})\s*[:/\-]\s*(\d{1,3})", re.ASCII)
 _FULL_GSP_RE: re.Pattern[str] = re.compile(r"(\d+):(\d+):(\d+)", re.ASCII)
 _ASCII_DIGITS_RE: re.Pattern[str] = re.compile(r"\d+", re.ASCII)
+ARROW_NAV_MAX_DISTANCE: int = 5
 
 _SAFE_TEXT_ERRORS = (TypeError, ValueError, RuntimeError, AttributeError, OverflowError, RecursionError)
 

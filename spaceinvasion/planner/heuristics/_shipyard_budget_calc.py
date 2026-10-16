@@ -6,7 +6,7 @@ from collections.abc import Mapping, Sequence
 
 from spaceinvasion.core import catalog
 from spaceinvasion.core.config import StrategyConfig
-from spaceinvasion.core.state import GameState, PlanetState, Resources
+from spaceinvasion.core.model import GameState, PlanetState, Resources
 from spaceinvasion.planner.eta import estimate_hourly_economy
 from spaceinvasion.planner.heuristics._cargo_helpers import _adaptive_enabled_cfg, _in_flight_ship_counts
 from spaceinvasion.planner.heuristics._common import (

@@ -14,7 +14,7 @@ from spaceinvasion.core.catalog import (
     safe_int,
     safe_key,
 )
-from spaceinvasion.core.state import PlanetState, Resources
+from spaceinvasion.core.model import PlanetState, Resources
 
 RESOURCE_KEYS: tuple[str, ...] = ("pig_iron", "metal", "kryptonite", "spice")
 

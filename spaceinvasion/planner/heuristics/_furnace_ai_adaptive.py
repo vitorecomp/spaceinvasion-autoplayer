@@ -6,7 +6,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 from spaceinvasion.combat.flight import normalize_coords
-from spaceinvasion.core.state import GameState, PlanetState
+from spaceinvasion.core.model import GameState, PlanetState
 from spaceinvasion.planner.heuristics._cargo_helpers import (
     _fallback_inbound_cargo_by_planet,
     _friendly_cargo_flights,

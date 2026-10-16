@@ -8,23 +8,30 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from spaceinvasion import game_data
-from spaceinvasion.ranking import (
-    _compute_resource_eta,
-    attach_action_etas,
+from spaceinvasion.core import catalog as game_data
+from spaceinvasion.combat.points import (
     attack_zone_for_points,
-    build_buildings_eta,
     build_combat_overview,
     build_ranking_evolution,
-    compute_action_eta,
     estimate_account_points,
     estimate_hourly_economy,
-    estimate_planet_hourly_economy,
     record_rank_snapshot,
-    simulate_combat_matchup,
 )
-from spaceinvasion.state import EnergyBalance, GameState, PlanetState, Resources
-from spaceinvasion.strategy import PlannedAction
+from spaceinvasion.combat.simulator import simulate_combat_matchup
+from spaceinvasion.planner.eta import (
+    compute_resource_eta as _compute_resource_eta,
+    attach_action_etas,
+    build_buildings_eta,
+    compute_action_eta,
+    estimate_planet_hourly_economy,
+)
+from spaceinvasion.core.model import (
+    EnergyBalance,
+    GameState,
+    PlanetState,
+    Resources,
+)
+from spaceinvasion.core.model import PlannedAction
 
 
 def _sample_ranking_state(*, net_deficit: bool = False) -> GameState:
@@ -706,13 +713,15 @@ class TestActionEtaEngine(unittest.TestCase):
 
     def test_format_duration_half_second_huge_ints_clamp_micro_and_malformed_ranking_fields(self) -> None:
         import time
-        from spaceinvasion.ranking import (
-            _format_duration,
-            _safe_big_mul_div,
-            build_buildings_eta,
+        from spaceinvasion.combat._points_helpers import safe_big_mul_div as _safe_big_mul_div
+        from spaceinvasion.combat.points import (
             build_combat_overview,
             build_ranking_evolution,
             estimate_account_points,
+        )
+        from spaceinvasion.planner.eta import (
+            format_duration as _format_duration,
+            build_buildings_eta,
         )
 
         self.assertEqual(_format_duration(0.0), "0s")
@@ -845,7 +854,7 @@ class TestActionEtaEngine(unittest.TestCase):
 
     def test_huge_ints_unicode_digits_and_corrupt_safety_margin_and_snapshot(self) -> None:
         import json
-        from spaceinvasion.storage import GameDatabase
+        from spaceinvasion.db.storage import GameDatabase
 
         base_st = _sample_ranking_state()
         p0 = base_st.planets[0]
@@ -912,7 +921,8 @@ class TestActionEtaEngine(unittest.TestCase):
 
     def test_buildings_eta_combat_overview_huge_levels_and_rank_history_nan_sanitized(self) -> None:
         import json
-        from spaceinvasion.ranking import _format_duration, load_rank_history
+        from spaceinvasion.combat.points import load_rank_history
+        from spaceinvasion.planner.eta import format_duration as _format_duration
 
         self.assertEqual(_format_duration(0.5), "1s")
         p_huge = PlanetState(
@@ -1089,7 +1099,7 @@ class TestActionEtaEngine(unittest.TestCase):
     def test_r8_build_buildings_eta_bounds_nonfinite_bad_and_huge_horizon_count(self) -> None:
         import json
         import time
-        from spaceinvasion.ranking import build_buildings_eta
+        from spaceinvasion.planner.eta import build_buildings_eta
 
         st = _sample_ranking_state()
         for bad_h in (float("nan"), float("inf"), float("-inf"), "bad", None, True):
@@ -1150,12 +1160,12 @@ class TestActionEtaEngine(unittest.TestCase):
     def test_r10_huge_precision_nonascii_bytes_and_safe_key(self) -> None:
         import json
         from dataclasses import replace
-        from spaceinvasion.ranking import (
-            attach_action_etas,
+        from spaceinvasion.combat.points import (
             build_combat_overview,
             estimate_account_points,
         )
-        from spaceinvasion.strategy import PlannedAction
+        from spaceinvasion.planner.eta import attach_action_etas
+        from spaceinvasion.core.model import PlannedAction
 
         st = _sample_ranking_state()
         pts = estimate_account_points(
@@ -1206,8 +1216,8 @@ class TestActionEtaEngine(unittest.TestCase):
     def test_r11_build_buildings_eta_huge_research_key_and_normalized_asteroid_type(self) -> None:
         import json
         from dataclasses import replace
-        from spaceinvasion.ranking import build_buildings_eta
-        from spaceinvasion.state import ResearchOffer
+        from spaceinvasion.planner.eta import build_buildings_eta
+        from spaceinvasion.core.model import ResearchOffer
 
         st = _sample_ranking_state()
         ast_p = replace(st.planets[0], planet_type=" Asteroid ")
@@ -1227,8 +1237,11 @@ class TestActionEtaEngine(unittest.TestCase):
 
     def test_r12_ranking_resists_broken_fspath_raise_str_and_huge_reward_fields(self) -> None:
         import json
-        from spaceinvasion import ranking as rnk
-        from spaceinvasion.state import TutorialStatus, TutorialTask
+        from spaceinvasion.planner._eta_helpers import safe_eta_int as _safe_eta_int
+        from spaceinvasion.core.model import (
+            TutorialStatus,
+            TutorialTask,
+        )
 
         class _RaiseFspath:
             def __fspath__(self) -> str:
@@ -1249,8 +1262,8 @@ class TestActionEtaEngine(unittest.TestCase):
             def __repr__(self) -> str:
                 raise RuntimeError("repr boom")
 
-        self.assertEqual(rnk._safe_eta_int(_RaiseFspath(), default=-3), -3)
-        self.assertIsInstance(rnk._safe_eta_int(_IntPath(), default=-3), int)
+        self.assertEqual(_safe_eta_int(_RaiseFspath(), default=-3), -3)
+        self.assertIsInstance(_safe_eta_int(_IntPath(), default=-3), int)
 
         ast_p = PlanetState(
             planet_id=1,
@@ -1286,16 +1299,18 @@ class TestActionEtaEngine(unittest.TestCase):
 
     def test_r14_safe_eta_int_resists_base_exception_dag20(self) -> None:
         import time
-        from spaceinvasion import ranking as rnk
+        from spaceinvasion.combat._points_helpers import safe_nonneg_int as _safe_nonneg_int
+        from spaceinvasion.combat._points_helpers import safe_optional_finite_int as _safe_optional_finite_int
+        from spaceinvasion.planner._eta_helpers import safe_eta_int as _safe_eta_int
 
         dag: BaseException = RuntimeError("leaf")
         for _ in range(20):
             dag = RuntimeError(10**5000, dag, dag, dag, dag)
 
         t0 = time.perf_counter()
-        res_eta = rnk._safe_eta_int(dag, default=-7)
-        res_nn = rnk._safe_nonneg_int(dag, default=-8)
-        res_opt = rnk._safe_optional_finite_int(dag)
+        res_eta = _safe_eta_int(dag, default=-7)
+        res_nn = _safe_nonneg_int(dag, default=-8)
+        res_opt = _safe_optional_finite_int(dag)
         elapsed_ms = (time.perf_counter() - t0) * 1000.0
         self.assertEqual(res_eta, -7)
         self.assertEqual(res_nn, -8)

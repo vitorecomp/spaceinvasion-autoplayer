@@ -4,9 +4,12 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from spaceinvasion.combat.fleet import GalaxySlot as CombatGalaxySlot
-from spaceinvasion.combat.fleet import InboxMessage, SpyReport
-from spaceinvasion.core.state import (
+from spaceinvasion.parsing.models import GalaxySlot as CombatGalaxySlot
+from spaceinvasion.parsing.models import (
+    InboxMessage,
+    SpyReport,
+)
+from spaceinvasion.core.model import (
     EnergyBalance,
     GameState,
     PlanetState,

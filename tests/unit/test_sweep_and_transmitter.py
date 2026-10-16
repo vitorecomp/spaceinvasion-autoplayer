@@ -8,17 +8,20 @@ import unittest
 from unittest.mock import MagicMock
 
 from spaceinvasion.core.config import StrategyConfig
-from spaceinvasion.core.state import (
+from spaceinvasion.core.model import (
     EnergyBalance,
     GameState,
     PlanetState,
     Resources,
     count_allocated_normal_planets,
+)
+from spaceinvasion.parsing.account_pages import (
     parse_daily_login_bonus,
     parse_transmitter_page,
 )
 from spaceinvasion.db.storage import GameDatabase
-from spaceinvasion.planner.strategy import PlannedAction, plan_actions
+from spaceinvasion.core.model import PlannedAction
+from spaceinvasion.planner.heuristics import plan_actions
 from spaceinvasion.runtime.api_server import GameApiBridge
 from spaceinvasion.session.executor import ActionExecutor
 
@@ -713,7 +716,8 @@ class TestSweepAndTransmitter(unittest.TestCase):
             self.assertEqual(res_full["debris_found"], 2)
 
     def test_building_and_home_active_queues_extract_executing_timers_and_finish_ts(self) -> None:
-        from spaceinvasion.core.state import parse_building_queue, parse_home_metadata
+        from spaceinvasion.parsing.overview import parse_home_metadata
+        from spaceinvasion.parsing.queues import parse_building_queue
 
         ref_ts = 1_794_890_000.0
         b_html = """
@@ -784,7 +788,11 @@ class TestSweepAndTransmitter(unittest.TestCase):
 
     def test_galaxy_json_colonize_metadata_click_delay_jitter_and_discard_colony_candidate(self) -> None:
         from unittest.mock import MagicMock, patch
-        from spaceinvasion.combat.fleet import GalaxySlot, SpyReport, parse_galaxy_system_html
+        from spaceinvasion.parsing.galaxy import parse_galaxy_system_html
+        from spaceinvasion.parsing.models import (
+            GalaxySlot,
+            SpyReport,
+        )
         from spaceinvasion.runtime.api_server import ApiRequestError, GameApiBridge
 
         # 1. Passive #json-element colonize extraction on 2D Galaxy view
@@ -885,7 +893,8 @@ class TestSweepAndTransmitter(unittest.TestCase):
     def test_retro_free_slot_ecology_probing_priority_and_noop_batch_continuation(self) -> None:
         from unittest.mock import MagicMock
         import bin.commander as commander_mod
-        from spaceinvasion.combat.fleet import GalaxySlot, grade_colony_candidate
+        from spaceinvasion.combat.colonies import grade_colony_candidate
+        from spaceinvasion.parsing.models import GalaxySlot
         from spaceinvasion.session.executor import ActionExecutor
         from spaceinvasion.runtime.api_server import GameApiBridge
 
@@ -1060,7 +1069,7 @@ class TestSweepAndTransmitter(unittest.TestCase):
 
     def test_undersized_colony_auto_deletion_and_top_queue_colony_priority(self) -> None:
         from dataclasses import replace
-        from spaceinvasion.core.state import (
+        from spaceinvasion.core.model import (
             EnergyBalance,
             QueueJob,
             homeworld_planet_id,
@@ -1490,7 +1499,7 @@ class TestSweepAndTransmitter(unittest.TestCase):
 
     def test_parallel_colonize_bounded_by_planet_slots_and_spy_colonize_attack_fleet_priority(self) -> None:
         from dataclasses import replace
-        from spaceinvasion.core.state import QueueJob
+        from spaceinvasion.core.model import QueueJob
 
         now = 1_700_000_300.0
         home = PlanetState(
@@ -1601,7 +1610,7 @@ class TestSweepAndTransmitter(unittest.TestCase):
     def test_smart_galaxy_sweep_explores_unscanned_first_then_weighted_near_and_frequent_attack_refresh(self) -> None:
         import time as _time
         from unittest.mock import patch
-        from spaceinvasion.combat.fleet import GalaxySlot
+        from spaceinvasion.parsing.models import GalaxySlot
 
         with tempfile.TemporaryDirectory(prefix="si_smart_sweep_") as tmp:
             tp = Path(tmp)
@@ -1792,7 +1801,10 @@ class TestSweepAndTransmitter(unittest.TestCase):
 
     def test_espionage_intel_attaches_origin_and_distances(self) -> None:
         import json
-        from spaceinvasion.combat.fleet import GalaxySlot, SpyReport
+        from spaceinvasion.parsing.models import (
+            GalaxySlot,
+            SpyReport,
+        )
 
         with tempfile.TemporaryDirectory(prefix="si_esp_dist_") as tmp_dir:
             tp = Path(tmp_dir)

@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 
 from spaceinvasion.core.config import StrategyConfig
-from spaceinvasion.core.state import GameState, PlanetState
+from spaceinvasion.core.model import GameState, PlanetState
 from spaceinvasion.planner.heuristics._common import _safe_strategy_int
 from spaceinvasion.planner.heuristics._fleet_context import _build_fleet_context, _FleetContext
 from spaceinvasion.planner.heuristics._fleet_harvest import _HarvestSortKey, _plan_unified_harvest

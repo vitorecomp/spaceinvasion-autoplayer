@@ -6,9 +6,10 @@ from collections.abc import Callable, Mapping, Sequence
 
 import numpy as np
 
-from spaceinvasion.combat.fleet import SHIP_SLUG_BY_KEY, _flight_distance_units
-from spaceinvasion.core import game_data
+from spaceinvasion.core import catalog as game_data
+from spaceinvasion.core.catalog import SHIP_SLUG_BY_KEY
 from spaceinvasion.core.coercion import coerce_int
+from spaceinvasion.core.coords import flight_distance as _flight_distance_units
 from spaceinvasion.planner.ai._problem_queues import estimate_interplanet_transport_seconds
 from spaceinvasion.planner.ai._types import GameStateLike, PlanetLike, is_valid_coords, resources_tuple
 from spaceinvasion.planner.config_optimizer import (

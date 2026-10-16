@@ -21,7 +21,7 @@ from spaceinvasion.core.catalog import (
     safe_int,
     safe_key,
 )
-from spaceinvasion.core.state import GameState, PlanetState
+from spaceinvasion.core.model import GameState, PlanetState
 
 
 def _build_unit_catalog(

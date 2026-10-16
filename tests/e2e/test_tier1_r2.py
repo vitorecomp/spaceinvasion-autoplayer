@@ -8,7 +8,7 @@ import requests
 
 import commander
 from tests.e2e.harness import E2ETestHarness, FakeClock, FakeSpaceInvasionServer
-from spaceinvasion.config import StrategyConfig
+from spaceinvasion.core.config import StrategyConfig
 
 
 def _r2_default_planets(

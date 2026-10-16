@@ -31,11 +31,14 @@ from tests.e2e.harness import (
     inspect_ui_html,
     run_ui_in_node,
 )
-from spaceinvasion.client import GameBrowserClient, RateLimitError
-from spaceinvasion.commander_client import GameApiError
-from spaceinvasion.config import StrategyConfig
-from spaceinvasion.state import Resources
-from spaceinvasion.strategy import PlannedAction
+from spaceinvasion.session.client import (
+    GameBrowserClient,
+    RateLimitError,
+)
+from spaceinvasion.runtime.commander_client import GameApiError
+from spaceinvasion.core.config import StrategyConfig
+from spaceinvasion.core.model import Resources
+from spaceinvasion.core.model import PlannedAction
 
 
 class TestHarnessSelf(unittest.TestCase):
@@ -121,7 +124,7 @@ class TestHarnessSelf(unittest.TestCase):
         self.assertIn("Pig iron mine", b_html)
 
     def test_self_03_fake_server_rolling_throttle_and_stale_f_planets(self) -> None:
-        import spaceinvasion.client as client_mod
+        import spaceinvasion.session.client as client_mod
 
         clock = FakeClock()
         srv = FakeSpaceInvasionServer(clock=clock, rate_limit_threshold=3, server_cooldown_s=50.0)
@@ -290,12 +293,12 @@ class TestHarnessSelf(unittest.TestCase):
                     h8.api.send_command({"command": "build", "building_id": 1, "dry_run": False})
 
     def test_self_07_enter_exception_rolls_back_patches_and_tmpdir(self) -> None:
-        import spaceinvasion.api_server as api_server_mod
-        import spaceinvasion.client as client_mod
-        import spaceinvasion.ranking as ranking_mod
+        import spaceinvasion.runtime.api_server as api_server_mod
+        import spaceinvasion.session.client as client_mod
+        import spaceinvasion.combat._rank_history as rank_history_mod
 
         orig_client_time = client_mod.time
-        orig_ranking_time = ranking_mod.time
+        orig_ranking_time = rank_history_mod.time
         orig_dbg_fn = api_server_mod.is_debug_port_open
         orig_default_lim = getattr(client_mod, "_DEFAULT_PAGE_VIEW_LIMITER", None)
         orig_cls_lim = getattr(GameBrowserClient, "page_limiter", None)
@@ -314,7 +317,7 @@ class TestHarnessSelf(unittest.TestCase):
                 h.__enter__()
 
         self.assertIs(client_mod.time, orig_client_time)
-        self.assertIs(ranking_mod.time, orig_ranking_time)
+        self.assertIs(rank_history_mod.time, orig_ranking_time)
         self.assertIs(api_server_mod.is_debug_port_open, orig_dbg_fn)
         self.assertIs(getattr(client_mod, "_DEFAULT_PAGE_VIEW_LIMITER", None), orig_default_lim)
         self.assertIs(getattr(GameBrowserClient, "page_limiter", None), orig_cls_lim)

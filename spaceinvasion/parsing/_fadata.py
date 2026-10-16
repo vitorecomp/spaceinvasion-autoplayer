@@ -9,7 +9,7 @@ from bs4 import BeautifulSoup
 
 from spaceinvasion.core.coercion import coerce_bounded_int, parse_game_int
 from spaceinvasion.core.coords import normalize_coord_triple
-from spaceinvasion.core.state import QueueJob, Resources
+from spaceinvasion.core.model import QueueJob, Resources
 from spaceinvasion.parsing._common import collapse_ws, format_hms_seconds, tag_text
 
 _FADATA_BLOCK_RE = re.compile(r"\bvar\s+faData\s*=\s*(\[.*?\])\s*;", re.DOTALL)

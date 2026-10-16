@@ -1,4 +1,4 @@
-"""Non-secret strategy profile loader (`config.json` / database) for SpaceInvasion."""
+"""Non-secret strategy profile loader (`config.json` / pure validation) for SpaceInvasion."""
 
 from __future__ import annotations
 
@@ -8,293 +8,26 @@ import json
 import math
 import os
 from pathlib import Path
-import re
-import time
 from typing import Any, Optional
-from urllib.parse import quote
+
+from spaceinvasion.core.redaction import (
+    _clip as _clip_cfg_str,
+)
+from spaceinvasion.core.redaction import (
+    _safe_text as _redaction_safe_text,
+)
+from spaceinvasion.core.redaction import (
+    is_secret_dict_key as _is_cfg_secret_dict_key,
+)
+from spaceinvasion.core.redaction import (
+    redact_text as _redact_cfg_text,
+)
 
 VALID_PLANNER_MODES: tuple[str, ...] = ("priority", "ai_planner")
-
-_CFG_SECRET_DICT_KEYS: frozenset[str] = frozenset(
-    {"sid", "password", "passwd", "cookie", "api_key", "secret", "authorization"}
-)
-_CFG_SECRET_DICT_STEMS: tuple[str, ...] = (
-    "password",
-    "passwd",
-    "cookie",
-    "api_key",
-    "api-key",
-    "secret",
-    "authorization",
-    "sid",
-)
-_CFG_BENIGN_KEY_PREFIX_TOKENS: frozenset[str] = frozenset(
-    {
-        "has",
-        "no",
-        "non",
-        "without",
-        "is",
-        "allow",
-        "require",
-        "enable",
-        "disable",
-        "need",
-        "check",
-        "use",
-        "missing",
-        "empty",
-    }
-)
-_CFG_SECRET_FAST_MARKERS: tuple[str, ...] = (
-    "sid",
-    "pass",
-    "cookie",
-    "api_key",
-    "api-key",
-    "secret",
-    "auth",
-    "bearer",
-)
-
-
-def _is_cfg_secret_dict_key(key: str) -> bool:
-    if not isinstance(key, str):
-        return False
-    low = key.strip().lower()
-    if not low:
-        return False
-    if not low.isascii():
-        low = low.replace("i\u0307", "i").replace("\u0131", "i").replace("\u017f", "s")
-    if low == "api-key" or low in _CFG_SECRET_DICT_KEYS:
-        return True
-    for stem in _CFG_SECRET_DICT_STEMS:
-        if low.endswith(stem):
-            prefix = low[: len(low) - len(stem)]
-            if not prefix:
-                return True
-            if prefix[-1] not in ("_", "-"):
-                return False
-            stripped = prefix.strip("_-")
-            if not stripped:
-                return True
-            parts = [p for p in stripped.replace("-", "_").split("_") if p]
-            if not parts:
-                return True
-            if not all(p.isascii() and p.isalnum() for p in parts):
-                return False
-            if parts[0] in _CFG_BENIGN_KEY_PREFIX_TOKENS:
-                return False
-            return True
-    return False
-
-
-_CFG_COMP_PREFIX_RE = r"[_-]*(?:[a-z0-9]+[_-]+)*"
-_CFG_COMP_KEY_RE = rf"(?P<key>{_CFG_COMP_PREFIX_RE}(?:sid|password|passwd|cookie|api_key|api-key|secret|authorization))"
-_CFG_COMP_KV_KEY_RE = rf"(?P<key>{_CFG_COMP_PREFIX_RE}(?:password|passwd|cookie|api_key|api-key|secret))"
-_CFG_COMP_AUTH_KEY_RE = rf"(?P<key>{_CFG_COMP_PREFIX_RE}authorization)"
-_CFG_AUTH_SCHEME_RE = r"(?:bearer|basic|token|digest)"
-_CFG_KV_SEP_RE = r"(?:[ \t]*[:=][ \t]*|%(?:25){0,4}3[ad])"
-_CFG_SCHEME_SEP_RE = r"(?:[ \t]+|%(?:25){0,4}20|\+)"
-_CFG_TOK_SAFE_CHAR = r"[^\s&,;\"'`<>#)}\]\[]"
-_CFG_UNQUOTED_TOK_RE = rf"(?:(?!%(?:25){{0,4}}(?:26|23|20|09|0[ad]|22|27|3[bce]|5[bd])){_CFG_TOK_SAFE_CHAR})+"
-
-
-def _cfg_quoted_val_pattern(p: str) -> str:
-    return (
-        rf"(?P<{p}_vq>[\"'])(?:"
-        rf"(?P<{p}_qval>(?:(?!(?P={p}_vq))(?:\\[^\r\n]|[^\\\r\n]))+)(?P<{p}_cq>(?P={p}_vq))|"
-        rf"(?!(?P={p}_vq)|\\?[\"'])(?P<{p}_uqval>{_CFG_UNQUOTED_TOK_RE})"
-        rf")|"
-        rf"(?P<{p}_evq2>\\\\(?P<{p}_ec2>[\"']))(?:"
-        rf"(?P<{p}_eqval2>(?:[^\\\r\n]|\\\\(?!(?P={p}_ec2))|\\(?!(?P={p}_ec2)|\\)|\\\\\\(?P={p}_ec2))+)(?P<{p}_ecq2>(?P={p}_evq2))|"
-        rf"(?!(?P={p}_evq2)|\\?[\"'])(?P<{p}_euqval2>{_CFG_UNQUOTED_TOK_RE})"
-        rf")|"
-        rf"(?P<{p}_evq>\\(?P<{p}_ec>[\"']))(?:"
-        rf"(?P<{p}_eqval>(?:[^\\\r\n]|\\\\\\\\|\\\\\\(?P={p}_ec)|\\\\(?!(?P={p}_ec))[^\\\r\n]|\\(?!(?P={p}_ec))[^\\\r\n])+)(?P<{p}_ecq>(?P={p}_evq))|"
-        rf"(?!(?P={p}_evq)|\\?[\"'])(?P<{p}_euqval>{_CFG_UNQUOTED_TOK_RE})"
-        rf")"
-    )
-
-
-def _cfg_delim_val_pattern(p: str) -> str:
-    return (
-        f"{_cfg_quoted_val_pattern(p)}|"
-        rf"(?P<{p}_bk><)(?:"
-        rf"(?P<{p}_bkval>[ \t]*[^\s<>\r\n][^<>\r\n]*)(?P<{p}_bkc>>)|"
-        rf"(?P<{p}_ubkval>{_CFG_UNQUOTED_TOK_RE})"
-        rf")|"
-        rf"(?P<{p}_sb>\[)(?:"
-        rf"(?P<{p}_sbval>[ \t]*[^\s\[\]\r\n][^\[\]\r\n]*)(?P<{p}_sbc>\])|"
-        rf"(?P<{p}_usbval>{_CFG_UNQUOTED_TOK_RE})"
-        rf")|"
-        rf"(?P<{p}_pq>%(?:25){{0,4}}(?:22|27))(?:"
-        rf"(?P<{p}_pqval>(?:(?!(?P={p}_pq)|%(?:25){{0,4}}(?:26|23|3[bce]|22|27|5[bd])){_CFG_TOK_SAFE_CHAR})+)(?P<{p}_pqc>(?P={p}_pq))|"
-        rf"(?P<{p}_upqval>{_CFG_UNQUOTED_TOK_RE})"
-        rf")|"
-        rf"(?P<{p}_pb>%(?:25){{0,4}}3c)(?:"
-        rf"(?P<{p}_pbval>(?:(?!%(?:25){{0,4}}(?:26|23|3[bce]|22|27|5[bd])){_CFG_TOK_SAFE_CHAR})+)(?P<{p}_pbc>%(?:25){{0,4}}3e)|"
-        rf"(?P<{p}_upbval>{_CFG_UNQUOTED_TOK_RE})"
-        rf")|"
-        rf"(?P<{p}_psb>%(?:25){{0,4}}5b)(?:"
-        rf"(?P<{p}_psbval>(?:(?!%(?:25){{0,4}}(?:26|23|3[bce]|22|27|5[bd])){_CFG_TOK_SAFE_CHAR})+)(?P<{p}_psbc>%(?:25){{0,4}}5d)|"
-        rf"(?P<{p}_upsbval>{_CFG_UNQUOTED_TOK_RE})"
-        rf")|"
-        rf"(?!(?:\\?[\"']|<|\[|%(?:25){{0,4}}(?:22|27|3c|5b)))(?P<{p}_uval>{_CFG_UNQUOTED_TOK_RE})"
-    )
-
-
-def _format_cfg_quoted_val(match: re.Match[str], p: str) -> str:
-    vq = match.group(f"{p}_vq")
-    if vq is not None:
-        return f"{vq}REDACTED{vq}" if match.group(f"{p}_cq") is not None else f"{vq}REDACTED"
-    evq2 = match.group(f"{p}_evq2")
-    if evq2 is not None:
-        return f"{evq2}REDACTED{evq2}" if match.group(f"{p}_ecq2") is not None else f"{evq2}REDACTED"
-    evq = match.group(f"{p}_evq")
-    if evq is not None:
-        return f"{evq}REDACTED{evq}" if match.group(f"{p}_ecq") is not None else f"{evq}REDACTED"
-    return ""
-
-
-def _format_cfg_delim_val(match: re.Match[str], p: str) -> str:
-    q = _format_cfg_quoted_val(match, p)
-    if q:
-        return q
-    if match.group(f"{p}_bk") is not None:
-        return "<REDACTED>" if match.group(f"{p}_bkc") is not None else "<REDACTED"
-    if match.group(f"{p}_sb") is not None:
-        return "[REDACTED]" if match.group(f"{p}_sbc") is not None else "[REDACTED"
-    pq = match.group(f"{p}_pq")
-    if pq is not None:
-        return f"{pq}REDACTED{pq}" if match.group(f"{p}_pqc") is not None else f"{pq}REDACTED"
-    pb = match.group(f"{p}_pb")
-    if pb is not None:
-        pbc = match.group(f"{p}_pbc")
-        return f"{pb}REDACTED{pbc}" if pbc is not None else f"{pb}REDACTED"
-    psb = match.group(f"{p}_psb")
-    if psb is not None:
-        psbc = match.group(f"{p}_psbc")
-        return f"{psb}REDACTED{psbc}" if psbc is not None else f"{psb}REDACTED"
-    return "REDACTED"
-
-
-_CFG_SECRET_JSON_KV_RE = re.compile(
-    rf"(?P<prefix>(?P<kq>\\{{0,2}}[\"']){_CFG_COMP_KEY_RE}(?P=kq)[ \t]*:[ \t]*)(?:{_cfg_quoted_val_pattern('j')})",
-    re.IGNORECASE,
-)
-_CFG_SECRET_URLENC_JSON_KV_RE = re.compile(
-    rf"(?P<prefix>(?P<kq>%(?:25){{0,4}}(?:22|27)){_CFG_COMP_KEY_RE}(?P=kq)(?:[ \t]|%(?:25){{0,4}}20|\+)*(?::|%(?:25){{0,4}}3a)(?:[ \t]|%(?:25){{0,4}}20|\+)*)(?:"
-    rf"{_cfg_quoted_val_pattern('uj')}|"
-    rf"(?P<uj_pq>%(?:25){{0,4}}(?:22|27))(?:"
-    rf"(?P<uj_pqval>(?:(?!(?P=uj_pq)|%(?:25){{0,4}}(?:26|23|3[bce]|22|27|5[bd])){_CFG_TOK_SAFE_CHAR})+)(?P<uj_pqc>(?P=uj_pq))|"
-    rf"(?P<uj_upqval>{_CFG_UNQUOTED_TOK_RE})"
-    rf")"
-    rf")",
-    re.IGNORECASE,
-)
-_CFG_SECRET_QUOTED_KV_RE = re.compile(
-    rf"(?P<prefix>(?<![\w-]){_CFG_COMP_KEY_RE}{_CFG_KV_SEP_RE}(?:{_CFG_AUTH_SCHEME_RE}{_CFG_SCHEME_SEP_RE})?)(?:{_cfg_quoted_val_pattern('qk')})",
-    re.IGNORECASE,
-)
-_CFG_AUTH_HEADER_RE = re.compile(
-    rf"(?<![\w-])(?P<hdr>{_CFG_COMP_AUTH_KEY_RE}{_CFG_KV_SEP_RE})"
-    rf"(?:"
-    rf"(?P<scheme>{_CFG_AUTH_SCHEME_RE}{_CFG_SCHEME_SEP_RE})(?:{_cfg_delim_val_pattern('s')})"
-    rf"|"
-    rf"(?!{_CFG_AUTH_SCHEME_RE}(?:{_CFG_SCHEME_SEP_RE}|$|(?=[&,;\"'`<>#)}}\[%]|\])))(?:{_cfg_delim_val_pattern('r')})"
-    rf")",
-    re.IGNORECASE,
-)
-_CFG_BEARER_RE = re.compile(
-    rf"(?P<prefix>(?:(?<![A-Za-z0-9_])|%(?:25){{0,4}}(?:20|22|27|3[acd]|2c|5b|7b))bearer(?:[ \t]+|%(?:25){{0,4}}20))(?:{_cfg_delim_val_pattern('b')})",
-    re.IGNORECASE,
-)
-_CFG_SID_RE = re.compile(
-    rf"(?P<bprefix>(?<![\w-])|%(?:25){{0,4}}(?:3[fb]|26|3b|20|09|22|27))(?P<key>{_CFG_COMP_PREFIX_RE}sid)(?P<sep>=|%(?:25){{0,4}}3d)(?:{_cfg_delim_val_pattern('sid')})",
-    re.IGNORECASE,
-)
-_CFG_SECRET_KV_RE = re.compile(
-    rf"(?<![\w-]){_CFG_COMP_KV_KEY_RE}(?P<sep>{_CFG_KV_SEP_RE})(?:{_cfg_delim_val_pattern('kv')})",
-    re.IGNORECASE,
-)
-
-
-def _sub_cfg_secret_json_kv(match: re.Match[str]) -> str:
-    if not _is_cfg_secret_dict_key(match.group("key")):
-        return match.group(0)
-    return f"{match.group('prefix')}{_format_cfg_quoted_val(match, 'j')}"
-
-
-def _sub_cfg_secret_urlenc_json_kv(match: re.Match[str]) -> str:
-    if not _is_cfg_secret_dict_key(match.group("key")):
-        return match.group(0)
-    q = _format_cfg_quoted_val(match, "uj")
-    if q:
-        return f"{match.group('prefix')}{q}"
-    pq = match.group("uj_pq")
-    if match.group("uj_pqc") is not None:
-        return f"{match.group('prefix')}{pq}REDACTED{pq}"
-    return f"{match.group('prefix')}{pq}REDACTED"
-
-
-def _sub_cfg_secret_quoted(match: re.Match[str]) -> str:
-    if not _is_cfg_secret_dict_key(match.group("key")):
-        return match.group(0)
-    return f"{match.group('prefix')}{_format_cfg_quoted_val(match, 'qk')}"
-
-
-def _sub_cfg_auth_header(match: re.Match[str]) -> str:
-    if not _is_cfg_secret_dict_key(match.group("key")):
-        return match.group(0)
-    hdr = match.group("hdr")
-    scheme = match.group("scheme")
-    if scheme is None:
-        return f"{hdr}{_format_cfg_delim_val(match, 'r')}"
-    return f"{hdr}{scheme}{_format_cfg_delim_val(match, 's')}"
-
-
-def _sub_cfg_bearer(match: re.Match[str]) -> str:
-    return f"{match.group('prefix')}{_format_cfg_delim_val(match, 'b')}"
-
-
-def _sub_cfg_sid_kv(match: re.Match[str]) -> str:
-    if not _is_cfg_secret_dict_key(match.group("key")):
-        return match.group(0)
-    return f"{match.group('bprefix')}{match.group('key')}{match.group('sep')}{_format_cfg_delim_val(match, 'sid')}"
-
-
-def _sub_cfg_secret_kv(match: re.Match[str]) -> str:
-    if not _is_cfg_secret_dict_key(match.group("key")):
-        return match.group(0)
-    return f"{match.group('key')}{match.group('sep')}{_format_cfg_delim_val(match, 'kv')}"
 
 
 def _decode_cfg_bytes(raw: bytes | bytearray) -> str:
     return bytes(raw).decode("utf-8", errors="replace")
-
-
-def _redact_cfg_text(text: str) -> str:
-    if not text or len(text) < 5:
-        return text
-    low = text.lower()
-    if not any(marker in low for marker in _CFG_SECRET_FAST_MARKERS) and (
-        text.isascii()
-        or (
-            "\u0130" not in text
-            and "\u0131" not in text
-            and "\u017f" not in text
-            and "\u212a" not in text
-        )
-    ):
-        return text
-    masked = _CFG_SECRET_JSON_KV_RE.sub(_sub_cfg_secret_json_kv, text)
-    masked = _CFG_SECRET_URLENC_JSON_KV_RE.sub(_sub_cfg_secret_urlenc_json_kv, masked)
-    masked = _CFG_SECRET_QUOTED_KV_RE.sub(_sub_cfg_secret_quoted, masked)
-    masked = _CFG_AUTH_HEADER_RE.sub(_sub_cfg_auth_header, masked)
-    masked = _CFG_BEARER_RE.sub(_sub_cfg_bearer, masked)
-    masked = _CFG_SID_RE.sub(_sub_cfg_sid_kv, masked)
-    return _CFG_SECRET_KV_RE.sub(_sub_cfg_secret_kv, masked)
 
 
 def _safe_fspath(value: Any) -> tuple[bool, Any]:
@@ -310,12 +43,6 @@ _MAX_CFG_TREE_NODES = 32_768
 _MAX_CFG_TREE_DEPTH = 64
 
 
-def _clip_cfg_str(text: str, limit: int = _MAX_CFG_KEY_CHARS) -> str:
-    if len(text) <= limit:
-        return text
-    return text[:limit] + "...[truncated]"
-
-
 def _safe_cfg_exc_text(
     exc: BaseException,
     *,
@@ -325,44 +52,10 @@ def _safe_cfg_exc_text(
 ) -> str:
     seen = _seen if _seen is not None else set()
     budget = _budget if _budget is not None else [_MAX_CFG_KEY_NODES]
-    str_fn = getattr(type(exc), "__str__", BaseException.__str__)
-    if str_fn not in (BaseException.__str__, KeyError.__str__):
-        try:
-            return _clip_cfg_str(str(exc), 16_384)
-        except Exception:
-            pass
-    args = getattr(exc, "args", ())
-    if not isinstance(args, (tuple, list)) or not args:
-        return "" if str_fn is BaseException.__str__ else type(exc).__name__
-    vid = id(exc)
-    if vid in seen or _depth >= 16 or budget[0] <= 0:
-        return f"<{type(exc).__name__}>"
-    budget[0] -= 1
-    seen.add(vid)
-    try:
-        if len(args) == 1:
-            a0 = args[0]
-            if isinstance(a0, str):
-                res = repr(a0) if isinstance(exc, KeyError) else a0
-                return _clip_cfg_str(res, 16_384)
-            return _clip_cfg_str(
-                _safe_cfg_key(a0, _depth=_depth + 1, _seen=seen, _budget=budget),
-                _MAX_CFG_KEY_CHARS,
-            )
-        parts: list[str] = []
-        for a in args[:8]:
-            if budget[0] <= 0:
-                parts.append("...")
-                break
-            if isinstance(a, str):
-                parts.append(repr(a))
-            else:
-                parts.append(_safe_cfg_key(a, _depth=_depth + 1, _seen=seen, _budget=budget))
-        if len(args) > 8:
-            parts.append(f"...+{len(args) - 8}")
-        return _clip_cfg_str("(" + ", ".join(parts) + ")", _MAX_CFG_KEY_CHARS)
-    finally:
-        seen.discard(vid)
+    return _clip_cfg_str(
+        _redaction_safe_text(exc, f"<{type(exc).__name__}>", _depth, seen, budget),
+        16_384,
+    )
 
 
 def normalize_planner_mode(value: Any, *, strict: bool = False) -> str:
@@ -1130,124 +823,10 @@ def _serialize_strategy_config_json(cfg: StrategyConfig, *, indent: Optional[int
     return json.dumps(cfg_dict, indent=indent, sort_keys=True, allow_nan=False)
 
 
-def load_strategy_config_from_postgres(dsn: str) -> Optional[StrategyConfig]:
-    """Load persisted `StrategyConfig` from PostgreSQL (`strategy_config_store` or `meta['strategy_config']`)."""
-    raw_json: Optional[str] = None
-    try:
-        import psycopg
-
-        with psycopg.connect(str(dsn).strip(), connect_timeout=3) as conn:
-            has_store = conn.execute(
-                "SELECT 1 FROM pg_catalog.pg_tables WHERE schemaname = 'public' AND tablename = 'strategy_config_store' LIMIT 1"
-            ).fetchone()
-            if has_store is not None:
-                row = conn.execute("SELECT config_json FROM strategy_config_store WHERE id = 1").fetchone()
-                if row is not None and isinstance(row[0], str) and row[0].strip():
-                    raw_json = row[0]
-            if raw_json is None:
-                has_meta = conn.execute(
-                    "SELECT 1 FROM pg_catalog.pg_tables WHERE schemaname = 'public' AND tablename = 'meta' LIMIT 1"
-                ).fetchone()
-                if has_meta is not None:
-                    mrow = conn.execute("SELECT value FROM meta WHERE key = 'strategy_config'").fetchone()
-                    if mrow is not None and isinstance(mrow[0], str) and mrow[0].strip():
-                        raw_json = mrow[0]
-    except Exception:
-        return None
-    if not raw_json:
-        return None
-    try:
-        parsed = _sanitize_cfg_json_tree(json.loads(raw_json))
-    except (ValueError, TypeError):
-        return None
-    if not isinstance(parsed, Mapping):
-        return None
-    return strategy_config_from_dict(parsed)
-
-
-def save_strategy_config_to_postgres(
-    cfg: StrategyConfig,
-    dsn: str,
-    *,
-    source: str = "postgres",
-) -> str:
-    """Persist `StrategyConfig` into PostgreSQL (`strategy_config_store`, `meta`, and `config_history`)."""
-    import psycopg
-
-    cfg_json = _serialize_strategy_config_json(cfg)
-    now_ts = round(time.time(), 3)
-    target_dsn = str(dsn).strip()
-    with psycopg.connect(target_dsn, connect_timeout=5) as conn:
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS strategy_config_store (
-                id BIGINT PRIMARY KEY CHECK (id = 1),
-                config_json TEXT NOT NULL,
-                updated_ts DOUBLE PRECISION NOT NULL,
-                source TEXT NOT NULL DEFAULT 'postgres'
-            )
-            """
-        )
-        conn.execute(
-            """
-            INSERT INTO strategy_config_store(id, config_json, updated_ts, source)
-            VALUES (1, %s, %s, %s)
-            ON CONFLICT(id) DO UPDATE SET
-                config_json = EXCLUDED.config_json,
-                updated_ts = EXCLUDED.updated_ts,
-                source = EXCLUDED.source
-            """,
-            (cfg_json, now_ts, str(source or "postgres")[:32]),
-        )
-        has_meta = conn.execute(
-            "SELECT 1 FROM pg_catalog.pg_tables WHERE schemaname = 'public' AND tablename = 'meta' LIMIT 1"
-        ).fetchone()
-        if has_meta is not None:
-            conn.execute(
-                """
-                INSERT INTO meta(key, value, updated_ts) VALUES ('strategy_config', %s, %s)
-                ON CONFLICT(key) DO UPDATE SET value = EXCLUDED.value, updated_ts = EXCLUDED.updated_ts
-                """,
-                (cfg_json, now_ts),
-            )
-        has_hist = conn.execute(
-            "SELECT 1 FROM pg_catalog.pg_tables WHERE schemaname = 'public' AND tablename = 'config_history' LIMIT 1"
-        ).fetchone()
-        if has_hist is not None:
-            last_row = conn.execute("SELECT config_json FROM config_history ORDER BY id DESC LIMIT 1").fetchone()
-            if last_row is None or last_row[0] != cfg_json:
-                conn.execute("INSERT INTO config_history(ts, config_json) VALUES (%s, %s)", (now_ts, cfg_json))
-        conn.commit()
-    return target_dsn
-
-
-def _resolve_default_config_target() -> tuple[str, str]:
-    """Pure-stdlib resolver for default `StrategyConfig` storage (`postgres` exclusively)."""
-    env = os.environ
-    env_url = str(env.get("SPACEINVASION_DB_URL") or "").strip()
-    if env_url.lower().startswith(("postgresql://", "postgres://")):
-        return ("postgres", env_url)
-    host = str(env.get("SPACEINVASION_PG_HOST") or "127.0.0.1").strip() or "127.0.0.1"
-    try:
-        port = max(1, min(65535, int(str(env.get("SPACEINVASION_PG_PORT") or "5433").strip())))
-    except ValueError:
-        port = 5433
-    dbn = str(env.get("SPACEINVASION_PG_DB") or "spaceinvasion").strip() or "spaceinvasion"
-    usr = str(env.get("SPACEINVASION_PG_USER") or "spaceinvasion").strip() or "spaceinvasion"
-    pw = str(env.get("SPACEINVASION_PG_PASSWORD") or "spaceinvasion")
-    dsn = f"postgresql://{quote(usr, safe='')}:{quote(pw, safe='')}@{host}:{port}/{quote(dbn, safe='')}"
-    return ("postgres", dsn)
-
-
-def load_strategy_config(path: Optional[Path | str] = None) -> StrategyConfig:
-    """Load `StrategyConfig` from PostgreSQL, or an explicit JSON file path."""
-    if path is None:
-        _backend, target = _resolve_default_config_target()
-        from_pg = load_strategy_config_from_postgres(str(target))
-        return from_pg if from_pg is not None else StrategyConfig()
+def load_strategy_config(path: Path | str) -> StrategyConfig:
+    """Load ``StrategyConfig`` from an explicit JSON file path."""
     if isinstance(path, str) and path.strip().lower().startswith(("postgresql://", "postgres://")):
-        from_pg = load_strategy_config_from_postgres(path)
-        return from_pg if from_pg is not None else StrategyConfig()
+        raise ValueError("Use spaceinvasion.db.config_store.load_strategy_config for PostgreSQL DSNs.")
     if isinstance(path, str):
         path = Path(path)
     if not path.exists():
@@ -1267,13 +846,10 @@ def load_strategy_config(path: Optional[Path | str] = None) -> StrategyConfig:
     return strategy_config_from_dict(parsed)
 
 
-def save_strategy_config(cfg: StrategyConfig, path: Optional[Path | str] = None) -> Path | str:
-    """Persist `StrategyConfig` to PostgreSQL, or an explicit JSON file path."""
-    if path is None:
-        _backend, target = _resolve_default_config_target()
-        return save_strategy_config_to_postgres(cfg, str(target))
+def save_strategy_config(cfg: StrategyConfig, path: Path | str) -> Path:
+    """Persist ``StrategyConfig`` to an explicit JSON file path."""
     if isinstance(path, str) and path.strip().lower().startswith(("postgresql://", "postgres://")):
-        return save_strategy_config_to_postgres(cfg, path)
+        raise ValueError("Use spaceinvasion.db.config_store.save_strategy_config for PostgreSQL DSNs.")
     if not isinstance(path, Path):
         ok_fsp, fsp_val = _safe_fspath(path)
         if not ok_fsp:

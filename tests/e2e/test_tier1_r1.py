@@ -26,15 +26,17 @@ from tests.e2e.fixtures import (
     make_ship_offer,
 )
 from tests.e2e.harness import E2ETestHarness, FakeSpaceInvasionServer
-from spaceinvasion import game_data
-from spaceinvasion.config import (
+from spaceinvasion.core import catalog as game_data
+from spaceinvasion.core.config import (
     StrategyConfig,
-    load_strategy_config,
-    save_strategy_config,
     strategy_config_from_dict,
 )
-from spaceinvasion.executor import ActionExecutor
-from spaceinvasion.state import (
+from spaceinvasion.db.config_store import (
+    load_strategy_config,
+    save_strategy_config,
+)
+from spaceinvasion.session.executor import ActionExecutor
+from spaceinvasion.core.model import (
     EnergyBalance,
     FleetAlert,
     GameState,
@@ -43,8 +45,9 @@ from spaceinvasion.state import (
     TutorialStatus,
     TutorialTask,
 )
-from spaceinvasion.storage import GameDatabase
-from spaceinvasion.strategy import (
+from spaceinvasion.db.storage import GameDatabase
+from spaceinvasion.core.model import PlannedAction
+from spaceinvasion.planner.heuristics import (
     BLAST_FURNACE,
     DEVELOPMENT_CENTER,
     FUSION_PLANT,
@@ -54,7 +57,6 @@ from spaceinvasion.strategy import (
     RESEARCH_LAB,
     SPICE_MINE,
     WEAPONS_FACTORY,
-    PlannedAction,
     plan_actions,
 )
 
@@ -311,8 +313,8 @@ class TestTier1R1(unittest.TestCase):
                 sys.executable,
                 "-c",
                 (
-                    "import spaceinvasion.config, "
-                    "spaceinvasion.strategy, spaceinvasion.api_server; "
+                    "import spaceinvasion.core.config, "
+                    "spaceinvasion.planner.heuristics, spaceinvasion.runtime.api_server; "
                     "print('OK')"
                 ),
             ],

@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import re
 
-from spaceinvasion.core.state import Resources
+from spaceinvasion.core.model import PlannedAction as PlannedAction
 
 SHIP_SLUG_BY_KEY: dict[str, str] = {
     "s1": "small-transport",
@@ -102,32 +101,3 @@ AI_THROTTLE_COOLDOWN_SECONDS: float = 60.0
 METAL_OVERFLOW_RESUME_PCT: int = 95
 EMPIRE_SMELT_HOLD_RATIO: float = 1.10
 EMPIRE_SMELT_MIN_SPARE_PIG: int = 50_000
-
-
-@dataclass(frozen=True)
-class PlannedAction:
-    """Single recommended or blocked empire action produced by the planner."""
-
-    priority: str
-    kind: str
-    planet_id: int
-    planet_coords: str
-    target_name: str
-    reason: str
-    target_id: int | None = None
-    target_level: int | None = None
-    cost: Resources = Resources()
-    missing: Resources = Resources()
-    executable_now: bool = False
-    action_href: str | None = None
-    wait_hours: float | None = 0.0
-    wait_seconds: float | None = 0.0
-    wait_eta: str = "Ready"
-    duration_seconds: float = 0.0
-    duration_text: str = "Instant"
-    total_hours: float | None = 0.0
-    total_seconds: float | None = 0.0
-    total_eta: str = "Ready"
-    eta_bottleneck: str | None = None
-    manual_queue_id: int | None = None
-    manual_sort_rank: int | None = None

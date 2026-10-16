@@ -23,7 +23,7 @@ from spaceinvasion.core.catalog import (
     safe_key,
     safe_optional_int,
 )
-from spaceinvasion.core.state import GameState, PlanetState
+from spaceinvasion.core.model import GameState, PlanetState
 from spaceinvasion.planner._eta_helpers import (
     ETA_RESOURCE_KEYS,
     building_category,

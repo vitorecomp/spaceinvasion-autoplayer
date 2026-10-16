@@ -18,14 +18,27 @@ from selenium.common.exceptions import NoSuchElementException
 from selenium.webdriver.common.by import By
 
 import commander
-from spaceinvasion import game_data
-from spaceinvasion.api_server import GameApiBridge, create_api_server
-from spaceinvasion.client import GameBrowserClient, PageViewLimiter, RateLimitError
-from spaceinvasion.commander_client import GameApiClient, GameApiError
-from spaceinvasion.config import StrategyConfig
-from spaceinvasion.fleet import GalaxySlot, SpyReport
-from spaceinvasion.reloader import snapshot_mtimes
-from spaceinvasion.state import (
+from spaceinvasion.core import catalog as game_data
+from spaceinvasion.runtime.api_server import (
+    GameApiBridge,
+    create_api_server,
+)
+from spaceinvasion.session.client import (
+    GameBrowserClient,
+    PageViewLimiter,
+    RateLimitError,
+)
+from spaceinvasion.runtime.commander_client import (
+    GameApiClient,
+    GameApiError,
+)
+from spaceinvasion.core.config import StrategyConfig
+from spaceinvasion.parsing.models import (
+    GalaxySlot,
+    SpyReport,
+)
+from spaceinvasion.runtime.reloader import snapshot_mtimes
+from spaceinvasion.core.model import (
     BuildingOffer,
     EnergyBalance,
     GameState,
@@ -36,8 +49,14 @@ from spaceinvasion.state import (
     TutorialTask,
     game_state_from_dict,
 )
-from spaceinvasion.storage import GameDatabase
-from spaceinvasion.strategy import BLAST_FURNACE, FUSION_PLANT, PIG_IRON_MINE, PlannedAction, plan_actions
+from spaceinvasion.db.storage import GameDatabase
+from spaceinvasion.core.model import PlannedAction
+from spaceinvasion.planner.heuristics import (
+    BLAST_FURNACE,
+    FUSION_PLANT,
+    PIG_IRON_MINE,
+    plan_actions,
+)
 
 
 def _sample_state(
@@ -134,7 +153,7 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
         port = server.server_address[1]
         threading.Thread(target=server.serve_forever, daemon=True).start()
         try:
-            with patch("spaceinvasion.api_server.is_debug_port_open", return_value=True):
+            with patch("spaceinvasion.runtime.api_server.is_debug_port_open", return_value=True):
                 resp = requests.post(
                     f"http://127.0.0.1:{port}/command",
                     json={"command": "scan_galaxy", "dry_run": False},
@@ -189,8 +208,8 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
     def test_commander_backs_off_at_least_retry_after_on_rate_limit(self) -> None:
         watched_resolved = {Path(p).resolve() for p in commander.WATCH_PATHS}
         self.assertIn(Path("spaceinvasion/combat/scanner.py").resolve(), watched_resolved)
-        self.assertIn(Path("spaceinvasion/planner/strategy.py").resolve(), watched_resolved)
-        self.assertIn(Path("spaceinvasion/combat/ranking.py").resolve(), watched_resolved)
+        self.assertIn(Path("spaceinvasion/planner/heuristics/assembly.py").resolve(), watched_resolved)
+        self.assertIn(Path("spaceinvasion/combat/points.py").resolve(), watched_resolved)
         snaps = snapshot_mtimes(commander.WATCH_PATHS)
         self.assertIn(str(Path("bin/commander.py").resolve()), snaps)
         # Missing watch paths are skipped safely without crashing reloader
@@ -682,7 +701,7 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
         port = server.server_address[1]
         threading.Thread(target=server.serve_forever, daemon=True).start()
         try:
-            with patch("spaceinvasion.api_server.is_debug_port_open", return_value=True):
+            with patch("spaceinvasion.runtime.api_server.is_debug_port_open", return_value=True):
                 # 1. Normal GET /state hits local budget -> HTTP 429, cooldown remains 0.0, hits == 0
                 st_resp = requests.get(f"http://127.0.0.1:{port}/state", timeout=5)
                 self.assertEqual(st_resp.status_code, 429)
@@ -782,8 +801,8 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
             self.assertNotEqual(c.args[0].get("command"), "ensure_session")
 
     def test_executor_pace_action_respects_max_limiter_wait_inside_bridge_lock(self) -> None:
-        from spaceinvasion.client import GameBrowserClient
-        from spaceinvasion.executor import ActionExecutor
+        from spaceinvasion.session.client import GameBrowserClient
+        from spaceinvasion.session.executor import ActionExecutor
 
         now = [500.0]
         sleeps: list[float] = []
@@ -1157,7 +1176,7 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
                 # 1. Closed port -> health and dashboard both report in_game=False even with cached state + cooldown
                 bridge._last_state = state
                 bridge.record_rate_limit(30.0)
-                with patch("spaceinvasion.api_server.is_debug_port_open", return_value=False):
+                with patch("spaceinvasion.runtime.api_server.is_debug_port_open", return_value=False):
                     h = bridge.health()
                     d = bridge.dashboard(refresh=False)
                 self.assertFalse(h["in_game"])
@@ -1814,7 +1833,7 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
             port = server.server_address[1]
             threading.Thread(target=server.serve_forever, daemon=True).start()
             try:
-                with patch("spaceinvasion.api_server.is_debug_port_open", return_value=True):
+                with patch("spaceinvasion.runtime.api_server.is_debug_port_open", return_value=True):
                     # Prime _last_state once, then reset limiter to test interactive headroom cleanly
                     bridge.get_state(include_buildings=True)
 
@@ -1955,7 +1974,10 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
         self.assertTrue(fake_res_client.read_full_snapshot.call_args_list[-1].kwargs["include_research"])
 
     def test_all_interactive_commands_within_6_views_and_spio_sync_normal_priority(self) -> None:
-        from spaceinvasion.state import ResearchOffer, UnitOffer
+        from spaceinvasion.core.model import (
+            ResearchOffer,
+            UnitOffer,
+        )
 
         # 1. Verify GameApiBridge executor_max_limiter_wait parameter behavior
         b_def = GameApiBridge(debug_port=9222, log_dir=None, client_factory=lambda _p: MagicMock(), ensure_session_fn=lambda: None)
@@ -2861,7 +2883,10 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
 
     def test_home_freshness_ttl_queue_clearing_prereq_cache_and_ship_qty_affordability(self) -> None:
         from tests.e2e.harness import FakeClock, FakeDriver, FakeSpaceInvasionServer
-        from spaceinvasion.state import ResearchOffer, UnitOffer
+        from spaceinvasion.core.model import (
+            ResearchOffer,
+            UnitOffer,
+        )
 
         def _make_env(tmp_dir: Path, *, planets=None, researches=None, tutorial=None, hostile_alerts=None):
             clock = FakeClock(initial=1000.0)
@@ -2927,7 +2952,7 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
                 hostile_alerts=["Hostile Attack from 02:380:99 arriving in 00:05:00"],
             )
             try:
-                with patch("spaceinvasion.api_server.time", _TimeProxy(clock)):
+                with patch("spaceinvasion.runtime.api_server.time", _TimeProxy(clock)):
                     lim.record_view(18)
                     drv._navigate_frame("F_Hauptframe", "indexInternal.es?action=internalGalaxy")
                     r_scan = bridge.handle_command({"command": "scan_galaxy", "galaxy": 2, "system": 380, "dry_run": False})
@@ -2950,7 +2975,7 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
                 hostile_alerts=["Hostile Attack from 02:380:99 arriving in 00:05:00"],
             )
             try:
-                with patch("spaceinvasion.api_server.time", _TimeProxy(clock_b)):
+                with patch("spaceinvasion.runtime.api_server.time", _TimeProxy(clock_b)):
                     drv_b._navigate_frame("F_Hauptframe", "indexInternal.es?action=internalGalaxy")
                     bridge_b.handle_command({"command": "build", "building_id": 1, "dry_run": True})
                     self.assertFalse(bridge_b._last_home_fetched)
@@ -3250,7 +3275,7 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
 
     def test_research_dry_run_active_queue_preservation_dedup_finish_clear_and_b8_zero_cross_planet(self) -> None:
         from tests.e2e.harness import FakeClock, FakeDriver, FakeSpaceInvasionServer
-        from spaceinvasion.state import ResearchOffer
+        from spaceinvasion.core.model import ResearchOffer
 
         def _make_research_env(tmp_dir: Path, *, planets, researches=None, tutorial=None, research_offers=None, active_research_banner=None):
             clock = FakeClock(initial=2000.0)
@@ -3537,7 +3562,10 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
 
     def test_adv_bridge_internalbuildings_banner_external_cancel_ship_prereq_and_cross_planet_b8(self) -> None:
         from tests.e2e.harness import FakeClock, FakeDriver, FakeSpaceInvasionServer
-        from spaceinvasion.state import ResearchOffer, UnitOffer
+        from spaceinvasion.core.model import (
+            ResearchOffer,
+            UnitOffer,
+        )
 
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -3679,7 +3707,7 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
                 bridge_x._db.close()
 
     def test_commander_fleet_slot_busy_wakes_promptly_and_continues_non_fleet_batch(self) -> None:
-        from spaceinvasion.core.state import UnitOffer
+        from spaceinvasion.core.model import UnitOffer
 
         p = PlanetState(
             planet_id=12476,

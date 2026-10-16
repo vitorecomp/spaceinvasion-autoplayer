@@ -6,7 +6,7 @@ from collections.abc import Mapping, Sequence
 
 from spaceinvasion.combat.flight import normalize_coords
 from spaceinvasion.core.catalog import sanitize_json_tree
-from spaceinvasion.core.state import GameState
+from spaceinvasion.core.model import GameState
 from spaceinvasion.planner.graph._ai_edges import StepDict, build_ai_edges, parse_week_filter
 from spaceinvasion.planner.graph._ai_nodes import build_ai_nodes_meta, normalize_ai_step
 from spaceinvasion.planner.graph.common import (

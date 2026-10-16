@@ -7,7 +7,7 @@ from dataclasses import dataclass, replace
 from typing import TypeVar
 
 from spaceinvasion.core.config import StrategyConfig
-from spaceinvasion.core.state import GameState, PlanetState
+from spaceinvasion.core.model import GameState, PlanetState
 from spaceinvasion.planner.heuristics._common import _safe_strategy_int, _safe_strategy_str
 from spaceinvasion.planner.heuristics._fleet_context import _FleetContext, _S8PoolEntry
 from spaceinvasion.planner.heuristics._fleet_helper_builds import _ColonizeSortKey, _ColonySpySortKey

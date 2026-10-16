@@ -8,9 +8,14 @@ import re
 
 from spaceinvasion.combat.cargo import fleet_cargo_capacity
 from spaceinvasion.core import catalog
-from spaceinvasion.core import state as _state_mod
 from spaceinvasion.core.config import StrategyConfig
-from spaceinvasion.core.state import GameState, PlanetState, is_in_flight_fleet_job
+from spaceinvasion.core.coords import extract_coords_from_text
+from spaceinvasion.core.model import (
+    GameState,
+    PlanetState,
+    count_in_flight_ships_by_planet,
+    is_in_flight_fleet_job,
+)
 from spaceinvasion.planner.heuristics._common import (
     _norm_planet_type,
     _safe_strategy_float,
@@ -101,11 +106,7 @@ def _parse_in_flight_ship_detail(detail: str) -> tuple[dict[str, int], bool]:
 
 
 def _norm_queue_coords(raw: object) -> str:
-    norm_fn = getattr(_state_mod, "_normalize_queue_coords", None)
-    if callable(norm_fn):
-        return str(norm_fn(_safe_strategy_str(raw)) or "")
-    m = re.search(r"(\d{1,2}):(\d{1,3}):(\d{1,2})", _safe_strategy_str(raw), re.ASCII)
-    return f"{int(m.group(1)):02d}:{int(m.group(2)):03d}:{int(m.group(3)):02d}" if m else ""
+    return extract_coords_from_text(_safe_strategy_str(raw))
 
 
 def _fallback_in_flight_ship_counts(state: GameState) -> dict[str, object]:
@@ -155,14 +156,12 @@ def _fallback_in_flight_ship_counts(state: GameState) -> dict[str, object]:
 
 
 def _in_flight_ship_counts(state: GameState) -> dict[str, object]:
-    """Ships in flight per home colony; delegates to `state.count_in_flight_ships_by_planet` when present."""
-    fn = getattr(_state_mod, "count_in_flight_ships_by_planet", None)
+    """Ships in flight per home colony; delegates to `count_in_flight_ships_by_planet`."""
     raw: object = None
-    if callable(fn):
-        try:
-            raw = fn(state)
-        except (TypeError, ValueError, KeyError, AttributeError):
-            raw = None
+    try:
+        raw = count_in_flight_ships_by_planet(state)
+    except (TypeError, ValueError, KeyError, AttributeError):
+        raw = None
     if not isinstance(raw, Mapping):
         raw = _fallback_in_flight_ship_counts(state)
 

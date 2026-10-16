@@ -14,9 +14,17 @@ from unittest.mock import MagicMock, patch
 import psycopg
 import psycopg_pool
 
-from spaceinvasion.combat.fleet import GalaxySlot, SpyReport
+from spaceinvasion.parsing.models import (
+    GalaxySlot,
+    SpyReport,
+)
 from spaceinvasion.core.logging_utils import append_tick_logs
-from spaceinvasion.core.state import EnergyBalance, GameState, PlanetState, Resources
+from spaceinvasion.core.model import (
+    EnergyBalance,
+    GameState,
+    PlanetState,
+    Resources,
+)
 from spaceinvasion.db.backend import (
     ensure_postgres_container_ready,
     is_unix_socket_dsn,

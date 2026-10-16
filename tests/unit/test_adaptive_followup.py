@@ -15,21 +15,27 @@ import time
 import unittest
 from unittest.mock import MagicMock, patch
 
-from spaceinvasion.core.config import StrategyConfig, save_strategy_config
-from spaceinvasion.core.state import GameState, QueueJob, Resources, UnitOffer
-from spaceinvasion.planner import ai_planner as ap
-from spaceinvasion.planner.strategy import (
+from spaceinvasion.core.config import StrategyConfig
+from spaceinvasion.db.config_store import save_strategy_config
+from spaceinvasion.core.model import (
+    GameState,
+    QueueJob,
+    Resources,
+    UnitOffer,
+)
+from spaceinvasion.planner import ai as ap
+from spaceinvasion.core.model import PlannedAction
+from spaceinvasion.planner.heuristics import (
     AI_INFRA_CARGO_TAG,
     INFRA_TRANSPORT_MAX_BATCH,
     INFRA_TRANSPORT_MIN_UTILIZATION,
-    PlannedAction,
-    _plan_planet_shipyard_targets,
-    _ship_offer_map,
     compute_infra_transport_targets,
     compute_spare_ship_budget,
     filter_shipyard_actions_by_spare_budget,
     plan_fleet_and_attack_actions,
 )
+from spaceinvasion.planner.heuristics._common import _ship_offer_map
+from spaceinvasion.planner.heuristics._shipyard_targets import _plan_planet_shipyard_targets
 from spaceinvasion.runtime.api_server import GameApiBridge
 from tests.unit.test_ai_planner import _make_planet, _sample_target_config, _target_planet_entry
 from tests.unit.test_strategy import _adaptive_cfg, _colony, _state

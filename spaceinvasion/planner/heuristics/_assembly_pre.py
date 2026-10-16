@@ -7,7 +7,7 @@ import math
 
 from spaceinvasion.core import catalog
 from spaceinvasion.core.config import StrategyConfig
-from spaceinvasion.core.state import BuildingOffer, GameState, PlanetState
+from spaceinvasion.core.model import BuildingOffer, GameState, PlanetState
 from spaceinvasion.planner.heuristics._actions import _make_build_action
 from spaceinvasion.planner.heuristics._common import (
     _apply_queue_cap_if_full,

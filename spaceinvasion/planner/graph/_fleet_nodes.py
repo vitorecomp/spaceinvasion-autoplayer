@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 
 from spaceinvasion.combat.flight import normalize_coords
-from spaceinvasion.core.state import PlanetState
+from spaceinvasion.core.model import PlanetState
 from spaceinvasion.planner.graph._fleet_edges import FleetNode, classify_inflight_mission
 from spaceinvasion.planner.graph.common import (
     RESOURCE_KEYS,

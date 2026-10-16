@@ -12,7 +12,8 @@ from tests.e2e.harness import (
     FakeSpaceInvasionServer,
     run_ui_in_node,
 )
-from spaceinvasion.config import StrategyConfig, load_strategy_config
+from spaceinvasion.core.config import StrategyConfig
+from spaceinvasion.db.config_store import load_strategy_config
 
 
 def _make_two_colony_server(*, hostile: bool = False) -> FakeSpaceInvasionServer:

@@ -15,7 +15,7 @@ from bs4 import BeautifulSoup
 from dotenv import dotenv_values
 import requests
 
-from spaceinvasion.core import game_data
+from spaceinvasion.core import catalog as game_data
 from spaceinvasion.session.http_pools import (
     close_http_response as _close_http_response,
     close_http_session as _close_http_session,

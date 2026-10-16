@@ -9,10 +9,10 @@ from __future__ import annotations
 
 from typing import Any, Mapping, Optional
 
-from spaceinvasion.combat import fleet
-from spaceinvasion.core import game_data
+from spaceinvasion.core import catalog as game_data
+from spaceinvasion.core.catalog import SHIP_SLUG_BY_KEY
 from spaceinvasion.core.config import StrategyConfig
-from spaceinvasion.core.state import (
+from spaceinvasion.core.model import (
     BuildingOffer,
     EnergyBalance,
     FleetAlert,
@@ -86,7 +86,7 @@ def _building_offers(
 def _ship_offers(ships: Mapping[str, int], resources: Resources, ship_ids: tuple[int, ...]) -> tuple[UnitOffer, ...]:
     offers: list[UnitOffer] = []
     for sid in ship_ids:
-        slug = fleet.SHIP_SLUG_BY_KEY.get(f"s{sid}") or ""
+        slug = SHIP_SLUG_BY_KEY.get(f"s{sid}") or ""
         info = game_data.SHIPS.get(slug) or {}
         cost = _res(info.get("base_cost") or {})
         can_build = resources.can_afford(cost)

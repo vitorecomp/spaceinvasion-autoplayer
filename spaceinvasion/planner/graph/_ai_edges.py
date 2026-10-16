@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 
 from spaceinvasion.core.catalog import BUILDINGS, RESEARCHES, building_energy_delta
-from spaceinvasion.core.state import PlanetState
+from spaceinvasion.core.model import PlanetState
 from spaceinvasion.planner.graph.common import (
     MINE_RESOURCE_BY_BID,
     RESOURCE_KEYS,

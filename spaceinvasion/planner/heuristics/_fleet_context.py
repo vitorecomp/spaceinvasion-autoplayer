@@ -9,7 +9,7 @@ import time
 from spaceinvasion.combat.flight import BashTracker, normalize_coords
 from spaceinvasion.combat.simulator import CombatReport
 from spaceinvasion.core.config import StrategyConfig
-from spaceinvasion.core.state import (
+from spaceinvasion.core.model import (
     GameState,
     PlanetState,
     Resources,

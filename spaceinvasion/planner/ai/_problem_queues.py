@@ -5,8 +5,9 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import TypeVar
 
-from spaceinvasion.combat.fleet import _flight_distance_units, estimate_fleet_flight_seconds, ship_effective_speed
+from spaceinvasion.combat.flight import estimate_fleet_flight_seconds, ship_effective_speed
 from spaceinvasion.core.coercion import coerce_finite_float, coerce_int, coerce_optional_int
+from spaceinvasion.core.coords import flight_distance as _flight_distance_units
 from spaceinvasion.core.coords import normalize_coords
 from spaceinvasion.core.model import Resources, normalize_planet_type
 from spaceinvasion.planner.ai._types import (

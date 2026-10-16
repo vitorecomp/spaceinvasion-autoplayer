@@ -6,7 +6,7 @@ from collections.abc import Mapping
 
 from spaceinvasion.combat.flight import format_station_ships_spec, parse_station_ships_spec
 from spaceinvasion.core import catalog
-from spaceinvasion.core.state import Resources
+from spaceinvasion.core.model import Resources
 from spaceinvasion.planner.heuristics._common import (
     _norm_planet_type,
     _normalize_manual_coords,

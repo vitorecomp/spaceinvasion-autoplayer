@@ -23,7 +23,7 @@ import requests
 
 WIKI_INDEX_URL = "https://spaceinvasion.bitmeup.com/wiki/en/"
 MERCHANT_URL = "https://spaceinvasion.bitmeup.com/wiki/en/economy/merchant"
-OUTPUT_PATH = Path(__file__).resolve().parent.parent / "spaceinvasion" / "core" / "game_data.py"
+OUTPUT_TABLES_DIR = Path(__file__).resolve().parent.parent / "spaceinvasion" / "core" / "catalog" / "tables"
 
 BUILDING_ID_BY_SLUG: dict[str, int] = {
     "pig-iron-mine": 1,
@@ -1263,22 +1263,20 @@ from typing import Any, Optional
     return "\n".join(body)
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description="Sync SpaceInvasion Classic Wiki data into spaceinvasion/game_data.py")
-    parser.add_argument("--output", type=Path, default=OUTPUT_PATH)
-    args = parser.parse_args()
+def write_catalog_tables(payload: dict[str, Any], tables_dir: Path = OUTPUT_TABLES_DIR) -> None:
+    """Write scraped SpaceInvasion Classic tables into ``spaceinvasion/core/catalog/tables/*.json``."""
+    tables_dir.mkdir(parents=True, exist_ok=True)
+    for filename, key in (("buildings.json", "buildings"), ("research.json", "researches"), ("ships.json", "ships"), ("defenses.json", "defenses")):
+        (tables_dir / filename).write_text(json.dumps(payload[key], indent=2, ensure_ascii=False, allow_nan=False) + "\n", encoding="utf-8")
 
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Sync SpaceInvasion Classic Wiki data into catalog tables JSON")
+    parser.add_argument("--output-dir", type=Path, default=OUTPUT_TABLES_DIR)
+    args = parser.parse_args()
     payload = scrape_wiki()
-    module_src = render_module(payload)
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(module_src, encoding="utf-8")
-    print(
-        f"Wrote {args.output} ({len(module_src)} bytes): "
-        f"{len(payload['buildings'])} buildings, "
-        f"{len(payload['researches'])} researches, "
-        f"{len(payload['ships'])} ships, "
-        f"{len(payload['defenses'])} defenses"
-    )
+    write_catalog_tables(payload, args.output_dir)
+    print(f"Wrote {args.output_dir}: {len(payload['buildings'])} buildings, {len(payload['researches'])} researches, {len(payload['ships'])} ships, {len(payload['defenses'])} defenses")
     return 0
 
 

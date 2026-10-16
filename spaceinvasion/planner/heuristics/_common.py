@@ -8,7 +8,7 @@ import re
 
 from spaceinvasion.core import catalog
 from spaceinvasion.core.config import StrategyConfig
-from spaceinvasion.core.state import (
+from spaceinvasion.core.model import (
     BuildingOffer,
     GameState,
     PlanetState,
@@ -52,7 +52,7 @@ def _safe_strategy_str(val: object) -> str:
     if isinstance(val, os.PathLike):
         try:
             val = os.fspath(val)
-        except (TypeError, ValueError, OSError):
+        except (TypeError, ValueError, OSError, RuntimeError, AttributeError, LookupError, OverflowError, RecursionError):
             return catalog.safe_key(val)
         if val is None:
             return ""

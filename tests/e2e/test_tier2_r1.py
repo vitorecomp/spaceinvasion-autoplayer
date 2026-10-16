@@ -24,10 +24,18 @@ from tests.e2e.fixtures import (
     make_ship_offer,
 )
 from tests.e2e.harness import E2ETestHarness
-from spaceinvasion.config import StrategyConfig, strategy_config_from_dict
-from spaceinvasion.state import EnergyBalance, FleetAlert, GameState, Resources
-from spaceinvasion.storage import GameDatabase
-from spaceinvasion.strategy import (
+from spaceinvasion.core.config import (
+    StrategyConfig,
+    strategy_config_from_dict,
+)
+from spaceinvasion.core.model import (
+    EnergyBalance,
+    FleetAlert,
+    GameState,
+    Resources,
+)
+from spaceinvasion.db.storage import GameDatabase
+from spaceinvasion.planner.heuristics import (
     BLAST_FURNACE,
     FUSION_PLANT,
     PIG_IRON_MINE,

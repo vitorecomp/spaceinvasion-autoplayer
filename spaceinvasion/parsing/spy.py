@@ -9,8 +9,8 @@ from bs4 import BeautifulSoup, Tag
 
 from spaceinvasion.core.coercion import parse_game_int
 from spaceinvasion.core.coords import normalize_coord_triple
+from spaceinvasion.core.model import Resources
 from spaceinvasion.core.redaction import redact_text
-from spaceinvasion.core.state import Resources
 from spaceinvasion.parsing._common import extract_spy_coords, extract_spy_link_coords, tag_text
 from spaceinvasion.parsing._msg_dom import (
     MSG_DATE_RE,

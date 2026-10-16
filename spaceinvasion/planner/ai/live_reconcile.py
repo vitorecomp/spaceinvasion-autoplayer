@@ -6,10 +6,9 @@ from collections.abc import Mapping, Sequence
 import logging
 from typing import cast
 
-from spaceinvasion.combat.ranking import attach_action_etas
 from spaceinvasion.core.coercion import coerce_int
+from spaceinvasion.core.model import GameState as LegacyGameState
 from spaceinvasion.core.model import PlannedAction
-from spaceinvasion.core.state import GameState as LegacyGameState
 from spaceinvasion.planner.ai._reconcile_fields import (
     _field_conflict_candidates,
     _is_planet_demolish_energy_safe,
@@ -26,6 +25,7 @@ from spaceinvasion.planner.ai._reconcile_helpers import (
 from spaceinvasion.planner.ai._reconcile_steps import reconcile_build_step, reconcile_research_step
 from spaceinvasion.planner.ai._types import GameStateLike, PlanetLike, ResearchOfferLike
 from spaceinvasion.planner.ai.live_fill import plan_live_fill_actions
+from spaceinvasion.planner.eta import attach_action_etas
 
 _LOGGER = logging.getLogger(__name__)
 _FILL_RECOVERABLE_ERRORS = (ValueError, TypeError, KeyError, LookupError, ArithmeticError, AttributeError)

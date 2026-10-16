@@ -32,14 +32,21 @@ from tests.e2e.harness import (
     FakeSpaceInvasionServer,
     run_ui_in_node,
 )
-from spaceinvasion.api_server import GameApiBridge
-from spaceinvasion.client import GameBrowserClient, PageViewLimiter
-from spaceinvasion.config import StrategyConfig
-from spaceinvasion.executor import ActionExecutor
-from spaceinvasion.fleet import GalaxySlot
-from spaceinvasion.logging_utils import append_api_log
-from spaceinvasion.ranking import _format_duration, build_buildings_eta, compute_action_eta
-from spaceinvasion.state import (
+from spaceinvasion.runtime.api_server import GameApiBridge
+from spaceinvasion.session.client import (
+    GameBrowserClient,
+    PageViewLimiter,
+)
+from spaceinvasion.core.config import StrategyConfig
+from spaceinvasion.session.executor import ActionExecutor
+from spaceinvasion.parsing.models import GalaxySlot
+from spaceinvasion.core.logging_utils import append_api_log
+from spaceinvasion.planner.eta import (
+    format_duration as _format_duration,
+    build_buildings_eta,
+    compute_action_eta,
+)
+from spaceinvasion.core.model import (
     EnergyBalance,
     GameState,
     PlanetState,
@@ -47,8 +54,12 @@ from spaceinvasion.state import (
     Resources,
     UnitOffer,
 )
-from spaceinvasion.storage import GameDatabase
-from spaceinvasion.strategy import PlannedAction, SPICE_MINE, plan_actions
+from spaceinvasion.db.storage import GameDatabase
+from spaceinvasion.core.model import PlannedAction
+from spaceinvasion.planner.heuristics import (
+    SPICE_MINE,
+    plan_actions,
+)
 
 
 class TestTier5Adversarial(unittest.TestCase):
@@ -206,7 +217,7 @@ class TestTier5Adversarial(unittest.TestCase):
         self.assertEqual(eta_b6["duration_text"], "1s")
 
         # Pig iron rate at b1=5, b2=2, speedup=1.0 -> scale speedup so net pig_iron_per_hr ~ 7200/hr (missing=1 => ~0.5s wait)
-        from spaceinvasion.ranking import estimate_planet_hourly_economy
+        from spaceinvasion.planner.eta import estimate_planet_hourly_economy
 
         pig_hr = float(estimate_planet_hourly_economy(st_eta, p_eta)["pig_iron_per_hr"])
         spd_half = 7200.0 / max(1.0, pig_hr)
@@ -372,7 +383,7 @@ class TestTier5Adversarial(unittest.TestCase):
             client_b.driver = MagicMock()
             client_b._wait_frame_ready.return_value = html_sel
             ex = ActionExecutor(dry_run=False, action_delay_range=(0.0, 0.0))
-            with patch("spaceinvasion.executor.Select"):
+            with patch("spaceinvasion.session.executor.Select"):
                 switched, _ = ex._select_planet_if_needed(client_b, 2, html=html_sel, require_confirm=True)
             self.assertFalse(switched)
 
@@ -729,9 +740,9 @@ class TestTier5Adversarial(unittest.TestCase):
             self.assertEqual(sc["countAfterRecalc"], 0)
 
     def test_adv_t5_06_unnormalized_coords_api_guards_and_deep_sid_redaction(self) -> None:
-        from spaceinvasion.api_server import _redact_api_payload
-        from spaceinvasion.fleet import parse_spy_report_html
-        from spaceinvasion.logging_utils import redact_sensitive
+        from spaceinvasion.runtime.api_server import _redact_api_payload
+        from spaceinvasion.parsing.spy import parse_spy_report_html
+        from spaceinvasion.core.logging_utils import redact_sensitive
 
         clock = FakeClock()
         planets = {
@@ -860,8 +871,8 @@ class TestTier5Adversarial(unittest.TestCase):
                 self.assertNotIn(srv.sid, log_path.read_text(encoding="utf-8", errors="ignore"))
 
     def test_adv_t5_07_off_home_sso_redirect_external_cancel_and_corrupt_eta_priority_guards(self) -> None:
-        from spaceinvasion.client import SpaceInvasionAuthError
-        from spaceinvasion.ranking import build_ranking_evolution
+        from spaceinvasion.session.client import SpaceInvasionAuthError
+        from spaceinvasion.combat.points import build_ranking_evolution
 
         clock = FakeClock()
         planets = {
@@ -997,11 +1008,20 @@ class TestTier5Adversarial(unittest.TestCase):
         )
 
     def test_adv_t5_08_domain_coords_cc_huge_ints_unicode_and_state_resilience(self) -> None:
-        from spaceinvasion import game_data
-        from spaceinvasion.auth import universes_from_portal_data
-        from spaceinvasion.fleet import fleet_cargo_capacity, plan_escape_flight, simulate_raid_outcome, SpyReport
-        from spaceinvasion.ranking import build_combat_overview, build_ranking_evolution, simulate_combat_matchup
-        from spaceinvasion.state import game_state_from_dict
+        from spaceinvasion.core import catalog as game_data
+        from spaceinvasion.session.auth import universes_from_portal_data
+        from spaceinvasion.combat.cargo import (
+            fleet_cargo_capacity,
+            plan_escape_flight,
+        )
+        from spaceinvasion.combat.simulator import simulate_raid_outcome
+        from spaceinvasion.parsing.models import SpyReport
+        from spaceinvasion.combat.points import (
+            build_combat_overview,
+            build_ranking_evolution,
+        )
+        from spaceinvasion.combat.simulator import simulate_combat_matchup
+        from spaceinvasion.core.model import game_state_from_dict
 
         # Finding 1 + Finding 2: Unnormalized own coords blocked in planner;
         # bad construction_commander degrades safely.
@@ -1083,7 +1103,10 @@ class TestTier5Adversarial(unittest.TestCase):
         self.assertEqual(unis[0].flight_speed, 1.0)
 
     def test_adv_t5_09_runtime_deep_target_coalescing_stale_cancel_cost_and_clocks(self) -> None:
-        from spaceinvasion.fleet import _extract_spy_coords, extract_galaxy_system_coords, normalize_coords, parse_spy_report_html
+        from spaceinvasion.core.coords import normalize_coords
+        from spaceinvasion.parsing._common import extract_spy_coords as _extract_spy_coords
+        from spaceinvasion.parsing.galaxy import extract_galaxy_system_coords
+        from spaceinvasion.parsing.spy import parse_spy_report_html
 
         # GAP-05: Clock timestamps must never resolve as planet coordinates; Harvest radio rejected for ATTACK
         self.assertEqual(_extract_spy_coords("[12:05:12] Spy report Pig iron 500"), "")
@@ -1172,8 +1195,12 @@ class TestTier5Adversarial(unittest.TestCase):
 
     def test_adv_t5_10_gap05_clocks_dark_red_auth_executor_and_storage_blank_path(self) -> None:
         from selenium.common.exceptions import ElementNotInteractableException
-        from spaceinvasion.auth import SpaceInvasionAuthError, universes_from_portal_data
-        from spaceinvasion.fleet import extract_galaxy_system_coords, parse_spy_messages_html
+        from spaceinvasion.session.auth import (
+            SpaceInvasionAuthError,
+            universes_from_portal_data,
+        )
+        from spaceinvasion.parsing.galaxy import extract_galaxy_system_coords
+        from spaceinvasion.parsing.spy import parse_spy_messages_html
 
         clock = FakeClock()
         planets = {
@@ -1288,7 +1315,7 @@ class TestTier5Adversarial(unittest.TestCase):
             sel = MagicMock()
             sel.find_elements.return_value = [opt1, opt2]
             mock_client.driver.find_element.return_value = sel
-            with patch("spaceinvasion.executor.Select") as mock_select_cls:
+            with patch("spaceinvasion.session.executor.Select") as mock_select_cls:
                 mock_select_cls.return_value.select_by_value.side_effect = ElementNotInteractableException("hidden")
                 switched, waited_html = ex._select_planet_if_needed(mock_client, 102, html=multi_html)
             self.assertFalse(switched)
@@ -1304,10 +1331,18 @@ class TestTier5Adversarial(unittest.TestCase):
 
     def test_adv_t5_11_extreme_ints_1e1m_nan_rank_history_http_state_and_ui_node(self) -> None:
         import time
-        from spaceinvasion import game_data
-        from spaceinvasion.logging_utils import append_tick_logs
-        from spaceinvasion.ranking import build_combat_overview, build_ranking_evolution, load_rank_history, record_rank_snapshot
-        from spaceinvasion.state import BuildingOffer, QueueJob
+        from spaceinvasion.core import catalog as game_data
+        from spaceinvasion.core.logging_utils import append_tick_logs
+        from spaceinvasion.combat.points import (
+            build_combat_overview,
+            build_ranking_evolution,
+            load_rank_history,
+            record_rank_snapshot,
+        )
+        from spaceinvasion.core.model import (
+            BuildingOffer,
+            QueueJob,
+        )
 
         def _reject_nonfinite(tok: str):
             raise ValueError(f"Non-standard JSON constant {tok!r}")
@@ -1494,7 +1529,7 @@ class TestTier5Adversarial(unittest.TestCase):
                             self.assertNotIn("Infinity", str(v))
 
     def test_adv_t5_12_ranking_1e307_1e295_b17_60_and_1e308_delta_strict_http_json(self) -> None:
-        from spaceinvasion.state import BuildingOffer
+        from spaceinvasion.core.model import BuildingOffer
 
         def _reject_nonfinite(tok: str):
             raise ValueError(f"Non-standard JSON constant {tok!r}")
@@ -1574,17 +1609,22 @@ class TestTier5Adversarial(unittest.TestCase):
                     self.assertEqual(eta["eta_bottleneck"], "pig_iron")
 
     def test_adv_t5_13_10e400_storage_p1_warehouse_and_5000_digit_html_config_sim(self) -> None:
-        from spaceinvasion.config import load_strategy_config, save_strategy_config
-        from spaceinvasion.state import (
-            BuildingOffer,
-            parse_building_queue,
-            parse_buildings_page,
+        from spaceinvasion.db.config_store import (
+            load_strategy_config,
+            save_strategy_config,
+        )
+        from spaceinvasion.core.model import BuildingOffer
+        from spaceinvasion.parsing.overview import (
             parse_home_metadata,
             parse_menu_status,
+        )
+        from spaceinvasion.parsing.pages import (
+            parse_buildings_page,
             parse_research_page,
-            parse_tutorial_from_home,
             parse_unit_factory_page,
         )
+        from spaceinvasion.parsing.queues import parse_building_queue
+        from spaceinvasion.parsing.tutorial import parse_tutorial_from_home
 
         def _reject_nonfinite(tok: str):
             raise ValueError(f"Non-standard JSON constant {tok!r}")
@@ -1726,7 +1766,11 @@ class TestTier5Adversarial(unittest.TestCase):
         import commander
         import login
         import run_stack
-        from spaceinvasion.auth import Credentials, LoginResult, UniverseOption
+        from spaceinvasion.session.auth import (
+            Credentials,
+            LoginResult,
+            UniverseOption,
+        )
 
         routes: dict[str, list[tuple[int, str]]] = {}
 
@@ -2020,12 +2064,17 @@ async (url) => {
         from urllib.parse import urlparse
         import commander
         import scripts.sync_wiki_data as sync_wiki_data
-        from spaceinvasion import browser, game_data
-        from spaceinvasion.api_server import MAX_REQUEST_BYTES
-        from spaceinvasion.auth import SpaceInvasionAuthError
-        from spaceinvasion.browser import BrowserConfig
-        from spaceinvasion.config import load_strategy_config, save_strategy_config, strategy_config_from_dict
-        from spaceinvasion.state import game_state_from_dict
+        from spaceinvasion.session import browser
+        from spaceinvasion.core import catalog as game_data
+        from spaceinvasion.runtime.api_server import MAX_REQUEST_BYTES
+        from spaceinvasion.session.auth import SpaceInvasionAuthError
+        from spaceinvasion.session.browser import BrowserConfig
+        from spaceinvasion.core.config import strategy_config_from_dict
+        from spaceinvasion.db.config_store import (
+            load_strategy_config,
+            save_strategy_config,
+        )
+        from spaceinvasion.core.model import game_state_from_dict
 
         def _reject_nonfinite(tok: str) -> object:
             raise ValueError(f"Non-finite JSON token: {tok!r}")
@@ -2040,18 +2089,25 @@ async (url) => {
             game_data.missing_prerequisites("building", 10**5000, buildings={}, researches={}),  # type: ignore[arg-type]
             [],
         )
-        rendered_gd = sync_wiki_data.render_module(
-            {
-                "synced_at_utc": game_data.WIKI_SYNCED_AT_UTC,
-                "source": game_data.WIKI_SOURCE_URL,
-                "merchant_rates_in_spice": game_data.MERCHANT_RATES_IN_SPICE,
-                "buildings": game_data.BUILDINGS,
-                "researches": game_data.RESEARCHES,
-                "ships": game_data.SHIPS,
-                "defenses": game_data.DEFENSES,
-            }
-        )
-        self.assertEqual(rendered_gd, Path("spaceinvasion/core/game_data.py").read_text(encoding="utf-8"))
+        with tempfile.TemporaryDirectory() as tmp_tables:
+            sync_wiki_data.write_catalog_tables(
+                {
+                    "synced_at_utc": game_data.WIKI_SYNCED_AT_UTC,
+                    "source": game_data.WIKI_SOURCE_URL,
+                    "merchant_rates_in_spice": game_data.MERCHANT_RATES_IN_SPICE,
+                    "buildings": game_data.BUILDINGS,
+                    "researches": game_data.RESEARCHES,
+                    "ships": game_data.SHIPS,
+                    "defenses": game_data.DEFENSES,
+                },
+                Path(tmp_tables),
+            )
+            tables_dir = Path("spaceinvasion/core/catalog/tables")
+            for fname in ("buildings.json", "research.json", "ships.json", "defenses.json"):
+                self.assertEqual(
+                    json.loads((Path(tmp_tables) / fname).read_text(encoding="utf-8")),
+                    json.loads((tables_dir / fname).read_text(encoding="utf-8")),
+                )
 
         # GAP-05: JSON roundtrip preserves '#' and ':' in playstyle cleanly
         with tempfile.TemporaryDirectory() as tmp_cfg:
@@ -2085,9 +2141,9 @@ async (url) => {
                         browser.close_or_detach_driver(MagicMock(), proc, keep_running=False)
                     else:
                         with (
-                            patch("spaceinvasion.browser.is_debug_port_open", return_value=False),
-                            patch("spaceinvasion.browser.launch_chrome_with_debug_port", return_value=proc),
-                            patch("spaceinvasion.browser.attach_chrome_driver", side_effect=SpaceInvasionAuthError("attach fail")),
+                            patch("spaceinvasion.session.browser.is_debug_port_open", return_value=False),
+                            patch("spaceinvasion.session.browser.launch_chrome_with_debug_port", return_value=proc),
+                            patch("spaceinvasion.session.browser.attach_chrome_driver", side_effect=SpaceInvasionAuthError("attach fail")),
                         ):
                             with self.assertRaises(SpaceInvasionAuthError):
                                 browser.open_browser_session(
@@ -2190,7 +2246,11 @@ async (url) => {
         import ast
         from pathlib import Path
         import requests
-        from spaceinvasion.config import load_strategy_config, save_strategy_config, StrategyConfig
+        from spaceinvasion.core.config import StrategyConfig
+        from spaceinvasion.db.config_store import (
+            load_strategy_config,
+            save_strategy_config,
+        )
 
         self.assertIsNotNone(shutil.which("node"), "Node.js is required")
 
@@ -2331,15 +2391,20 @@ async (url, opts, fullUrl, nativeFetch) => {
         from unittest.mock import MagicMock, patch
         import requests
         import commander
-        from spaceinvasion.api_server import ApiRequestError
-        from spaceinvasion.client import PageViewLimiter
-        from spaceinvasion.commander_client import GameApiClient, GameApiError
-        from spaceinvasion.config import StrategyConfig, load_strategy_config
-        from spaceinvasion.executor import ActionExecutor
-        from spaceinvasion.fleet import normalize_coords
-        from spaceinvasion.ranking import build_buildings_eta
-        from spaceinvasion.state import game_state_from_dict
-        from spaceinvasion.strategy import PlannedAction, plan_actions
+        from spaceinvasion.runtime.api_server import ApiRequestError
+        from spaceinvasion.session.client import PageViewLimiter
+        from spaceinvasion.runtime.commander_client import (
+            GameApiClient,
+            GameApiError,
+        )
+        from spaceinvasion.core.config import StrategyConfig
+        from spaceinvasion.db.config_store import load_strategy_config
+        from spaceinvasion.session.executor import ActionExecutor
+        from spaceinvasion.core.coords import normalize_coords
+        from spaceinvasion.planner.eta import build_buildings_eta
+        from spaceinvasion.core.model import game_state_from_dict
+        from spaceinvasion.core.model import PlannedAction
+        from spaceinvasion.planner.heuristics import plan_actions
 
         # 1. Domain boundary regressions (config mid-token quotes, non-ASCII coords, ranking horizon, MLP train, sim horizon)
         with tempfile.TemporaryDirectory() as tmp:
@@ -2486,21 +2551,22 @@ async (url, opts, fullUrl, nativeFetch) => {
             held_err = None
 
     def test_adv_t5_19_r9_priority_asteroid_full_field_defender_research_rate_limit_and_ascii_parity(self) -> None:
-        from spaceinvasion.api_server import ApiRequestError
-        from spaceinvasion.config import normalize_planner_mode, strategy_config_from_dict
-        from spaceinvasion.fleet import (
-            _parse_coords_distance,
+        from spaceinvasion.runtime.api_server import ApiRequestError
+        from spaceinvasion.core.config import (
+            normalize_planner_mode,
+            strategy_config_from_dict,
+        )
+        from spaceinvasion.core.coords import coords_distance as _parse_coords_distance
+        from spaceinvasion.parsing.galaxy import (
             extract_galaxy_system_coords,
             parse_galaxy_system_html,
-            parse_spy_report_html,
         )
-        from spaceinvasion.state import (
-            BuildingOffer,
-            parse_economy_rates,
-            parse_planets_overview_json,
-            parse_si_int,
-        )
-        from spaceinvasion.storage import _coord_query_candidates
+        from spaceinvasion.parsing.spy import parse_spy_report_html
+        from spaceinvasion.core.coercion import parse_si_int
+        from spaceinvasion.core.model import BuildingOffer
+        from spaceinvasion.parsing.overview import parse_planets_overview_json
+        from spaceinvasion.parsing.pages import parse_economy_rates
+        from spaceinvasion.db.storage import _coord_query_candidates
 
         # 1. GAP-R9-01: priority mode obeys Asteroid REQ-BLD-003 and 0-free-field limit
         ast_p = PlanetState(
@@ -2594,11 +2660,14 @@ async (url, opts, fullUrl, nativeFetch) => {
                 self.assertNotIn("T5_METHOD_SID", log_p.read_text(encoding="utf-8"))
 
     def test_adv_t5_20_r10_e2e_unicode_digits_negative_fields_blob_redaction_and_raid_asteroid_parity(self) -> None:
-        from spaceinvasion.api_server import GameApiBridge, create_api_server
-        from spaceinvasion.client import RateLimitError
-        from spaceinvasion.config import StrategyConfig
-        from spaceinvasion.executor import ActionExecutor
-        from spaceinvasion.state import (
+        from spaceinvasion.runtime.api_server import (
+            GameApiBridge,
+            create_api_server,
+        )
+        from spaceinvasion.session.client import RateLimitError
+        from spaceinvasion.core.config import StrategyConfig
+        from spaceinvasion.session.executor import ActionExecutor
+        from spaceinvasion.core.model import (
             BuildingOffer,
             EnergyBalance,
             GameState,
@@ -2608,8 +2677,11 @@ async (url, opts, fullUrl, nativeFetch) => {
             TutorialTask,
             UnitOffer,
         )
-        from spaceinvasion.storage import GameDatabase
-        from spaceinvasion.strategy import SOLAR_CELLS_ID, plan_actions
+        from spaceinvasion.db.storage import GameDatabase
+        from spaceinvasion.planner.heuristics import (
+            SOLAR_CELLS_ID,
+            plan_actions,
+        )
 
         # 1. SQLite bytes BLOB + literal 'sid' JSON + non-finite cells redacted across all DB readers
         with tempfile.TemporaryDirectory() as tmp:
@@ -2714,12 +2786,21 @@ async (url, opts, fullUrl, nativeFetch) => {
         import io
         from types import MappingProxyType
         import login as login_cli
-        from spaceinvasion.auth import Credentials, LoginResult
-        from spaceinvasion.browser import BrowserLoginResult
-        from spaceinvasion.config import _sanitize_cfg_json_tree, strategy_config_from_dict
-        from spaceinvasion.logging_utils import redact_sensitive
-        from spaceinvasion.state import BuildingOffer, QueueJob
-        from spaceinvasion.storage import _json_dumps
+        from spaceinvasion.session.auth import (
+            Credentials,
+            LoginResult,
+        )
+        from spaceinvasion.session.browser import BrowserLoginResult
+        from spaceinvasion.core.config import (
+            _sanitize_cfg_json_tree,
+            strategy_config_from_dict,
+        )
+        from spaceinvasion.core.logging_utils import redact_sensitive
+        from spaceinvasion.core.model import (
+            BuildingOffer,
+            QueueJob,
+        )
+        from spaceinvasion.db.storage import _json_dumps
 
         class _BytesPath:
             def __fspath__(self) -> bytes:
@@ -2906,10 +2987,15 @@ async (url, opts, fullUrl, nativeFetch) => {
     def test_adv_t5_22_r12_unified_secret_redaction_http_exc_safety_raid_tutorial_and_broken_pathlike(
         self,
     ) -> None:
-        from spaceinvasion.fleet import normalize_coords
-        from spaceinvasion.logging_utils import redact_sensitive
-        from spaceinvasion.ranking import build_combat_overview
-        from spaceinvasion.state import BuildingOffer, TutorialStatus, TutorialTask, normalize_planet_type
+        from spaceinvasion.core.coords import normalize_coords
+        from spaceinvasion.core.logging_utils import redact_sensitive
+        from spaceinvasion.combat.points import build_combat_overview
+        from spaceinvasion.core.model import (
+            BuildingOffer,
+            TutorialStatus,
+            TutorialTask,
+            normalize_planet_type,
+        )
 
         class _RaiseFspath:
             def __fspath__(self) -> str:
@@ -3068,11 +3154,21 @@ async (url, opts, fullUrl, nativeFetch) => {
     def test_adv_t5_23_r13_b8_b9_raid_tutorial_spy_links_client_cookies_and_compound_redaction(self) -> None:
         import time
         from types import SimpleNamespace
-        from spaceinvasion.auth import ConfigurationError, load_session_cookies
-        from spaceinvasion.commander_client import GameApiClient, GameApiError
-        from spaceinvasion.fleet import parse_spy_messages_html
-        from spaceinvasion.logging_utils import redact_sensitive
-        from spaceinvasion.state import QueueJob, TutorialStatus, TutorialTask
+        from spaceinvasion.session.auth import (
+            ConfigurationError,
+            load_session_cookies,
+        )
+        from spaceinvasion.runtime.commander_client import (
+            GameApiClient,
+            GameApiError,
+        )
+        from spaceinvasion.parsing.spy import parse_spy_messages_html
+        from spaceinvasion.core.logging_utils import redact_sensitive
+        from spaceinvasion.core.model import (
+            QueueJob,
+            TutorialStatus,
+            TutorialTask,
+        )
 
         # 1. b8=0 / queued b8 RESEARCH & b9=0 / queued b9 BUILD_SHIP blocked across priority & ga_nn
         p_nob8_b9 = PlanetState(
@@ -3261,9 +3357,9 @@ async (url, opts, fullUrl, nativeFetch) => {
     def test_adv_t5_24_r14_combined_domain_offline_spio_redaction_and_dag20_cycles(self) -> None:
         import time
         from unittest.mock import patch
-        from spaceinvasion.auth import SpaceInvasionAuthError
-        from spaceinvasion.client import RateLimitError
-        from spaceinvasion.state import (
+        from spaceinvasion.session.auth import SpaceInvasionAuthError
+        from spaceinvasion.session.client import RateLimitError
+        from spaceinvasion.core.model import (
             BuildingOffer,
             EnergyBalance,
             GameState,

@@ -16,8 +16,11 @@ from unittest.mock import MagicMock
 
 import requests
 
-from spaceinvasion.api_server import GameApiBridge, create_api_server
-from spaceinvasion.migrations import (
+from spaceinvasion.runtime.api_server import (
+    GameApiBridge,
+    create_api_server,
+)
+from spaceinvasion.db.migrations import (
     GAME_DB_MIGRATIONS,
     GAME_REQUIRED_TABLES,
     HISTORY_TABLES,
@@ -29,9 +32,14 @@ from spaceinvasion.migrations import (
     MigrationRunner,
     main as migrations_cli_main,
 )
-from spaceinvasion.state import EnergyBalance, GameState, PlanetState, Resources
-from spaceinvasion.storage import GameDatabase
-from spaceinvasion.strategy import PlannedAction
+from spaceinvasion.core.model import (
+    EnergyBalance,
+    GameState,
+    PlanetState,
+    Resources,
+)
+from spaceinvasion.db.storage import GameDatabase
+from spaceinvasion.core.model import PlannedAction
 from tests.pg_harness import get_shared_pg_harness
 
 
@@ -89,7 +97,7 @@ class TestDatabaseMigrationsAndVersioning(unittest.TestCase):
                 db_v2.close()
 
     def test_v002_database_upgrades_nondestructively_and_preserves_all_rows(self) -> None:
-        from spaceinvasion.combat.fleet import SpyReport
+        from spaceinvasion.parsing.models import SpyReport
 
         dsn = get_shared_pg_harness().create_database(prefix="mig_v2", from_template=False)
         db = GameDatabase(dsn, target_schema_version=2)
@@ -321,7 +329,7 @@ class TestDatabaseMigrationsAndVersioning(unittest.TestCase):
                 bridge.close()
 
     def test_v009_universe_research_max_monotonic_ledger_and_append_only_history(self) -> None:
-        from spaceinvasion.combat.fleet import SpyReport
+        from spaceinvasion.parsing.models import SpyReport
 
         self.assertEqual(LATEST_SCHEMA_VERSION, 14)
         with tempfile.TemporaryDirectory(prefix="si_mig_v9_") as tmp:
@@ -435,7 +443,10 @@ class TestDatabaseMigrationsAndVersioning(unittest.TestCase):
                 db.close()
 
     def test_v012_hot_and_history_table_division_backfill_and_incremental_sync(self) -> None:
-        from spaceinvasion.combat.fleet import GalaxySlot, SpyReport
+        from spaceinvasion.parsing.models import (
+            GalaxySlot,
+            SpyReport,
+        )
 
         # Canonical hot vs history partition must be disjoint and cover all required tables
         hot_set = set(HOT_TABLES)
@@ -683,7 +694,7 @@ class TestDatabaseMigrationsAndVersioning(unittest.TestCase):
                 db_v13.close()
 
     def test_v014_hourly_production_and_loot_recycle_hourly_upgrade_and_backfill(self) -> None:
-        from spaceinvasion.combat.fleet import InboxMessage
+        from spaceinvasion.parsing.models import InboxMessage
 
         self.assertIn("loot_recycle_hourly", set(HOT_TABLES))
         self.assertIn("hourly_production_history", set(HISTORY_TABLES))

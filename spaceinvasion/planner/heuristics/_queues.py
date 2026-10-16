@@ -6,7 +6,7 @@ from collections.abc import Mapping
 import re
 
 from spaceinvasion.core import catalog
-from spaceinvasion.core.state import GameState, PlanetState
+from spaceinvasion.core.model import GameState, PlanetState
 from spaceinvasion.planner.heuristics._common import (
     _norm_planet_type,
     _normalize_manual_coords,

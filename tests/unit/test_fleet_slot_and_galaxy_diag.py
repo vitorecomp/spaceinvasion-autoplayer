@@ -8,8 +8,14 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 from spaceinvasion.core.config import StrategyConfig
-from spaceinvasion.core.state import EnergyBalance, GameState, PlanetState, QueueJob, Resources
-from spaceinvasion.planner.strategy import PlannedAction
+from spaceinvasion.core.model import (
+    EnergyBalance,
+    GameState,
+    PlanetState,
+    QueueJob,
+    Resources,
+)
+from spaceinvasion.core.model import PlannedAction
 from spaceinvasion.runtime.api_server import GameApiBridge
 from spaceinvasion.session.client import GameBrowserClient
 from spaceinvasion.session.executor import ActionExecutor

@@ -17,7 +17,7 @@ import urllib.request
 
 from bs4 import BeautifulSoup
 
-from spaceinvasion.core import game_data
+from spaceinvasion.core import catalog as game_data
 from spaceinvasion.session.auth import (
     BASE_URL,
     DEFAULT_SESSIONS_DIR,

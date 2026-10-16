@@ -7,7 +7,7 @@ from collections.abc import Mapping, Sequence
 from spaceinvasion.combat.flight import normalize_coords
 from spaceinvasion.core.catalog import RESEARCH_BY_ID, SHIPS, resolve_unit
 from spaceinvasion.core.config import StrategyConfig
-from spaceinvasion.core.state import (
+from spaceinvasion.core.model import (
     GameState,
     PlanetState,
     count_in_flight_spy_fleets_for_planet,

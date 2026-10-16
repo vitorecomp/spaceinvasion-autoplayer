@@ -19,6 +19,7 @@ from spaceinvasion.parsing.fleet_page import (
     parse_station_ships_spec,
 )
 from spaceinvasion.parsing.galaxy import (
+    ARROW_NAV_MAX_DISTANCE,
     extract_galaxy_coords_from_html,
     extract_galaxy_system_coords,
     extract_galaxy_universe_bounds,
@@ -74,6 +75,7 @@ from spaceinvasion.parsing.spy import (
 from spaceinvasion.parsing.tutorial import parse_tutorial_from_home
 
 __all__ = [
+    "ARROW_NAV_MAX_DISTANCE",
     "BuildingOffer",
     "DEFENSE_SLUG_BY_KEY",
     "EnergyBalance",

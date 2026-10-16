@@ -24,7 +24,7 @@ from spaceinvasion.core.catalog import (
     safe_key,
     spice_equivalent,
 )
-from spaceinvasion.core.state import GameState, Resources
+from spaceinvasion.core.model import GameState, Resources
 
 
 class SpyReportLike(Protocol):

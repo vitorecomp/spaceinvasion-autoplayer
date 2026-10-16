@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 from spaceinvasion.core import catalog
 from spaceinvasion.core.config import StrategyConfig
-from spaceinvasion.core.state import (
+from spaceinvasion.core.model import (
     GameState,
     PlanetState,
     ResearchOffer,

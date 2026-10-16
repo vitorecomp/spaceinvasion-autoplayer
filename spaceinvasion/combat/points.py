@@ -8,6 +8,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 import math
+from pathlib import Path
 
 from spaceinvasion.combat._combat_overview import build_combat_overview_payload
 from spaceinvasion.combat._points_helpers import (
@@ -24,7 +25,16 @@ from spaceinvasion.combat._points_helpers import (
     safe_optional_finite_int,
 )
 from spaceinvasion.combat._points_helpers import (
+    estimate_planet_hourly_economy as estimate_planet_hourly_economy,
+)
+from spaceinvasion.combat._points_helpers import (
     format_eta as format_eta,
+)
+from spaceinvasion.combat._rank_history import (
+    load_rank_history as load_rank_history,
+)
+from spaceinvasion.combat._rank_history import (
+    record_rank_snapshot as _record_rank_snapshot_impl,
 )
 from spaceinvasion.core.catalog import (
     DEFENSE_SLUG_BY_KEY,
@@ -37,7 +47,7 @@ from spaceinvasion.core.catalog import (
     sanitize_json_tree,
     spice_equivalent,
 )
-from spaceinvasion.core.state import GameState, PlanetState
+from spaceinvasion.core.model import GameState, PlanetState
 
 NEWBIE_PROTECTION_POINTS = 10_000
 
@@ -368,6 +378,23 @@ def build_ranking_evolution(
         "milestones": _build_ranking_milestones(baseline_pts, rate_hr, az),
         "observed_trend": _compute_observed_trend(history),
     }
+
+
+def record_rank_snapshot(
+    history_path: Path | None,
+    state: GameState,
+    *,
+    max_entries: int = 240,
+    min_interval_seconds: float = 300.0,
+) -> list[dict[str, object]]:
+    """Append a deduplicated rank/points observation to ``history_path`` (JSON) and return samples."""
+    return _record_rank_snapshot_impl(
+        history_path,
+        state,
+        estimate_account_points,
+        max_entries=max_entries,
+        min_interval_seconds=min_interval_seconds,
+    )
 
 
 def build_combat_overview(

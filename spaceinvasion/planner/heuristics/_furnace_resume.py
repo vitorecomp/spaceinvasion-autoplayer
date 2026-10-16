@@ -7,7 +7,7 @@ import math
 
 from spaceinvasion.core import catalog
 from spaceinvasion.core.config import StrategyConfig
-from spaceinvasion.core.state import GameState, PlanetState
+from spaceinvasion.core.model import GameState, PlanetState
 from spaceinvasion.planner.heuristics._actions import _pick_best_power_building
 from spaceinvasion.planner.heuristics._common import (
     _norm_planet_type,

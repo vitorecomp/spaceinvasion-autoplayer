@@ -7,9 +7,9 @@ import re
 
 from bs4 import BeautifulSoup, Tag
 
-from spaceinvasion.core import game_data
+from spaceinvasion.core import catalog as game_data
 from spaceinvasion.core.coercion import coerce_bounded_int
-from spaceinvasion.core.state import BUILDING_ID_BY_NAME, TutorialStatus, TutorialTask
+from spaceinvasion.core.model import BUILDING_ID_BY_NAME, TutorialStatus, TutorialTask
 from spaceinvasion.parsing._common import collapse_ws, tag_text
 from spaceinvasion.parsing.models import SHIP_SLUG_BY_KEY
 

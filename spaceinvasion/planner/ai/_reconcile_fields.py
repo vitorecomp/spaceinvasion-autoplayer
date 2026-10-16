@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 import math
 
-from spaceinvasion.core import game_data
+from spaceinvasion.core import catalog as game_data
 from spaceinvasion.core.coercion import coerce_int, coerce_optional_int
 from spaceinvasion.core.coords import normalize_coords
 from spaceinvasion.core.model import PlannedAction, normalize_planet_type

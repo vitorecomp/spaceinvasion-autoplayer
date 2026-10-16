@@ -13,8 +13,8 @@ from spaceinvasion.session.http_pools import (
     close_http_session as _close_http_session,
     configure_http_session_pools as _configure_http_session_pools,
 )
-from spaceinvasion.core.logging_utils import redact_sensitive
-from spaceinvasion.core.state import GameState, game_state_from_dict
+from spaceinvasion.core.model import GameState, game_state_from_dict
+from spaceinvasion.core.redaction import redact_sensitive
 
 
 def _safe_api_timeout(raw: Any, default: float = 30.0) -> float:

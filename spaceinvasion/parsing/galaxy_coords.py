@@ -10,6 +10,7 @@ from urllib.parse import parse_qs, urlparse
 
 from bs4 import BeautifulSoup, Tag
 
+from spaceinvasion.core.coords import ARROW_NAV_MAX_DISTANCE as ARROW_NAV_MAX_DISTANCE
 from spaceinvasion.parsing._common import (
     COORD_CONTEXT_PREFIX_RE,
     GALAXY_COORDS_TRIPLE_RE,
@@ -324,6 +325,7 @@ def extract_galaxy_universe_bounds(html: str) -> tuple[int | None, int | None]:
 
 
 __all__ = [
+    "ARROW_NAV_MAX_DISTANCE",
     "attr_opt_str",
     "extract_galaxy_coords_from_html",
     "extract_galaxy_system_coords",

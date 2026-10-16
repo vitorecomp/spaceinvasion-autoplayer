@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 
 from spaceinvasion.core.catalog import safe_int
-from spaceinvasion.core.state import PlanetState
+from spaceinvasion.core.model import PlanetState
 from spaceinvasion.planner.graph.common import (
     MINE_RESOURCE_BY_BID,
     RESOURCE_LABELS,

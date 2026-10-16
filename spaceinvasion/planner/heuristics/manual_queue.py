@@ -7,7 +7,7 @@ from dataclasses import replace
 
 from spaceinvasion.core import catalog
 from spaceinvasion.core.config import StrategyConfig
-from spaceinvasion.core.state import GameState, PlanetState, Resources
+from spaceinvasion.core.model import GameState, PlanetState, Resources
 from spaceinvasion.planner.eta import attach_action_etas
 from spaceinvasion.planner.heuristics._common import (
     _norm_planet_type,

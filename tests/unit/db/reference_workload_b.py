@@ -9,7 +9,10 @@ import time
 
 from sqlalchemy.orm import Session
 
-from spaceinvasion.combat.ranking import estimate_account_points, estimate_hourly_economy
+from spaceinvasion.combat.points import (
+    estimate_account_points,
+    estimate_hourly_economy,
+)
 from spaceinvasion.db.repos import (
     GalaxyRepository,
     IntelRepository,

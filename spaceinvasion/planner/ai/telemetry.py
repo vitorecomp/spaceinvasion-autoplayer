@@ -8,9 +8,9 @@ import math
 
 import numpy as np
 
-from spaceinvasion.combat.fleet import _parse_coords_distance
-from spaceinvasion.core import game_data
+from spaceinvasion.core import catalog as game_data
 from spaceinvasion.core.coercion import coerce_finite_float
+from spaceinvasion.core.coords import coords_distance as _parse_coords_distance
 from spaceinvasion.core.model import normalize_planet_type
 from spaceinvasion.planner.ai._types import (
     DEFAULT_MEDIAN_ROUND_TRIP_SECONDS,

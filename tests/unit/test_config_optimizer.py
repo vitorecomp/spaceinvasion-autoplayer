@@ -12,8 +12,13 @@ import unittest
 
 import numpy as np
 
-from spaceinvasion.core import game_data
-from spaceinvasion.core.state import EnergyBalance, GameState, PlanetState, Resources
+from spaceinvasion.core import catalog as game_data
+from spaceinvasion.core.model import (
+    EnergyBalance,
+    GameState,
+    PlanetState,
+    Resources,
+)
 from spaceinvasion.planner import config_optimizer as co
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -800,7 +805,7 @@ class ConfigOptimizerUnitTests(unittest.TestCase):
         self.assertEqual(exported["summary"]["central_planet_name"], "Titan Capital")
 
         # Downstream AI-Planner inherits custom names from target_config cleanly.
-        from spaceinvasion.planner import ai_planner as ap
+        from spaceinvasion.planner import ai as ap
 
         ai_plan = ap.run_ai_planner(
             state,

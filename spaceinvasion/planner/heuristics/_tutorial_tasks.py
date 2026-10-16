@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from spaceinvasion.core.state import GameState, TutorialTask
+from spaceinvasion.core.model import GameState, TutorialTask
 from spaceinvasion.planner.heuristics._common import _safe_strategy_str
 
 

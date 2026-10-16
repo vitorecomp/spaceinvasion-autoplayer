@@ -6,7 +6,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 from spaceinvasion.core import catalog
-from spaceinvasion.core.state import PlanetState, Resources
+from spaceinvasion.core.model import PlanetState, Resources
 from spaceinvasion.planner.heuristics._common import _safe_strategy_int, _safe_strategy_str
 from spaceinvasion.planner.heuristics._types import (
     _METAL_CONSUMER_KINDS,

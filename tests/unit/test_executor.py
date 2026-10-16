@@ -15,10 +15,20 @@ from selenium.common.exceptions import (
 )
 from selenium.webdriver.common.by import By
 
-from spaceinvasion.client import GameBrowserClient, PageViewLimiter
-from spaceinvasion.executor import ActionExecutor
-from spaceinvasion.state import BuildingOffer, EnergyBalance, GameState, PlanetState, Resources
-from spaceinvasion.strategy import FUSION_PLANT, PlannedAction
+from spaceinvasion.session.client import (
+    GameBrowserClient,
+    PageViewLimiter,
+)
+from spaceinvasion.session.executor import ActionExecutor
+from spaceinvasion.core.model import (
+    BuildingOffer,
+    EnergyBalance,
+    GameState,
+    PlanetState,
+    Resources,
+)
+from spaceinvasion.core.model import PlannedAction
+from spaceinvasion.planner.heuristics import FUSION_PLANT
 
 
 def _make_state_and_action() -> tuple[GameState, PlannedAction]:
@@ -297,7 +307,7 @@ class TestActionExecutor(unittest.TestCase):
         client.read_planets_overview.return_value = state
 
         live_ex = ActionExecutor(dry_run=False, action_delay_range=(0.0, 0.0))
-        with patch("spaceinvasion.executor.Select") as mock_select_cls:
+        with patch("spaceinvasion.session.executor.Select") as mock_select_cls:
             res = live_ex.execute_action(client, state, throttle_action)
 
         self.assertTrue(res.executed)
@@ -511,7 +521,7 @@ class TestActionExecutor(unittest.TestCase):
         client.read_planets_overview.return_value = state
 
         ex = ActionExecutor(dry_run=False, action_delay_range=(0.0, 0.0), allow_raids=True)
-        with patch("spaceinvasion.executor.Select") as mock_select_cls:
+        with patch("spaceinvasion.session.executor.Select") as mock_select_cls:
             res = ex.execute_action(client, state, atk_act)
 
         self.assertTrue(res.executed)
@@ -719,7 +729,7 @@ class TestActionExecutor(unittest.TestCase):
         self.assertEqual(ex.remaining_hourly_budget(), 2)
 
     def test_execute_spy_dispatch_and_report_parse(self) -> None:
-        from spaceinvasion.fleet import parse_spy_report_html
+        from spaceinvasion.parsing.spy import parse_spy_report_html
 
         planet = PlanetState(
             planet_id=12476,
@@ -1603,7 +1613,7 @@ class TestActionExecutor(unittest.TestCase):
         self.assertTrue(min_scan_res.executed)
 
     def test_execution_result_populates_updated_state_and_preserves_mocks(self) -> None:
-        from spaceinvasion.state import TutorialStatus
+        from spaceinvasion.core.model import TutorialStatus
 
         p1 = PlanetState(
             planet_id=12476,
@@ -1790,7 +1800,7 @@ class TestActionExecutor(unittest.TestCase):
         c_thr.navigate_menu.return_value = econ_html
         c_thr._wait_frame_ready.return_value = econ_after_html
         c_thr.read_planets_overview.return_value = state
-        with patch("spaceinvasion.executor.Select"):
+        with patch("spaceinvasion.session.executor.Select"):
             res_t = ex.execute_action(
                 c_thr,
                 state,
@@ -1845,7 +1855,7 @@ class TestActionExecutor(unittest.TestCase):
         atk_radio.get_attribute.side_effect = lambda a: {"value": "1", "name": "mission", "id": "m1"}.get(a, "")
         atk_radio.is_selected.return_value = False
         c_flt.driver.find_elements.side_effect = [[MagicMock()], [atk_radio]]
-        with patch("spaceinvasion.executor.Select"):
+        with patch("spaceinvasion.session.executor.Select"):
             res_flt = ex.execute_action(
                 c_flt,
                 state,
@@ -2134,7 +2144,7 @@ class TestActionExecutor(unittest.TestCase):
         client_ok.driver.find_element.return_value = sel_empty
         client_ok._wait_frame_ready.return_value = "<div>switched</div>"
         ex_c = ActionExecutor(dry_run=False, action_delay_range=(0.0, 0.0))
-        with patch("spaceinvasion.executor.Select"):
+        with patch("spaceinvasion.session.executor.Select"):
             switched_c, updated_c = ex_c._select_planet_if_needed(client_ok, 12477, html=stale_html, require_confirm=True)
         self.assertTrue(switched_c)
         self.assertEqual(updated_c, "<div>switched</div>")
@@ -2182,7 +2192,7 @@ class TestActionExecutor(unittest.TestCase):
         client_retro._wait_frame_ready.return_value = retro_after_html
 
         ex_d = ActionExecutor(dry_run=False, action_delay_range=(0.0, 0.0))
-        with patch("spaceinvasion.executor.Select") as mock_sel_cls:
+        with patch("spaceinvasion.session.executor.Select") as mock_sel_cls:
             mock_sel_cls.return_value.select_by_value.side_effect = ElementNotInteractableException("hidden")
             switched_d, updated_d = ex_d._select_planet_if_needed(
                 client_retro, 12453, html=retro_before_html, require_confirm=True
@@ -2221,7 +2231,7 @@ class TestActionExecutor(unittest.TestCase):
         client_race._wait_frame_ready.side_effect = [retro_after_html, retro_before_html]
 
         ex_e = ActionExecutor(dry_run=False, action_delay_range=(0.0, 0.0))
-        with patch("spaceinvasion.executor.Select") as mock_sel_cls_e:
+        with patch("spaceinvasion.session.executor.Select") as mock_sel_cls_e:
             mock_sel_cls_e.return_value.select_by_value.side_effect = ElementNotInteractableException("hidden")
             switched_e, updated_e = ex_e._select_planet_if_needed(
                 client_race, 12476, html=retro_after_html, require_confirm=True
@@ -2245,7 +2255,7 @@ class TestActionExecutor(unittest.TestCase):
         client_stale_nav._mark_frame_navigation.side_effect = ["tok-a", "tok-b"]
         client_stale_nav._wait_frame_ready.return_value = retro_before_html
         ex_f = ActionExecutor(dry_run=False, action_delay_range=(0.0, 0.0))
-        with patch("spaceinvasion.executor.Select") as mock_sel_cls_f:
+        with patch("spaceinvasion.session.executor.Select") as mock_sel_cls_f:
             mock_sel_cls_f.return_value.select_by_value.side_effect = [
                 StaleElementReferenceException("countdown reload"),
                 ElementNotInteractableException("hidden"),
@@ -2283,7 +2293,7 @@ class TestActionExecutor(unittest.TestCase):
         client_bounce.driver = MagicMock()
         client_bounce._wait_frame_ready.return_value = bounced_html
         ex_b = ActionExecutor(dry_run=False, action_delay_range=(0.0, 0.0))
-        with patch("spaceinvasion.executor.Select"):
+        with patch("spaceinvasion.session.executor.Select"):
             switched_b, _ = ex_b._select_planet_if_needed(client_bounce, 12477, html=html_with_select, require_confirm=True)
         self.assertFalse(switched_b)
         self.assertEqual(ex_b.last_observed_active_planet_id, 12476)
@@ -2623,7 +2633,7 @@ class TestActionExecutor(unittest.TestCase):
             sel_ok,
         ]
         client_rec._wait_frame_ready.return_value = switched_html
-        with patch("spaceinvasion.executor.Select") as mock_select_cls:
+        with patch("spaceinvasion.session.executor.Select") as mock_select_cls:
             mock_select_cls.return_value.select_by_value.side_effect = [None]
             switched, waited_html = ex_u._select_planet_if_needed(client_rec, 102, html=multi_html)
         self.assertTrue(switched)
@@ -2661,7 +2671,7 @@ class TestActionExecutor(unittest.TestCase):
         sel = MagicMock()
         sel.find_elements.return_value = [opt1, opt2]
         client.driver.find_element.return_value = sel
-        with patch("spaceinvasion.executor.Select") as mock_select_cls:
+        with patch("spaceinvasion.session.executor.Select") as mock_select_cls:
             mock_select_cls.return_value.select_by_value.side_effect = ElementNotInteractableException("select hidden")
             switched, waited_html = ex._select_planet_if_needed(client, 102, html=multi_html)
         self.assertFalse(switched)
@@ -2782,8 +2792,8 @@ class TestActionExecutor(unittest.TestCase):
         self.assertFalse(res_bad_fleet.executed)
 
     def test_adv_executor_10e5000_planet_switch_and_build_ship_and_actions(self) -> None:
-        from spaceinvasion import game_data
-        from spaceinvasion.state import UnitOffer
+        from spaceinvasion.core import catalog as game_data
+        from spaceinvasion.core.model import UnitOffer
 
         state, _ = _make_state_and_action()
         client = MagicMock(spec=GameBrowserClient)
@@ -2943,9 +2953,18 @@ class TestActionExecutor(unittest.TestCase):
         import tempfile
         from pathlib import Path
         from unittest.mock import MagicMock
-        from spaceinvasion.logging_utils import append_api_log, append_tick_logs, redact_sensitive
-        from spaceinvasion.state import EnergyBalance, GameState, PlanetState, Resources
-        from spaceinvasion.strategy import PlannedAction
+        from spaceinvasion.core.logging_utils import (
+            append_api_log,
+            append_tick_logs,
+            redact_sensitive,
+        )
+        from spaceinvasion.core.model import (
+            EnergyBalance,
+            GameState,
+            PlanetState,
+            Resources,
+        )
+        from spaceinvasion.core.model import PlannedAction
 
         ex_zero = ActionExecutor(dry_run=False, max_actions_per_hour=0)
         self.assertEqual(ex_zero.max_actions_per_hour, 0)
@@ -3056,7 +3075,7 @@ class TestActionExecutor(unittest.TestCase):
                     self.assertNotIn(sec, txt)
 
     def test_r12_executor_safe_str_resists_broken_fspath_and_raise_str(self) -> None:
-        from spaceinvasion import executor as ex_mod
+        from spaceinvasion.session import executor as ex_mod
 
         class _RaiseFspath:
             def __fspath__(self) -> str:
@@ -3099,7 +3118,7 @@ class TestActionExecutor(unittest.TestCase):
 
     def test_r13_executor_safe_str_handles_deep_cyclic_exceptions(self) -> None:
         import time
-        from spaceinvasion import executor as ex_mod
+        from spaceinvasion.session import executor as ex_mod
 
         class _SelfPath:
             def __fspath__(self) -> "_SelfPath":
@@ -3146,9 +3165,14 @@ class TestActionExecutor(unittest.TestCase):
 
     def test_r14_executor_safe_str_dag20_and_throttle_blocks_asteroid_and_raid(self) -> None:
         import time
-        from spaceinvasion import executor as ex_mod
-        from spaceinvasion.state import EnergyBalance, GameState, PlanetState, Resources
-        from spaceinvasion.strategy import PlannedAction
+        from spaceinvasion.session import executor as ex_mod
+        from spaceinvasion.core.model import (
+            EnergyBalance,
+            GameState,
+            PlanetState,
+            Resources,
+        )
+        from spaceinvasion.core.model import PlannedAction
 
         dag: BaseException = RuntimeError("leaf")
         for _ in range(20):
@@ -3235,7 +3259,7 @@ class TestActionExecutor(unittest.TestCase):
             executable_now=True,
         )
         ex = ActionExecutor(dry_run=False, action_delay_range=(0.0, 0.0))
-        with patch("spaceinvasion.executor.Select") as mock_sel:
+        with patch("spaceinvasion.session.executor.Select") as mock_sel:
             res = ex.execute_action(client, base_state, resume_bf)
         self.assertTrue(res.executed)
         mock_sel.return_value.select_by_value.assert_called_once_with("100")
@@ -3253,7 +3277,7 @@ class TestActionExecutor(unittest.TestCase):
         client_fail.driver = driver_fail
         client_fail.navigate_menu.return_value = real_econ_before
         client_fail._wait_frame_ready.return_value = real_econ_before  # still 0%!
-        with patch("spaceinvasion.executor.Select"):
+        with patch("spaceinvasion.session.executor.Select"):
             res_fail = ex.execute_action(client_fail, base_state, resume_bf)
         self.assertFalse(res_fail.executed)
         self.assertIn("did not persist", res_fail.message)
@@ -3281,14 +3305,14 @@ class TestActionExecutor(unittest.TestCase):
             reason="Pause thermosolar",
             executable_now=True,
         )
-        with patch("spaceinvasion.executor.Select"):
+        with patch("spaceinvasion.session.executor.Select"):
             res_b6 = ex.execute_action(client_b6, base_state, pause_b6)
         self.assertTrue(res_b6.executed)
         self.assertEqual(driver_b6.find_element.call_args_list[0].args[1], "resource6")
         self.assertEqual(ex.last_economy_rates[12476]["resource6"], 0)
 
     def test_live_internal_send_fleet_finish_gobutton_maxlength_and_html_sid_redaction(self) -> None:
-        from spaceinvasion.logging_utils import redact_sensitive
+        from spaceinvasion.core.logging_utils import redact_sensitive
 
         raw_html = (
             '<form id="ress"><input name="sid" type="hidden" value="181659802557cf6e707aa6177d2b66a6"/>'

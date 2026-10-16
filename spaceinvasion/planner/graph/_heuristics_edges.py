@@ -9,7 +9,7 @@ from spaceinvasion.core.catalog import (
     RESEARCHES,
     building_energy_delta,
 )
-from spaceinvasion.core.state import PlanetState
+from spaceinvasion.core.model import PlanetState
 from spaceinvasion.planner.graph._heuristics_economy import AddEdgeFn, NodeMeta, add_economy_edges
 from spaceinvasion.planner.graph.common import (
     clean_int,

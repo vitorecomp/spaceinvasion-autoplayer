@@ -1,17 +1,17 @@
-"""Seeded differential fuzz suite: legacy combat.fleet/ranking vs new combat/* and planner/eta."""
+"""Seeded fuzz invariant suite for ``spaceinvasion.combat.*`` and ``spaceinvasion.planner.eta``."""
 
 from __future__ import annotations
 
-from collections.abc import Callable
-import dataclasses
 import math
 from pathlib import Path
 import random
 
 import pytest
 
-from spaceinvasion.combat import cargo, colonies, fleet as legacy_fleet, flight, ranking as legacy_ranking, simulator
-from spaceinvasion.core.state import EnergyBalance, GameState, PlanetState, Resources
+from spaceinvasion.combat import cargo, colonies, flight, simulator
+from spaceinvasion.core.model import EnergyBalance, GameState, PlanetState, Resources
+from spaceinvasion.parsing.fleet_page import parse_send_fleet_mission_block
+from spaceinvasion.parsing.models import SpyReport
 from spaceinvasion.planner import eta
 
 _SHIPS: tuple[str, ...] = tuple(f"s{i}" for i in range(1, 17))
@@ -21,41 +21,12 @@ _FUZZ_SEED = 1234
 _GOLDEN_PAGES_DIR = Path(__file__).resolve().parents[2] / "goldens" / "pages"
 
 
-def _norm(val: object) -> object:
-    if dataclasses.is_dataclass(val) and not isinstance(val, type):
-        return {k: _norm(v) for k, v in dataclasses.asdict(val).items()}
-    if isinstance(val, dict):
-        return {str(k): _norm(v) for k, v in val.items()}
-    if isinstance(val, (list, tuple)):
-        return [_norm(v) for v in val]
-    if isinstance(val, float):
-        return None if math.isnan(val) else round(val, 9)
-    return val
-
-
-def _assert_same(label: str, legacy_fn: Callable[[], object], new_fn: Callable[[], object]) -> None:
-    try:
-        legacy_out: tuple[str, object] = ("ok", _norm(legacy_fn()))
-    except (ValueError, TypeError, KeyError, ZeroDivisionError) as exc:
-        legacy_out = ("exc", type(exc).__name__)
-    try:
-        new_out: tuple[str, object] = ("ok", _norm(new_fn()))
-    except (ValueError, TypeError, KeyError, ZeroDivisionError) as exc:
-        new_out = ("exc", type(exc).__name__)
-    assert new_out == legacy_out, f"{label} mismatch: legacy={legacy_out!r} new={new_out!r}"
-
-
 def _rand_fleet(rng: random.Random, pool: tuple[str, ...], *, k: int = 4, hi: int = 60) -> dict[str, int]:
     return {s: rng.randint(0, hi) for s in rng.sample(pool, rng.randint(0, k))}
 
 
 def _rand_res(rng: random.Random, hi: int = 200_000) -> Resources:
-    return Resources(
-        rng.randint(0, hi),
-        rng.randint(0, hi),
-        rng.randint(0, hi),
-        rng.randint(0, hi // 4),
-    )
+    return Resources(rng.randint(0, hi), rng.randint(0, hi), rng.randint(0, hi), rng.randint(0, hi // 4))
 
 
 def _rand_coords(rng: random.Random) -> str:
@@ -81,10 +52,10 @@ def _rand_planet(rng: random.Random, pid: int = 101) -> PlanetState:
     )
 
 
-def test_fuzz_combat_cargo_colonies_flight_and_eta_parity() -> None:
+def test_fuzz_combat_cargo_colonies_flight_and_eta_invariants() -> None:
     rng = random.Random(_FUZZ_SEED)
     for _ in range(_FUZZ_ITERATIONS):
-        rep = legacy_fleet.SpyReport(
+        rep = SpyReport(
             target_coords=_rand_coords(rng),
             owner=rng.choice(["", "x", "Spacia"]),
             resources=_rand_res(rng),
@@ -96,83 +67,44 @@ def test_fuzz_combat_cargo_colonies_flight_and_eta_parity() -> None:
         att = _rand_fleet(rng, _SHIPS, k=5, hi=120)
         ares = {f"r{i}": rng.randint(0, 15) for i in rng.sample(range(1, 16), 4)}
         margin = rng.choice([1.0, 1.4, 2.0])
-        _assert_same(
-            "simulate_raid_outcome",
-            lambda: legacy_fleet.simulate_raid_outcome(att, rep, attacker_researches=ares, safety_margin=margin),
-            lambda: simulator.simulate_raid_outcome(att, rep, attacker_researches=ares, safety_margin=margin),
-        )
+        raid = simulator.simulate_raid_outcome(att, rep, attacker_researches=ares, safety_margin=margin)
+        assert 0.0 <= raid.win_probability <= 1.0
 
         pl = _rand_planet(rng)
-        tc = _rand_coords(rng)
-        fr = rng.choice([0, 500, 5000])
-        ssc = rng.random() < 0.3
-        _assert_same(
-            "plan_escape_flight",
-            lambda: legacy_fleet.plan_escape_flight(pl, target_coords=tc, fuel_reserve_spice=fr, save_solar_cells=ssc),
-            lambda: cargo.plan_escape_flight(pl, target_coords=tc, fuel_reserve_spice=fr, save_solar_cells=ssc),
+        esc = cargo.plan_escape_flight(
+            pl, target_coords=_rand_coords(rng), fuel_reserve_spice=rng.choice([0, 500, 5000]), save_solar_cells=rng.random() < 0.3
         )
+        assert esc.cargo_capacity >= 0 and esc.saved_resources.total() >= 0
 
-        coords = _rand_coords(rng)
-        origin = _rand_coords(rng)
-        pos = rng.choice([None, *range(1, 16)])
-        uf = rng.choice([None, 0, 150, 299, 300, 340, 400])
-        cmin = rng.choice([None, 120, 250, 310])
-        cmax = rng.choice([None, 200, 330, 420])
-        temp = rng.choice([None, -50, 20, 90])
-        spied = rng.random() < 0.5
-        mft = rng.choice([250, 300, 330])
-        lsp = rng.random() * 1e9
-        lsc = rng.random() * 1e9
-        _assert_same(
-            "grade_colony_candidate",
-            lambda: legacy_fleet.grade_colony_candidate(
-                coords=coords,
-                origin_coords=origin,
-                position=pos,
-                uninhabited_fields=uf,
-                colonize_min_fields=cmin,
-                colonize_max_fields=cmax,
-                temperature=temp,
-                spied=spied,
-                min_fields_target=mft,
-                last_spied_ts=lsp,
-                last_scanned_ts=lsc,
-            ),
-            lambda: colonies.grade_colony_candidate(
-                coords=coords,
-                origin_coords=origin,
-                position=pos,
-                uninhabited_fields=uf,
-                colonize_min_fields=cmin,
-                colonize_max_fields=cmax,
-                temperature=temp,
-                spied=spied,
-                min_fields_target=mft,
-                last_spied_ts=lsp,
-                last_scanned_ts=lsc,
-            ),
+        graded = colonies.grade_colony_candidate(
+            coords=_rand_coords(rng),
+            origin_coords=_rand_coords(rng),
+            position=rng.choice([None, *range(1, 16)]),
+            uninhabited_fields=rng.choice([None, 0, 150, 299, 300, 340, 400]),
+            colonize_min_fields=rng.choice([None, 120, 250, 310]),
+            colonize_max_fields=rng.choice([None, 200, 330, 420]),
+            temperature=rng.choice([None, -50, 20, 90]),
+            spied=rng.random() < 0.5,
+            min_fields_target=rng.choice([250, 300, 330]),
+            last_spied_ts=rng.random() * 1e9,
+            last_scanned_ts=rng.random() * 1e9,
         )
+        assert "grade" in graded and "score" in graded
 
-        o_c = _rand_coords(rng)
-        t_c = rng.choice([_rand_coords(rng), "bad", "", "1:2:3"])
-        fl = _rand_fleet(rng, _SHIPS, k=4, hi=50)
-        rt = rng.random() < 0.5
-        _assert_same(
-            "estimate_fleet_flight_seconds",
-            lambda: legacy_fleet.estimate_fleet_flight_seconds(o_c, t_c, fl, researches=ares, round_trip=rt),
-            lambda: flight.estimate_fleet_flight_seconds(o_c, t_c, fl, researches=ares, round_trip=rt),
+        secs = flight.estimate_fleet_flight_seconds(
+            _rand_coords(rng),
+            rng.choice([_rand_coords(rng), "bad", "", "1:2:3"]),
+            _rand_fleet(rng, _SHIPS, k=4, hi=50),
+            researches=ares,
+            round_trip=rng.random() < 0.5,
         )
+        assert secs is None or (math.isfinite(secs) and secs >= 0.0)
 
-        need = _rand_res(rng)
-        sur = _rand_res(rng)
-        dfs = rng.choice([None, _rand_res(rng)])
         cap = rng.randint(0, 400_000)
-        fill = rng.random() < 0.5
-        _assert_same(
-            "pack_transport_cargo",
-            lambda: legacy_fleet.pack_transport_cargo(need, sur, dfs, cap, fill_to_capacity=fill),
-            lambda: cargo.pack_transport_cargo(need, sur, dfs, cap, fill_to_capacity=fill),
+        packed = cargo.pack_transport_cargo(
+            _rand_res(rng), _rand_res(rng), rng.choice([None, _rand_res(rng)]), cap, fill_to_capacity=rng.random() < 0.5
         )
+        assert packed.total() <= cap
 
         planets = tuple(_rand_planet(rng, 100 + i) for i in range(rng.randint(1, 4)))
         st = GameState(
@@ -184,23 +116,16 @@ def test_fuzz_combat_cargo_colonies_flight_and_eta_parity() -> None:
             active_planet_id=planets[0].planet_id,
             researches={f"r{i}": rng.randint(0, 20) for i in range(1, 16)},
         )
-        _assert_same(
-            "estimate_planet_hourly_economy",
-            lambda: legacy_ranking.estimate_planet_hourly_economy(st, planets[0]),
-            lambda: eta.estimate_planet_hourly_economy(st, planets[0]),
-        )
-        _assert_same(
-            "build_buildings_eta",
-            lambda: legacy_ranking.build_buildings_eta(st, planets[0]),
-            lambda: eta.build_buildings_eta(st, planets[0]),
-        )
+        pecon = eta.estimate_planet_hourly_economy(st, planets[0])
+        assert pecon["spice_eq_per_hr"] >= 0.0
+        tbl = eta.build_buildings_eta(st, planets[0])
+        assert "buildings" in tbl
 
 
-def test_fuzz_bash_tracker_sequences_parity() -> None:
+def test_fuzz_bash_tracker_sequences_invariants() -> None:
     rng = random.Random(_FUZZ_SEED + 1)
     for _ in range(_FUZZ_ITERATIONS):
-        legacy_bt = legacy_fleet.BashTracker()
-        new_bt = flight.BashTracker()
+        bt = flight.BashTracker()
         t0 = 1_700_000_000.0
         targets = [_rand_coords(rng) for _ in range(3)]
         for step in range(30):
@@ -208,29 +133,22 @@ def test_fuzz_bash_tracker_sequences_parity() -> None:
             tgt = rng.choice(targets)
             ts = t0 + step * rng.choice([60.0, 3600.0, 20000.0])
             if op == "att":
-                legacy_bt.record_attack(tgt, timestamp=ts)
-                new_bt.record_attack(tgt, timestamp=ts)
+                bt.record_attack(tgt, timestamp=ts)
             elif op == "blk":
-                until = ts + rng.choice([60.0, 7200.0])
-                legacy_bt.record_block(tgt, until, reason="r")
-                new_bt.record_block(tgt, until, reason="r")
+                bt.record_block(tgt, ts + rng.choice([60.0, 7200.0]), reason="r")
             else:
-                inact = rng.random() < 0.3
-                spacia = rng.random() < 0.2
-                war = rng.random() < 0.2
-                _assert_same(
-                    "BashTracker.can_attack",
-                    lambda: legacy_bt.can_attack(
-                        tgt, is_inactive=inact, is_spacia=spacia, in_declared_war=war, timestamp=ts
-                    ),
-                    lambda: new_bt.can_attack(
-                        tgt, is_inactive=inact, is_spacia=spacia, in_declared_war=war, timestamp=ts
-                    ),
+                res = bt.can_attack(
+                    tgt,
+                    is_inactive=rng.random() < 0.3,
+                    is_spacia=rng.random() < 0.2,
+                    in_declared_war=rng.random() < 0.2,
+                    timestamp=ts,
                 )
+                assert isinstance(res, bool)
 
 
 @pytest.mark.parametrize("kind", ("ATTACK", "SPY", "TRANSPORT", "STATION", "SAVE", "COLONIZE"))
-def test_fuzz_mission_banner_parser_parity(kind: str) -> None:
+def test_fuzz_mission_banner_parser_invariants(kind: str) -> None:
     base = (_GOLDEN_PAGES_DIR / "send_fleet_blocked.html").read_text(encoding="utf-8")
     variants = (
         base,
@@ -244,14 +162,6 @@ def test_fuzz_mission_banner_parser_parity(kind: str) -> None:
         "<div>Angriff (verboten): Bash-Schutz aktiv. Reset in 1:02:03</div>",
         "<div>Attack (forbidden):</div><div>Reset in 00:00:30</div>",
     )
-    from spaceinvasion.parsing.fleet_page import parse_send_fleet_mission_block
-
     for html in variants:
-
-        def _run_legacy(h: str = html) -> object:
-            return legacy_fleet.parse_send_fleet_mission_block(h, kind)
-
-        def _run_new(h: str = html) -> object:
-            return parse_send_fleet_mission_block(h, kind)
-
-        _assert_same(f"parse_send_fleet_mission_block[{kind}]", _run_legacy, _run_new)
+        out = parse_send_fleet_mission_block(html, kind)
+        assert out is None or len(out) == 3

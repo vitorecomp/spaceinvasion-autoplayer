@@ -23,10 +23,33 @@ from selenium.common.exceptions import (
 )
 from selenium.webdriver.common.by import By
 
-from spaceinvasion.core import game_data
+from spaceinvasion.core import catalog as game_data
+from spaceinvasion.core.logging_utils import append_crash_debug_log
+from spaceinvasion.core.model import GameState, QueueJob, normalize_planet_type
+from spaceinvasion.parsing.account_pages import parse_daily_login_bonus
+from spaceinvasion.parsing.galaxy import (
+    ARROW_NAV_MAX_DISTANCE,
+    extract_galaxy_system_coords,
+    extract_galaxy_universe_bounds,
+)
+from spaceinvasion.parsing.overview import (
+    parse_home_metadata,
+    parse_menu_status,
+    parse_planets_overview_json,
+    parse_ticker_rates,
+    parse_unread_banner_count,
+)
+from spaceinvasion.parsing.pages import (
+    parse_building_queue,
+    parse_buildings_page,
+    parse_economy_rates,
+    parse_research_page,
+    parse_research_queue_timer,
+    parse_unit_factory_page,
+)
+from spaceinvasion.parsing.tutorial import parse_tutorial_from_home
 from spaceinvasion.session._call_utils import call_with_optional_priority as _call_with_optional_priority
 from spaceinvasion.session.auth import AntiBotChallengeError, SpaceInvasionAuthError, detect_antibot_challenge
-from spaceinvasion.core.logging_utils import append_crash_debug_log
 from spaceinvasion.session.browser import (
     DEFAULT_DEBUG_HOST,
     DEFAULT_DEBUG_PORT,
@@ -34,29 +57,6 @@ from spaceinvasion.session.browser import (
     close_or_detach_driver,
     find_and_switch_game_tab,
     is_debug_port_open,
-)
-from spaceinvasion.combat.fleet import (
-    ARROW_NAV_MAX_DISTANCE,
-    extract_galaxy_system_coords,
-    extract_galaxy_universe_bounds,
-)
-from spaceinvasion.core.state import (
-    GameState,
-    QueueJob,
-    normalize_planet_type,
-    parse_building_queue,
-    parse_buildings_page,
-    parse_daily_login_bonus,
-    parse_economy_rates,
-    parse_home_metadata,
-    parse_menu_status,
-    parse_planets_overview_json,
-    parse_research_page,
-    parse_research_queue_timer,
-    parse_ticker_rates,
-    parse_tutorial_from_home,
-    parse_unit_factory_page,
-    parse_unread_banner_count,
 )
 
 DEFAULT_MIN_NAV_DELAY: tuple[float, float] = (0.9, 1.8)

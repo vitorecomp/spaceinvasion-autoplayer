@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from spaceinvasion.core import game_data
+from spaceinvasion.core import catalog as game_data
 from spaceinvasion.planner.ai._sim_types import Blocker, PriorityKey, Proposal, SimulatorView, Vec4
 from spaceinvasion.planner.ai._strategy_eval import (
     ColonyCacheKey,

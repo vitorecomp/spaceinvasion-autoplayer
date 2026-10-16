@@ -8,56 +8,32 @@ from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
-import re
 import sys
-from typing import Any, Optional, Sequence
+from typing import Any, Optional, Sequence, cast
 
-from spaceinvasion.core import game_data
+from spaceinvasion.core import catalog as game_data
+from spaceinvasion.core.model import GameState, PlannedAction
 from spaceinvasion.core.redaction import (
-    _SID_RE as _SID_RE,
-    _sub_sid_kv as _sub_sid_kv,
-    is_secret_dict_key,
-    redact_text as _redact_text,
+    _clip as _clip_log_str,
 )
-from spaceinvasion.core.state import GameState
-from spaceinvasion.planner.strategy import PlannedAction
-
-_WEBDRIVER_STACKTRACE_RE = re.compile(
-    r"(?:\r?\n|\s)+Stacktrace:\s*(?:\r?\n\s*#\d+\s+[^\r\n]*)*.*$",
-    re.DOTALL,
+from spaceinvasion.core.redaction import (
+    _redact_key as _redaction_redact_key,
 )
-_WEBDRIVER_SESSION_INFO_RE = re.compile(
-    r"(?:\r?\n|\s)+\((?:Session|Driver|Build) info:[^\r\n)]*\)",
-    re.IGNORECASE,
+from spaceinvasion.core.redaction import (
+    _safe_text as _redaction_safe_text,
 )
-
-
-def strip_webdriver_stacktrace(text: str) -> str:
-    """Strip noisy ChromeDriver/Selenium C++ stacktrace and session-info footers from error text."""
-    if not isinstance(text, str) or not text:
-        return ""
-    cleaned = _WEBDRIVER_STACKTRACE_RE.sub("", text)
-    cleaned = _WEBDRIVER_SESSION_INFO_RE.sub("", cleaned)
-    # Collapse multi-line WebDriver messages into a compact single line
-    cleaned = re.sub(r"\s*\r?\n\s*", " ", cleaned).strip()
-    return cleaned
-
-
-def format_clean_error(err: Any, *, max_chars: int = 512) -> str:
-    """Redact sensitive tokens, strip ChromeDriver C++ stacktraces, and format an error cleanly."""
-    redacted = redact_sensitive(err)
-    if isinstance(redacted, str):
-        text = redacted
-    elif redacted is None:
-        text = ""
-    else:
-        text = _safe_summary_text(redacted, f"<{type(err).__name__}>")
-    cleaned = strip_webdriver_stacktrace(text)
-    if not cleaned:
-        cleaned = f"<{type(err).__name__}>" if isinstance(err, BaseException) else ""
-    if max_chars > 0 and len(cleaned) > max_chars:
-        return cleaned[:max_chars].rstrip() + "...[truncated]"
-    return cleaned
+from spaceinvasion.core.redaction import (
+    format_clean_error as format_clean_error,
+)
+from spaceinvasion.core.redaction import (
+    is_secret_dict_key as is_secret_dict_key,
+)
+from spaceinvasion.core.redaction import (
+    redact_sensitive as redact_sensitive,
+)
+from spaceinvasion.core.redaction import (
+    strip_webdriver_stacktrace as strip_webdriver_stacktrace,
+)
 
 
 def _decode_bytes(raw: bytes | bytearray) -> str:
@@ -70,24 +46,8 @@ _MAX_LOG_TREE_NODES = 32_768
 _MAX_LOG_TREE_DEPTH = 64
 
 
-def _clip_log_str(text: str, limit: int = _MAX_LOG_KEY_CHARS) -> str:
-    if len(text) <= limit:
-        return text
-    return text[:limit] + "...[truncated]"
-
-
 def _safe_fspath_text(obj: os.PathLike[Any]) -> str:
-    try:
-        raw = os.fspath(obj)
-    except Exception:
-        return f"<{type(obj).__name__}>"
-    if isinstance(raw, (bytes, bytearray)):
-        return _decode_bytes(raw)
-    if isinstance(raw, str):
-        return raw
-    if isinstance(raw, os.PathLike):
-        return f"<{type(raw).__name__}>"
-    return _safe_summary_text(raw, f"<{type(raw).__name__}>")
+    return _redaction_safe_text(obj, f"<{type(obj).__name__}>", 0, set(), [_MAX_LOG_KEY_NODES])
 
 
 def _safe_exc_text(
@@ -99,45 +59,10 @@ def _safe_exc_text(
 ) -> str:
     seen = _seen if _seen is not None else set()
     budget = _budget if _budget is not None else [_MAX_LOG_KEY_NODES]
-    str_fn = getattr(type(exc), "__str__", BaseException.__str__)
-    if str_fn not in (BaseException.__str__, KeyError.__str__):
-        try:
-            return _clip_log_str(str(exc), 16_384)
-        except Exception:
-            pass
-    args = getattr(exc, "args", ())
-    if not isinstance(args, (tuple, list)) or not args:
-        return "" if str_fn is BaseException.__str__ else type(exc).__name__
-    vid = id(exc)
-    if vid in seen or _depth >= 16 or budget[0] <= 0:
-        return f"<{type(exc).__name__}>"
-    budget[0] -= 1
-    seen.add(vid)
-    try:
-        if len(args) == 1:
-            a0 = args[0]
-            if isinstance(a0, str):
-                res = repr(a0) if isinstance(exc, KeyError) else a0
-                return _clip_log_str(res, 16_384)
-            if isinstance(a0, BaseException):
-                return _safe_exc_text(a0, _depth=_depth + 1, _seen=seen, _budget=budget)
-            return _clip_log_str(_safe_summary_text(a0, f"<{type(a0).__name__}>"), _MAX_LOG_KEY_CHARS)
-        parts: list[str] = []
-        for a in args[:8]:
-            if budget[0] <= 0:
-                parts.append("...")
-                break
-            if isinstance(a, str):
-                parts.append(repr(a))
-            elif isinstance(a, BaseException):
-                parts.append(_safe_exc_text(a, _depth=_depth + 1, _seen=seen, _budget=budget))
-            else:
-                parts.append(_safe_summary_text(a, f"<{type(a).__name__}>"))
-        if len(args) > 8:
-            parts.append(f"...+{len(args) - 8}")
-        return _clip_log_str("(" + ", ".join(parts) + ")", _MAX_LOG_KEY_CHARS)
-    finally:
-        seen.discard(vid)
+    return _clip_log_str(
+        _redaction_safe_text(exc, f"<{type(exc).__name__}>", _depth, seen, budget),
+        16_384,
+    )
 
 
 def _redact_mapping_key(
@@ -147,111 +72,9 @@ def _redact_mapping_key(
     _seen: Optional[set[int]] = None,
     _budget: Optional[list[int]] = None,
 ) -> Any:
-    if isinstance(key, str):
-        return _redact_text(key)
-    if key is None or isinstance(key, (bool, int, float)):
-        return key
-    if isinstance(key, (bytes, bytearray)):
-        return _redact_text(_decode_bytes(key))
     seen = _seen if _seen is not None else set()
     budget = _budget if _budget is not None else [_MAX_LOG_KEY_NODES]
-    if isinstance(key, os.PathLike):
-        vid = id(key)
-        if vid in seen or _depth >= 16 or budget[0] <= 0:
-            return f"<{type(key).__name__}>"
-        budget[0] -= 1
-        seen.add(vid)
-        try:
-            return _redact_text(_safe_fspath_text(key))
-        finally:
-            seen.discard(vid)
-    if isinstance(key, BaseException):
-        return _redact_text(_safe_exc_text(key, _depth=_depth, _seen=seen, _budget=budget))
-    if isinstance(key, (tuple, frozenset)):
-        vid = id(key)
-        if vid in seen or _depth >= 16 or budget[0] <= 0:
-            return "(...)" if isinstance(key, tuple) else "frozenset({...})"
-        budget[0] -= 1
-        seen.add(vid)
-        try:
-            items: list[Any] = []
-            for idx, el in enumerate(key):
-                if idx >= 64 or budget[0] <= 0:
-                    items.append("...")
-                    break
-                items.append(_redact_mapping_key(el, _depth=_depth + 1, _seen=seen, _budget=budget))
-            return tuple(items) if isinstance(key, tuple) else frozenset(items)
-        except TypeError:
-            pass
-        finally:
-            seen.discard(vid)
-    try:
-        safe_k = game_data.safe_key(key)
-    except Exception:
-        safe_k = f"<{type(key).__name__}>"
-    return _redact_text(safe_k)
-
-
-def redact_sensitive(
-    obj: Any,
-    *,
-    _depth: int = 0,
-    _seen: Optional[set[int]] = None,
-    _budget: Optional[list[int]] = None,
-) -> Any:
-    """Recursively mask transient session tokens and secret key-value fields before writing logs."""
-    if isinstance(obj, str):
-        return _redact_text(obj)
-    if obj is None or isinstance(obj, (bool, int, float)):
-        return obj
-    if isinstance(obj, (bytes, bytearray)):
-        return _redact_text(_decode_bytes(obj))
-    if isinstance(obj, BaseException):
-        return _redact_text(_safe_exc_text(obj))
-    if isinstance(obj, os.PathLike):
-        return _redact_text(_safe_fspath_text(obj))
-    if isinstance(obj, (Mapping, list, tuple, set, frozenset)):
-        seen = _seen if _seen is not None else set()
-        budget = _budget if _budget is not None else [_MAX_LOG_TREE_NODES]
-        vid = id(obj)
-        if vid in seen:
-            return "[Cycle]"
-        if _depth >= _MAX_LOG_TREE_DEPTH or budget[0] <= 0:
-            return "[Truncated]"
-        budget[0] -= 1
-        seen.add(vid)
-        try:
-            if isinstance(obj, Mapping):
-                out: dict[Any, Any] = {}
-                for k, v in obj.items():
-                    if budget[0] <= 0:
-                        out["[Truncated]"] = "[Truncated]"
-                        break
-                    clean_k = _redact_text(k) if isinstance(k, str) else _redact_mapping_key(k)
-                    if isinstance(clean_k, str) and is_secret_dict_key(clean_k):
-                        if v is None or v == "":
-                            out[clean_k] = v
-                        elif isinstance(v, (bytes, bytearray)) and len(v) == 0:
-                            out[clean_k] = ""
-                        else:
-                            out[clean_k] = "REDACTED"
-                    else:
-                        out[clean_k] = redact_sensitive(
-                            v, _depth=_depth + 1, _seen=seen, _budget=budget
-                        )
-                return out
-            out_list: list[Any] = []
-            for v in obj:
-                if budget[0] <= 0:
-                    out_list.append("[Truncated]")
-                    break
-                out_list.append(
-                    redact_sensitive(v, _depth=_depth + 1, _seen=seen, _budget=budget)
-                )
-            return out_list
-        finally:
-            seen.discard(vid)
-    return obj
+    return _redaction_redact_key(key, False, _depth, seen, budget)
 
 
 def _safe_summary_text(val: Any, default: str = "") -> str:
@@ -328,9 +151,9 @@ def _to_dict(item: Any) -> Optional[dict[str, Any]]:
     if item is None:
         return None
     if isinstance(item, Mapping):
-        return redact_sensitive(dict(item))
+        return cast(dict[str, Any], redact_sensitive(dict(item)))
     if is_dataclass(item) and not isinstance(item, type):
-        return redact_sensitive(asdict(item))
+        return cast(dict[str, Any], redact_sensitive(asdict(item)))
     if isinstance(item, os.PathLike):
         return {"value": redact_sensitive(item)}
     if isinstance(item, (bytes, bytearray)):
@@ -449,32 +272,35 @@ def append_tick_logs(
     actual_dict = _to_dict(actual_action)
     next_dict = _to_dict(next_action)
 
-    record = redact_sensitive(
-        _coerce_json_scalars(
-            game_data.sanitize_json_tree(
-                redact_sensitive(
-                    {
-                        "ts": ts,
-                        "tick": tick,
-                        "mode": mode,
-                        "universe_id": state.universe_id,
-                        "planet": planet.coords if planet else None,
-                        "resources": asdict(planet.resources) if planet else None,
-                        "energy": (
-                            {"produced": planet.energy.produced, "used": planet.energy.used}
-                            if planet
-                            else None
-                        ),
-                        "actual_action": actual_dict,
-                        "actual_result": actual_result,
-                        "next_action": next_dict,
-                        "outcomes": list(outcomes),
-                    }
-                ),
-                max_int=game_data.MAX_JSON_SAFE_INT,
-                nonfinite_float=None,
+    record = cast(
+        dict[str, Any],
+        redact_sensitive(
+            _coerce_json_scalars(
+                game_data.sanitize_json_tree(
+                    redact_sensitive(
+                        {
+                            "ts": ts,
+                            "tick": tick,
+                            "mode": mode,
+                            "universe_id": state.universe_id,
+                            "planet": planet.coords if planet else None,
+                            "resources": asdict(planet.resources) if planet else None,
+                            "energy": (
+                                {"produced": planet.energy.produced, "used": planet.energy.used}
+                                if planet
+                                else None
+                            ),
+                            "actual_action": actual_dict,
+                            "actual_result": actual_result,
+                            "next_action": next_dict,
+                            "outcomes": list(outcomes),
+                        }
+                    ),
+                    max_int=game_data.MAX_JSON_SAFE_INT,
+                    nonfinite_float=None,
+                )
             )
-        )
+        ),
     )
     with jsonl_path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(record, allow_nan=False) + "\n")

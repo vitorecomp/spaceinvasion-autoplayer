@@ -6,21 +6,25 @@ from dataclasses import asdict, fields as dataclass_fields
 import json
 import unittest
 
-from spaceinvasion.state import (
+from spaceinvasion.core.coercion import parse_si_int
+from spaceinvasion.core.model import (
     GameState,
     game_state_from_dict,
-    parse_building_queue,
-    parse_buildings_page,
-    parse_economy_rates,
+)
+from spaceinvasion.parsing.overview import (
     parse_home_metadata,
     parse_menu_messages,
     parse_menu_status,
     parse_planets_overview_json,
+)
+from spaceinvasion.parsing.pages import (
+    parse_buildings_page,
+    parse_economy_rates,
     parse_research_page,
-    parse_si_int,
-    parse_tutorial_from_home,
     parse_unit_factory_page,
 )
+from spaceinvasion.parsing.queues import parse_building_queue
+from spaceinvasion.parsing.tutorial import parse_tutorial_from_home
 
 SAMPLE_JSON_CONTAINER = json.dumps(
     {
@@ -469,9 +473,9 @@ class TestStateParsers(unittest.TestCase):
         self.assertFalse(r_off.can_research)
 
     def test_game_state_from_dict_coerces_corrupt_queues_and_scalars_safely(self) -> None:
-        from spaceinvasion.config import StrategyConfig
-        from spaceinvasion.state import Resources
-        from spaceinvasion.strategy import plan_actions
+        from spaceinvasion.core.config import StrategyConfig
+        from spaceinvasion.core.model import Resources
+        from spaceinvasion.planner.heuristics import plan_actions
 
         corrupt_dict = {
             "universe_id": "31",
@@ -545,7 +549,10 @@ class TestStateParsers(unittest.TestCase):
         huge_short = Resources(pig_iron=10**1_000_000).format_short()
         self.assertIn("~1e", huge_short)
 
-        from spaceinvasion.state import EnergyBalance, PlanetState
+        from spaceinvasion.core.model import (
+            EnergyBalance,
+            PlanetState,
+        )
 
         corrupt_res = Resources(
             pig_iron=-(10**5000),  # type: ignore[arg-type]
@@ -574,7 +581,11 @@ class TestStateParsers(unittest.TestCase):
 
     def test_storage_fill_ratios_handles_huge_and_degenerate_values(self) -> None:
         import math
-        from spaceinvasion.state import EnergyBalance, PlanetState, Resources
+        from spaceinvasion.core.model import (
+            EnergyBalance,
+            PlanetState,
+            Resources,
+        )
 
         for huge in (10**308, 10**400, 10**1_000_000):
             planet = PlanetState(
@@ -729,15 +740,15 @@ class TestStateParsers(unittest.TestCase):
         self.assertEqual(gs_neg.researches["r1"], 0)
 
     def test_r10_negative_clamping_bytes_safe_key_and_signed_preservations(self) -> None:
-        from spaceinvasion import state as st_mod
-        from spaceinvasion.state import (
+        from spaceinvasion.core import model as st_mod
+        from spaceinvasion.core.model import (
             EnergyBalance,
             GameState,
             PlanetState,
             Resources,
             game_state_from_dict,
-            parse_buildings_page,
         )
+        from spaceinvasion.parsing.pages import parse_buildings_page
 
         # Resources.from_list clamps negatives; direct Resources(...) stays signed; EnergyBalance.net stays signed
         self.assertEqual(Resources.from_list([-10, -5, -2, -1]), Resources(0, 0, 0, 0))
@@ -785,10 +796,12 @@ class TestStateParsers(unittest.TestCase):
         self.assertEqual(huge_p.fields_used, 10**5000)
         self.assertEqual(huge_p.buildings["b2"], 10**5000)
 
-        self.assertEqual(st_mod._safe_state_int(b"42"), 42)
-        self.assertEqual(st_mod._safe_state_int("\u0664\u0662"), 0)
-        self.assertEqual(st_mod._safe_state_float(b"2.5"), 2.5)
-        self.assertEqual(st_mod._safe_state_float("\u0662.\u0665"), 0.0)
+        from spaceinvasion.core.coercion import coerce_finite_float, coerce_int
+
+        self.assertEqual(coerce_int(b"42"), 42)
+        self.assertEqual(coerce_int("\u0664\u0662"), 0)
+        self.assertEqual(coerce_finite_float(b"2.5"), 2.5)
+        self.assertEqual(coerce_finite_float("\u0662.\u0665"), 0.0)
 
         gs = game_state_from_dict(
             {
@@ -820,7 +833,7 @@ class TestStateParsers(unittest.TestCase):
 
     def test_r12_normalize_planet_type_blank_path_fallback_and_broken_pathlike(self) -> None:
         from pathlib import Path
-        from spaceinvasion import state as st_mod
+        from spaceinvasion.core import model as st_mod
 
         class _RaiseFspath:
             def __fspath__(self) -> str:
@@ -878,29 +891,36 @@ class TestStateParsers(unittest.TestCase):
         )
         self.assertEqual(gs.planets[0].planet_type, "asteroid")
         self.assertIsInstance(gs.planets[0].name, str)
-        self.assertEqual(st_mod.parse_si_int(_RaiseFspath()), 0)
-        self.assertIsInstance(st_mod._safe_state_str(_RaiseStrRepr()), str)
-        self.assertIsInstance(st_mod._safe_state_str(_RaiseFspath()), str)
-        self.assertIsNotNone(st_mod._safe_optional_state_str(_IntPath()))
-        self.assertIsNotNone(st_mod._safe_optional_state_str(_RaiseFspath()))
-        self.assertEqual(st_mod._parse_cost_from_text(_RaiseFspath()), st_mod.Resources())
-        self.assertEqual(st_mod._parse_cost_from_text(_IntPath()), st_mod.Resources())
+        from spaceinvasion.core._model_helpers import safe_optional_state_str, safe_state_str
+        from spaceinvasion.core.coercion import parse_si_int
+        from spaceinvasion.parsing.pages import _parse_cost_from_text
+
+        self.assertEqual(parse_si_int(_RaiseFspath()), 0)
+        self.assertIsInstance(safe_state_str(_RaiseStrRepr()), str)
+        self.assertIsInstance(safe_state_str(_RaiseFspath()), str)
+        self.assertIsNotNone(safe_optional_state_str(_IntPath()))
+        self.assertIsNotNone(safe_optional_state_str(_RaiseFspath()))
+        self.assertEqual(_parse_cost_from_text(_RaiseFspath()), st_mod.Resources())
+        self.assertEqual(_parse_cost_from_text(_IntPath()), st_mod.Resources())
 
     def test_r14_deep_plain_value_and_non_dict_mapping_resist_cycles_and_dag20(self) -> None:
         import time
         from types import MappingProxyType
-        from spaceinvasion import state as st_mod
+        from spaceinvasion.core._model_helpers import (
+            contains_non_dict_mapping as _contains_non_dict_mapping,
+            deep_plain_value as _deep_plain_value,
+        )
 
         cyc_list: list[object] = []
         cyc_list.append(cyc_list)
         cyc_dict: dict[str, object] = {}
         cyc_dict["self"] = cyc_dict
 
-        self.assertFalse(st_mod._contains_non_dict_mapping(cyc_list))
-        self.assertFalse(st_mod._contains_non_dict_mapping(cyc_dict))
+        self.assertFalse(_contains_non_dict_mapping(cyc_list))
+        self.assertFalse(_contains_non_dict_mapping(cyc_dict))
 
-        plain_list = st_mod._deep_plain_value(cyc_list)
-        plain_dict = st_mod._deep_plain_value(cyc_dict)
+        plain_list = _deep_plain_value(cyc_list)
+        plain_dict = _deep_plain_value(cyc_dict)
         self.assertEqual(plain_list, ["[Cycle]"])
         self.assertEqual(plain_dict, {"self": "[Cycle]"})
 
@@ -908,8 +928,8 @@ class TestStateParsers(unittest.TestCase):
         for _ in range(20):
             dag = [dag, dag, dag]
         t0 = time.perf_counter()
-        has_nd = st_mod._contains_non_dict_mapping(dag)
-        plain_dag = st_mod._deep_plain_value(dag)
+        has_nd = _contains_non_dict_mapping(dag)
+        plain_dag = _deep_plain_value(dag)
         elapsed_ms = (time.perf_counter() - t0) * 1000.0
         self.assertTrue(has_nd)
         self.assertIsNotNone(plain_dag)
@@ -991,7 +1011,7 @@ class TestStateParsers(unittest.TestCase):
         self.assertTrue(any(q.category == "fleet" for q in queues7))
 
     def test_fadata_origin_coords_and_per_planet_fleet_slot_accounting(self) -> None:
-        from spaceinvasion.core.state import (
+        from spaceinvasion.core.model import (
             EnergyBalance,
             GameState,
             PlanetState,
@@ -1113,14 +1133,14 @@ class TestStateParsers(unittest.TestCase):
 
     def test_fadata_cargo_parsing_for_returning_attack_recycle_and_transport_roundtrip(self) -> None:
         from dataclasses import asdict
-        from spaceinvasion.core.state import (
+        from spaceinvasion.core.model import (
             EnergyBalance,
             GameState,
             PlanetState,
             Resources,
             game_state_from_dict,
-            parse_home_metadata,
         )
+        from spaceinvasion.parsing.overview import parse_home_metadata
 
         fadata_html = """
         <html><body><script>
@@ -1182,7 +1202,7 @@ class TestStateParsers(unittest.TestCase):
 
     def test_queue_job_expected_delivered_roundtrip_and_building_origin_coords(self) -> None:
         from dataclasses import asdict
-        from spaceinvasion.core.state import (
+        from spaceinvasion.core.model import (
             EnergyBalance,
             GameState,
             PlanetState,
@@ -1190,9 +1210,9 @@ class TestStateParsers(unittest.TestCase):
             Resources,
             game_state_from_dict,
             is_undersized_fresh_colony,
-            parse_building_queue,
-            parse_home_metadata,
         )
+        from spaceinvasion.parsing.overview import parse_home_metadata
+        from spaceinvasion.parsing.queues import parse_building_queue
 
         # Default QueueJob backward compatibility
         q_default = QueueJob(category="fleet", name="Attack → [02:378:15]")
@@ -1287,15 +1307,15 @@ class TestStateParsers(unittest.TestCase):
         self.assertFalse(is_undersized_fresh_colony(p2, gs_b2, 300))
 
     def test_count_in_flight_ships_by_planet_all_hulls_station_and_truncation_safety(self) -> None:
-        from spaceinvasion.core.state import (
+        from spaceinvasion.core.model import (
             EnergyBalance,
             GameState,
             PlanetState,
             QueueJob,
             Resources,
             count_in_flight_ships_by_planet,
-            parse_home_metadata,
         )
+        from spaceinvasion.parsing.overview import parse_home_metadata
 
         # None state returns clean empty dicts
         self.assertEqual(

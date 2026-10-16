@@ -27,12 +27,9 @@ from spaceinvasion.runtime.cli_support import maybe_reexec_venv, safe_cli_str  #
 
 maybe_reexec_venv(_REPO_ROOT, skip=os.environ.get("SPACEINVASION_NO_REEXEC") == "1")
 
-from spaceinvasion.combat.fleet import parse_station_ships_spec  # noqa: E402
-from spaceinvasion.core import game_data # noqa: E402
-from spaceinvasion.runtime.commander_client import GameApiClient, GameApiError  # noqa: E402
+from spaceinvasion.core import catalog as game_data  # noqa: E402
 from spaceinvasion.core.config import (  # noqa: E402
     StrategyConfig,
-    load_strategy_config,
     normalize_planner_mode,
     strategy_config_from_dict,
 )
@@ -43,25 +40,28 @@ from spaceinvasion.core.logging_utils import (  # noqa: E402
     pick_next_action,
     redact_sensitive,
 )
-from spaceinvasion.runtime.reloader import (  # noqa: E402
-    current_python_cmd,
-    discover_watch_paths,
-    should_spawn_reloader,
-    watch_and_run,
-)
-from spaceinvasion.core.state import (  # noqa: E402
+from spaceinvasion.core.model import (  # noqa: E402
     GameState,
+    PlannedAction,
     Resources,
     count_allocated_normal_planets,
     game_state_from_dict,
     is_asteroid_planet,
     normalize_planet_type,
 )
-from spaceinvasion.planner.strategy import (  # noqa: E402
-    PlannedAction,
+from spaceinvasion.db.config_store import load_strategy_config  # noqa: E402
+from spaceinvasion.parsing.fleet_page import parse_station_ships_spec  # noqa: E402
+from spaceinvasion.planner.heuristics import (  # noqa: E402
     _count_planet_building_queues,
     merge_manual_queue_actions,
     plan_actions,
+)
+from spaceinvasion.runtime.commander_client import GameApiClient, GameApiError  # noqa: E402
+from spaceinvasion.runtime.reloader import (  # noqa: E402
+    current_python_cmd,
+    discover_watch_paths,
+    should_spawn_reloader,
+    watch_and_run,
 )
 
 WATCH_PATHS = discover_watch_paths(

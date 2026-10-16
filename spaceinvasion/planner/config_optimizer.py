@@ -18,9 +18,10 @@ from typing import Any, Optional
 
 import numpy as np
 
-from spaceinvasion.combat.fleet import DEFENSE_SLUG_BY_KEY, SHIP_SLUG_BY_KEY, normalize_coords
-from spaceinvasion.core import game_data
-from spaceinvasion.core.state import (
+from spaceinvasion.core import catalog as game_data
+from spaceinvasion.core.catalog import DEFENSE_SLUG_BY_KEY, SHIP_SLUG_BY_KEY
+from spaceinvasion.core.coords import normalize_coords
+from spaceinvasion.core.model import (
     EnergyBalance,
     GameState,
     PlanetState,
@@ -4570,7 +4571,6 @@ def compute_yearly_ships_per_week_projection(
                 "completion_pct": float(end_row["completion_pct"]),
             }
         )
-
     return _json_ready(
         {
             "target_ship_key": ship_key,

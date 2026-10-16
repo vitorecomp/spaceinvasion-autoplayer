@@ -19,7 +19,7 @@ from spaceinvasion.core.catalog import (
     safe_optional_int,
     spice_equivalent,
 )
-from spaceinvasion.core.state import GameState, PlanetState, Resources
+from spaceinvasion.core.model import GameState, PlanetState, Resources
 
 POINTS_PER_RESOURCE_DIVISOR = 1_000.0
 MAX_ETA_FLOAT: float = 1e200

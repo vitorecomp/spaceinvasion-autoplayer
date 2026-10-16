@@ -25,37 +25,36 @@ from selenium.common.exceptions import (
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import Select
 
-from spaceinvasion.core import game_data
-from spaceinvasion.session._call_utils import call_with_optional_priority
-from spaceinvasion.session.client import GameBrowserClient, PageViewLimiter
-from spaceinvasion.combat.fleet import (
-    GalaxySlot,
-    fleet_cargo_capacity,
-    normalize_coords,
-    parse_galaxy_system_html,
-    parse_send_fleet_mission_block,
-    parse_station_ships_spec,
-    select_transport_ships,
-)
+from spaceinvasion.combat.cargo import fleet_cargo_capacity, select_transport_ships
+from spaceinvasion.core import catalog as game_data
+from spaceinvasion.core.coercion import coerce_int
+from spaceinvasion.core.coords import normalize_coords
 from spaceinvasion.core.logging_utils import append_crash_debug_log, redact_sensitive
-from spaceinvasion.core.state import (
+from spaceinvasion.core.model import (
     GameState,
+    PlannedAction,
     QueueJob,
     Resources,
     homeworld_planet_id,
     is_undersized_fresh_colony,
     normalize_planet_type,
+)
+from spaceinvasion.parsing.account_pages import parse_daily_login_bonus, parse_transmitter_page
+from spaceinvasion.parsing.fleet_page import parse_send_fleet_mission_block, parse_station_ships_spec
+from spaceinvasion.parsing.galaxy import parse_galaxy_system_html
+from spaceinvasion.parsing.models import GalaxySlot
+from spaceinvasion.parsing.overview import parse_home_metadata
+from spaceinvasion.parsing.pages import (
     parse_building_queue,
     parse_buildings_page,
-    parse_daily_login_bonus,
     parse_economy_rates,
-    parse_home_metadata,
     parse_research_page,
-    parse_transmitter_page,
-    parse_tutorial_from_home,
     parse_unit_factory_page,
 )
-from spaceinvasion.planner.strategy import PlannedAction
+from spaceinvasion.parsing.tutorial import parse_tutorial_from_home
+from spaceinvasion.session._call_utils import call_with_optional_priority
+from spaceinvasion.session.client import GameBrowserClient, PageViewLimiter
+from spaceinvasion.session.limiter import is_server_rate_limit_html
 
 _call_with_optional_priority = functools.partial(call_with_optional_priority, priority="interactive")
 
@@ -3838,7 +3837,7 @@ class ActionExecutor:
                 )
 
         self.last_transmitter_info = _base_tm_meta({**info, "activated": False})
-        free_before = int(info.get("free_spins") or 0)
+        free_before = coerce_int(info.get("free_spins"), 0)
         if free_before <= 0:
             if daily_bonus_seen and not daily_bonus_collected:
                 err_bonus = (
@@ -3954,7 +3953,7 @@ class ActionExecutor:
         else:
             after_html = str(getattr(client.driver, "page_source", "") or "")
         after_info = parse_transmitter_page(after_html)
-        free_after = int(after_info.get("free_spins") or 0)
+        free_after = coerce_int(after_info.get("free_spins"), 0)
         reward_txt = _safe_str(after_info.get("latest_reward") or "").strip()
         prev_reward = _safe_str(info.get("latest_reward") or "").strip()
         prev_date = _safe_str(info.get("latest_date") or "").strip()

@@ -9,7 +9,7 @@ import re
 from spaceinvasion.combat.flight import normalize_coords
 from spaceinvasion.core import catalog
 from spaceinvasion.core.config import StrategyConfig
-from spaceinvasion.core.state import GameState, PlanetState, Resources, is_in_flight_fleet_job
+from spaceinvasion.core.model import GameState, PlanetState, Resources, is_in_flight_fleet_job
 from spaceinvasion.planner.heuristics._cargo_helpers import _adaptive_execution_enabled
 from spaceinvasion.planner.heuristics._common import (
     _resources_from_dict,

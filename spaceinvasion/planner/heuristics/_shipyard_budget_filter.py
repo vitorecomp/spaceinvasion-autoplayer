@@ -6,7 +6,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import replace
 
 from spaceinvasion.core import catalog
-from spaceinvasion.core.state import GameState
+from spaceinvasion.core.model import GameState
 from spaceinvasion.planner.heuristics._common import (
     _norm_planet_type,
     _resources_from_dict,

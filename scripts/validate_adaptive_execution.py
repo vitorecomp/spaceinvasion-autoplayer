@@ -146,7 +146,7 @@ def _furnace_capacity_per_hour(planets: list[dict], economies: dict, speedup: fl
     """Metal per hour with every furnace at 100% (needs the repo's game data; `None` when it cannot be loaded)."""
     try:
         sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-        from spaceinvasion.core import game_data  # noqa: PLC0415 - optional, read-only table lookup
+        from spaceinvasion.core import catalog as game_data  # noqa: PLC0415 - optional, read-only table lookup
     except Exception:  # noqa: BLE001 - the script still works without the table
         return None
     total = 0.0

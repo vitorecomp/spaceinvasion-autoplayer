@@ -28,7 +28,7 @@ from spaceinvasion.core.catalog import (
     building_level_stats,
     safe_finite_float,
 )
-from spaceinvasion.core.state import GameState, PlanetState, normalize_planet_type
+from spaceinvasion.core.model import GameState, PlanetState, normalize_planet_type
 from spaceinvasion.planner._eta_helpers import (
     ETA_RESOURCE_KEYS,
     INSTANT_ACTION_KINDS,

@@ -6,7 +6,7 @@ from collections.abc import Mapping, Sequence
 
 from spaceinvasion.core import catalog
 from spaceinvasion.core.config import StrategyConfig
-from spaceinvasion.core.state import GameState, PlanetState, ResearchOffer
+from spaceinvasion.core.model import GameState, PlanetState, ResearchOffer
 from spaceinvasion.planner.heuristics._common import (
     _norm_planet_type,
     _offer_map,

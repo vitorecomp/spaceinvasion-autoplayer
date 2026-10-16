@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 from spaceinvasion.core import catalog
-from spaceinvasion.core.state import BuildingOffer, GameState, PlanetState
+from spaceinvasion.core.model import BuildingOffer, GameState, PlanetState
 from spaceinvasion.planner.heuristics._common import _safe_strategy_int
 from spaceinvasion.planner.heuristics._queues import _eff_level
 from spaceinvasion.planner.heuristics._types import (

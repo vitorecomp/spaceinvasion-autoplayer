@@ -11,7 +11,7 @@ from spaceinvasion.combat.flight import (
     normalize_coords,
 )
 from spaceinvasion.core.config import StrategyConfig
-from spaceinvasion.core.state import (
+from spaceinvasion.core.model import (
     GameState,
     PlanetState,
     extract_in_flight_station_dest_coords,

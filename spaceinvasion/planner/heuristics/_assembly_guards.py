@@ -7,7 +7,7 @@ from collections.abc import Mapping
 from spaceinvasion.combat.cargo import plan_escape_flight
 from spaceinvasion.core import catalog
 from spaceinvasion.core.config import StrategyConfig
-from spaceinvasion.core.state import (
+from spaceinvasion.core.model import (
     BuildingOffer,
     GameState,
     PlanetState,

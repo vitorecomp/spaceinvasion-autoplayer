@@ -3,36 +3,27 @@
 from __future__ import annotations
 
 from dataclasses import asdict, is_dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timezone, tzinfo
 import heapq
 import json
 import math
 import os
 from pathlib import Path
 import re
-from sqlite3 import Error as _SqliteError, OperationalError as _SqliteOperationalError
+from sqlite3 import Error as _SqliteError
+from sqlite3 import OperationalError as _SqliteOperationalError
 import time
 from typing import Any, Iterable, Mapping, Optional, Sequence, cast
 from zoneinfo import ZoneInfo
 
-from spaceinvasion.core import game_data
-from spaceinvasion.combat.fleet import (
-    BashTracker,
-    GalaxySlot,
-    InboxMessage,
-    SpyReport,
-    _classify_and_parse_inbox_block,
-    grade_colony_candidate,
-    is_non_recycle_fleet_notice_text,
-    is_non_spy_notice_text,
-    normalize_coords,
-)
-from spaceinvasion.core.logging_utils import (
-    _SID_RE as _LOG_SID_RE,
-    _sub_sid_kv as _sub_log_sid_kv,
-    is_secret_dict_key,
-    redact_sensitive,
-)
+from spaceinvasion.combat.colonies import grade_colony_candidate
+from spaceinvasion.combat.flight import BashTracker
+from spaceinvasion.core import catalog as game_data
+from spaceinvasion.core.coords import normalize_coords
+from spaceinvasion.core.model import GameState, game_state_from_dict, normalize_planet_type
+from spaceinvasion.core.redaction import _SID_RE as _LOG_SID_RE
+from spaceinvasion.core.redaction import _sub_sid_kv as _sub_log_sid_kv
+from spaceinvasion.core.redaction import is_secret_dict_key, redact_sensitive
 from spaceinvasion.db.backend import (
     build_default_postgres_url,
     create_postgres_backup,
@@ -48,7 +39,12 @@ from spaceinvasion.db.migrations import (
     backfill_v012_hot_tables,
     backfill_v014_loot_recycle_hourly,
 )
-from spaceinvasion.core.state import GameState, game_state_from_dict, normalize_planet_type
+from spaceinvasion.parsing.inbox import (
+    _classify_and_parse_inbox_block,
+    is_non_recycle_fleet_notice_text,
+)
+from spaceinvasion.parsing.models import GalaxySlot, InboxMessage, SpyReport
+from spaceinvasion.parsing.spy import is_non_spy_notice_text
 
 
 def server_day_key(ts: Optional[float] = None) -> str:
@@ -57,7 +53,7 @@ def server_day_key(ts: Optional[float] = None) -> str:
     if eff_ts <= 0.0:
         eff_ts = time.time()
     try:
-        tz = ZoneInfo("Europe/Berlin")
+        tz: tzinfo = ZoneInfo("Europe/Berlin")
     except Exception:
         tz = timezone.utc
     try:
@@ -767,8 +763,8 @@ class GameDatabase:
 
             if cat_s == "battle_report":
                 saw_loot_or_recycle = True
-                loot_obj = pdata.get("loot") if isinstance(pdata.get("loot"), Mapping) else {}
-                deb_obj = pdata.get("debris") if isinstance(pdata.get("debris"), Mapping) else {}
+                loot_obj = loot_raw if isinstance(loot_raw := pdata.get("loot"), Mapping) else {}
+                deb_obj = deb_raw if isinstance(deb_raw := pdata.get("debris"), Mapping) else {}
                 b_pig = max(0, _sql_int(loot_obj.get("pig_iron"), 0))
                 b_met = max(0, _sql_int(loot_obj.get("metal"), 0))
                 b_kry = max(0, _sql_int(loot_obj.get("kryptonite"), 0))
@@ -833,8 +829,8 @@ class GameDatabase:
                 )
             elif cat_s == "recycle_report":
                 saw_loot_or_recycle = True
-                harv_obj = pdata.get("harvested") if isinstance(pdata.get("harvested"), Mapping) else {}
-                avail_obj = pdata.get("debris_available") if isinstance(pdata.get("debris_available"), Mapping) else {}
+                harv_obj = harv_raw if isinstance(harv_raw := pdata.get("harvested"), Mapping) else {}
+                avail_obj = avail_raw if isinstance(avail_raw := pdata.get("debris_available"), Mapping) else {}
                 h_pig = max(0, _sql_int(harv_obj.get("pig_iron"), 0))
                 h_met = max(0, _sql_int(harv_obj.get("metal"), 0))
                 h_kry = max(0, _sql_int(harv_obj.get("kryptonite"), 0))
@@ -1675,7 +1671,7 @@ class GameDatabase:
         rank_min_interval_seconds: float = 300.0,
     ) -> list[dict[str, Any]]:
         """Persist rank, colony, economy-rate, and tutorial snapshots atomically; return rank history."""
-        from spaceinvasion.combat.ranking import estimate_account_points, estimate_hourly_economy
+        from spaceinvasion.combat.points import estimate_account_points, estimate_hourly_economy
 
         est = estimate_account_points(state)
         econ = estimate_hourly_economy(state)

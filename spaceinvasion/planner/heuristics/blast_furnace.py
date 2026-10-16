@@ -6,7 +6,7 @@ from collections.abc import Iterable, Mapping, Sequence
 import time
 
 from spaceinvasion.core.config import StrategyConfig
-from spaceinvasion.core.state import GameState, PlanetState
+from spaceinvasion.core.model import GameState, PlanetState
 from spaceinvasion.planner.heuristics._common import (
     _norm_planet_type,
     _resolve_storage_warn_ratio,

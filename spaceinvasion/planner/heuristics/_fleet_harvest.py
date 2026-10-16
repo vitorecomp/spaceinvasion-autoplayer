@@ -17,7 +17,7 @@ from spaceinvasion.combat.flight import (
 from spaceinvasion.combat.simulator import RaidRecommendation, score_raid_target
 from spaceinvasion.core import catalog
 from spaceinvasion.core.config import StrategyConfig
-from spaceinvasion.core.state import GameState, PlanetState, has_in_flight_fleet_from_planet
+from spaceinvasion.core.model import GameState, PlanetState, has_in_flight_fleet_from_planet
 from spaceinvasion.planner.heuristics._common import (
     _safe_strategy_float,
     _safe_strategy_int,

@@ -2,16 +2,15 @@
 
 from __future__ import annotations
 
+from collections import deque
+from collections.abc import Mapping
 import contextlib
 from dataclasses import asdict, replace
 from datetime import datetime
 import errno
-import functools
 import hashlib
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from collections import deque
-from collections.abc import Mapping
 import inspect
 import json
 import math
@@ -26,72 +25,50 @@ import time
 from typing import Any, Callable, Deque, Optional, Sequence
 from urllib.parse import parse_qs, urlparse
 
-from spaceinvasion.core import game_data
-from spaceinvasion.planner.action_graph import (
-    build_action_graph,
-    merge_strategy_config_overrides,
-)
-from spaceinvasion.session.auth import AntiBotChallengeError, SpaceInvasionAuthError, load_credentials
-from spaceinvasion.session.browser import (
-    DEFAULT_DEBUG_HOST,
-    DEFAULT_DEBUG_PORT,
-    DEFAULT_PROFILE_ROOT,
-    BrowserConfig,
-    is_debug_port_open,
-    login_with_browser,
-)
-from spaceinvasion.session.client import GameBrowserClient, PageViewLimiter, RateLimitError, is_server_rate_limit_html
-from spaceinvasion.core.config import (
-    StrategyConfig,
-    load_strategy_config,
-    normalize_planner_mode,
-    save_strategy_config,
-    strategy_config_from_dict,
-)
-from spaceinvasion.session.executor import ActionExecutor
-from spaceinvasion.combat.fleet import (
-    ARROW_NAV_MAX_DISTANCE,
-    SHIP_SLUG_BY_KEY,
-    InboxMessage,
-    SpyReport,
-    _parse_coords_distance,
-    extract_galaxy_system_coords,
-    extract_message_folder_links,
+from spaceinvasion.combat.cargo import (
     fleet_cargo_capacity,
-    format_station_ships_spec,
-    normalize_coords,
-    parse_galaxy_system_html,
-    parse_inbox_messages_html,
-    parse_spy_messages_html,
-    parse_station_ships_spec,
     plan_escape_flight,
-    score_galaxy_scan_sectors,
-    select_smart_galaxy_scan_batch,
-    simulate_raid_outcome,
 )
-from spaceinvasion.core.logging_utils import (
-    _SID_RE as _LOG_SID_RE,
-    _sub_sid_kv as _sub_log_sid_kv,
-    append_api_log,
-    append_crash_debug_log,
-    format_clean_error,
-    is_secret_dict_key,
-    redact_sensitive,
-)
-from spaceinvasion.combat.ranking import (
-    attach_action_etas,
-    build_buildings_eta,
+from spaceinvasion.combat.flight import BashTracker  # noqa: F401
+from spaceinvasion.combat.points import (
     build_combat_overview,
     build_ranking_evolution,
     estimate_hourly_economy,
     estimate_planet_hourly_economy,
     record_rank_snapshot,
-    simulate_combat_matchup,
 )
-from spaceinvasion.core.state import (
+from spaceinvasion.combat.scanner import (
+    ARROW_NAV_MAX_DISTANCE,
+    score_galaxy_scan_sectors,
+    select_smart_galaxy_scan_batch,
+)
+from spaceinvasion.combat.simulator import (
+    simulate_combat_matchup,
+    simulate_raid_outcome,
+)
+from spaceinvasion.core import catalog as game_data
+from spaceinvasion.core.catalog import SHIP_SLUG_BY_KEY
+from spaceinvasion.core.coercion import parse_si_int
+from spaceinvasion.core.config import (
+    StrategyConfig,
+    normalize_planner_mode,
+    strategy_config_from_dict,
+)
+from spaceinvasion.core.coords import (
+    coords_distance as _parse_coords_distance,
+)
+from spaceinvasion.core.coords import (
+    normalize_coords,
+)
+from spaceinvasion.core.logging_utils import (
+    append_api_log,
+    append_crash_debug_log,
+)
+from spaceinvasion.core.model import (
     BUILDING_ID_BY_NAME,
     GameState,
     PlanetState,
+    PlannedAction,
     QueueJob,
     Resources,
     count_allocated_normal_planets,
@@ -104,13 +81,26 @@ from spaceinvasion.core.state import (
     is_in_flight_fleet_job,
     is_undersized_fresh_colony,
     normalize_planet_type,
-    parse_daily_login_bonus,
-    parse_economy_rates,
-    parse_home_metadata,
-    parse_si_int,
-    parse_tutorial_from_home,
-    parse_universe_research_records,
-    parse_unread_banner_count,
+)
+from spaceinvasion.core.redaction import (
+    _redact_key as _redaction_redact_key,
+)
+from spaceinvasion.core.redaction import (
+    _safe_text as _redaction_safe_text,
+)
+from spaceinvasion.core.redaction import (
+    format_clean_error,
+    is_secret_dict_key,
+    redact_sensitive,
+)
+from spaceinvasion.core.redaction import (
+    is_clean_api_key as _is_clean_api_key,
+)
+from spaceinvasion.core.redaction import (
+    redact_api_payload as _redact_api_payload,
+)
+from spaceinvasion.core.redaction import (
+    redact_text as _scrub_api_str,
 )
 from spaceinvasion.db.backend import (
     ResolvedDatabaseConfig,
@@ -124,10 +114,36 @@ from spaceinvasion.db.backend import (
     redact_db_url,
     resolve_database_config,
 )
+from spaceinvasion.db.config_store import load_strategy_config, save_strategy_config
 from spaceinvasion.db.storage import GameDatabase, server_day_key
-from spaceinvasion.planner.strategy import (
+from spaceinvasion.parsing.account_pages import (
+    parse_daily_login_bonus,
+    parse_universe_research_records,
+)
+from spaceinvasion.parsing.fleet_page import (
+    format_station_ships_spec,
+    parse_station_ships_spec,
+)
+from spaceinvasion.parsing.galaxy import (
+    extract_galaxy_system_coords,
+    parse_galaxy_system_html,
+)
+from spaceinvasion.parsing.inbox import (
+    extract_message_folder_links,
+    parse_inbox_messages_html,
+)
+from spaceinvasion.parsing.models import InboxMessage, SpyReport
+from spaceinvasion.parsing.overview import parse_home_metadata, parse_unread_banner_count
+from spaceinvasion.parsing.pages import parse_economy_rates
+from spaceinvasion.parsing.spy import parse_spy_messages_html
+from spaceinvasion.parsing.tutorial import parse_tutorial_from_home
+from spaceinvasion.planner.eta import attach_action_etas, build_buildings_eta
+from spaceinvasion.planner.graph import (
+    build_action_graph,
+    merge_strategy_config_overrides,
+)
+from spaceinvasion.planner.heuristics import (
     AI_INFRA_CARGO_TAG,
-    PlannedAction,
     _tutorial_colonize_task,
     compute_spare_ship_budget,
     merge_manual_queue_actions,
@@ -135,12 +151,22 @@ from spaceinvasion.planner.strategy import (
     plan_ai_blast_furnace_throttles,
     plan_fleet_and_attack_actions,
 )
+from spaceinvasion.session.auth import AntiBotChallengeError, SpaceInvasionAuthError, load_credentials
+from spaceinvasion.session.browser import (
+    DEFAULT_DEBUG_HOST,
+    DEFAULT_DEBUG_PORT,
+    DEFAULT_PROFILE_ROOT,
+    BrowserConfig,
+    is_debug_port_open,
+    login_with_browser,
+)
+from spaceinvasion.session.client import GameBrowserClient, PageViewLimiter, RateLimitError, is_server_rate_limit_html
+from spaceinvasion.session.executor import ActionExecutor
 
 REPO_ROOT_DIR = Path(__file__).resolve().parents[2]
 UI_DIR = Path(__file__).resolve().parents[1] / "ui"
 MAX_REQUEST_BYTES = 1_048_576
 _SERVER_BOOT_ID = secrets.token_hex(4)
-_API_SID_RE = re.compile(_LOG_SID_RE.pattern, _LOG_SID_RE.flags)
 
 
 def _fleet_subrank(a: PlannedAction) -> int:
@@ -169,8 +195,6 @@ def _fleet_subrank(a: PlannedAction) -> int:
     return 0
 
 
-def _sub_api_sid(match: re.Match[str]) -> str:
-    return _sub_log_sid_kv(match)
 _UI_ASSETS: dict[str, tuple[str, str]] = {
     "/": ("index.html", "text/html; charset=utf-8"),
     "/index.html": ("index.html", "text/html; charset=utf-8"),
@@ -235,53 +259,10 @@ class GalaxyScanInProgressError(RuntimeError):
 _MAX_API_JSON_INT: int = game_data.MAX_JSON_SAFE_INT
 
 
-def _scrub_api_str(text: str) -> str:
-    if not text:
-        return text
-    low = text.lower()
-    if (
-        "sid" not in low
-        and "pass" not in low
-        and "cookie" not in low
-        and "api_key" not in low
-        and "api-key" not in low
-        and "secret" not in low
-        and "auth" not in low
-        and "bearer" not in low
-        and (
-            text.isascii()
-            or (
-                "\u0130" not in text
-                and "\u0131" not in text
-                and "\u017f" not in text
-                and "\u212a" not in text
-            )
-        )
-    ):
-        return text
-    scrubbed = redact_sensitive(text)
-    s = scrubbed if isinstance(scrubbed, str) else _bounded_api_str(scrubbed)
-    if (
-        "sid" in low
-        or "\u0130" in s
-        or "\u0131" in s
-        or "\u017f" in s
-        or "sid" in s.lower()
-    ):
-        return _API_SID_RE.sub(_sub_api_sid, s)
-    return s
-
-
 _MAX_API_KEY_NODES = 256
 _MAX_API_KEY_CHARS = 4096
 _MAX_API_TREE_NODES = 32_768
 _MAX_API_TREE_DEPTH = 64
-
-
-def _clip_api_str(text: str, limit: int = _MAX_API_KEY_CHARS) -> str:
-    if len(text) <= limit:
-        return text
-    return text[:limit] + "...[truncated]"
 
 
 def _redact_api_key(
@@ -291,206 +272,13 @@ def _redact_api_key(
     _seen: Optional[set[int]] = None,
     _budget: Optional[list[int]] = None,
 ) -> Any:
-    if isinstance(key, str):
-        return _scrub_api_str(key)
-    if key is None or isinstance(key, (bool, int, float)):
-        return key
-    if isinstance(key, (bytes, bytearray)):
-        return _scrub_api_str(bytes(key).decode("utf-8", errors="replace"))
-    seen = _seen if _seen is not None else set()
-    budget = _budget if _budget is not None else [_MAX_API_KEY_NODES]
-    if isinstance(key, os.PathLike):
-        vid = id(key)
-        if vid in seen or _depth >= 16 or budget[0] <= 0:
-            return "<unprintable>"
-        budget[0] -= 1
-        seen.add(vid)
-        try:
-            try:
-                fsp = os.fspath(key)
-            except Exception:
-                return "<unprintable>"
-            return _redact_api_key(fsp, _depth=_depth + 1, _seen=seen, _budget=budget)
-        finally:
-            seen.discard(vid)
-    if isinstance(key, BaseException):
-        return _format_api_exception(key, max_len=512, _depth=_depth, _seen=seen, _budget=budget)
-    if isinstance(key, (tuple, frozenset)):
-        vid = id(key)
-        if vid in seen or _depth >= 16 or budget[0] <= 0:
-            return "(...)" if isinstance(key, tuple) else "frozenset({...})"
-        budget[0] -= 1
-        seen.add(vid)
-        try:
-            items: list[Any] = []
-            for idx, item in enumerate(key):
-                if idx >= 64 or budget[0] <= 0:
-                    items.append("...")
-                    break
-                items.append(_redact_api_key(item, _depth=_depth + 1, _seen=seen, _budget=budget))
-            return tuple(items) if isinstance(key, tuple) else frozenset(items)
-        except TypeError:
-            pass
-        finally:
-            seen.discard(vid)
-    return _bounded_api_str(key)
-
-
-@functools.lru_cache(maxsize=512)
-def _is_clean_api_key(key: str) -> bool:
-    """Fast cached check for short ASCII dict keys containing no secret tokens."""
-    if not key or len(key) > 64 or not key.isascii():
-        return False
-    return _scrub_api_str(key) == key and not is_secret_dict_key(key)
-
-
-def _redact_api_payload(
-    value: Any,
-    *,
-    _depth: int = 0,
-    _seen: Optional[set[int]] = None,
-    _budget: Optional[list[int]] = None,
-) -> Any:
-    """Recursively scrub session tokens and secret key-value fields from API responses."""
-    tv = type(value)
-    if value is None or tv is bool or tv is int or tv is float:
-        return value
-    if tv is str:
-        return value if (len(value) < 3 and value.isascii()) else _scrub_api_str(value)
-    if tv is dict:
-        seen = _seen if _seen is not None else set()
-        budget = _budget if _budget is not None else [_MAX_API_TREE_NODES]
-        vid = id(value)
-        if vid in seen:
-            return "[Cycle]"
-        if _depth >= _MAX_API_TREE_DEPTH or budget[0] <= 0:
-            return "[Truncated]"
-        budget[0] -= 1
-        seen.add(vid)
-        try:
-            out: dict[Any, Any] = {}
-            next_depth = _depth + 1
-            for k, v in value.items():
-                if budget[0] <= 0:
-                    out["[Truncated]"] = "[Truncated]"
-                    break
-                if type(k) is str and _is_clean_api_key(k):
-                    tv_v = type(v)
-                    if v is None or tv_v is bool or tv_v is int or tv_v is float:
-                        out[k] = v
-                    elif tv_v is str:
-                        out[k] = v if (len(v) < 3 and v.isascii()) else _scrub_api_str(v)
-                    else:
-                        out[k] = _redact_api_payload(
-                            v, _depth=next_depth, _seen=seen, _budget=budget
-                        )
-                    continue
-                clean_k = _redact_api_key(k)
-                if isinstance(clean_k, str) and is_secret_dict_key(clean_k):
-                    if v is None or v == "":
-                        out[clean_k] = v
-                    elif isinstance(v, (bytes, bytearray)) and len(v) == 0:
-                        out[clean_k] = ""
-                    else:
-                        out[clean_k] = "REDACTED"
-                else:
-                    out[clean_k] = _redact_api_payload(
-                        v, _depth=next_depth, _seen=seen, _budget=budget
-                    )
-            return out
-        finally:
-            seen.discard(vid)
-    if tv is list:
-        seen = _seen if _seen is not None else set()
-        budget = _budget if _budget is not None else [_MAX_API_TREE_NODES]
-        vid = id(value)
-        if vid in seen:
-            return "[Cycle]"
-        if _depth >= _MAX_API_TREE_DEPTH or budget[0] <= 0:
-            return "[Truncated]"
-        budget[0] -= 1
-        seen.add(vid)
-        try:
-            out_list: list[Any] = []
-            next_depth = _depth + 1
-            for v in value:
-                if budget[0] <= 0:
-                    out_list.append("[Truncated]")
-                    break
-                tv_v = type(v)
-                if v is None or tv_v is bool or tv_v is int or tv_v is float:
-                    out_list.append(v)
-                elif tv_v is str:
-                    out_list.append(v if (len(v) < 3 and v.isascii()) else _scrub_api_str(v))
-                else:
-                    out_list.append(
-                        _redact_api_payload(v, _depth=next_depth, _seen=seen, _budget=budget)
-                    )
-            return out_list
-        finally:
-            seen.discard(vid)
-    if isinstance(value, str):
-        return _scrub_api_str(value)
-    if isinstance(value, (bool, int, float)):
-        return value
-    if isinstance(value, (bytes, bytearray)):
-        return _scrub_api_str(bytes(value).decode("utf-8", errors="replace"))
-    if isinstance(value, BaseException):
-        return _format_api_exception(value, max_len=2048)
-    if isinstance(value, (Mapping, list, tuple, set, frozenset, os.PathLike)):
-        seen = _seen if _seen is not None else set()
-        budget = _budget if _budget is not None else [_MAX_API_TREE_NODES]
-        vid = id(value)
-        if vid in seen:
-            return "<unprintable>" if isinstance(value, os.PathLike) else "[Cycle]"
-        if _depth >= _MAX_API_TREE_DEPTH or budget[0] <= 0:
-            return "<unprintable>" if isinstance(value, os.PathLike) else "[Truncated]"
-        budget[0] -= 1
-        seen.add(vid)
-        try:
-            if isinstance(value, os.PathLike):
-                try:
-                    raw = os.fspath(value)
-                except Exception:
-                    return "<unprintable>"
-                if isinstance(raw, (bytes, bytearray)):
-                    return _scrub_api_str(bytes(raw).decode("utf-8", errors="replace"))
-                if isinstance(raw, str):
-                    return _scrub_api_str(raw)
-                if isinstance(raw, os.PathLike):
-                    return "<unprintable>"
-                return _redact_api_payload(raw, _depth=_depth + 1, _seen=seen, _budget=budget)
-            if isinstance(value, Mapping):
-                out_map: dict[Any, Any] = {}
-                for k, v in value.items():
-                    if budget[0] <= 0:
-                        out_map["[Truncated]"] = "[Truncated]"
-                        break
-                    clean_k = _redact_api_key(k)
-                    if isinstance(clean_k, str) and is_secret_dict_key(clean_k):
-                        if v is None or v == "":
-                            out_map[clean_k] = v
-                        elif isinstance(v, (bytes, bytearray)) and len(v) == 0:
-                            out_map[clean_k] = ""
-                        else:
-                            out_map[clean_k] = "REDACTED"
-                    else:
-                        out_map[clean_k] = _redact_api_payload(
-                            v, _depth=_depth + 1, _seen=seen, _budget=budget
-                        )
-                return out_map
-            out_seq: list[Any] = []
-            for v in value:
-                if budget[0] <= 0:
-                    out_seq.append("[Truncated]")
-                    break
-                out_seq.append(
-                    _redact_api_payload(v, _depth=_depth + 1, _seen=seen, _budget=budget)
-                )
-            return out_seq
-        finally:
-            seen.discard(vid)
-    return value
+    return _redaction_redact_key(
+        key,
+        True,
+        _depth,
+        _seen if _seen is not None else set(),
+        _budget if _budget is not None else [_MAX_API_KEY_NODES],
+    )
 
 
 def _parse_command_int(
@@ -670,9 +458,9 @@ def _validate_config_patch(raw_cfg: Mapping[str, Any], *, strict_bools: bool = T
         "galaxy_scan_near_weight": (0.0, 20.0),
         "galaxy_scan_attack_weight": (0.0, 20.0),
     }
-    for key, (lo, hi) in float_specs.items():
+    for key, (lo_f, hi_f) in float_specs.items():
         if key in raw_cfg:
-            _validate_strict_float(key, raw_cfg[key], min_val=lo, max_val=hi)
+            _validate_strict_float(key, raw_cfg[key], min_val=lo_f, max_val=hi_f)
 
     bool_keys: tuple[str, ...] = (
         "merchant_mode",
@@ -774,68 +562,7 @@ def _format_api_exception(
 ) -> str:
     seen = _seen if _seen is not None else set()
     budget = _budget if _budget is not None else [_MAX_API_KEY_NODES]
-    str_fn = getattr(type(exc), "__str__", BaseException.__str__)
-    used_custom_str = False
-    raw = ""
-    if str_fn not in (BaseException.__str__, KeyError.__str__):
-        try:
-            raw = _clip_api_str(str(exc), 16_384)
-            used_custom_str = True
-        except Exception:
-            raw = ""
-    if not used_custom_str:
-        args = getattr(exc, "args", ())
-        if not isinstance(args, (tuple, list)) or not args:
-            raw = "" if str_fn is BaseException.__str__ else type(exc).__name__
-        else:
-            vid = id(exc)
-            if vid in seen or _depth >= 16 or budget[0] <= 0:
-                raw = f"<{type(exc).__name__}>"
-            else:
-                budget[0] -= 1
-                seen.add(vid)
-                try:
-                    if len(args) == 1:
-                        a0 = args[0]
-                        if isinstance(a0, str):
-                            raw = repr(a0) if isinstance(exc, KeyError) else a0
-                        elif isinstance(a0, BaseException):
-                            raw = _format_api_exception(
-                                a0,
-                                default=default,
-                                max_len=4096,
-                                _depth=_depth + 1,
-                                _seen=seen,
-                                _budget=budget,
-                            )
-                        else:
-                            raw = _bounded_api_str(a0, default=default, max_len=4096)
-                    else:
-                        parts: list[str] = []
-                        for a in args[:8]:
-                            if budget[0] <= 0:
-                                parts.append("...")
-                                break
-                            if isinstance(a, str):
-                                parts.append(repr(a))
-                            elif isinstance(a, BaseException):
-                                parts.append(
-                                    _format_api_exception(
-                                        a,
-                                        default=default,
-                                        max_len=4096,
-                                        _depth=_depth + 1,
-                                        _seen=seen,
-                                        _budget=budget,
-                                    )
-                                )
-                            else:
-                                parts.append(_bounded_api_str(a, default=default, max_len=4096))
-                        if len(args) > 8:
-                            parts.append(f"...+{len(args) - 8}")
-                        raw = _clip_api_str("(" + ", ".join(parts) + ")")
-                finally:
-                    seen.discard(vid)
+    raw = _redaction_safe_text(exc, default, _depth, seen, budget)
     scrubbed = _scrub_api_str(raw)
     return scrubbed[:max_len] if len(scrubbed) > max_len else scrubbed
 
@@ -4004,7 +3731,7 @@ class GameApiBridge:
             if is_attack and not is_ret and exp_cargo is None and dest_coords:
                 trow = raid_by_coords.get(dest_coords)
                 if isinstance(trow, Mapping):
-                    res_src = trow.get("resources") if isinstance(trow.get("resources"), Mapping) else trow
+                    res_src = raw_res_map if isinstance(raw_res_map := trow.get("resources"), Mapping) else trow
                     raw_pig = max(0, _safe_api_int(res_src.get("pig_iron", 0), 0))
                     raw_met = max(0, _safe_api_int(res_src.get("metal", 0), 0))
                     raw_kry = max(0, _safe_api_int(res_src.get("kryptonite", 0), 0))
@@ -5357,22 +5084,7 @@ class GameApiBridge:
                 return tok_fn()
             except Exception:
                 return None
-        conn = getattr(db, "_conn", None)
-        if conn is None:
-            return None
-        db_lock = getattr(db, "_lock", None)
-        try:
-            if db_lock is not None:
-                with db_lock:
-                    dv_row = conn.execute("PRAGMA data_version").fetchone()
-                    tc = int(conn.total_changes)
-            else:
-                dv_row = conn.execute("PRAGMA data_version").fetchone()
-                tc = int(conn.total_changes)
-            dv = int(dv_row[0]) if dv_row is not None else 0
-            return (id(db), tc, dv)
-        except Exception:
-            return None
+        return None
 
     def _record_hourly_production_locked(
         self,
@@ -5665,7 +5377,7 @@ class GameApiBridge:
     @staticmethod
     def _load_ai_planner_mod() -> Any:
         try:
-            from spaceinvasion.planner import ai_planner as mod
+            from spaceinvasion.planner import ai as mod
 
             return mod
         except ImportError as exc:
@@ -5676,7 +5388,7 @@ class GameApiBridge:
     @staticmethod
     def _load_action_graph_builders() -> tuple[Any, Any]:
         try:
-            from spaceinvasion.planner.action_graph import (
+            from spaceinvasion.planner.graph import (
                 build_ai_planner_graph,
                 build_fleet_planner_graph,
             )
@@ -7495,8 +7207,8 @@ class GameApiBridge:
             if any(q.category == "research" for q in state.active_queues):
                 res_offers = prev.research_offers
             elif any(o.active for o in prev.research_offers):
-                from spaceinvasion.core import game_data
-                from spaceinvasion.planner.strategy import _resources_from_dict
+                from spaceinvasion.core import catalog as game_data
+                from spaceinvasion.planner.heuristics import _resources_from_dict
 
                 active_p = state.active_planet()
                 has_lab = active_p is not None and active_p.building_level(8) >= 1
@@ -8714,8 +8426,8 @@ class GameApiBridge:
         *,
         allow_live_verify: bool = False,
     ) -> PlannedAction:
-        from spaceinvasion.core import game_data
-        from spaceinvasion.planner.strategy import _resources_from_dict
+        from spaceinvasion.core import catalog as game_data
+        from spaceinvasion.planner.heuristics import _resources_from_dict
 
         planet = self._resolve_planet(state, planet_id)
         nxt_lvl = planet.building_level(building_id) + 1
@@ -8804,7 +8516,7 @@ class GameApiBridge:
                 executable_now=can_exec,
                 action_href=None,
             )
-        from spaceinvasion.planner.strategy import _is_stale_remote_resource_wait
+        from spaceinvasion.planner.heuristics import _is_stale_remote_resource_wait
 
         is_remote = planet.planet_id != state.active_planet_id
         prereqs_met = not game_data.missing_prerequisites(
@@ -8852,7 +8564,7 @@ class GameApiBridge:
         *,
         allow_live_verify: bool = False,
     ) -> PlannedAction:
-        from spaceinvasion.planner.strategy import _resources_from_dict
+        from spaceinvasion.planner.heuristics import _resources_from_dict
 
         planet = self._resolve_planet(state, planet_id)
         rkey = f"r{research_id}"
@@ -9030,8 +8742,8 @@ class GameApiBridge:
         *,
         allow_live_verify: bool = False,
     ) -> PlannedAction:
-        from spaceinvasion.core import game_data
-        from spaceinvasion.planner.strategy import _resources_from_dict
+        from spaceinvasion.core import catalog as game_data
+        from spaceinvasion.planner.heuristics import _resources_from_dict
 
         planet = self._resolve_planet(state, planet_id)
         qty = max(1, quantity)

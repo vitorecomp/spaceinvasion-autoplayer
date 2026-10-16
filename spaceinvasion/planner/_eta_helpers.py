@@ -22,7 +22,7 @@ from spaceinvasion.core.catalog import (
     safe_finite_float,
     safe_scale_round_int,
 )
-from spaceinvasion.core.state import GameState, PlanetState
+from spaceinvasion.core.model import GameState, PlanetState
 
 ETA_RESOURCE_KEYS: tuple[str, ...] = ("pig_iron", "metal", "kryptonite", "spice")
 
@@ -122,7 +122,7 @@ def safe_eta_int(raw: object, default: int = 0, *, pos_inf_value: int | None = N
     if isinstance(raw, os.PathLike):
         try:
             raw = os.fspath(raw)
-        except (TypeError, ValueError, OSError):
+        except (TypeError, ValueError, OSError, RuntimeError, AttributeError, LookupError, OverflowError, RecursionError):
             return default
     if raw is None or isinstance(raw, (bool, Mapping, list, tuple, set, frozenset, BaseException)):
         return default
@@ -244,7 +244,7 @@ def resolve_planet_for_eta(state: GameState, action: object) -> PlanetState | No
     if isinstance(raw_pid, os.PathLike):
         try:
             raw_pid = os.fspath(raw_pid)
-        except (TypeError, ValueError, OSError):
+        except (TypeError, ValueError, OSError, RuntimeError, AttributeError, LookupError, OverflowError, RecursionError):
             return None
     if isinstance(raw_pid, (bytes, bytearray)):
         raw_pid = bytes(raw_pid).decode("utf-8", errors="replace")

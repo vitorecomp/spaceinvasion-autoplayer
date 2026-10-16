@@ -8,7 +8,7 @@ import math
 
 from spaceinvasion.core import catalog
 from spaceinvasion.core.config import StrategyConfig
-from spaceinvasion.core.state import EnergyBalance, GameState, PlanetState
+from spaceinvasion.core.model import EnergyBalance, GameState, PlanetState
 from spaceinvasion.planner.heuristics._common import (
     _safe_strategy_float,
     _safe_strategy_int,

@@ -6,14 +6,14 @@ import copy
 import json
 import unittest
 
-from spaceinvasion.action_graph import (
+from spaceinvasion.planner.graph import (
     build_action_graph,
     build_ai_planner_graph,
     build_fleet_planner_graph,
     merge_strategy_config_overrides,
 )
-from spaceinvasion.config import StrategyConfig
-from spaceinvasion.state import (
+from spaceinvasion.core.config import StrategyConfig
+from spaceinvasion.core.model import (
     BuildingOffer,
     EnergyBalance,
     FleetAlert,
@@ -24,7 +24,8 @@ from spaceinvasion.state import (
     Resources,
     UnitOffer,
 )
-from spaceinvasion.strategy import PlannedAction, plan_actions
+from spaceinvasion.core.model import PlannedAction
+from spaceinvasion.planner.heuristics import plan_actions
 
 
 def _mk_planet(
@@ -538,7 +539,7 @@ class TestActionGraphEngine(unittest.TestCase):
             speedup_factor=4.0,
         )
 
-        from spaceinvasion.strategy import plan_actions
+        from spaceinvasion.planner.heuristics import plan_actions
 
         prio_cfg = StrategyConfig(planner_mode="priority")
         prio_actions = plan_actions(st, config=prio_cfg)
@@ -1125,7 +1126,10 @@ class TestActionGraphEngine(unittest.TestCase):
         self.assertEqual(fg_none["slot_budgets"], [])
 
     def test_build_fleet_planner_graph_includes_fleet_research_and_prerequisite_edges(self) -> None:
-        from spaceinvasion.planner.action_graph import build_fleet_planner_graph, merge_strategy_config_overrides
+        from spaceinvasion.planner.graph import (
+            build_fleet_planner_graph,
+            merge_strategy_config_overrides,
+        )
 
         p1 = PlanetState(
             planet_id=101,

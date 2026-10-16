@@ -17,7 +17,7 @@ from spaceinvasion.combat.flight import (
     normalize_coords,
 )
 from spaceinvasion.core import catalog
-from spaceinvasion.core.state import GameState, PlanetState, Resources
+from spaceinvasion.core.model import GameState, PlanetState, Resources
 from spaceinvasion.planner.eta import estimate_planet_hourly_economy
 from spaceinvasion.planner.heuristics._common import (
     _safe_strategy_float,

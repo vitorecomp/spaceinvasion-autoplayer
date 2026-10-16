@@ -7,9 +7,21 @@ import re
 from typing import Any, Mapping, Optional, Sequence
 import unittest
 
-from spaceinvasion import fleet, game_data, ranking
-from spaceinvasion.config import StrategyConfig, strategy_config_from_dict
-from spaceinvasion.state import (
+from spaceinvasion.combat.flight import BashTracker
+from spaceinvasion.combat.points import (
+    estimate_account_points,
+    estimate_hourly_economy,
+    estimate_planet_hourly_economy,
+)
+from spaceinvasion.combat.simulator import simulate_raid_outcome
+from spaceinvasion.core import catalog as game_data
+from spaceinvasion.core.catalog import SHIP_SLUG_BY_KEY
+from spaceinvasion.parsing.models import SpyReport
+from spaceinvasion.core.config import (
+    StrategyConfig,
+    strategy_config_from_dict,
+)
+from spaceinvasion.core.model import (
     BuildingOffer,
     EnergyBalance,
     FleetAlert,
@@ -122,7 +134,7 @@ def make_ship_offer(
     input_name: Optional[str] = None,
     status_text: Optional[str] = None,
 ) -> UnitOffer:
-    slug = fleet.SHIP_SLUG_BY_KEY.get(f"s{sid}")
+    slug = SHIP_SLUG_BY_KEY.get(f"s{sid}")
     info = game_data.SHIPS.get(slug or "") or {}
     name = str(info.get("name") or f"Ship s{sid}")
     resolved_cost = cost if cost is not None else _res_from_dict(info.get("base_cost") or {})
@@ -357,8 +369,8 @@ def evaluate_sequence_score(
 ) -> SequenceEvaluation:
     """Independently simulate `actions` forward using `game_data`, `ranking`, and `fleet` only."""
     cfg = config or StrategyConfig()
-    initial_pts = float(ranking.estimate_account_points(state)["estimated_points"])
-    initial_inc = float(ranking.estimate_hourly_economy(state)["spice_eq_per_hr"])
+    initial_pts = float(estimate_account_points(state)["estimated_points"])
+    initial_inc = float(estimate_hourly_economy(state)["spice_eq_per_hr"])
 
     active_pid = state.active_planet_id or (state.planets[0].planet_id if state.planets else None)
     sim_researches = dict(state.researches or {})
@@ -409,7 +421,7 @@ def evaluate_sequence_score(
         for t in (state.raid_targets or ())
         if (t.get("coords") or t.get("target_coords"))
     }
-    bash = fleet.BashTracker()
+    bash = BashTracker()
 
     def _current_state_obj() -> GameState:
         plist = []
@@ -443,7 +455,7 @@ def evaluate_sequence_score(
         cur_state = _current_state_obj()
         for pid_item, sp_item in sim_planets.items():
             p_cur = next(pl for pl in cur_state.planets if pl.planet_id == pid_item)
-            econ = ranking.estimate_planet_hourly_economy(cur_state, p_cur)
+            econ = estimate_planet_hourly_economy(cur_state, p_cur)
             sp_item["resources"][0] = max(0.0, sp_item["resources"][0] + float(econ["pig_iron_per_hr"]) * dt_hours)
             sp_item["resources"][1] = max(0.0, sp_item["resources"][1] + float(econ["metal_per_hr"]) * dt_hours)
             sp_item["resources"][2] = max(0.0, sp_item["resources"][2] + float(econ["kryptonite_per_hr"]) * dt_hours)
@@ -455,7 +467,7 @@ def evaluate_sequence_score(
             return 0.0
         cur_state = _current_state_obj()
         cur_p = next(pl for pl in cur_state.planets if pl.planet_id == pid_target)
-        econ = ranking.estimate_planet_hourly_economy(cur_state, cur_p)
+        econ = estimate_planet_hourly_economy(cur_state, cur_p)
         rates = [
             float(econ["pig_iron_per_hr"]),
             float(econ["metal_per_hr"]),
@@ -520,7 +532,7 @@ def evaluate_sequence_score(
                 violations.append(f"Bash violation at {t_coords}")
                 continue
             res_map = raw_t.get("resources") if isinstance(raw_t.get("resources"), dict) else raw_t
-            rep = fleet.SpyReport(
+            rep = SpyReport(
                 target_coords=t_coords,
                 owner=str(raw_t.get("owner") or ""),
                 resources=_res_from_dict(res_map or {}),
@@ -533,7 +545,7 @@ def evaluate_sequence_score(
                 for k, v in sp["ships"].items()
                 if k in ("s4", "s5", "s6", "s7", "s13", "s14", "s15", "s16", "s1", "s2", "s3") and int(v) > 0
             }
-            combat = fleet.simulate_raid_outcome(
+            combat = simulate_raid_outcome(
                 atk_ships,
                 rep,
                 attacker_researches=sim_researches,
@@ -681,7 +693,7 @@ def evaluate_sequence_score(
         if kind == "BUILD_SHIP" and getattr(act, "target_id", None) is not None:
             sid_num = int(getattr(act, "target_id"))
             skey = f"s{sid_num}"
-            slug = fleet.SHIP_SLUG_BY_KEY.get(skey)
+            slug = SHIP_SLUG_BY_KEY.get(skey)
             if not slug:
                 violations.append(f"Unknown ship id {skey} on planet {pid}")
                 continue
@@ -719,8 +731,8 @@ def evaluate_sequence_score(
         _flush_completions()
 
     final_state = _current_state_obj()
-    final_pts = float(ranking.estimate_account_points(final_state)["estimated_points"])
-    final_inc = float(ranking.estimate_hourly_economy(final_state)["spice_eq_per_hr"])
+    final_pts = float(estimate_account_points(final_state)["estimated_points"])
+    final_inc = float(estimate_hourly_economy(final_state)["spice_eq_per_hr"])
     pts_delta = final_pts - initial_pts
     inc_delta = final_inc - initial_inc
     penalty = 10_000.0 * len(violations)

@@ -21,23 +21,31 @@ from tests.e2e.fixtures import (
     make_ship_offer,
 )
 from tests.e2e.harness import E2ETestHarness, FakeClock, FakeSpaceInvasionServer, run_ui_in_node
-from spaceinvasion.config import StrategyConfig, load_strategy_config
-from spaceinvasion.fleet import BashTracker, SpyReport
-from spaceinvasion.state import EnergyBalance, Resources
-from spaceinvasion.storage import GameDatabase
-from spaceinvasion.strategy import (
+from spaceinvasion.core.config import StrategyConfig
+from spaceinvasion.db.config_store import load_strategy_config
+from spaceinvasion.combat.flight import BashTracker
+from spaceinvasion.parsing.models import SpyReport
+from spaceinvasion.core.model import (
+    EnergyBalance,
+    Resources,
+)
+from spaceinvasion.db.storage import GameDatabase
+from spaceinvasion.core.model import PlannedAction
+from spaceinvasion.planner.heuristics import (
     BLAST_FURNACE,
     DEVELOPMENT_CENTER,
     FUSION_PLANT,
     PIG_IRON_MINE,
-    PlannedAction,
     plan_actions,
 )
 
 
 def _import_eta_helpers(test: unittest.TestCase):
     try:
-        from spaceinvasion.ranking import attach_action_etas, compute_action_eta
+        from spaceinvasion.planner.eta import (
+            attach_action_etas,
+            compute_action_eta,
+        )
     except ImportError as exc:
         test.fail(f"R3 ETA helpers missing from spaceinvasion.ranking: {exc}")
     return compute_action_eta, attach_action_etas

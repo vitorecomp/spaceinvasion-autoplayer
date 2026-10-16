@@ -7,7 +7,7 @@ import json
 import math
 import re
 
-from spaceinvasion.core import game_data
+from spaceinvasion.core import catalog as game_data
 from spaceinvasion.core.coercion import coerce_int, parse_game_int
 from spaceinvasion.parsing.models import DEFENSE_SLUG_BY_KEY, SHIP_SLUG_BY_KEY
 

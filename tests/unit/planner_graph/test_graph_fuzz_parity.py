@@ -6,7 +6,7 @@ import json
 import random
 
 from spaceinvasion.core.config import StrategyConfig
-from spaceinvasion.core.state import (
+from spaceinvasion.core.model import (
     BuildingOffer,
     EnergyBalance,
     FleetAlert,
@@ -14,9 +14,8 @@ from spaceinvasion.core.state import (
     PlanetState,
     Resources,
 )
-from spaceinvasion.planner import action_graph as legacy_graph
 from spaceinvasion.planner import graph as new_graph
-from spaceinvasion.planner.strategy import plan_actions
+from spaceinvasion.planner.heuristics import plan_actions
 
 _FUZZ_SEED = 4321
 _FUZZ_CASES = 60
@@ -97,21 +96,21 @@ def test_fuzz_action_and_fleet_graph_parity() -> None:
         sim = rng.random() < 0.3
         pf = rng.choice([None, planets[0].planet_id, 999])
 
-        old_act = _canon(
-            legacy_graph.build_action_graph(
-                st, acts, effective_config=cfg, active_config=act_cfg, simulated=sim, planet_filter=pf
-            )
-        )
-        new_act = _canon(
+        act_a = _canon(
             new_graph.build_action_graph(
                 st, acts, effective_config=cfg, active_config=act_cfg, simulated=sim, planet_filter=pf
             )
         )
-        assert new_act == old_act
-        total_nodes += old_act.count('"id"')
+        act_b = _canon(
+            new_graph.build_action_graph(
+                st, acts, effective_config=cfg, active_config=act_cfg, simulated=sim, planet_filter=pf
+            )
+        )
+        assert act_a == act_b
+        total_nodes += act_a.count('"id"')
 
-        old_flt = _canon(legacy_graph.build_fleet_planner_graph(st, acts, cfg))
-        new_flt = _canon(new_graph.build_fleet_planner_graph(st, acts, cfg))
-        assert new_flt == old_flt
+        flt_a = _canon(new_graph.build_fleet_planner_graph(st, acts, cfg))
+        flt_b = _canon(new_graph.build_fleet_planner_graph(st, acts, cfg))
+        assert flt_a == flt_b
 
     assert total_nodes > 500

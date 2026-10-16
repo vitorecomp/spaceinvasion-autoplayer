@@ -28,18 +28,23 @@ from selenium.common.exceptions import (
 from selenium.webdriver.common.by import By
 
 import commander
-import spaceinvasion.api_server as api_server_mod
-from spaceinvasion.api_server import GameApiBridge, create_api_server
-import spaceinvasion.client as client_mod
-from spaceinvasion.client import GameBrowserClient
-from spaceinvasion.commander_client import GameApiClient
-from spaceinvasion.config import StrategyConfig, save_strategy_config
-import spaceinvasion.executor as executor_mod
-import spaceinvasion.fleet as fleet_mod
-from spaceinvasion import game_data
-import spaceinvasion.ranking as ranking_mod
-import spaceinvasion.storage as storage_mod
-import spaceinvasion.strategy as strategy_mod
+import spaceinvasion.runtime.api_server as api_server_mod
+from spaceinvasion.runtime.api_server import (
+    GameApiBridge,
+    create_api_server,
+)
+import spaceinvasion.session.client as client_mod
+from spaceinvasion.session.client import GameBrowserClient
+from spaceinvasion.runtime.commander_client import GameApiClient
+from spaceinvasion.core.config import StrategyConfig
+from spaceinvasion.db.config_store import save_strategy_config
+import spaceinvasion.session.executor as executor_mod
+import spaceinvasion.combat.flight as fleet_mod
+import spaceinvasion.combat._rank_history as rank_history_mod
+from spaceinvasion.core import catalog as game_data
+import spaceinvasion.db.storage as storage_mod
+import spaceinvasion.planner.heuristics._fleet_context as fleet_ctx_mod
+import spaceinvasion.planner.heuristics.blast_furnace as blast_furnace_mod
 
 
 def _fmt_dot_int(val: int) -> str:
@@ -335,12 +340,12 @@ class FakeSpaceInvasionServer:
                 b_map[str(bkey)] = {"name": bname, "level": int(lvl)}
             s_map: dict[str, dict[str, Any]] = {}
             for skey, qty in (p.get("ships") or {}).items():
-                slug = fleet_mod.SHIP_SLUG_BY_KEY.get(str(skey))
+                slug = game_data.SHIP_SLUG_BY_KEY.get(str(skey))
                 sname = (game_data.SHIPS.get(slug or "") or {}).get("name", str(skey))
                 s_map[str(skey)] = {"name": sname, "level": int(qty)}
             d_map: dict[str, dict[str, Any]] = {}
             for dkey, qty in (p.get("defense") or {}).items():
-                slug = fleet_mod.DEFENSE_SLUG_BY_KEY.get(str(dkey))
+                slug = game_data.DEFENSE_SLUG_BY_KEY.get(str(dkey))
                 dname = (game_data.DEFENSES.get(slug or "") or {}).get("name", str(dkey))
                 d_map[str(dkey)] = {"name": dname, "level": int(qty)}
             p_list.append(
@@ -667,7 +672,7 @@ class FakeSpaceInvasionServer:
                         continue
                     sid_num = int(m.group(1))
                     skey = f"s{sid_num}"
-                    slug = fleet_mod.SHIP_SLUG_BY_KEY.get(skey)
+                    slug = game_data.SHIP_SLUG_BY_KEY.get(skey)
                     cost = (game_data.SHIPS.get(slug or "") or {}).get("base_cost") or {}
                     res = ap["resources"]
                     res[0] = max(0, res[0] - int(cost.get("pig_iron", 0)) * qty)
@@ -894,7 +899,7 @@ class FakeSpaceInvasionServer:
                     f'Available: {o.get("owned", 0)} Required: {cost_str} {inp_html}</td></tr></table>'
                 )
         else:
-            for skey, slug in fleet_mod.SHIP_SLUG_BY_KEY.items():
+            for skey, slug in game_data.SHIP_SLUG_BY_KEY.items():
                 sid_num = int(skey[1:])
                 info = game_data.SHIPS.get(slug) or {}
                 c = info.get("base_cost") or {}
@@ -1104,11 +1109,11 @@ class FakeSpaceInvasionServer:
             f"Spice: {_fmt_dot_int(res.get('spice', 0))}",
         ]
         for skey, qty in (rep.get("fleet") or {}).items():
-            slug = fleet_mod.SHIP_SLUG_BY_KEY.get(skey)
+            slug = game_data.SHIP_SLUG_BY_KEY.get(skey)
             uname = (game_data.SHIPS.get(slug or "") or {}).get("name", skey)
             parts.append(f"{uname}: {_fmt_dot_int(qty)}")
         for dkey, qty in (rep.get("defense") or {}).items():
-            slug = fleet_mod.DEFENSE_SLUG_BY_KEY.get(dkey)
+            slug = game_data.DEFENSE_SLUG_BY_KEY.get(dkey)
             uname = (game_data.DEFENSES.get(slug or "") or {}).get("name", dkey)
             parts.append(f"{uname}: {_fmt_dot_int(qty)}")
         if rep.get("dug_in") is True:
@@ -1884,8 +1889,9 @@ class E2ETestHarness:
                     api_server_mod,
                     storage_mod,
                     fleet_mod,
-                    strategy_mod,
-                    ranking_mod,
+                    rank_history_mod,
+                    fleet_ctx_mod,
+                    blast_furnace_mod,
                     commander,
                 ):
                     p_time = patch.object(mod, "time", proxy)

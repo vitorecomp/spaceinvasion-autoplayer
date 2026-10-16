@@ -29,17 +29,18 @@ import pytest
 import numpy as np
 import pandas as pd
 
-from spaceinvasion import game_data
-from spaceinvasion.ranking import compute_action_eta
-from spaceinvasion.state import (
+from spaceinvasion.core import catalog as game_data
+from spaceinvasion.planner.eta import compute_action_eta
+from spaceinvasion.core.model import (
     BuildingOffer,
     EnergyBalance,
     GameState,
     PlanetState,
     Resources,
 )
-from spaceinvasion.storage import GameDatabase
-from spaceinvasion.strategy import PlannedAction, plan_actions
+from spaceinvasion.db.storage import GameDatabase
+from spaceinvasion.core.model import PlannedAction
+from spaceinvasion.planner.heuristics import plan_actions
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 ATTACK_HISTORY_PATH = REPO_ROOT / "state" / "spaceinvasion.db"
@@ -1259,7 +1260,10 @@ class TestFullPlannerNotebook(unittest.TestCase):
     # ------------------------------------------------------------------ static metadata
 
     def test_metadata_files_agree_with_the_game_catalog(self) -> None:
-        from spaceinvasion.combat.fleet import DEFENSE_SLUG_BY_KEY, SHIP_SLUG_BY_KEY
+        from spaceinvasion.core.catalog import (
+            DEFENSE_SLUG_BY_KEY,
+            SHIP_SLUG_BY_KEY,
+        )
         from spaceinvasion.core.config import StrategyConfig
 
         docs = {

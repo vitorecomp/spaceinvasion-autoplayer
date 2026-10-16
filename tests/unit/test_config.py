@@ -7,13 +7,15 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from spaceinvasion.config import (
+from spaceinvasion.core.config import (
     StrategyConfig,
     VALID_PLANNER_MODES,
-    load_strategy_config,
     normalize_planner_mode,
-    save_strategy_config,
     strategy_config_from_dict,
+)
+from spaceinvasion.db.config_store import (
+    load_strategy_config,
+    save_strategy_config,
 )
 
 
@@ -156,7 +158,10 @@ class TestStrategyConfig(unittest.TestCase):
 
     def test_mapping_proxy_non_dict_invalid_utf8_and_non_finite_bool_and_yaml(self) -> None:
         from types import MappingProxyType
-        from spaceinvasion.config import _safe_cfg_bool, strategy_config_from_dict
+        from spaceinvasion.core.config import (
+            _safe_cfg_bool,
+            strategy_config_from_dict,
+        )
 
         self.assertEqual(strategy_config_from_dict([1, 2, 3]), StrategyConfig())  # type: ignore[arg-type]
         self.assertEqual(strategy_config_from_dict(None), StrategyConfig())
@@ -254,7 +259,7 @@ class TestStrategyConfig(unittest.TestCase):
             self.assertEqual(load_strategy_config(plain_p).playstyle, "fleeter")
 
     def test_r7_json_roundtrip_unicode_line_separators_and_shipyard_target_keys(self) -> None:
-        from spaceinvasion.config import DEFAULT_SHIPYARD_TARGETS
+        from spaceinvasion.core.config import DEFAULT_SHIPYARD_TARGETS
 
         with tempfile.TemporaryDirectory() as tmp:
             for weird_ps in (
@@ -327,7 +332,8 @@ class TestStrategyConfig(unittest.TestCase):
     def test_r10_tuple_frozenset_huge_int_keys_and_save(self) -> None:
         import json
         from dataclasses import asdict
-        from spaceinvasion.config import _sanitize_cfg_json_tree, save_strategy_config
+        from spaceinvasion.core.config import _sanitize_cfg_json_tree
+        from spaceinvasion.db.config_store import save_strategy_config
 
         huge = 10**5000
         tree = _sanitize_cfg_json_tree(
@@ -360,7 +366,7 @@ class TestStrategyConfig(unittest.TestCase):
     def test_r11_frozenset_pathlike_unknown_scalar_and_secret_key_redaction(self) -> None:
         import json
         from pathlib import Path
-        from spaceinvasion.config import (
+        from spaceinvasion.core.config import (
             _safe_cfg_bool,
             _sanitize_cfg_json_tree,
             normalize_planner_mode,
@@ -417,7 +423,7 @@ class TestStrategyConfig(unittest.TestCase):
     def test_r12_config_fspath_raise_str_authorization_bearer_json_kv_and_deep_keys(self) -> None:
         import ast
         import json
-        from spaceinvasion import config as cfg_mod
+        from spaceinvasion.core import config as cfg_mod
 
         class _RaiseFspath:
             def __fspath__(self) -> str:
@@ -443,13 +449,13 @@ class TestStrategyConfig(unittest.TestCase):
                 raise RuntimeError("bool boom")
 
         tree_ast = ast.parse(Path("spaceinvasion/core/config.py").read_text(encoding="utf-8"))
-        internal_imports = [
+        forbidden_imports = [
             ast.dump(node)
             for node in ast.walk(tree_ast)
-            if (isinstance(node, ast.Import) and any(a.name.startswith("spaceinvasion") for a in node.names))
-            or (isinstance(node, ast.ImportFrom) and (node.module or "").startswith("spaceinvasion"))
+            if (isinstance(node, ast.Import) and any(a.name.startswith("spaceinvasion") and not a.name.startswith("spaceinvasion.core.") for a in node.names))
+            or (isinstance(node, ast.ImportFrom) and (node.module or "").startswith("spaceinvasion") and not (node.module or "").startswith("spaceinvasion.core."))
         ]
-        self.assertEqual(internal_imports, [])
+        self.assertEqual(forbidden_imports, [])
 
         self.assertEqual(normalize_planner_mode(_RaiseFspath()), "priority")
         self.assertEqual(normalize_planner_mode(_IntPath()), "priority")
@@ -519,7 +525,7 @@ class TestStrategyConfig(unittest.TestCase):
 
     def test_r13_config_compound_secrets_unicode_fastpath_quoted_bearer_and_shipyard_targets(self) -> None:
         import json
-        from spaceinvasion import config as cfg_mod
+        from spaceinvasion.core import config as cfg_mod
 
         san_text_cases = (
             ("client_secret=CS_1&user_password=UP_2&bot_api_key=BK_3&session_cookie=SC_4&access_passwd=AP_5&session_sid=SS_6",
@@ -588,14 +594,14 @@ class TestStrategyConfig(unittest.TestCase):
 
     def test_r14_config_shipyard_aliases_urlenc_json_esc_quotes_and_dag20_cycles(self) -> None:
         import time
-        from spaceinvasion.config import (
+        from spaceinvasion.core.config import (
             _redact_cfg_text,
             _safe_cfg_exc_text,
             _safe_cfg_key,
             _sanitize_cfg_json_tree,
-            save_strategy_config,
             strategy_config_from_dict,
         )
+        from spaceinvasion.db.config_store import save_strategy_config
 
         # 1. shipyard_targets canonicalization + last-wins + bare digits preserved verbatim
         cfg = strategy_config_from_dict(
@@ -904,7 +910,7 @@ class TestStrategyConfig(unittest.TestCase):
 
     def test_ai_adaptive_execution_default_bool_parsing_and_roundtrip(self) -> None:
         from spaceinvasion.db.storage import GameDatabase
-        from spaceinvasion.planner.action_graph import merge_strategy_config_overrides
+        from spaceinvasion.planner.graph import merge_strategy_config_overrides
 
         default_cfg = StrategyConfig()
         self.assertFalse(default_cfg.ai_adaptive_execution)

@@ -10,9 +10,9 @@ import unittest
 
 import numpy as np
 
-from spaceinvasion.core import game_data
+from spaceinvasion.core import catalog as game_data
 from spaceinvasion.core.config import StrategyConfig
-from spaceinvasion.core.state import (
+from spaceinvasion.core.model import (
     BuildingOffer,
     EnergyBalance,
     GameState,
@@ -21,11 +21,11 @@ from spaceinvasion.core.state import (
     ResearchOffer,
     Resources,
 )
-from spaceinvasion.planner import ai_planner as ap
+from spaceinvasion.planner import ai as ap
 from spaceinvasion.planner import config_optimizer as co
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-MODULE_PATH = REPO_ROOT / "spaceinvasion" / "planner" / "ai_planner.py"
+AI_PKG_DIR = REPO_ROOT / "spaceinvasion" / "planner" / "ai"
 NOTEBOOK_PATH = REPO_ROOT / "notebooks" / "full_planner.ipynb"
 
 
@@ -123,19 +123,20 @@ def _target_planet_entry(
 
 class AiPlannerUnitTests(unittest.TestCase):
     def test_zero_forbidden_dependencies(self) -> None:
-        source = MODULE_PATH.read_text(encoding="utf-8")
-        tree = ast.parse(source)
         forbidden = {"pandas", "selenium", "IPython", "jupyter", "requests"}
         found: set[str] = set()
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Import):
-                for alias in node.names:
-                    found.add(alias.name.split(".")[0])
-            elif isinstance(node, ast.ImportFrom) and node.module:
-                found.add(node.module.split(".")[0])
+        for path in sorted(AI_PKG_DIR.glob("*.py")):
+            source = path.read_text(encoding="utf-8")
+            self.assertNotIn("9222", source)
+            self.assertNotIn("spaceinvasion.db", source)
+            tree = ast.parse(source)
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    for alias in node.names:
+                        found.add(alias.name.split(".")[0])
+                elif isinstance(node, ast.ImportFrom) and node.module:
+                    found.add(node.module.split(".")[0])
         self.assertEqual(found & forbidden, set())
-        self.assertNotIn("9222", source)
-        self.assertNotIn("spaceinvasion.db", source)
 
     def test_default_params_match_contract(self) -> None:
         d = ap.DEFAULT_AI_PLANNER_PARAMS
@@ -1078,7 +1079,7 @@ class AiPlannerUnitTests(unittest.TestCase):
 
     def test_in_flight_incoming_cargo_and_returning_fleet_credit_recipient(self) -> None:
         # Donor has 0 stock, Recipient has 0 stock, but an inbound Transport arrives in 1800s with full cost of b1 L5!
-        cost_b1_5 = ap.full_cost(game_data.building_cost(1, 5))
+        cost_b1_5 = co.full_cost(game_data.building_cost(1, 5))
         donor = _make_planet(
             101,
             "02:380:01",
@@ -2789,7 +2790,7 @@ class AiPlannerUnitTests(unittest.TestCase):
         self.assertEqual(ap.compute_inbound_friendly_cargo_by_planet(st), {})
 
     def test_allow_demolition_triggers_demolish_strictly_when_planet_is_out_of_fields(self) -> None:
-        from spaceinvasion.planner import action_graph as ag
+        from spaceinvasion.planner import graph as ag
 
         # Planet starts at 38/40 fields (2 free fields):
         # b1: 5 -> 9 (+4 fields needed -> 2 free fields used first, then 2 demolitions of b3 triggered @ 40/40!)

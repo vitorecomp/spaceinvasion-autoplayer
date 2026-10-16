@@ -16,19 +16,25 @@ from __future__ import annotations
 from dataclasses import replace
 import unittest
 
-from spaceinvasion.core import game_data
+from spaceinvasion.core import catalog as game_data
 from spaceinvasion.core.config import StrategyConfig
-from spaceinvasion.core.state import EnergyBalance, GameState, PlanetState, QueueJob, Resources
-from spaceinvasion.planner import ai_planner as ap
+from spaceinvasion.core.model import (
+    EnergyBalance,
+    GameState,
+    PlanetState,
+    QueueJob,
+    Resources,
+)
+from spaceinvasion.planner import ai as ap
 from spaceinvasion.planner.config_optimizer import full_cost
-from spaceinvasion.planner.strategy import (
+from spaceinvasion.core.model import PlannedAction
+from spaceinvasion.planner.heuristics import (
     AI_PLAN_ORDER_LOAN_TAG,
     EMPIRE_SMELT_MIN_SPARE_PIG,
     INFRA_TRANSPORT_FLEET_CAP_RATIO,
     INFRA_TRANSPORT_RAID_ALLOWANCE_CARGO,
     PLAN_ORDER_LOAN_MIN_CARGO,
     PLAN_ORDER_LOAN_MIN_SHARE,
-    PlannedAction,
     compute_infra_transport_targets,
     plan_ai_blast_furnace_throttles,
     plan_interplanet_transports,

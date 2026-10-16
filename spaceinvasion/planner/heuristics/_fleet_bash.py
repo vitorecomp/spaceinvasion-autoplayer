@@ -7,7 +7,7 @@ import re
 
 from spaceinvasion.combat.flight import BashTracker, normalize_coords
 from spaceinvasion.core import catalog
-from spaceinvasion.core.state import GameState
+from spaceinvasion.core.model import GameState
 from spaceinvasion.planner.heuristics._common import (
     _parse_gal_sys_pos,
     _safe_strategy_float,

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from spaceinvasion.core.state import GameState, PlanetState, Resources
+from spaceinvasion.core.model import GameState, PlanetState, Resources
 from spaceinvasion.planner.heuristics._common import _safe_strategy_float, _safe_strategy_int, _safe_strategy_str
 from spaceinvasion.planner.heuristics._manual_reconcile_helpers import (
     _compute_reconcile_planet_metrics,

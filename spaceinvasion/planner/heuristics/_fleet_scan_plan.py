@@ -6,7 +6,7 @@ from collections.abc import Mapping, Sequence
 
 from spaceinvasion.combat.scanner import select_planner_scan_system
 from spaceinvasion.core.config import StrategyConfig
-from spaceinvasion.core.state import GameState, PlanetState
+from spaceinvasion.core.model import GameState, PlanetState
 from spaceinvasion.planner.heuristics._common import (
     _norm_planet_type,
     _parse_gal_sys_pos,

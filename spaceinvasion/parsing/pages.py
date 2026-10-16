@@ -8,7 +8,7 @@ import re
 from bs4 import BeautifulSoup, Tag
 
 from spaceinvasion.core.coercion import coerce_bounded_int, parse_game_int
-from spaceinvasion.core.state import BuildingOffer, ResearchOffer, Resources, UnitOffer
+from spaceinvasion.core.model import BuildingOffer, ResearchOffer, Resources, UnitOffer
 from spaceinvasion.parsing._common import attr_opt_str, attr_str, attr_tokens, safe_text, tag_text
 from spaceinvasion.parsing.queues import parse_building_queue, parse_research_queue_timer
 

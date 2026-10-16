@@ -788,15 +788,18 @@ class PostgresTestRedirector:
         with self._lock:
             if self._installed:
                 return
-            from spaceinvasion.combat import ranking as ranking_mod
+            from spaceinvasion.combat import points as points_mod
             from spaceinvasion.core import config as config_mod
             from spaceinvasion.db import backend as backend_mod
+            from spaceinvasion.db import config_store as config_store_mod
             from spaceinvasion.db import storage as storage_mod
 
             self._orig_db_init = storage_mod.GameDatabase.__init__
-            self._orig_load_cfg = config_mod.load_strategy_config
-            self._orig_save_cfg = config_mod.save_strategy_config
-            self._orig_load_rank_history = ranking_mod.load_rank_history
+            self._orig_load_cfg = config_store_mod.load_strategy_config
+            self._orig_save_cfg = config_store_mod.save_strategy_config
+            self._orig_load_cfg_json = config_mod.load_strategy_config
+            self._orig_save_cfg_json = config_mod.save_strategy_config
+            self._orig_load_rank_history = points_mod.load_rank_history
             redirector = self
 
             def _wrapped_db_init(
@@ -872,6 +875,10 @@ class PostgresTestRedirector:
                         redirector._open_dbs.append(weakref.ref(db_self))
 
             def _wrapped_load_cfg(path: Any = None) -> Any:
+                if redirector._enabled and path is None:
+                    env_url = str(os.environ.get("SPACEINVASION_DB_URL") or "").strip().lower()
+                    if not env_url.startswith(("postgresql://", "postgres://")):
+                        return config_mod.StrategyConfig()
                 if redirector._enabled and path is not None:
                     mapped = redirector.lookup_mapped_dsn(path)
                     if mapped is not None:
@@ -901,10 +908,26 @@ class PostgresTestRedirector:
                             db.close()
                 return redirector._orig_load_rank_history(history_path)
 
+            def _wrapped_load_cfg_json(path: Any = None) -> Any:
+                if redirector._enabled and path is not None:
+                    mapped = redirector.lookup_mapped_dsn(path)
+                    if mapped is not None:
+                        return redirector._orig_load_cfg(mapped)
+                return redirector._orig_load_cfg_json(path)
+
+            def _wrapped_save_cfg_json(cfg: Any, path: Any = None) -> Any:
+                if redirector._enabled and path is not None:
+                    mapped = redirector.lookup_mapped_dsn(path)
+                    if mapped is not None:
+                        return redirector._orig_save_cfg(cfg, mapped)
+                return redirector._orig_save_cfg_json(cfg, path)
+
             storage_mod.GameDatabase.__init__ = _wrapped_db_init  # type: ignore[assignment,method-assign]
-            config_mod.load_strategy_config = _wrapped_load_cfg
-            config_mod.save_strategy_config = _wrapped_save_cfg
-            ranking_mod.load_rank_history = _wrapped_load_rank_history
+            config_store_mod.load_strategy_config = _wrapped_load_cfg
+            config_store_mod.save_strategy_config = _wrapped_save_cfg
+            config_mod.load_strategy_config = _wrapped_load_cfg_json
+            config_mod.save_strategy_config = _wrapped_save_cfg_json
+            points_mod.load_rank_history = _wrapped_load_rank_history
             # Keep backend_mod referenced to ensure it's loaded before tests patch anything
             _ = backend_mod.is_unix_socket_dsn
             self._installed = True

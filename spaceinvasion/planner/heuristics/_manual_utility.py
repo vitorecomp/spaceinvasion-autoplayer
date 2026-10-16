@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 import re
 
-from spaceinvasion.core.state import Resources, homeworld_planet_id, is_undersized_fresh_colony
+from spaceinvasion.core.model import Resources, homeworld_planet_id, is_undersized_fresh_colony
 from spaceinvasion.planner.heuristics._common import (
     _normalize_manual_coords,
     _safe_strategy_int,

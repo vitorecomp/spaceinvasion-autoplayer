@@ -7,6 +7,7 @@ import functools
 import itertools
 import os
 import re
+from typing import Any, overload
 from urllib.parse import parse_qs, urlparse, urlunparse
 
 SECRET_DICT_KEYS: frozenset[str] = frozenset("sid password passwd cookie api_key secret authorization".split())
@@ -365,12 +366,36 @@ def _redact_tree(obj: object, api: bool, depth: int, seen: set[int], budget: lis
         seen.discard(vid)
 
 
-def redact_sensitive(obj: object) -> object:
+@overload
+def redact_sensitive(obj: str) -> str: ...
+
+
+@overload
+def redact_sensitive(obj: Mapping[Any, Any]) -> dict[str, Any]: ...
+
+
+@overload
+def redact_sensitive(obj: object) -> Any: ...
+
+
+def redact_sensitive(obj: object) -> Any:
     """Recursively mask session tokens, credentials, and secret key-value fields."""
     return _redact_tree(obj, False, 0, set(), [_MAX_TREE_NODES])
 
 
-def redact_api_payload(value: object) -> object:
+@overload
+def redact_api_payload(value: str) -> str: ...
+
+
+@overload
+def redact_api_payload(value: Mapping[Any, Any]) -> dict[str, Any]: ...
+
+
+@overload
+def redact_api_payload(value: object) -> Any: ...
+
+
+def redact_api_payload(value: object) -> Any:
     """Recursively scrub API response payloads using the cached ASCII-clean key fast path."""
     return _redact_tree(value, True, 0, set(), [_MAX_TREE_NODES])
 

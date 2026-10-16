@@ -9,10 +9,10 @@ import sys
 
 import pytest
 
-from spaceinvasion.combat.fleet import DEFENSE_SLUG_BY_KEY as FLEET_DEFENSE_SLUGS
-from spaceinvasion.combat.fleet import SHIP_SLUG_BY_KEY as FLEET_SHIP_SLUGS
 from spaceinvasion.core import catalog, game_data
-from spaceinvasion.core.state import Resources
+from spaceinvasion.core.catalog import DEFENSE_SLUG_BY_KEY as FLEET_DEFENSE_SLUGS
+from spaceinvasion.core.catalog import SHIP_SLUG_BY_KEY as FLEET_SHIP_SLUGS
+from spaceinvasion.core.model import Resources
 
 CATALOG_DIR = Path(__file__).resolve().parents[3] / "spaceinvasion" / "core" / "catalog"
 

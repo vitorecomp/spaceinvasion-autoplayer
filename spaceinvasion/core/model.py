@@ -6,6 +6,7 @@ import dataclasses
 from dataclasses import dataclass
 import re
 
+from spaceinvasion.core._inflight import count_in_flight_ships_by_planet
 from spaceinvasion.core._model_codec import game_state_from_dict, game_state_to_dict
 from spaceinvasion.core._model_helpers import (
     ASTEROID_ALLOWED_BUILDINGS,
@@ -241,6 +242,7 @@ __all__ = [
     "UnitOffer",
     "count_allocated_normal_planets",
     "count_in_flight_fleets_for_planet",
+    "count_in_flight_ships_by_planet",
     "count_in_flight_spy_fleets_for_planet",
     "extract_in_flight_colonize_coords",
     "extract_in_flight_recycle_coords",

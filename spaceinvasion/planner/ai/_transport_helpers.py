@@ -6,7 +6,7 @@ from collections.abc import Callable, Mapping, Sequence
 import math
 from typing import Protocol, runtime_checkable
 
-from spaceinvasion.core import game_data
+from spaceinvasion.core import catalog as game_data
 from spaceinvasion.core.coercion import coerce_finite_float, coerce_int
 from spaceinvasion.planner.ai._problem_in_progress import _extract_live_in_progress_state
 from spaceinvasion.planner.ai._problem_queues import estimate_interplanet_transport_seconds

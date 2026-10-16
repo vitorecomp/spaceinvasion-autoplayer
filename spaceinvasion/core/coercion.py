@@ -391,3 +391,6 @@ def sanitize_json_tree(obj: object, *, max_int: int = MAX_JSON_SAFE_INT, nonfini
 def safe_sequence(value: object) -> tuple[object, ...]:
     """Return ``tuple(value)`` for non-string sequences, otherwise ``()``."""
     return tuple(value) if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)) else ()
+
+
+parse_si_int = parse_game_int

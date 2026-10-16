@@ -36,7 +36,7 @@ _MODEL_NAMES: frozenset[str] = frozenset(cls.__name__ for cls in PAYLOAD_MODELS)
 
 def _format_literal(arg: object) -> str:
     if isinstance(arg, str):
-        return json.dumps(arg, ensure_ascii=False)
+        return json.dumps(arg, ensure_ascii=False, allow_nan=False)
     if isinstance(arg, bool):
         return "true" if arg else "false"
     if isinstance(arg, (int, float)):
@@ -110,8 +110,8 @@ def _emit_literal_type_alias(name: str, alias_type: object) -> list[str]:
 def _emit_page_titles() -> list[str]:
     lines = ["export const PAGE_TITLES: Record<PageKey, string> = {"]
     for key, title in PAGE_TITLES.items():
-        key_expr = key if key.isidentifier() else json.dumps(key)
-        lines.append(f"  {key_expr}: {json.dumps(title, ensure_ascii=False)},")
+        key_expr = key if key.isidentifier() else json.dumps(key, allow_nan=False)
+        lines.append(f"  {key_expr}: {json.dumps(title, ensure_ascii=False, allow_nan=False)},")
     lines.extend(["};", ""])
     return lines
 
@@ -138,7 +138,7 @@ def _emit_interface(model: type[object]) -> list[str]:
 
 def _emit_settings_schema_export() -> list[str]:
     schema = export_frontend_settings_schema()
-    rendered_json = json.dumps(schema, indent=2, ensure_ascii=False)
+    rendered_json = json.dumps(schema, indent=2, ensure_ascii=False, allow_nan=False)
     return [
         "export const GENERATED_SETTINGS_SCHEMA: SettingsSchemaPayload = " + rendered_json + ";",
         "",

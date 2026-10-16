@@ -7,7 +7,7 @@ from pathlib import Path
 import unittest
 from unittest.mock import MagicMock, patch
 
-from spaceinvasion.auth import SpaceInvasionAuthError
+from spaceinvasion.session.auth import SpaceInvasionAuthError
 
 
 class TestRunnerDebugPortLifecycle(unittest.TestCase):
@@ -89,7 +89,7 @@ class TestRunnerDebugPortLifecycle(unittest.TestCase):
         import tempfile
         import game_api
         import run_stack
-        from spaceinvasion.api_server import GameApiBridge
+        from spaceinvasion.runtime.api_server import GameApiBridge
 
         before_sig = signal.getsignal(signal.SIGTERM)
         with patch("sys.stdout", new_callable=io.StringIO):
@@ -185,8 +185,8 @@ class TestRunnerDebugPortLifecycle(unittest.TestCase):
         import math
         import tempfile
         import run_stack
-        from spaceinvasion.logging_utils import append_tick_logs
-        from spaceinvasion.state import (
+        from spaceinvasion.core.logging_utils import append_tick_logs
+        from spaceinvasion.core.model import (
             EnergyBalance,
             GameState,
             PlanetState,
@@ -194,7 +194,7 @@ class TestRunnerDebugPortLifecycle(unittest.TestCase):
             TutorialStatus,
             TutorialTask,
         )
-        from spaceinvasion.strategy import PlannedAction
+        from spaceinvasion.core.model import PlannedAction
 
         secret = "SECRET_RUNNER_SID_999"
         planet = PlanetState(
@@ -281,8 +281,16 @@ class TestRunnerDebugPortLifecycle(unittest.TestCase):
     def test_r8_append_tick_logs_and_api_log_huge_10e5000_tick_and_status(self) -> None:
         import json
         import tempfile
-        from spaceinvasion.logging_utils import append_api_log, append_tick_logs
-        from spaceinvasion.state import EnergyBalance, GameState, PlanetState, Resources
+        from spaceinvasion.core.logging_utils import (
+            append_api_log,
+            append_tick_logs,
+        )
+        from spaceinvasion.core.model import (
+            EnergyBalance,
+            GameState,
+            PlanetState,
+            Resources,
+        )
 
         pl = PlanetState(
             planet_id=1,
@@ -334,7 +342,7 @@ class TestRunnerDebugPortLifecycle(unittest.TestCase):
 
     def test_r9_append_api_log_method_redaction(self) -> None:
         import tempfile
-        from spaceinvasion.logging_utils import append_api_log
+        from spaceinvasion.core.logging_utils import append_api_log
 
         secret = "R9_RUNBOT_SID_777"
         with tempfile.TemporaryDirectory() as tmp:
@@ -379,10 +387,22 @@ class TestRunnerDebugPortLifecycle(unittest.TestCase):
         import json
         import tempfile
         import login as login_cli
-        from spaceinvasion.auth import Credentials, LoginResult
-        from spaceinvasion.browser import BrowserLoginResult
-        from spaceinvasion.logging_utils import append_api_log, append_tick_logs, redact_sensitive
-        from spaceinvasion.state import EnergyBalance, GameState, PlanetState, Resources
+        from spaceinvasion.session.auth import (
+            Credentials,
+            LoginResult,
+        )
+        from spaceinvasion.session.browser import BrowserLoginResult
+        from spaceinvasion.core.logging_utils import (
+            append_api_log,
+            append_tick_logs,
+            redact_sensitive,
+        )
+        from spaceinvasion.core.model import (
+            EnergyBalance,
+            GameState,
+            PlanetState,
+            Resources,
+        )
 
         class _BytesPath:
             def __fspath__(self) -> bytes:
@@ -487,7 +507,7 @@ class TestRunnerDebugPortLifecycle(unittest.TestCase):
         import tempfile
         import game_api as game_api_cli
         import run_stack as run_stack_cli
-        from spaceinvasion.logging_utils import redact_sensitive
+        from spaceinvasion.core.logging_utils import redact_sensitive
 
         class _RaiseFspath:
             def __fspath__(self) -> str:
@@ -537,8 +557,13 @@ class TestRunnerDebugPortLifecycle(unittest.TestCase):
             self.assertNotIn(sec, dumped)
         self.assertIn("authorization: bearer redacted", dumped.lower())
 
-        from spaceinvasion.logging_utils import append_tick_logs
-        from spaceinvasion.state import EnergyBalance, GameState, PlanetState, Resources
+        from spaceinvasion.core.logging_utils import append_tick_logs
+        from spaceinvasion.core.model import (
+            EnergyBalance,
+            GameState,
+            PlanetState,
+            Resources,
+        )
 
         st_log = GameState(
             31,
@@ -590,7 +615,10 @@ class TestRunnerDebugPortLifecycle(unittest.TestCase):
         import time
         import game_api as game_api_cli
         import run_stack as run_stack_cli
-        from spaceinvasion.logging_utils import is_secret_dict_key, redact_sensitive
+        from spaceinvasion.core.logging_utils import (
+            is_secret_dict_key,
+            redact_sensitive,
+        )
 
         cyc = RuntimeError("cyc")
         cyc.args = (10**5000, cyc)
@@ -652,7 +680,7 @@ class TestRunnerDebugPortLifecycle(unittest.TestCase):
 
     def test_r14_logging_urlenc_json_esc_quotes_pct20_redos_and_cli_dag20_cycles(self) -> None:
         import time
-        from spaceinvasion import logging_utils as lu
+        from spaceinvasion.core import logging_utils as lu
         import login as login_mod
         import commander as cmd_mod
         import run_stack as rs_mod

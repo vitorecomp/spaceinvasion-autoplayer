@@ -8,9 +8,14 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from spaceinvasion.combat.fleet import GalaxySlot
-from spaceinvasion.core.state import EnergyBalance, GameState, PlanetState, Resources
-from spaceinvasion.planner.strategy import PlannedAction
+from spaceinvasion.parsing.models import GalaxySlot
+from spaceinvasion.core.model import (
+    EnergyBalance,
+    GameState,
+    PlanetState,
+    Resources,
+)
+from spaceinvasion.core.model import PlannedAction
 from spaceinvasion.runtime.api_server import GameApiBridge
 from spaceinvasion.session.executor import ExecutionResult
 

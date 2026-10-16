@@ -105,16 +105,13 @@ class _FrozenTime:
 @contextmanager
 def frozen_time(now: float) -> Iterator[None]:
     """Freeze `time.time()` in the pure planner, combat and state modules and seed `random`."""
-    from spaceinvasion.combat import fleet, ranking
-    from spaceinvasion.core import config, state
-    from spaceinvasion.planner import strategy
     from tests.goldens.scenarios import GOLDEN_SEED
 
     proxy = _FrozenTime(now)
     rng_state = random.getstate()
     with ExitStack() as stack:
-        for module in (fleet, ranking, config, state, strategy):
-            stack.enter_context(mock.patch.object(module, "time", proxy))
+        stack.enter_context(mock.patch.object(_real_time, "time", proxy.time))
+        stack.enter_context(mock.patch.object(_real_time, "monotonic", proxy.monotonic))
         random.seed(GOLDEN_SEED)
         try:
             yield
@@ -207,7 +204,7 @@ def summarize_actions(actions: Sequence[Any]) -> dict[str, Any]:
 
 
 def _plan(state: Any, cfg: Any) -> list[Any]:
-    from spaceinvasion.planner.strategy import plan_actions
+    from spaceinvasion.planner.heuristics import plan_actions
     from tests.goldens.scenarios import GOLDEN_EPOCH
 
     return plan_actions(state, config=cfg, scanned_systems={}, throttle_cooldowns={}, now_ts=GOLDEN_EPOCH)
@@ -231,7 +228,7 @@ def capture_planner() -> dict[str, Any]:
 
 def capture_action_graph() -> dict[str, Any]:
     """Heuristic action graph (`build_action_graph`) and the fleet-planner graph built from the same plan."""
-    from spaceinvasion.planner.action_graph import build_action_graph, build_fleet_planner_graph
+    from spaceinvasion.planner.graph import build_action_graph, build_fleet_planner_graph
     from tests.goldens.scenarios import CONFIGS, GOLDEN_EPOCH, STATES, default_config, full_auto_config
 
     out: dict[str, Any] = {}
@@ -264,8 +261,8 @@ def capture_action_graph() -> dict[str, Any]:
 def capture_ai_planner() -> dict[str, Any]:
     """AI-Planner: the planned path, the live actions reconciled from it, and `build_ai_planner_graph`."""
     from spaceinvasion.core.config import StrategyConfig
-    from spaceinvasion.planner import ai_planner
-    from spaceinvasion.planner.action_graph import build_ai_planner_graph
+    from spaceinvasion.planner import ai as ai_planner
+    from spaceinvasion.planner.graph import build_ai_planner_graph
     from tests.goldens.scenarios import AI_PLANNER_PARAMS, GOLDEN_EPOCH, STATES, ai_target_config
 
     out: dict[str, Any] = {}

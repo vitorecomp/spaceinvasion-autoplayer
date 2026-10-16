@@ -11,8 +11,11 @@ from unittest.mock import MagicMock, patch
 from selenium.common.exceptions import ElementClickInterceptedException, NoSuchElementException
 from selenium.webdriver.common.by import By
 
-from spaceinvasion.auth import AntiBotChallengeError, SpaceInvasionAuthError
-from spaceinvasion.client import (
+from spaceinvasion.session.auth import (
+    AntiBotChallengeError,
+    SpaceInvasionAuthError,
+)
+from spaceinvasion.session.client import (
     GameBrowserClient,
     PageViewLimiter,
     RateLimitError,
@@ -459,7 +462,7 @@ class TestPageViewLimiterAndClient(unittest.TestCase):
 
         client = GameBrowserClient(driver, page_limiter=limiter, min_nav_delay=(0.0, 0.0), timeout=2.0)
         with patch.object(driver, "execute_script", side_effect=_exec_keeping_stale_token):
-            with patch("spaceinvasion.client.time.sleep", return_value=None):
+            with patch("spaceinvasion.session.client.time.sleep", return_value=None):
                 html = client.open_galaxy(galaxy=2, system=381)
         self.assertIn("New381", html)
         self.assertNotIn("Old380", html)
@@ -480,7 +483,7 @@ class TestPageViewLimiterAndClient(unittest.TestCase):
                     main.nav_token = None
 
         main.on_navigate = _on_fleet_poll
-        with patch("spaceinvasion.client.time.sleep", return_value=None):
+        with patch("spaceinvasion.session.client.time.sleep", return_value=None):
             send_html = client._wait_frame_ready(
                 "F_Hauptframe",
                 expected_action="internalSendFleet",
@@ -510,7 +513,7 @@ class TestPageViewLimiterAndClient(unittest.TestCase):
         # (a) Rate limit HTML on URL lacking expected_action raises RateLimitError on poll #1
         main.href = "https://spaceinvasion.bitmeup.com/indexInternal.es?error=limit"
         main.html = "<div>You've made more than 30 page views at last minute.</div>"
-        with patch("spaceinvasion.client.time.sleep", side_effect=_fail_on_excess_sleep):
+        with patch("spaceinvasion.session.client.time.sleep", side_effect=_fail_on_excess_sleep):
             with self.assertRaises(RateLimitError):
                 client._wait_frame_ready("F_Hauptframe", expected_action="internalBuildings")
         self.assertEqual(sleep_calls[0], 0)
@@ -519,7 +522,7 @@ class TestPageViewLimiterAndClient(unittest.TestCase):
         # (b) Cloudflare turnstile raises AntiBotChallengeError immediately
         limiter.reset()
         main.html = "<div class='cf-turnstile'>Verify</div>"
-        with patch("spaceinvasion.client.time.sleep", side_effect=_fail_on_excess_sleep):
+        with patch("spaceinvasion.session.client.time.sleep", side_effect=_fail_on_excess_sleep):
             with self.assertRaises(AntiBotChallengeError):
                 client._wait_frame_ready("F_Hauptframe", expected_action="internalBuildings")
         self.assertEqual(sleep_calls[0], 0)
@@ -1802,7 +1805,7 @@ class TestPageViewLimiterAndClient(unittest.TestCase):
             spy_patches.append(patch.object(limiter, m_name, side_effect=_make_spy(m_name, orig_m)))
 
         with patch.object(limiter, "clear_throttle_recovery", side_effect=_spy_clear), patch(
-            "spaceinvasion.client.find_and_switch_game_tab", return_value=True
+            "spaceinvasion.session.client.find_and_switch_game_tab", return_value=True
         ):
             client.ensure_in_game(priority="interactive")
         self.assertEqual(lock_owned_on_tab_clear, [False])
@@ -1811,7 +1814,7 @@ class TestPageViewLimiterAndClient(unittest.TestCase):
         try:
             for sp in spy_patches:
                 sp.start()
-            with patch("spaceinvasion.client.find_and_switch_game_tab", return_value=True):
+            with patch("spaceinvasion.session.client.find_and_switch_game_tab", return_value=True):
                 client.ensure_in_game(priority="interactive")
             drv.frames["F_planets"].html = "<div>You've made more than 30 page views at last minute!</div>"
             with self.assertRaises(RateLimitError):
@@ -2068,7 +2071,7 @@ class TestPageViewLimiterAndClient(unittest.TestCase):
 
         res_4f: list[str] = []
         with patch.object(lim_f, "rate_limit_remaining", side_effect=_gated_rem), patch(
-            "spaceinvasion.client.find_and_switch_game_tab",
+            "spaceinvasion.session.client.find_and_switch_game_tab",
             side_effect=_switch_tab_recover,
         ):
             def _run_t1() -> None:
@@ -2127,7 +2130,7 @@ class TestPageViewLimiterAndClient(unittest.TestCase):
             c.read_full_snapshot(include_home=False, include_buildings=False)
 
         # Off-internalHome F_Hauptframe redirecting to BitMeUp login or universe picker raises SpaceInvasionAuthError
-        from spaceinvasion.state import GameState
+        from spaceinvasion.core.model import GameState
 
         haupt_el = MagicMock()
         haupt_el.get_attribute.return_value = "indexInternal.es?action=internalBuildings"
@@ -2309,8 +2312,11 @@ class TestPageViewLimiterAndClient(unittest.TestCase):
         self.assertLessEqual(lim_huge.views_last_60s(), 10_000)
 
     def test_r10_bytes_nonascii_bounds_and_commander_client_timeout(self) -> None:
-        from spaceinvasion.client import GameBrowserClient
-        from spaceinvasion.commander_client import GameApiClient, _safe_api_timeout
+        from spaceinvasion.session.client import GameBrowserClient
+        from spaceinvasion.runtime.commander_client import (
+            GameApiClient,
+            _safe_api_timeout,
+        )
 
         lim = PageViewLimiter(
             max_views_per_minute=b"30",  # type: ignore[arg-type]
@@ -2341,8 +2347,12 @@ class TestPageViewLimiterAndClient(unittest.TestCase):
         import tempfile
         from pathlib import Path
         from unittest.mock import patch
-        from spaceinvasion.client import GameBrowserClient, RateLimitError, is_server_rate_limit_html
-        from spaceinvasion.logging_utils import append_crash_debug_log
+        from spaceinvasion.session.client import (
+            GameBrowserClient,
+            RateLimitError,
+            is_server_rate_limit_html,
+        )
+        from spaceinvasion.core.logging_utils import append_crash_debug_log
 
         # 1. Hidden unpopulated `internalGalaxy` modal does NOT trigger false RateLimitError
         gal_modal_html = (
@@ -2371,7 +2381,7 @@ class TestPageViewLimiterAndClient(unittest.TestCase):
 
         drv.find_element.side_effect = NoSuchElementException("no F_planets in popup")
         cli_pop = GameBrowserClient(drv)
-        with patch("spaceinvasion.client.find_and_switch_game_tab", return_value=True) as mock_switch:
+        with patch("spaceinvasion.session.client.find_and_switch_game_tab", return_value=True) as mock_switch:
             cli_pop.ensure_in_game()
         mock_switch.assert_called_once_with(drv)
 
@@ -2406,7 +2416,7 @@ class TestPageViewLimiterAndClient(unittest.TestCase):
                 '<div>You\'ve made more than <span id="pageview-amount">0</span> page views.</div>'
             )
         )
-        from spaceinvasion.logging_utils import redact_sensitive
+        from spaceinvasion.core.logging_utils import redact_sensitive
 
         self.assertEqual(
             redact_sensitive('<input type="password" name="password" value="p@ss\'word123">'),
@@ -2422,7 +2432,12 @@ class TestPageViewLimiterAndClient(unittest.TestCase):
         )
 
         # Full Metal warehouse (`metal >= storage.metal`) must NOT flip `resource2=100` to `0` on `#metall=0`
-        from spaceinvasion.state import EnergyBalance, GameState, PlanetState, Resources
+        from spaceinvasion.core.model import (
+            EnergyBalance,
+            GameState,
+            PlanetState,
+            Resources,
+        )
 
         p_full_met = PlanetState(
             planet_id=12476,
@@ -2478,7 +2493,7 @@ class TestPageViewLimiterAndClient(unittest.TestCase):
 
         # Commander `sync_economy` propagates HTTP 429 rate-limit instead of swallowing it
         import commander
-        from spaceinvasion.commander_client import GameApiError
+        from spaceinvasion.runtime.commander_client import GameApiError
         from dataclasses import asdict
 
         fake_api = MagicMock()

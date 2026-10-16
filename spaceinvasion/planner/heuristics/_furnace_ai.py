@@ -7,7 +7,7 @@ from dataclasses import dataclass
 import math
 
 from spaceinvasion.core import catalog
-from spaceinvasion.core.state import GameState, PlanetState
+from spaceinvasion.core.model import GameState, PlanetState
 from spaceinvasion.planner.heuristics._common import (
     _safe_strategy_float,
     _safe_strategy_int,

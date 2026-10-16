@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from spaceinvasion.core.state import (
+from spaceinvasion.core.model import (
     BuildingOffer,
     EnergyBalance,
     FleetAlert,

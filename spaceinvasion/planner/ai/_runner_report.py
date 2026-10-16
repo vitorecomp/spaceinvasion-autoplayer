@@ -6,7 +6,7 @@ from collections.abc import Mapping, Sequence
 import math
 from typing import TYPE_CHECKING
 
-from spaceinvasion.core import game_data
+from spaceinvasion.core import catalog as game_data
 from spaceinvasion.core.coercion import coerce_finite_float, coerce_int
 from spaceinvasion.planner.ai._types import PATH_HOURS_PER_WEEK
 from spaceinvasion.planner.ai.telemetry import fmt_path_time

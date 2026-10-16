@@ -17,11 +17,13 @@ import urllib.request
 import bin.commander as commander_mod
 from spaceinvasion.core.config import (
     StrategyConfig,
-    load_strategy_config,
-    save_strategy_config,
     strategy_config_from_dict,
 )
-from spaceinvasion.core.state import (
+from spaceinvasion.db.config_store import (
+    load_strategy_config,
+    save_strategy_config,
+)
+from spaceinvasion.core.model import (
     BuildingOffer,
     EnergyBalance,
     FleetAlert,

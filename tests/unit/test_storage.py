@@ -9,8 +9,11 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from spaceinvasion.fleet import GalaxySlot, SpyReport
-from spaceinvasion.state import (
+from spaceinvasion.parsing.models import (
+    GalaxySlot,
+    SpyReport,
+)
+from spaceinvasion.core.model import (
     EnergyBalance,
     GameState,
     PlanetState,
@@ -18,8 +21,8 @@ from spaceinvasion.state import (
     TutorialStatus,
     TutorialTask,
 )
-from spaceinvasion.storage import GameDatabase
-from spaceinvasion.strategy import PlannedAction
+from spaceinvasion.db.storage import GameDatabase
+from spaceinvasion.core.model import PlannedAction
 
 
 def _sample_db_state(*, ts: float = 1000.0, step: int = 6, b1: int = 12, b2_rate: int = 0) -> GameState:
@@ -667,7 +670,7 @@ class TestGameDatabase(unittest.TestCase):
                 db.close()
 
     def test_r9_coord_candidates_arabic_indic_and_direct_summary_sid_redaction(self) -> None:
-        from spaceinvasion.storage import _coord_query_candidates
+        from spaceinvasion.db.storage import _coord_query_candidates
 
         ar = "\u0660\u0662:\u0663\u0668\u0660:\u0660\u0664"
         norm, cands, like_pat = _coord_query_candidates(ar)
@@ -709,7 +712,7 @@ class TestGameDatabase(unittest.TestCase):
                 db.close()
 
     def test_r10_blob_sid_redaction_literal_sid_json_and_planet_history(self) -> None:
-        from spaceinvasion.storage import _sanitize_obj
+        from spaceinvasion.db.storage import _sanitize_obj
 
         s1 = "BLOB_SECRET_11"
         s2 = "JSON_SID_22"
@@ -791,7 +794,11 @@ class TestGameDatabase(unittest.TestCase):
 
     def test_r11_normalized_planet_type_plannedaction_class_mapping_path_and_complex(self) -> None:
         from types import MappingProxyType
-        from spaceinvasion.storage import _is_win_outcome, _json_dumps, _sanitize_obj
+        from spaceinvasion.db.storage import (
+            _is_win_outcome,
+            _json_dumps,
+            _sanitize_obj,
+        )
 
         class _BytesPath:
             def __fspath__(self) -> bytes:
@@ -880,7 +887,7 @@ class TestGameDatabase(unittest.TestCase):
 
     def test_r12_storage_redacts_authorization_json_pw_exceptions_and_broken_pathlike(self) -> None:
         from types import MappingProxyType
-        from spaceinvasion.storage import _json_dumps
+        from spaceinvasion.db.storage import _json_dumps
 
         class _RaiseFspath:
             def __fspath__(self) -> str:
@@ -946,7 +953,11 @@ class TestGameDatabase(unittest.TestCase):
                 db.close()
 
     def test_r13_storage_redacts_compound_secrets_unicode_fastpath_and_quoted_bearer(self) -> None:
-        from spaceinvasion.storage import _json_dumps, _raw_text, _sanitize_text
+        from spaceinvasion.db.storage import (
+            _json_dumps,
+            _raw_text,
+            _sanitize_text,
+        )
 
         cyc = RuntimeError("cyc")
         cyc.args = (10**5000, cyc)
@@ -1007,7 +1018,7 @@ class TestGameDatabase(unittest.TestCase):
 
     def test_r14_storage_sid_delim_url_json_cycle_and_dag20_safety(self) -> None:
         import time
-        from spaceinvasion import storage as st_mod
+        from spaceinvasion.db import storage as st_mod
 
         vectors = (
             '%22password%22%3A%22ST_UE_PW%22',
@@ -1133,8 +1144,11 @@ class TestGameDatabase(unittest.TestCase):
                 db.close()
 
     def test_record_spy_report_rejects_fleet_return_and_startup_repairs_poisoned_free_slots(self) -> None:
-        from spaceinvasion.combat.fleet import GalaxySlot, SpyReport
-        from spaceinvasion.core.state import Resources
+        from spaceinvasion.parsing.models import (
+            GalaxySlot,
+            SpyReport,
+        )
+        from spaceinvasion.core.model import Resources
 
         with tempfile.TemporaryDirectory() as td:
             db_path = Path(td) / "spaceinvasion.db"
@@ -1449,7 +1463,10 @@ class TestGameDatabase(unittest.TestCase):
                 db.close()
 
     def test_debris_amounts_proximity_ranking_and_non_destructive_recycle_filter(self) -> None:
-        from spaceinvasion.combat.fleet import GalaxySlot, InboxMessage
+        from spaceinvasion.parsing.models import (
+            GalaxySlot,
+            InboxMessage,
+        )
 
         with tempfile.TemporaryDirectory(prefix="si_deb_store_") as tmp:
             db = GameDatabase(Path(tmp) / "spaceinvasion.db")
@@ -1529,8 +1546,11 @@ class TestGameDatabase(unittest.TestCase):
                 db.close()
 
     def test_custom_planet_names_transport_dispatches_v014_telemetry_and_max_galaxies(self) -> None:
-        from spaceinvasion.combat.fleet import GalaxySlot, InboxMessage
-        from spaceinvasion.planner.strategy import PlannedAction
+        from spaceinvasion.parsing.models import (
+            GalaxySlot,
+            InboxMessage,
+        )
+        from spaceinvasion.core.model import PlannedAction
 
         base_hr = 1_760_000_000 // 3600 * 3600
         with tempfile.TemporaryDirectory(prefix="si_store_v14_") as tmp:
@@ -1680,7 +1700,7 @@ class TestGameDatabase(unittest.TestCase):
 
     def test_hot_read_caches_telemetry_toggle_blocked_expiry_and_cte_snapshot_parity(self) -> None:
         import time
-        from spaceinvasion.combat.fleet import GalaxySlot
+        from spaceinvasion.parsing.models import GalaxySlot
 
         db = GameDatabase(":memory:")
         try:

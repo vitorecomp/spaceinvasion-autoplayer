@@ -15,8 +15,8 @@ from spaceinvasion.core.catalog import (
     sanitize_json_tree,
 )
 from spaceinvasion.core.config import StrategyConfig, strategy_config_from_dict
+from spaceinvasion.core.model import GameState, PlanetState, PlannedAction
 from spaceinvasion.core.settings import normalize_planner_mode
-from spaceinvasion.core.state import GameState, PlanetState
 from spaceinvasion.planner.eta import attach_action_etas
 from spaceinvasion.planner.graph._heuristics_economy import NodeMeta
 from spaceinvasion.planner.graph._heuristics_edges import build_heuristic_edges
@@ -41,7 +41,6 @@ from spaceinvasion.planner.graph.common import (
     serialize_config,
     slot_key_for_action,
 )
-from spaceinvasion.planner.strategy import PlannedAction
 
 
 def _build_single_heuristic_node(

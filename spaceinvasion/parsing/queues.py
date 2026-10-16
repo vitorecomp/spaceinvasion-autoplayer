@@ -9,7 +9,7 @@ from bs4 import BeautifulSoup, Tag
 
 from spaceinvasion.core.coercion import coerce_bounded_int, coerce_finite_float
 from spaceinvasion.core.coords import normalize_coord_triple
-from spaceinvasion.core.state import BUILDING_ID_BY_NAME, QueueJob
+from spaceinvasion.core.model import BUILDING_ID_BY_NAME, QueueJob
 from spaceinvasion.parsing._common import (
     HMS_TIMER_RE,
     clean_queue_item_name,

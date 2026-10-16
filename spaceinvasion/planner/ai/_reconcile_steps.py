@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from spaceinvasion.core import game_data
+from spaceinvasion.core import catalog as game_data
 from spaceinvasion.core.coercion import coerce_int, coerce_optional_int
 from spaceinvasion.core.model import PlannedAction, Resources, is_building_allowed_on_planet_type, normalize_planet_type
 from spaceinvasion.planner.ai._reconcile_fields import handle_full_planet_fields

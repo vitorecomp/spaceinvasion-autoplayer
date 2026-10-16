@@ -8,8 +8,8 @@ import math
 
 from spaceinvasion.core.catalog import cap_json_int, safe_finite_float, safe_int, safe_key, sanitize_json_tree
 from spaceinvasion.core.config import StrategyConfig, strategy_config_from_dict
+from spaceinvasion.core.model import PlanetState, normalize_planet_type
 from spaceinvasion.core.settings import normalize_planner_mode
-from spaceinvasion.core.state import PlanetState, normalize_planet_type
 
 EDGE_TYPE_PRIORITY: tuple[str, ...] = (
     "prerequisite",

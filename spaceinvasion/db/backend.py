@@ -15,13 +15,16 @@ import subprocess
 import tempfile
 import threading
 import time
-from typing import TYPE_CHECKING, Any, Mapping, Optional
+from typing import Any, Mapping, Optional, Protocol
 from urllib.parse import parse_qs, quote, urlparse, urlunparse
 
-from spaceinvasion.core.logging_utils import redact_sensitive
+from spaceinvasion.core.redaction import redact_sensitive
 
-if TYPE_CHECKING:
-    from spaceinvasion.db.storage import GameDatabase
+
+class _DatabaseLike(Protocol):
+    postgres_url: str
+    _lock: Any
+    _conn: Any
 
 VALID_DB_BACKENDS: frozenset[str] = frozenset({"postgres"})
 DEFAULT_DB_BACKEND: str = "postgres"
@@ -387,20 +390,20 @@ def ensure_postgres_container_ready(
     }
 
 
-def _list_table_columns(db: "GameDatabase", table: str) -> list[str]:
+def _list_table_columns(db: _DatabaseLike, table: str) -> list[str]:
     with db._lock:
         rows = db._conn.execute(f"PRAGMA table_info({table})").fetchall()
         return [str(r[1]) for r in rows]
 
 
-def _existing_tables(db: "GameDatabase") -> set[str]:
+def _existing_tables(db: _DatabaseLike) -> set[str]:
     with db._lock:
         rows = db._conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
         return {str(r[0]) for r in rows}
 
 
 def create_postgres_backup(
-    db: "GameDatabase",
+    db: _DatabaseLike,
     *,
     label: str = "manual",
     backup_dir: Optional[Path] = None,

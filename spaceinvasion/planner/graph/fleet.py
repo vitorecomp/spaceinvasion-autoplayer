@@ -8,7 +8,7 @@ import math
 from spaceinvasion.combat.flight import normalize_coords
 from spaceinvasion.core.catalog import sanitize_json_tree
 from spaceinvasion.core.config import StrategyConfig
-from spaceinvasion.core.state import GameState, PlanetState, is_in_flight_fleet_job
+from spaceinvasion.core.model import GameState, PlanetState, PlannedAction, is_in_flight_fleet_job
 from spaceinvasion.planner.eta import attach_action_etas
 from spaceinvasion.planner.graph._fleet_edges import (
     FleetNode,
@@ -27,7 +27,6 @@ from spaceinvasion.planner.graph.common import (
     kahn_longest_layers,
     res_to_dict,
 )
-from spaceinvasion.planner.strategy import PlannedAction
 
 
 def _format_fleet_node(m: FleetNode, layer: int, in_deg: int, out_deg: int) -> dict[str, object]:

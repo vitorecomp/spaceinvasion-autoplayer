@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 
-from spaceinvasion.core import game_data
+from spaceinvasion.core import catalog as game_data
 from spaceinvasion.core.coercion import coerce_finite_float, coerce_int
 from spaceinvasion.planner.ai._problem_queues import summarize_blast_furnace_entries
 from spaceinvasion.planner.ai._sim_production import ProductionModel

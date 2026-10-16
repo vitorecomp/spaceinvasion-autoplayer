@@ -4,20 +4,30 @@ from __future__ import annotations
 
 import unittest
 
-from spaceinvasion.fleet import (
-    BashTracker,
-    GalaxySlot,
-    SpyReport,
-    extract_galaxy_coords_from_html,
-    extract_galaxy_system_coords,
-    parse_galaxy_system_html,
-    parse_spy_messages_html,
-    parse_spy_report_html,
-    plan_escape_flight,
+from spaceinvasion.combat.cargo import plan_escape_flight
+from spaceinvasion.combat.flight import BashTracker
+from spaceinvasion.combat.simulator import (
     score_raid_target,
     simulate_raid_outcome,
 )
-from spaceinvasion.state import EnergyBalance, PlanetState, Resources
+from spaceinvasion.parsing.galaxy import (
+    extract_galaxy_coords_from_html,
+    extract_galaxy_system_coords,
+    parse_galaxy_system_html,
+)
+from spaceinvasion.parsing.models import (
+    GalaxySlot,
+    SpyReport,
+)
+from spaceinvasion.parsing.spy import (
+    parse_spy_messages_html,
+    parse_spy_report_html,
+)
+from spaceinvasion.core.model import (
+    EnergyBalance,
+    PlanetState,
+    Resources,
+)
 
 
 class TestFleetAndCombat(unittest.TestCase):
@@ -462,7 +472,9 @@ class TestFleetAndCombat(unittest.TestCase):
         self.assertEqual(by_pos[13].status_color, "purple")
 
     def test_clock_timestamps_not_misparsed_coord_normalization_and_combat_none_guards(self) -> None:
-        from spaceinvasion.fleet import _extract_spy_coords, extract_galaxy_system_coords, parse_spy_messages_html
+        from spaceinvasion.parsing._common import extract_spy_coords as _extract_spy_coords
+        from spaceinvasion.parsing.galaxy import extract_galaxy_system_coords
+        from spaceinvasion.parsing.spy import parse_spy_messages_html
 
         msg_html = """
         <div class="msg">
@@ -513,7 +525,8 @@ class TestFleetAndCombat(unittest.TestCase):
         self.assertEqual(r_over.expected_loot.pig_iron, 10_000)
 
     def test_spy_and_galaxy_extractors_exclude_clock_timestamps(self) -> None:
-        from spaceinvasion.fleet import _extract_spy_coords, normalize_coords
+        from spaceinvasion.core.coords import normalize_coords
+        from spaceinvasion.parsing._common import extract_spy_coords as _extract_spy_coords
 
         self.assertEqual(_extract_spy_coords("Report at [12:05:12] Pig iron: 5000"), "")
         self.assertEqual(_extract_spy_coords("Report at 12:05:12 Pig iron: 5000"), "")
@@ -535,7 +548,7 @@ class TestFleetAndCombat(unittest.TestCase):
 
     def test_huge_int_ships_and_research_avoid_overflow_in_combat_cargo_and_escape(self) -> None:
         import math
-        from spaceinvasion.fleet import fleet_cargo_capacity
+        from spaceinvasion.combat.cargo import fleet_cargo_capacity
 
         cap = fleet_cargo_capacity({"s1": 10**400}, miner_spec_level=10**400)
         self.assertGreater(cap, 0)
@@ -572,7 +585,7 @@ class TestFleetAndCombat(unittest.TestCase):
         self.assertIn("~1e", esc.reason)
 
     def test_gap05_non_0m_clocks_excluded_while_coord_context_and_02_38_04_preserved(self) -> None:
-        from spaceinvasion.fleet import _extract_spy_coords
+        from spaceinvasion.parsing._common import extract_spy_coords as _extract_spy_coords
 
         self.assertEqual(extract_galaxy_system_coords("<div>[14:15:12]</div>", default=(7, 77)), (7, 77))
         self.assertEqual(
@@ -626,7 +639,10 @@ class TestFleetAndCombat(unittest.TestCase):
         self.assertEqual(parse_spy_messages_html("<div>[12:15:12] Pig iron: 5000</div>"), ())
 
     def test_r8_normalize_coords_and_galaxy_parsers_reject_arabic_indic_digits(self) -> None:
-        from spaceinvasion.fleet import _parse_coords_distance, normalize_coords
+        from spaceinvasion.core.coords import (
+            coords_distance as _parse_coords_distance,
+            normalize_coords,
+        )
 
         arabic_coords = "\u0660\u0662:\u0663\u0668\u0660:\u0660\u0664"
         self.assertEqual(normalize_coords(arabic_coords), arabic_coords)
@@ -685,19 +701,22 @@ class TestFleetAndCombat(unittest.TestCase):
         self.assertEqual(spy_ar.defense, {})
 
     def test_r10_normalize_coords_bytes_and_frozenset_safe_key(self) -> None:
-        from spaceinvasion import fleet
-        from spaceinvasion.fleet import SpyReport, fleet_cargo_capacity, normalize_coords, simulate_raid_outcome
-        from spaceinvasion.state import Resources
+        from spaceinvasion.combat.cargo import _safe_fleet_int, fleet_cargo_capacity
+        from spaceinvasion.combat.simulator import simulate_raid_outcome
+        from spaceinvasion.core.coords import normalize_coords
+        from spaceinvasion.core.model import Resources
+        from spaceinvasion.parsing._common import valid_galaxy, valid_system
+        from spaceinvasion.parsing.models import SpyReport
 
         self.assertEqual(normalize_coords(b"2:380:4"), "02:380:04")  # type: ignore[arg-type]
         norm_huge = normalize_coords(10**5000)  # type: ignore[arg-type]
         self.assertIsInstance(norm_huge, str)
         self.assertLessEqual(len(norm_huge), 250)
         self.assertIsInstance(normalize_coords((10**5000, "x")), str)  # type: ignore[arg-type]
-        self.assertEqual(fleet._safe_fleet_int(b"25"), 25)
-        self.assertEqual(fleet._safe_fleet_int(frozenset({1})), 0)
-        self.assertFalse(fleet._valid_gal(frozenset({1})))
-        self.assertFalse(fleet._valid_sys(frozenset({1})))
+        self.assertEqual(_safe_fleet_int(b"25"), 25)
+        self.assertEqual(_safe_fleet_int(frozenset({1})), 0)
+        self.assertIsNone(valid_galaxy(frozenset({1})))
+        self.assertIsNone(valid_system(frozenset({1})))
 
         cap = fleet_cargo_capacity({10**5000: 5, "s2": 2})  # type: ignore[dict-item]
         self.assertGreater(cap, 0)
@@ -713,7 +732,8 @@ class TestFleetAndCombat(unittest.TestCase):
 
     def test_r12_normalize_coords_resists_broken_fspath_and_raise_str_obj(self) -> None:
         from pathlib import Path
-        from spaceinvasion import fleet as flt
+        from spaceinvasion.core.coords import normalize_coords
+        from spaceinvasion.parsing._common import valid_galaxy, valid_system
 
         class _RaiseFspath:
             def __fspath__(self) -> str:
@@ -730,14 +750,14 @@ class TestFleetAndCombat(unittest.TestCase):
             def __repr__(self) -> str:
                 raise RuntimeError("repr boom")
 
-        self.assertIsInstance(flt.normalize_coords(_RaiseFspath()), str)
-        self.assertIsInstance(flt.normalize_coords(_IntPath()), str)
-        self.assertIsInstance(flt.normalize_coords(_RaiseStrRepr()), str)
-        self.assertEqual(flt.normalize_coords(Path("2:380:12")), "02:380:12")
-        self.assertFalse(flt._valid_gal(_RaiseFspath()))
-        self.assertFalse(flt._valid_gal(_IntPath()))
-        self.assertFalse(flt._valid_sys(_RaiseFspath()))
-        self.assertFalse(flt._valid_sys(_IntPath()))
+        self.assertIsInstance(normalize_coords(_RaiseFspath()), str)  # type: ignore[arg-type]
+        self.assertIsInstance(normalize_coords(_IntPath()), str)  # type: ignore[arg-type]
+        self.assertIsInstance(normalize_coords(_RaiseStrRepr()), str)  # type: ignore[arg-type]
+        self.assertEqual(normalize_coords(Path("2:380:12")), "02:380:12")  # type: ignore[arg-type]
+        self.assertIsNone(valid_galaxy(_RaiseFspath()))
+        self.assertIsNone(valid_galaxy(_IntPath()))
+        self.assertIsNone(valid_system(_RaiseFspath()))
+        self.assertIsNone(valid_system(_IntPath()))
 
         planet = PlanetState(
             planet_id=1,
@@ -832,7 +852,7 @@ class TestFleetAndCombat(unittest.TestCase):
         )
 
     def test_r14_parse_galaxy_system_html_resists_huge_10e5000_coords(self) -> None:
-        from spaceinvasion.fleet import parse_galaxy_system_html
+        from spaceinvasion.parsing.galaxy import parse_galaxy_system_html
 
         html = '<table><tr><td>1</td><td>Planet</td><td>User</td><td></td></tr></table>'
         huge = 10**5000
@@ -851,7 +871,10 @@ class TestFleetAndCombat(unittest.TestCase):
             self.assertEqual(entries_bad[0].coords, "01:001:01")
 
     def test_2d_graphical_galaxy_planet_hit_colors_spacia_and_si_tpl_coords(self) -> None:
-        from spaceinvasion.fleet import extract_galaxy_system_coords, parse_galaxy_system_html
+        from spaceinvasion.parsing.galaxy import (
+            extract_galaxy_system_coords,
+            parse_galaxy_system_html,
+        )
 
         html_2d = """
         <html><body data-galaxy="1">
@@ -921,8 +944,12 @@ class TestFleetAndCombat(unittest.TestCase):
         self.assertEqual(edge_slots[9].status_color, "white")
 
     def test_bash_protection_banner_parser_block_override_and_german_sicherheitspruefung(self) -> None:
-        from spaceinvasion.auth import AntiBotChallengeError, detect_antibot_challenge
-        from spaceinvasion.fleet import BashTracker, parse_send_fleet_mission_block
+        from spaceinvasion.session.auth import (
+            AntiBotChallengeError,
+            detect_antibot_challenge,
+        )
+        from spaceinvasion.combat.flight import BashTracker
+        from spaceinvasion.parsing.fleet_page import parse_send_fleet_mission_block
 
         bash_html = """
         <html><body>
@@ -992,7 +1019,7 @@ class TestFleetAndCombat(unittest.TestCase):
 
         # German Cloudflare modal ("Sicherheitsprüfung") is detected by auth.py and raises in client.py
         from unittest.mock import MagicMock
-        from spaceinvasion.client import GameBrowserClient
+        from spaceinvasion.session.client import GameBrowserClient
 
         modal_html = """
         <div class="modal">
@@ -1009,11 +1036,11 @@ class TestFleetAndCombat(unittest.TestCase):
             browser_client._check_page_guards(modal_html)
 
     def test_own_planet_header_stripping_and_multirow_checkbox_inbox_parser(self) -> None:
-        from spaceinvasion.fleet import (
+        from spaceinvasion.parsing.inbox import (
             extract_message_folder_links,
             parse_inbox_messages_html,
-            parse_spy_messages_html,
         )
+        from spaceinvasion.parsing.spy import parse_spy_messages_html
 
         own_header_only_html = """
         <html><body>
@@ -1125,11 +1152,9 @@ class TestFleetAndCombat(unittest.TestCase):
             self.assertNotIn("SECRET999", m.raw_html)
 
     def test_real_retro_recycle_4res_fleet_return_battle_dot_thousands_embedded_spy_json_and_colony_grades(self) -> None:
-        from spaceinvasion.fleet import (
-            grade_colony_candidate,
-            parse_inbox_messages_html,
-            parse_spy_report_html,
-        )
+        from spaceinvasion.combat.colonies import grade_colony_candidate
+        from spaceinvasion.parsing.inbox import parse_inbox_messages_html
+        from spaceinvasion.parsing.spy import parse_spy_report_html
 
         retro_inbox_html = """
         <html><body>
@@ -1236,9 +1261,9 @@ class TestFleetAndCombat(unittest.TestCase):
         self.assertIn("Prime Large-Field Belt", g_strat["orbital_zone"])
 
     def test_fleet_return_with_own_header_never_parsed_as_spacia_spy_report(self) -> None:
-        from spaceinvasion.fleet import (
+        from spaceinvasion.parsing.inbox import parse_inbox_messages_html
+        from spaceinvasion.parsing.spy import (
             is_non_spy_notice_text,
-            parse_inbox_messages_html,
             parse_spy_messages_html,
         )
 
@@ -1274,7 +1299,7 @@ class TestFleetAndCombat(unittest.TestCase):
         self.assertTrue(is_non_spy_notice_text(msgs[0].body_text))
 
     def test_extract_galaxy_system_coords_prefers_live_json_element_over_stale_ajax_dom(self) -> None:
-        from spaceinvasion.fleet import extract_galaxy_system_coords
+        from spaceinvasion.parsing.galaxy import extract_galaxy_system_coords
 
         # After an in-place 2D Galaxy AJAX `window.si.navigate(2, 387)`, `<input value="129">`,
         # inline `SI_TPL.galaxy = {galaxy: 2, sun: 129}`, and `location.href` remain frozen on
@@ -1295,14 +1320,16 @@ class TestFleetAndCombat(unittest.TestCase):
         self.assertEqual((gal, sys_n), (2, 387))
 
     def test_flight_time_resource_per_hour_and_transport_packing(self) -> None:
-        from spaceinvasion.combat.fleet import (
-            estimate_fleet_flight_seconds,
-            estimate_resource_per_hour,
+        from spaceinvasion.combat.cargo import (
             extract_target_debris_resources,
             fleet_cargo_capacity,
-            fleet_effective_speed,
             pack_transport_cargo,
             select_transport_ships,
+        )
+        from spaceinvasion.combat.flight import (
+            estimate_fleet_flight_seconds,
+            estimate_resource_per_hour,
+            fleet_effective_speed,
             ship_effective_speed,
         )
 
@@ -1362,9 +1389,9 @@ class TestFleetAndCombat(unittest.TestCase):
         self.assertLessEqual(packed.spice, 1_500)
 
     def test_retro_rubblefield1_beats_ghost_rubblefield_and_station_not_misclassified_as_recycle(self) -> None:
-        from spaceinvasion.combat.fleet import (
+        from spaceinvasion.parsing.galaxy import parse_galaxy_system_html
+        from spaceinvasion.parsing.inbox import (
             is_non_recycle_fleet_notice_text,
-            parse_galaxy_system_html,
             parse_inbox_messages_html,
         )
 
@@ -1447,7 +1474,10 @@ class TestFleetAndCombat(unittest.TestCase):
         self.assertFalse(is_non_recycle_fleet_notice_text(msgs["9002"].body_text, msgs["9002"].subject))
 
     def test_pack_and_top_up_transport_cargo_maximizes_fleet_capacity_within_bounds(self) -> None:
-        from spaceinvasion.combat.fleet import pack_transport_cargo, top_up_transport_cargo
+        from spaceinvasion.combat.cargo import (
+            pack_transport_cargo,
+            top_up_transport_cargo,
+        )
 
         need = Resources(pig_iron=5_000, metal=3_000, kryptonite=0, spice=0)
         surplus = Resources(pig_iron=40_000, metal=30_000, kryptonite=25_000, spice=10_000)

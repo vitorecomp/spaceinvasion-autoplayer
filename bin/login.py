@@ -26,7 +26,7 @@ from spaceinvasion.runtime.cli_support import maybe_reexec_venv, safe_cli_str  #
 
 maybe_reexec_venv(_REPO_ROOT, skip=os.environ.get("SPACEINVASION_NO_REEXEC") == "1")
 
-from spaceinvasion.core import game_data # noqa: E402
+from spaceinvasion.core import catalog as game_data # noqa: E402
 from spaceinvasion.session.auth import (  # noqa: E402
     DEFAULT_SESSIONS_DIR,
     SpaceInvasionAuthError,

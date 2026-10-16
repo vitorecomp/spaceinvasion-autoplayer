@@ -6,9 +6,9 @@ from dataclasses import asdict, replace
 import unittest
 from unittest import mock
 
-from spaceinvasion.config import StrategyConfig
-from spaceinvasion.ranking import compute_action_eta
-from spaceinvasion.state import (
+from spaceinvasion.core.config import StrategyConfig
+from spaceinvasion.planner.eta import compute_action_eta
+from spaceinvasion.core.model import (
     BuildingOffer,
     EnergyBalance,
     FleetAlert,
@@ -21,7 +21,8 @@ from spaceinvasion.state import (
     TutorialTask,
     UnitOffer,
 )
-from spaceinvasion.strategy import (
+from spaceinvasion.core.model import PlannedAction
+from spaceinvasion.planner.heuristics import (
     BLAST_FURNACE,
     FUSION_PLANT,
     KRYPTONITE_MINE,
@@ -31,7 +32,6 @@ from spaceinvasion.strategy import (
     SPICE_MINE,
     THERMOSOLAR_PLANT,
     WEAPONS_FACTORY,
-    PlannedAction,
     plan_actions,
 )
 
@@ -772,7 +772,7 @@ class TestStrategyPlanner(unittest.TestCase):
         self.assertEqual(acts_ga, acts_pri)
 
     def test_status_color_omitted_active_asteroid_vs_commander_slots_and_non_finite_fields(self) -> None:
-        from spaceinvasion.strategy import _max_build_slots
+        from spaceinvasion.planner.heuristics._queues import _max_build_slots
 
         p_ast = PlanetState(
             planet_id=1,
@@ -967,7 +967,7 @@ class TestStrategyPlanner(unittest.TestCase):
             self.assertTrue(p1_wh, f"Expected P1 warehouse action for huge={huge.bit_length()}b")
 
     def test_r8_plan_actions_allow_raids_survives_non_ascii_superscript_coords(self) -> None:
-        from spaceinvasion.state import game_state_from_dict
+        from spaceinvasion.core.model import game_state_from_dict
 
         gs = game_state_from_dict(
             {
@@ -1069,13 +1069,22 @@ class TestStrategyPlanner(unittest.TestCase):
         self.assertEqual([a for a in acts_s9 if a.kind == "BUILD"], [])
 
     def test_r10_zero_free_fields_blocks_power_even_with_deficit_and_raid_case_normalization(self) -> None:
-        from spaceinvasion import strategy as strat
-        from spaceinvasion.state import TutorialStatus, TutorialTask
+        from spaceinvasion.core.model import (
+            TutorialStatus,
+            TutorialTask,
+        )
+        from spaceinvasion.planner.heuristics._common import (
+            _is_building_allowed_on_planet,
+            _norm_planet_type,
+            _safe_strategy_float,
+            _safe_strategy_int,
+        )
+        from spaceinvasion.planner.heuristics._queues import _max_build_slots
 
-        self.assertEqual(strat._safe_strategy_int(b"77"), 77)
-        self.assertEqual(strat._safe_strategy_int("\u0667\u0667"), 0)
-        self.assertEqual(strat._safe_strategy_float(b"1.5"), 1.5)
-        self.assertEqual(strat._safe_strategy_float("\u0661.\u0665"), 0.0)
+        self.assertEqual(_safe_strategy_int(b"77"), 77)
+        self.assertEqual(_safe_strategy_int("\u0667\u0667"), 0)
+        self.assertEqual(_safe_strategy_float(b"1.5"), 1.5)
+        self.assertEqual(_safe_strategy_float("\u0661.\u0665"), 0.0)
 
         # 1. Zero free fields + severe energy deficit + tutorial b5 task must NOT emit BUILD
         full_tutorial_p = PlanetState(
@@ -1160,8 +1169,8 @@ class TestStrategyPlanner(unittest.TestCase):
             building_offers=(BuildingOffer(1, "Pig iron mine", 5, 6, Resources(100, 50, 0, 0), True, "?b=1"),),
             ship_offers=(UnitOffer("ship", SOLAR_CELLS_ID, "Solar cells", 0, Resources(0, 2000, 200, 400), True, "ship[9]"),),
         )
-        self.assertEqual(strat._norm_planet_type(raid_case_p), "raid")
-        self.assertFalse(strat._is_building_allowed_on_planet(raid_case_p, 1, raid_case_p.building_offers))
+        self.assertEqual(_norm_planet_type(raid_case_p), "raid")
+        self.assertFalse(_is_building_allowed_on_planet(raid_case_p, 1, raid_case_p.building_offers))
         raid_st = GameState(31, 1, "u", 1_700_000_000.0, (raid_case_p,), active_planet_id=103)
         ast_case_p = PlanetState(
             planet_id=104,
@@ -1175,8 +1184,8 @@ class TestStrategyPlanner(unittest.TestCase):
             storage=Resources(200_000, 200_000, 200_000, 200_000),
             energy=EnergyBalance(50, 10),
         )
-        self.assertEqual(strat._norm_planet_type(ast_case_p), "asteroid")
-        self.assertEqual(strat._max_build_slots(ast_case_p, raid_st), 1)
+        self.assertEqual(_norm_planet_type(ast_case_p), "asteroid")
+        self.assertEqual(_max_build_slots(ast_case_p, raid_st), 1)
         acts_rc = plan_actions(
             raid_st,
             config=StrategyConfig(planner_mode="priority", allow_shipyard=True),
@@ -1185,7 +1194,7 @@ class TestStrategyPlanner(unittest.TestCase):
 
     def test_r11_research_offer_map_bytes_huge_and_tuple_offers_b8_asteroid(self) -> None:
         import json
-        import spaceinvasion.strategy as strat
+        import spaceinvasion.planner.heuristics as strat
 
         ast_p = PlanetState(
             planet_id=204,
@@ -1223,24 +1232,30 @@ class TestStrategyPlanner(unittest.TestCase):
                 ResearchOffer(2, b"r2", "Energy technology", 0, 1, Resources(0, 400, 800, 400), True, "ok", "?r=2"),  # type: ignore[arg-type]
             ),
         )
-        rmap = strat._research_offer_map(st)
+        from spaceinvasion.planner.heuristics._actions import _make_build_action
+        from spaceinvasion.planner.heuristics._common import (
+            _is_building_allowed_on_planet,
+            _research_offer_map,
+        )
+
+        rmap = _research_offer_map(st)
         self.assertIn("r2", rmap)
         json.dumps({k: v.name for k, v in rmap.items()}, allow_nan=False)
 
         b8_offer = BuildingOffer(8, "Research lab", 0, 1, Resources(0, 800, 0, 300), True, "?b=8")
-        self.assertTrue(strat._is_building_allowed_on_planet(ast_p, 8, (b8_offer,)))
-        self.assertFalse(strat._is_building_allowed_on_planet(ast_p, 8, ()))
-        self.assertFalse(strat._is_building_allowed_on_planet(ast_p, 1, ()))
-        self.assertTrue(strat._is_building_allowed_on_planet(ast_p, 19, ()))
-        self.assertFalse(strat._is_building_allowed_on_planet(norm_p, 19, ()))
+        self.assertTrue(_is_building_allowed_on_planet(ast_p, 8, (b8_offer,)))
+        self.assertFalse(_is_building_allowed_on_planet(ast_p, 8, ()))
+        self.assertFalse(_is_building_allowed_on_planet(ast_p, 1, ()))
+        self.assertTrue(_is_building_allowed_on_planet(ast_p, 19, ()))
+        self.assertFalse(_is_building_allowed_on_planet(norm_p, 19, ()))
         b1_offer = BuildingOffer(1, "Pig iron mine", 0, 1, Resources(78, 0, 25, 0), True, "?b=1")
-        forged_act = strat._make_build_action("P2", ast_p, 1, "Pig iron mine", "Mine", {1: b1_offer})
+        forged_act = _make_build_action("P2", ast_p, 1, "Pig iron mine", "Mine", {1: b1_offer})
         self.assertFalse(forged_act.executable_now)
         self.assertIsNone(forged_act.action_href)
         self.assertIn("not permitted on asteroid", forged_act.reason)
 
     def test_r12_priority_raid_colony_blocks_tutorial_research_ships_and_huge_reward_text(self) -> None:
-        from spaceinvasion import strategy as strat
+        from spaceinvasion.planner import heuristics as strat
 
         class _RaiseFspath:
             def __fspath__(self) -> str:
@@ -1305,15 +1320,18 @@ class TestStrategyPlanner(unittest.TestCase):
             tutorial=tut_mix,
             research_offers=(r_offer,),
         )
+        from spaceinvasion.planner.heuristics._actions import _make_research_action
+        from spaceinvasion.planner.heuristics._tutorial_fleet import _plan_tutorial_fleet_milestones
+
         cfg = StrategyConfig(allow_research=True, allow_shipyard=True, allow_multi_planet=False)
         tut_acts = plan_actions(st_raid, config=cfg)
-        fleet_acts = strat._plan_tutorial_fleet_milestones(st_raid, raid_p, cfg)
+        fleet_acts = _plan_tutorial_fleet_milestones(st_raid, raid_p, cfg)
         self.assertFalse(any(a.kind == "RESEARCH" for a in tut_acts))
         self.assertFalse(any(a.kind == "BUILD" and a.target_id == 1 for a in tut_acts))
         self.assertFalse(any(a.kind == "BUILD_SHIP" and a.planet_id == 501 for a in tut_acts))
         self.assertEqual(fleet_acts, [])
 
-        forged_r_raid = strat._make_research_action(
+        forged_r_raid = _make_research_action(
             "P2", raid_p, st_raid, "r1", "Mining technology", {"r1": r_offer}, False, allow_live=True
         )
         self.assertFalse(forged_r_raid.executable_now)
@@ -1342,7 +1360,7 @@ class TestStrategyPlanner(unittest.TestCase):
             tutorial=tut_mix,
             research_offers=(r_offer,),
         )
-        forged_r_ast = strat._make_research_action(
+        forged_r_ast = _make_research_action(
             "P2", ast_no_lab, st_ast, "r1", "Mining technology", {"r1": r_offer}, False, allow_live=True
         )
         self.assertFalse(forged_r_ast.executable_now)
@@ -1371,7 +1389,7 @@ class TestStrategyPlanner(unittest.TestCase):
             self.assertIsInstance(claim_acts[0].reason, str)
 
     def test_r13_research_ship_b8_b9_exec_gates_and_raid_asteroid_tutorial_parity(self) -> None:
-        from spaceinvasion.state import QueueJob
+        from spaceinvasion.core.model import QueueJob
 
         # 1. Normal planet with b8=0 + stale ResearchOffer must NOT mark RESEARCH executable_now=True
         p_no_b8_b9 = PlanetState(
@@ -1553,7 +1571,7 @@ class TestStrategyPlanner(unittest.TestCase):
         self.assertFalse(any(a.kind == "RESEARCH" and a.executable_now for a in multi_acts))
 
     def test_r14_stale_queued_forged_build_offers_tutorial_ship_delegation_and_shipyard_aliases(self) -> None:
-        from spaceinvasion.state import (
+        from spaceinvasion.core.model import (
             BuildingOffer,
             EnergyBalance,
             GameState,
@@ -1563,7 +1581,7 @@ class TestStrategyPlanner(unittest.TestCase):
             TutorialTask,
             UnitOffer,
         )
-        from spaceinvasion.strategy import _make_build_action
+        from spaceinvasion.planner.heuristics._actions import _make_build_action
 
         # 1. Stale offer_tgt != nxt_lvl (e.g. queued building card shows +1 level) falls back to nxt_lvl WAIT_RESOURCES non-executable
         home_p = PlanetState(
@@ -1827,7 +1845,7 @@ class TestStrategyPlanner(unittest.TestCase):
         self.assertTrue(any(a.kind == "SPY" and a.executable_now for a in acts_spy))
 
     def test_tutorial_steps_6_to_11_end_to_end_progression_without_stalling(self) -> None:
-        from spaceinvasion.state import QueueJob
+        from spaceinvasion.core.model import QueueJob
 
         # Step 6a: Raid fleet in flight (12x s4, 6x s1 -> 02:383:02) holds duplicate ATTACK and non-tutorial ships
         tut6_active = TutorialStatus(
@@ -2030,7 +2048,9 @@ class TestStrategyPlanner(unittest.TestCase):
         self.assertIn(9, b_ids_ordered)  # Unlocks Weapons factory toward L4 for Recycler/Colony ship
         self.assertIn(12, b_ids_ordered)  # Expands Metal warehouse for storage-capped Spice mine!
         # Compare raw bucket ordering in _plan_tutorial_actions: Spice mine (4) before non-urgent Fusion (5)
-        from spaceinvasion.strategy import _effective_building_levels_and_energy, _offer_map, _plan_tutorial_actions
+        from spaceinvasion.planner.heuristics._common import _offer_map
+        from spaceinvasion.planner.heuristics._queues import _effective_building_levels_and_energy
+        from spaceinvasion.planner.heuristics.tutorial import _plan_tutorial_actions
 
         eff_late, proj_late = _effective_building_levels_and_energy(st_late, p_late, is_active_planet=True)
         raw_tut_b = _plan_tutorial_actions(
@@ -2184,7 +2204,7 @@ class TestStrategyPlanner(unittest.TestCase):
         self.assertTrue(any(a.planet_id == 12478 and a.kind == "BUILD_SHIP" and a.target_id == 9 and a.executable_now for a in acts_mixed))
 
     def test_manual_queue_merge_priority_reorder_resource_reservation_and_auto_satisfaction(self) -> None:
-        from spaceinvasion.strategy import merge_manual_queue_actions
+        from spaceinvasion.planner.heuristics import merge_manual_queue_actions
 
         planet = PlanetState(
             planet_id=12476,
@@ -2332,7 +2352,7 @@ class TestStrategyPlanner(unittest.TestCase):
         self.assertFalse(any(a.kind == "THROTTLE_BUILDING" and a.target_id == 2 and a.target_level == 100 for a in paused_acts))
 
     def test_pinned_metal_item_reviews_blast_furnace_based_on_queue_position(self) -> None:
-        from spaceinvasion.strategy import merge_manual_queue_actions
+        from spaceinvasion.planner.heuristics import merge_manual_queue_actions
 
         # Colony with Blast furnace (b2=8) currently PAUSED at 0%, low Pig iron (2,000) & low Metal (100)
         p_base = PlanetState(
@@ -2452,12 +2472,12 @@ class TestStrategyPlanner(unittest.TestCase):
         self.assertEqual(merged_reordered[1].manual_queue_id, 12)
 
     def test_blast_furnace_never_paused_while_p1_item_lacks_metal(self) -> None:
-        from spaceinvasion.planner.strategy import (
-            PlannedAction,
-            _plan_blast_furnace_throttle,
+        from spaceinvasion.core.model import PlannedAction
+        from spaceinvasion.planner.heuristics import (
             merge_manual_queue_actions,
             p1_metal_shortfall,
         )
+        from spaceinvasion.planner.heuristics.blast_furnace import _plan_blast_furnace_throttle
 
         # Live repro: b2 L21, Metal 15,854 / 800k, Pig 186,897; energy +342 net (b2 @100% costs 790).
         planet = PlanetState(
@@ -2585,7 +2605,11 @@ class TestStrategyPlanner(unittest.TestCase):
         )
 
     def test_fadata_dedup_spy_first_closest_distance_reserved_slots_designated_planet_and_colony_quota_probing(self) -> None:
-        from spaceinvasion.core.state import QueueJob, is_in_flight_fleet_job, parse_home_metadata
+        from spaceinvasion.core.model import (
+            QueueJob,
+            is_in_flight_fleet_job,
+        )
+        from spaceinvasion.parsing.overview import parse_home_metadata
 
         # 1. faData 2-leg deduplication: 4 outbound + 4 scheduled future returns + 1 genuine returning flight = 5 in-flight
         fadata_html = """
@@ -2923,7 +2947,7 @@ class TestStrategyPlanner(unittest.TestCase):
     def test_plan_interplanet_transports_shortfall_bootstrap_and_guards(self) -> None:
         """Verify inter-planet TRANSPORT shortfall supply, young-colony bootstrap, and safety guards."""
         from dataclasses import replace
-        from spaceinvasion.planner.strategy import plan_interplanet_transports
+        from spaceinvasion.planner.heuristics import plan_interplanet_transports
 
         donor = PlanetState(
             planet_id=201,
@@ -3030,7 +3054,8 @@ class TestStrategyPlanner(unittest.TestCase):
     def test_remote_colony_stale_resource_offer_unlocks_parallel_builds(self) -> None:
         """Non-active colonies with stale 'Not enough resources' cached offers must build in parallel
         with the active planet (in both priority and ga_nn), while genuine non-resource blocks stay blocked."""
-        from spaceinvasion.planner.strategy import _make_build_action, merge_manual_queue_actions
+        from spaceinvasion.planner.heuristics import merge_manual_queue_actions
+        from spaceinvasion.planner.heuristics._actions import _make_build_action
 
         active_p = PlanetState(
             planet_id=12476,
@@ -3184,8 +3209,8 @@ class TestStrategyPlanner(unittest.TestCase):
         """Verify strictly per-planet 1+b10 slots, centralized initial b9 deferral, zero-prereq colony b10,
         one-way STATION deployment (Tier #3.5), multi-planet parallel ATTACK/RECYCLE, and smart rec_qty sizing."""
         from dataclasses import replace
-        from spaceinvasion.combat.fleet import parse_station_ships_spec
-        from spaceinvasion.planner.strategy import plan_interplanet_stationing
+        from spaceinvasion.parsing.fleet_page import parse_station_ships_spec
+        from spaceinvasion.planner.heuristics import plan_interplanet_stationing
 
         # 1. Centralized initial Weapons factory (b9) deferral + proactive zero-prereq Fleet base (b10) on young colonies
         hub = PlanetState(
@@ -3447,7 +3472,7 @@ class TestStrategyPlanner(unittest.TestCase):
         self.assertEqual(single_rec.target_level, 40)
 
     def test_compute_spare_ship_budget_and_filter_with_urgent_zero_count_replacements(self) -> None:
-        from spaceinvasion.planner.strategy import (
+        from spaceinvasion.planner.heuristics import (
             compute_spare_ship_budget,
             filter_shipyard_actions_by_spare_budget,
         )
@@ -3581,7 +3606,7 @@ class TestStrategyPlanner(unittest.TestCase):
         )
 
     def test_interplanet_transport_routes_surplus_to_ai_planner_priority_target(self) -> None:
-        from spaceinvasion.planner.strategy import (
+        from spaceinvasion.planner.heuristics import (
             plan_fleet_and_attack_actions,
             plan_interplanet_transports,
         )
@@ -3672,7 +3697,7 @@ class TestStrategyPlanner(unittest.TestCase):
         self.assertFalse(any(a.kind == "DEMOLISH_BUILDING" for a in fleet_acts))
 
     def test_in_flight_recycle_dedup_normalizes_unpadded_coords_and_caps_cross_galaxy_trips(self) -> None:
-        from spaceinvasion.core.state import extract_in_flight_recycle_coords
+        from spaceinvasion.core.model import extract_in_flight_recycle_coords
 
         p_rec = PlanetState(
             planet_id=701,
@@ -3744,7 +3769,7 @@ class TestStrategyPlanner(unittest.TestCase):
         self.assertFalse(any("06:180:13" in t for t in rec_targets), msg=f"Cross-galaxy >12h 06:180:13 in {rec_targets}")
 
     def test_ai_planner_blast_furnace_throttles_empire_and_safety_rules(self) -> None:
-        from spaceinvasion.planner.strategy import plan_ai_blast_furnace_throttles
+        from spaceinvasion.planner.heuristics import plan_ai_blast_furnace_throttles
 
         p_krypt = PlanetState(
             planet_id=901,
@@ -4120,12 +4145,12 @@ class TestStrategyPlanner(unittest.TestCase):
         )
 
     def test_fleet_research_auto_unlock_explicit_targets_spare_budget_and_slot_guards(self) -> None:
-        from spaceinvasion.planner.strategy import (
-            PlannedAction,
-            _plan_fleet_research_actions,
+        from spaceinvasion.core.model import PlannedAction
+        from spaceinvasion.planner.heuristics import (
             filter_shipyard_actions_by_spare_budget,
             plan_fleet_and_attack_actions,
         )
+        from spaceinvasion.planner.heuristics._shipyard_research import _plan_fleet_research_actions
 
         # Homeworld with b8=8, b9=5 (Starcruiser b9=5 ready, Battleship b9=8 NOT ready)
         # Researches: r2=7 (meets Shield r9 req r2>=6), r3=6 (needs r3=8 -> r6=4 for Battleship), r9=0, r10=0
@@ -4318,10 +4343,10 @@ class TestStrategyPlanner(unittest.TestCase):
         self.assertEqual(_plan_fleet_research_actions(st, replace(cfg, allow_research=False)), [])
 
     def test_per_planet_building_queues_do_not_block_other_colonies_in_strategy_and_manual_queue(self) -> None:
-        from spaceinvasion.planner.strategy import (
+        from spaceinvasion.planner.heuristics import merge_manual_queue_actions
+        from spaceinvasion.planner.heuristics._queues import (
             _count_planet_building_queues,
             _queued_building_counts,
-            merge_manual_queue_actions,
         )
 
         now_ts = 1_700_010_000.0
@@ -4442,7 +4467,7 @@ class TestStrategyPlanner(unittest.TestCase):
 
     def test_plan_interplanet_transports_max_cargo_top_up_and_pass1_fairness(self) -> None:
         """Pass 1 satisfies every colony's requested shortfall first; Pass 2 tops up each trip to max usable fleet cargo."""
-        from spaceinvasion.planner.strategy import plan_interplanet_transports
+        from spaceinvasion.planner.heuristics import plan_interplanet_transports
 
         # Donor has 2 Large Transports (2 * 25,000 = 50,000 raw cap) and huge spare resources
         donor = PlanetState(
@@ -4753,26 +4778,26 @@ class TestStrategyPlanner(unittest.TestCase):
         self.assertFalse(any(a.kind == "RECYCLE" for a in acts_block_rec))
 
         # 3. Multi-planet fallback: threshold rejects p_far (80 systems away) but allows p_near (same system)
-        from spaceinvasion.combat import fleet as _fleet
+        from spaceinvasion.combat.flight import estimate_fleet_flight_seconds, estimate_resource_per_hour
 
-        far_atk_s = _fleet.estimate_fleet_flight_seconds(
+        far_atk_s = estimate_fleet_flight_seconds(
             p_far.coords, "02:380:08", {"s2": 10, "s7": 15}, researches=st_far_only.researches, round_trip=True
         )
-        near_atk_s = _fleet.estimate_fleet_flight_seconds(
+        near_atk_s = estimate_fleet_flight_seconds(
             p_near.coords, "02:380:08", {"s2": 10, "s7": 15}, researches=st_far_only.researches, round_trip=True
         )
-        far_atk_rph = _fleet.estimate_resource_per_hour(40_000, far_atk_s)
-        near_atk_rph = _fleet.estimate_resource_per_hour(40_000, near_atk_s)
+        far_atk_rph = estimate_resource_per_hour(40_000, far_atk_s)
+        near_atk_rph = estimate_resource_per_hour(40_000, near_atk_s)
         self.assertGreater(near_atk_rph, far_atk_rph)
 
-        far_rec_s = _fleet.estimate_fleet_flight_seconds(
+        far_rec_s = estimate_fleet_flight_seconds(
             p_far.coords, "02:380:09", {"s11": 5}, researches=st_far_only.researches, round_trip=True
         )
-        near_rec_s = _fleet.estimate_fleet_flight_seconds(
+        near_rec_s = estimate_fleet_flight_seconds(
             p_near.coords, "02:380:09", {"s11": 5}, researches=st_far_only.researches, round_trip=True
         )
-        far_rec_rph = _fleet.estimate_resource_per_hour(50_000, far_rec_s)
-        near_rec_rph = _fleet.estimate_resource_per_hour(50_000, near_rec_s)
+        far_rec_rph = estimate_resource_per_hour(50_000, far_rec_s)
+        near_rec_rph = estimate_resource_per_hour(50_000, near_rec_s)
         self.assertGreater(near_rec_rph, far_rec_rph)
 
         mid_atk_thr = (far_atk_rph + near_atk_rph) / 2.0
@@ -4900,7 +4925,7 @@ class TestAdaptiveBlastFurnace(unittest.TestCase):
     """Plan v2 Step 1: per-colony (+ donor) Blast furnace control behind `ai_adaptive_execution`."""
 
     def setUp(self) -> None:
-        from spaceinvasion.planner.strategy import plan_ai_blast_furnace_throttles
+        from spaceinvasion.planner.heuristics import plan_ai_blast_furnace_throttles
 
         self.plan = plan_ai_blast_furnace_throttles
         self.base_kwargs = dict(
@@ -4983,7 +5008,7 @@ class TestAdaptiveBlastFurnace(unittest.TestCase):
         self.assertEqual(self.plan(_state((p_off,), queues=(flight,)), ai, [], self.cfg, now_ts=5000.0), [])
 
     def test_busy_queue_delays_turn_on_but_never_flaps_running_furnace(self) -> None:
-        from spaceinvasion.core import game_data
+        from spaceinvasion.core import catalog as game_data
 
         p_off = _colony(901, "02:380:04", metal=10_000, b2_pct=0)
         ai = [_ai_step(901, "02:380:04", 11_000)]  # 1,000 Metal gap
@@ -5093,7 +5118,7 @@ class TestAdaptiveInFlightHulls(unittest.TestCase):
         return QueueJob(category="fleet", name=name, remaining_seconds=600.0, origin_coords=origin, detail=detail)
 
     def _ships(self, st, cfg):
-        from spaceinvasion.planner.strategy import _plan_planet_shipyard_targets
+        from spaceinvasion.planner.heuristics._shipyard_targets import _plan_planet_shipyard_targets
 
         return [a for a in _plan_planet_shipyard_targets(st, st.planets[0], self.offers, cfg) if a.target_id == 1]
 
@@ -5134,14 +5159,14 @@ class TestAdaptiveInFlightHulls(unittest.TestCase):
             queues=(self._flight("Outbound · 4 Small transport", name="Station → 02:380:09"),),
             researches={"r4": 4},
         )
-        from spaceinvasion.planner.strategy import _in_flight_ship_counts
+        from spaceinvasion.planner.heuristics._cargo_helpers import _in_flight_ship_counts
 
         counts = _in_flight_ship_counts(st)
         self.assertEqual(counts["by_planet_id"].get(702, {}).get("s1"), 4)
         self.assertEqual(counts["empire_in_flight"].get("s1"), 4)
 
     def test_unlock_advisory_ship_targets_count_in_flight(self) -> None:
-        from spaceinvasion.planner.strategy import _plan_unlock_and_advisory_actions
+        from spaceinvasion.planner.heuristics._shipyard_unlocks import _plan_unlock_and_advisory_actions
 
         st = _state((self.yard,), queues=(self._flight("Outbound · 4 Small transport"),), researches={"r4": 4})
 
@@ -5157,7 +5182,7 @@ class TestAdaptiveInFlightHulls(unittest.TestCase):
         self.assertEqual(_run(_adaptive_cfg(True, **self.cfg_kwargs)), [])
 
     def test_urgency_counts_in_flight_ships(self) -> None:
-        from spaceinvasion.planner.strategy import compute_spare_ship_budget
+        from spaceinvasion.planner.heuristics import compute_spare_ship_budget
 
         empty = replace(self.yard, ships={"s4": 3})
         st = _state(
@@ -5192,7 +5217,7 @@ class TestAdaptiveTransportFleet(unittest.TestCase):
     def test_target_capacity_math_and_even_s2_split(self) -> None:
         import math
 
-        from spaceinvasion.planner.strategy import compute_infra_transport_targets
+        from spaceinvasion.planner.heuristics import compute_infra_transport_targets
 
         planets = self._yards()
         st = _state(planets, researches={"r4": 6})
@@ -5219,7 +5244,7 @@ class TestAdaptiveTransportFleet(unittest.TestCase):
         )
 
     def test_in_flight_and_utilization_clamps(self) -> None:
-        from spaceinvasion.planner.strategy import compute_infra_transport_targets
+        from spaceinvasion.planner.heuristics import compute_infra_transport_targets
 
         planets = self._yards(s2_ready=1, s1_only=0, parked_s1=0)
         flight = QueueJob(
@@ -5238,7 +5263,7 @@ class TestAdaptiveTransportFleet(unittest.TestCase):
     def test_small_transport_fallback_when_no_s2_colony(self) -> None:
         import math
 
-        from spaceinvasion.planner.strategy import compute_infra_transport_targets
+        from spaceinvasion.planner.heuristics import compute_infra_transport_targets
 
         planets = self._yards()
         st = _state(planets, researches={"r4": 5})  # Rocket engine 5 < 6 -> no Large transport anywhere
@@ -5250,7 +5275,8 @@ class TestAdaptiveTransportFleet(unittest.TestCase):
         self.assertEqual(total_new, n_s1)
 
     def test_shipyard_targets_tag_and_floor(self) -> None:
-        from spaceinvasion.planner.strategy import AI_INFRA_CARGO_TAG, _plan_planet_shipyard_targets
+        from spaceinvasion.planner.heuristics import AI_INFRA_CARGO_TAG
+        from spaceinvasion.planner.heuristics._shipyard_targets import _plan_planet_shipyard_targets
 
         planets = self._yards(s2_ready=1, s1_only=0, parked_s1=0)
         st = _state(planets, researches={"r4": 6})
@@ -5286,7 +5312,7 @@ class TestAdaptiveTransportFleet(unittest.TestCase):
         self.assertNotIn(AI_INFRA_CARGO_TAG, s2_off[0].reason)
 
     def test_infra_budget_cap_and_filter_funding(self) -> None:
-        from spaceinvasion.planner.strategy import (
+        from spaceinvasion.planner.heuristics import (
             AI_INFRA_CARGO_TAG,
             compute_spare_ship_budget,
             filter_shipyard_actions_by_spare_budget,
@@ -5295,7 +5321,7 @@ class TestAdaptiveTransportFleet(unittest.TestCase):
         planets = self._yards(s2_ready=1, s1_only=0)
         st = _state(planets, researches={"r4": 6})
         econ = {"pig_iron_per_hr": 0.0, "metal_per_hr": 40_000.0, "kryptonite_per_hr": 20_000.0, "spice_per_hr": 0.0}
-        with mock.patch("spaceinvasion.combat.ranking.estimate_hourly_economy", return_value=econ):
+        with mock.patch("spaceinvasion.planner.heuristics._shipyard_budget_calc.estimate_hourly_economy", return_value=econ):
             budget = compute_spare_ship_budget(st, 10.0)
             budget_tight = compute_spare_ship_budget(
                 st, 10.0, reserved_cost={"metal": 195_000.0, "kryptonite": 48_000.0},
@@ -5343,7 +5369,10 @@ class TestAdaptiveTransportFleet(unittest.TestCase):
         self.assertTrue(out_ex[1].executable_now)
 
     def test_fleet_planner_end_to_end_and_switch_off(self) -> None:
-        from spaceinvasion.planner.strategy import AI_INFRA_CARGO_TAG, plan_fleet_and_attack_actions
+        from spaceinvasion.planner.heuristics import (
+            AI_INFRA_CARGO_TAG,
+            plan_fleet_and_attack_actions,
+        )
 
         planets = self._yards(s2_ready=2, s1_only=0)
         st = _state(planets, researches={"r4": 6})
@@ -5360,8 +5389,8 @@ class TestAdaptiveTransportFleet(unittest.TestCase):
 
     def test_lab_research_gated_on_research_queue_and_infra_spend_ledger_cap(self) -> None:
         """Verify F4 (research step uses research queue, not build queue + queue fallback) and F3 (1h spend ledger, zero income = 0, carryover)."""
-        from spaceinvasion.core import game_data
-        from spaceinvasion.planner.strategy import (
+        from spaceinvasion.core import catalog as game_data
+        from spaceinvasion.planner.heuristics import (
             compute_spare_ship_budget,
             plan_ai_blast_furnace_throttles,
         )
@@ -5433,11 +5462,11 @@ class TestAdaptiveTransportFleet(unittest.TestCase):
         st_yards = _state(self._yards(s2_ready=1, s1_only=0), researches={"r4": 6})
         econ_zero = {"pig_iron_per_hr": 0.0, "metal_per_hr": 0.0, "kryptonite_per_hr": 0.0, "spice_per_hr": 0.0}
         econ_low = {"pig_iron_per_hr": 0.0, "metal_per_hr": 16_000.0, "kryptonite_per_hr": 12_000.0, "spice_per_hr": 0.0}
-        with mock.patch("spaceinvasion.combat.ranking.estimate_hourly_economy", return_value=econ_zero):
+        with mock.patch("spaceinvasion.planner.heuristics._shipyard_budget_calc.estimate_hourly_economy", return_value=econ_zero):
             b_zero = compute_spare_ship_budget(st_yards, 10.0)
         self.assertEqual(b_zero["infra_transport_budget"], {"metal": 0.0, "kryptonite": 0.0})
 
-        with mock.patch("spaceinvasion.combat.ranking.estimate_hourly_economy", return_value=econ_low):
+        with mock.patch("spaceinvasion.planner.heuristics._shipyard_budget_calc.estimate_hourly_economy", return_value=econ_low):
             b_spent = compute_spare_ship_budget(
                 st_yards, 10.0, infra_spend_last_hour={"metal": 3_000.0, "kryptonite": 3_500.0}
             )

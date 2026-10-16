@@ -2414,7 +2414,7 @@ def backfill_v014_loot_recycle_hourly(conn: sqlite3.Connection, now_ts: float) -
 
     ts_r = round(float(now_ts), 3) if math.isfinite(float(now_ts)) else round(time.time(), 3)
     try:
-        from spaceinvasion.combat.fleet import is_non_recycle_fleet_notice_text as _is_non_rec_notice
+        from spaceinvasion.parsing.inbox import is_non_recycle_fleet_notice_text as _is_non_rec_notice
     except Exception:
         _is_non_rec_notice = None
 
