@@ -216,12 +216,14 @@ class TestApiAndCommander(unittest.TestCase):
             self.assertTrue(eta_cmd["ok"])
             self.assertEqual(len(eta_cmd["buildings_eta"]["researches"]), 15)
 
-            sim_cmd = api.send_command({
-                "command": "simulate_combat",
-                "attacker_ships": {"s4": 20, "s1": 4},
-                "defender_defense": {"d1": 2},
-                "target_resources": {"pig_iron": 10000, "metal": 10000},
-            })
+            sim_cmd = api.send_command(
+                {
+                    "command": "simulate_combat",
+                    "attacker_ships": {"s4": 20, "s1": 4},
+                    "defender_defense": {"d1": 2},
+                    "target_resources": {"pig_iron": 10000, "metal": 10000},
+                }
+            )
             self.assertTrue(sim_cmd["ok"])
             self.assertTrue(sim_cmd["simulation"]["safe_to_attack"])
 
@@ -273,9 +275,7 @@ class TestApiAndCommander(unittest.TestCase):
             threading.Thread(target=server.serve_forever, daemon=True).start()
             try:
                 api = GameApiClient(base_url=f"http://127.0.0.1:{port}")
-                st, actual, res, next_act, outcomes = commander.run_commander_tick(
-                    api, live=False, max_actions=1
-                )
+                st, actual, res, next_act, outcomes = commander.run_commander_tick(api, live=False, max_actions=1)
                 append_tick_logs(
                     logs_dir,
                     source="commander",
@@ -800,7 +800,7 @@ class TestApiAndCommander(unittest.TestCase):
             cfg_path = tmp_path / "config.json"
             nav_html = (
                 f'<a href="indexInternal.es?action=internalHome&SID={secret}" '
-                f'onclick="go(\'indexInternal.es?sid={secret}\')">Home</a>'
+                f"onclick=\"go('indexInternal.es?sid={secret}')\">Home</a>"
                 f'<a href="indexInternal.es?SID={secret}&action=internalBuildings">Buildings</a>'
             )
             fake_client = MagicMock()
@@ -857,21 +857,25 @@ class TestApiAndCommander(unittest.TestCase):
         import sys
 
         base_a = _sample_state()
-        p_a = dc_replace(
-            base_a.planets[0],
-            planet_id=101,
-            coords="02:111:12",
-            buildings={"b1": 4, "b2": 3, "b3": 4, "b5": 8, "b9": 2},
-            ships={"s4": 25, "s1": 8},
-            resources=Resources(8000, 6000, 4000, 2000),
-            tutorial=None,
-        ) if hasattr(base_a.planets[0], "tutorial") else dc_replace(
-            base_a.planets[0],
-            planet_id=101,
-            coords="02:111:12",
-            buildings={"b1": 4, "b2": 3, "b3": 4, "b5": 8, "b9": 2},
-            ships={"s4": 25, "s1": 8},
-            resources=Resources(8000, 6000, 4000, 2000),
+        p_a = (
+            dc_replace(
+                base_a.planets[0],
+                planet_id=101,
+                coords="02:111:12",
+                buildings={"b1": 4, "b2": 3, "b3": 4, "b5": 8, "b9": 2},
+                ships={"s4": 25, "s1": 8},
+                resources=Resources(8000, 6000, 4000, 2000),
+                tutorial=None,
+            )
+            if hasattr(base_a.planets[0], "tutorial")
+            else dc_replace(
+                base_a.planets[0],
+                planet_id=101,
+                coords="02:111:12",
+                buildings={"b1": 4, "b2": 3, "b3": 4, "b5": 8, "b9": 2},
+                ships={"s4": 25, "s1": 8},
+                resources=Resources(8000, 6000, 4000, 2000),
+            )
         )
         state_a = dc_replace(base_a, planets=(p_a,), active_planet_id=101, tutorial=None)
         state_b = dc_replace(
@@ -884,8 +888,14 @@ class TestApiAndCommander(unittest.TestCase):
             tmp_path = Path(tmp)
             cfg_a = tmp_path / "cfg_a.json"
             cfg_b = tmp_path / "cfg_b.json"
-            cfg_a.write_text('{"planner_mode": "priority", "ga_generations": 1, "ga_population_size": 4, "allow_raids": true}', encoding="utf-8")
-            cfg_b.write_text('{"planner_mode": "priority", "ga_generations": 5, "ga_population_size": 4, "allow_raids": true}', encoding="utf-8")
+            cfg_a.write_text(
+                '{"planner_mode": "priority", "ga_generations": 1, "ga_population_size": 4, "allow_raids": true}',
+                encoding="utf-8",
+            )
+            cfg_b.write_text(
+                '{"planner_mode": "priority", "ga_generations": 5, "ga_population_size": 4, "allow_raids": true}',
+                encoding="utf-8",
+            )
 
             client_a = MagicMock()
             client_a.__enter__.return_value = client_a
@@ -913,8 +923,20 @@ class TestApiAndCommander(unittest.TestCase):
             )
             try:
                 assert bridge_a._db is not None and bridge_b._db is not None
-                bridge_a._db.record_raid("02:111:01", attacked_ts=1_700_000_100.0, is_exempt=True, outcome="Victory", loot={"pig_iron": 10000})
-                bridge_b._db.record_raid("09:222:09", attacked_ts=1_700_000_200.0, is_exempt=True, outcome="Victory", loot={"pig_iron": 20000})
+                bridge_a._db.record_raid(
+                    "02:111:01",
+                    attacked_ts=1_700_000_100.0,
+                    is_exempt=True,
+                    outcome="Victory",
+                    loot={"pig_iron": 10000},
+                )
+                bridge_b._db.record_raid(
+                    "09:222:09",
+                    attacked_ts=1_700_000_200.0,
+                    is_exempt=True,
+                    outcome="Victory",
+                    loot={"pig_iron": 20000},
+                )
 
                 errors: list[str] = []
                 barrier = threading.Barrier(2)
@@ -1039,7 +1061,9 @@ class TestApiAndCommander(unittest.TestCase):
                 ]
                 for payload in bool_cmds:
                     r_bool = requests.post(f"{base}/command", json=payload, timeout=5)
-                    self.assertEqual(r_bool.status_code, 400, msg=f"Expected 400 for {payload!r}, got {r_bool.status_code}")
+                    self.assertEqual(
+                        r_bool.status_code, 400, msg=f"Expected 400 for {payload!r}, got {r_bool.status_code}"
+                    )
             finally:
                 server.shutdown()
                 server.server_close()
@@ -1053,11 +1077,11 @@ class TestApiAndCommander(unittest.TestCase):
         secret_enc = "encTok_999"
         state = _sample_state()
         nav_html = (
-            f'<html><body>'
+            f"<html><body>"
             f'<a href="indexInternal.es?action=internalHome&next=foo%3Fsid%3D{secret_enc}%26bar%3D1">Home</a>'
             f'<a href="indexInternal.es?sid%3D{secret_enc}&action=internalBuildings">Bld</a>'
             f'<a href="indexInternal.es?action=internalResearch&SID={secret_plain}">Res</a>'
-            f'</body></html>'
+            f"</body></html>"
         )
         fake_client = MagicMock()
         fake_client.__enter__.return_value = fake_client
@@ -1274,7 +1298,17 @@ class TestApiAndCommander(unittest.TestCase):
                 (p0,),
                 active_planet_id=1,
                 research_offers=(
-                    ResearchOffer(2, "r2", "Energy technology", 0, 1, cost=Resources(), status_text="Active", can_research=False, active=True),
+                    ResearchOffer(
+                        2,
+                        "r2",
+                        "Energy technology",
+                        0,
+                        1,
+                        cost=Resources(),
+                        status_text="Active",
+                        can_research=False,
+                        active=True,
+                    ),
                 ),
             )
             cur_st = GameState(
@@ -1308,7 +1342,16 @@ class TestApiAndCommander(unittest.TestCase):
                     (_mk_p({"b8": 2, "b9": 1}),),
                     active_planet_id=1,
                     research_offers=(
-                        ResearchOffer(11, "r11", "Particle technology", 0, 1, cost=Resources(), can_research=False, status_text="not enough resources"),
+                        ResearchOffer(
+                            11,
+                            "r11",
+                            "Particle technology",
+                            0,
+                            1,
+                            cost=Resources(),
+                            can_research=False,
+                            status_text="not enough resources",
+                        ),
                     ),
                 )
                 r_act = bridge._find_research_action(locked_r_st, 11, 1)
@@ -1323,7 +1366,15 @@ class TestApiAndCommander(unittest.TestCase):
                         _mk_p(
                             {"b9": 1},
                             ship_offers=(
-                                UnitOffer("ship", 6, "Destroyer", 0, cost=Resources(), can_build=False, status_text="insufficient resources"),
+                                UnitOffer(
+                                    "ship",
+                                    6,
+                                    "Destroyer",
+                                    0,
+                                    cost=Resources(),
+                                    can_build=False,
+                                    status_text="insufficient resources",
+                                ),
                             ),
                         ),
                     ),
@@ -1448,9 +1499,42 @@ class TestApiAndCommander(unittest.TestCase):
                 self.assertIn("protected", blue_atk["message"].lower())
 
                 # 3. BUG-04: External research cancel clears active AND restores can_research on unlocked affordable offers
-                r2_active = ResearchOffer(2, "r2", "Energy technology", 4, 5, Resources(0, 6400, 12800, 6400), False, "In research (Cancel)", None, active=True)
-                r1_busy = ResearchOffer(1, "r1", "Mining technology", 1, 2, Resources(400, 200, 0, 0), False, "Research queue busy", None, active=False)
-                r11_locked = ResearchOffer(11, "r11", "Particle technology", 0, 1, Resources(1000, 1000, 1000, 0), False, "Unavailable", None, active=False)
+                r2_active = ResearchOffer(
+                    2,
+                    "r2",
+                    "Energy technology",
+                    4,
+                    5,
+                    Resources(0, 6400, 12800, 6400),
+                    False,
+                    "In research (Cancel)",
+                    None,
+                    active=True,
+                )
+                r1_busy = ResearchOffer(
+                    1,
+                    "r1",
+                    "Mining technology",
+                    1,
+                    2,
+                    Resources(400, 200, 0, 0),
+                    False,
+                    "Research queue busy",
+                    None,
+                    active=False,
+                )
+                r11_locked = ResearchOffer(
+                    11,
+                    "r11",
+                    "Particle technology",
+                    0,
+                    1,
+                    Resources(1000, 1000, 1000, 0),
+                    False,
+                    "Unavailable",
+                    None,
+                    active=False,
+                )
                 bridge._last_state = replace(st0, research_offers=(r2_active, r1_busy, r11_locked))
                 merged = bridge._merge_cached_offers(replace(st0, research_offers=(), active_queues=()))
                 by_rid = {o.research_id: o for o in merged.research_offers}
@@ -1469,22 +1553,19 @@ class TestApiAndCommander(unittest.TestCase):
                 # corrupt DB JSON fields do not crash attack, and externally canceled zero-cost ResearchOffer
                 # restores real catalog cost for both affordable and unaffordable offers.
                 many_yellow = [
-                    GalaxySlot(f"05:{idx:03d}:01", 1, f"Farm{idx}", f"Idle{idx}", "yellow")
-                    for idx in range(1, 106)
+                    GalaxySlot(f"05:{idx:03d}:01", 1, f"Farm{idx}", f"Idle{idx}", "yellow") for idx in range(1, 106)
                 ]
                 many_yellow.append(GalaxySlot("09:009:09", 9, "DeepBlue", "VacDeep", "blue"))
                 bridge._db.record_galaxy_slots(many_yellow, ts=2000.0)
                 bridge._db._conn.execute(
                     "UPDATE spy_targets SET pig_iron=0, spice=100, "
-                    "fleet_json='{\"s1\": \"bad\"}', defense_json='{\"d1\": \"bad\"}' "
+                    'fleet_json=\'{"s1": "bad"}\', defense_json=\'{"d1": "bad"}\' '
                     "WHERE coords='05:001:01'"
                 )
                 bridge._db._conn.commit()
                 bridge._raid_targets = bridge._enrich_raid_targets(bridge._db.get_spy_targets(limit=100))
                 self.assertFalse(any(r.get("coords") == "09:009:09" for r in bridge._raid_targets))
-                deep_blue_atk = bridge.handle_command(
-                    {"command": "attack", "target_coords": "9:9:9", "dry_run": False}
-                )
+                deep_blue_atk = bridge.handle_command({"command": "attack", "target_coords": "9:9:9", "dry_run": False})
                 self.assertFalse(deep_blue_atk["executed"])
                 self.assertIn("protected", deep_blue_atk["message"].lower())
                 corrupt_dry_atk = bridge.handle_command(
@@ -1760,7 +1841,11 @@ class TestApiAndCommander(unittest.TestCase):
             }
             valid_state_json = json.dumps(state_dict)
             valid_plan_json = json.dumps({"ok": True, "actions": []})
-            corrupt_bot_json = '{"paused": false, "scanned_systems": {"01:010": 1000.0}, "throttle_cooldowns": {"²": 100.0, "999999999999999999999": 100.0, "101": ' + ("9" * 500) + "}}"
+            corrupt_bot_json = (
+                '{"paused": false, "scanned_systems": {"01:010": 1000.0}, "throttle_cooldowns": {"²": 100.0, "999999999999999999999": 100.0, "101": '
+                + ("9" * 500)
+                + "}}"
+            )
 
             with tempfile.TemporaryDirectory() as tmp:
                 tp = Path(tmp)
@@ -1774,7 +1859,10 @@ class TestApiAndCommander(unittest.TestCase):
                     routes["/bot_status"] = [(200, corrupt_bot_json), (200, corrupt_bot_json)]
                     routes["/state"] = [(200, valid_state_json), (200, valid_state_json)]
                     routes["/command"] = [(200, valid_plan_json), (200, valid_plan_json)]
-                    routes[tick1_route] = [tick1_resp, (200, valid_state_json if tick1_route == "/state" else valid_plan_json)]
+                    routes[tick1_route] = [
+                        tick1_resp,
+                        (200, valid_state_json if tick1_route == "/state" else valid_plan_json),
+                    ]
                     with (
                         patch("commander.time.sleep", return_value=None),
                         patch("sys.stdout", new_callable=io.StringIO) as out_buf,
@@ -2295,18 +2383,14 @@ class TestApiAndCommander(unittest.TestCase):
                     self.assertEqual(r_ps.status_code, 400)
 
                 # scan_galaxy with >4300-digit coords and >4300-zero-padded coords falls back cleanly
-                r_scan1 = requests.post(
-                    f"{base}/command", json={"command": "scan_galaxy", "dry_run": True}, timeout=5
-                )
+                r_scan1 = requests.post(f"{base}/command", json={"command": "scan_galaxy", "dry_run": True}, timeout=5)
                 self.assertEqual(r_scan1.status_code, 200)
                 self.assertIn("01:001", r_scan1.json()["action"]["target_name"])
 
                 bridge._last_state = GameState(
                     31, 1, "u", 1_700_000_000.0, (zero_padded_p,), active_planet_id=zero_padded_p.planet_id
                 )
-                r_scan2 = requests.post(
-                    f"{base}/command", json={"command": "scan_galaxy", "dry_run": True}, timeout=5
-                )
+                r_scan2 = requests.post(f"{base}/command", json={"command": "scan_galaxy", "dry_run": True}, timeout=5)
                 self.assertEqual(r_scan2.status_code, 200)
                 self.assertIn("02:380", r_scan2.json()["action"]["target_name"])
 
@@ -2569,7 +2653,16 @@ class TestApiAndCommander(unittest.TestCase):
                     building_offers=(
                         BuildingOffer(1, "Pig iron mine", 5, 1, Resources(100, 50, 0, 0), False, "Not enough", "?b=1"),
                         BuildingOffer(5, "Fusion plant", 0, 1, Resources(100, 50, 0, 0), True, "Build", "?b=5"),
-                        BuildingOffer(19, "Galaxy scanner", 1, 2, Resources(20_000, 80_000, 40_000, 16_000), True, "Build", "?b=19"),
+                        BuildingOffer(
+                            19,
+                            "Galaxy scanner",
+                            1,
+                            2,
+                            Resources(20_000, 80_000, 40_000, 16_000),
+                            True,
+                            "Build",
+                            "?b=19",
+                        ),
                     ),
                 )
                 raid_p = PlanetState(
@@ -2601,7 +2694,9 @@ class TestApiAndCommander(unittest.TestCase):
                     energy=EnergyBalance(50, 10),
                     buildings={"b7": 8},
                     building_offers=(
-                        BuildingOffer(19, "Galaxy scanner", 0, 1, Resources(10_000, 40_000, 20_000, 8_000), True, "Build", "?b=19"),
+                        BuildingOffer(
+                            19, "Galaxy scanner", 0, 1, Resources(10_000, 40_000, 20_000, 8_000), True, "Build", "?b=19"
+                        ),
                     ),
                 )
                 norm_p2 = PlanetState(
@@ -2632,7 +2727,9 @@ class TestApiAndCommander(unittest.TestCase):
                 # Forbidden: live offer present (b5 on ast, b1 on raid, b19 on norm)
                 for bid_chk, pid_chk in ((5, 901), (1, 902), (19, 903)):
                     act_f2 = bridge._find_build_action(st_bld, bid_chk, pid_chk, allow_live_verify=True)
-                    self.assertFalse(act_f2.executable_now, f"Expected forbidden live offer b{bid_chk} on pid {pid_chk}")
+                    self.assertFalse(
+                        act_f2.executable_now, f"Expected forbidden live offer b{bid_chk} on pid {pid_chk}"
+                    )
                     self.assertIsNone(act_f2.action_href)
                     self.assertIn("not allowed", act_f2.reason)
                 # Allowed: b7 (offer is None) & b19 (offer present) on ast, and b8 on ast when b8 offer present
@@ -2824,7 +2921,9 @@ class TestApiAndCommander(unittest.TestCase):
                     with patch.object(
                         bridge,
                         "handle_command",
-                        side_effect=RuntimeError(10**5000, "Authorization: Bearer HTTP_POST_SEC ?password=HTTP_POST_PW"),
+                        side_effect=RuntimeError(
+                            10**5000, "Authorization: Bearer HTTP_POST_SEC ?password=HTTP_POST_PW"
+                        ),
                     ):
                         r_post = requests.post(f"{base}/command", json={"command": "plan"}, timeout=5)
                     self.assertEqual(r_post.status_code, 500)
@@ -2883,7 +2982,7 @@ class TestApiAndCommander(unittest.TestCase):
         self.assertIsInstance(api_mod._format_api_exception(cyc), str)
 
         with cc.GameApiClient() as cli:
-            non_json_body = ("A" * 195) + '?sid=DECODE_TAIL_SID&client_secret=DECODE_CSEC&password=DECODE_PW'
+            non_json_body = ("A" * 195) + "?sid=DECODE_TAIL_SID&client_secret=DECODE_CSEC&password=DECODE_PW"
             with self.assertRaises(cc.GameApiError) as ctx_500:
                 cli._decode(
                     SimpleNamespace(
@@ -2995,7 +3094,7 @@ class TestApiAndCommander(unittest.TestCase):
         formatted = api_mod._format_api_exception(dag_exc)
         self.assertNotIn("API_DAG_SEC", formatted)
         self.assertLess((time.perf_counter() - t0) * 1000.0, 50.0)
-        self.assertNotIn("API_UE_PW", api_mod._scrub_api_str('%22password%22%3A%22API_UE_PW%22'))
+        self.assertNotIn("API_UE_PW", api_mod._scrub_api_str("%22password%22%3A%22API_UE_PW%22"))
         self.assertNotIn("API_ESC_PW", api_mod._scrub_api_str('\\"password\\":\\"API_ESC_PW\\"'))
 
         # 2. _find_research_action / _find_ship_action reject raid + unknown ship; _find_build_action rejects stale offer even in live verify
@@ -3025,7 +3124,9 @@ class TestApiAndCommander(unittest.TestCase):
             storage=Resources(100_000, 100_000, 100_000, 100_000),
             energy=EnergyBalance(500, 100),
             buildings={"b1": 4},
-            building_offers=(BuildingOffer(1, "Pig iron mine", 5, 6, Resources(100, 100, 0, 0), True, "Build", "?b=1"),),
+            building_offers=(
+                BuildingOffer(1, "Pig iron mine", 5, 6, Resources(100, 100, 0, 0), True, "Build", "?b=1"),
+            ),
             ship_offers=(UnitOffer("ship", 4, "Small fighter", 0, Resources(3000, 1000, 0, 0), True, "ship[4]"),),
         )
         ast_p = PlanetState(
@@ -3040,7 +3141,9 @@ class TestApiAndCommander(unittest.TestCase):
             storage=Resources(100_000, 100_000, 100_000, 100_000),
             energy=EnergyBalance(500, 100),
             buildings={"b1": 1, "b7": 1},
-            building_offers=(BuildingOffer(8, "Research lab", 0, 1, Resources(500, 500, 500, 0), True, "Build", "?b=8"),),
+            building_offers=(
+                BuildingOffer(8, "Research lab", 0, 1, Resources(500, 500, 500, 0), True, "Build", "?b=8"),
+            ),
         )
         st = GameState(
             31,
@@ -3049,10 +3152,13 @@ class TestApiAndCommander(unittest.TestCase):
             time.time(),
             (raid_p, norm_p, ast_p),
             active_planet_id=921,
-            research_offers=(ResearchOffer(2, "r2", "Energy technology", 0, 1, Resources(500, 500, 0, 0), True, "", "?r=2"),),
+            research_offers=(
+                ResearchOffer(2, "r2", "Energy technology", 0, 1, Resources(500, 500, 0, 0), True, "", "?r=2"),
+            ),
         )
 
         with tempfile.TemporaryDirectory() as tmp:
+
             def _fail_factory(_port: int) -> object:
                 raise AssertionError("should not open browser")
 
@@ -3094,7 +3200,9 @@ class TestApiAndCommander(unittest.TestCase):
                     calls += 1
                     raise SpaceInvasionAuthError("offline")
 
-                self.assertEqual(bridge._sync_spio_if_unread(None, st, get_client=_boom_auth, ignore_auth_error=True), 0)
+                self.assertEqual(
+                    bridge._sync_spio_if_unread(None, st, get_client=_boom_auth, ignore_auth_error=True), 0
+                )
                 self.assertEqual(calls, 0)
 
                 st_spio = GameState(
@@ -3107,7 +3215,9 @@ class TestApiAndCommander(unittest.TestCase):
                     unread_messages={"spio": 2},
                 )
                 bridge._last_spio_sync_at = 0.0
-                self.assertEqual(bridge._sync_spio_if_unread(None, st_spio, get_client=_boom_auth, ignore_auth_error=True), 0)
+                self.assertEqual(
+                    bridge._sync_spio_if_unread(None, st_spio, get_client=_boom_auth, ignore_auth_error=True), 0
+                )
                 self.assertEqual(calls, 1)
 
                 def _boom_rate() -> object:
@@ -3298,7 +3408,15 @@ class TestApiAndCommander(unittest.TestCase):
             (p_16,),
             active_planet_id=12476,
             fleet_alerts=(FleetAlert("attack", True, "Hostile attack inbound on 02:380:16"),),
-            raid_targets=({"coords": "02:380:04", "owner": "Idle", "status_color": "yellow", "is_inactive": True, "last_scanned_ts": 995.0},),
+            raid_targets=(
+                {
+                    "coords": "02:380:04",
+                    "owner": "Idle",
+                    "status_color": "yellow",
+                    "is_inactive": True,
+                    "last_scanned_ts": 995.0,
+                },
+            ),
             speedup_factor=20.0,
         )
         fake_client = MagicMock()
@@ -3315,7 +3433,9 @@ class TestApiAndCommander(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             cfg_path = Path(tmp) / "cfg.json"
-            cfg_path.write_text('{"allow_fleetsave": false, "allow_raids": true, "allow_galaxy_scan": true}', encoding="utf-8")
+            cfg_path.write_text(
+                '{"allow_fleetsave": false, "allow_raids": true, "allow_galaxy_scan": true}', encoding="utf-8"
+            )
             bridge = api_mod.GameApiBridge(
                 db_path=Path(tmp) / "esc.db",
                 config_path=cfg_path,
@@ -3445,7 +3565,6 @@ class TestApiAndCommander(unittest.TestCase):
             finally:
                 bridge.close()
 
-
     def test_action_graph_command_isolated_simulation_zero_mutation_and_zero_browser_views(self) -> None:
         from dataclasses import asdict
         import requests
@@ -3489,8 +3608,12 @@ class TestApiAndCommander(unittest.TestCase):
                 energy=EnergyBalance(300, 110),
                 buildings={"b1": 4, "b2": 3, "b3": 4, "b4": 3, "b5": 6, "b7": 3, "b8": 2, "b9": 2},
                 building_offers=(
-                    BuildingOffer(1, "Pig iron mine", 4, 5, Resources(800, 320, 0, 0), True, "Available", "indexInternal.es?b=1"),
-                    BuildingOffer(3, "Kryptonite mine", 4, 5, Resources(700, 500, 0, 0), True, "Available", "indexInternal.es?b=3"),
+                    BuildingOffer(
+                        1, "Pig iron mine", 4, 5, Resources(800, 320, 0, 0), True, "Available", "indexInternal.es?b=1"
+                    ),
+                    BuildingOffer(
+                        3, "Kryptonite mine", 4, 5, Resources(700, 500, 0, 0), True, "Available", "indexInternal.es?b=3"
+                    ),
                 ),
             )
             st = GameState(
@@ -3502,7 +3625,17 @@ class TestApiAndCommander(unittest.TestCase):
                 active_planet_id=101,
                 researches={"r2": 2, "r3": 2},
                 research_offers=(
-                    ResearchOffer(2, "r2", "Energy technology", 2, 3, Resources(0, 1600, 3200, 1600), True, "Available", "indexInternal.es?r=2"),
+                    ResearchOffer(
+                        2,
+                        "r2",
+                        "Energy technology",
+                        2,
+                        3,
+                        Resources(0, 1600, 3200, 1600),
+                        True,
+                        "Available",
+                        "indexInternal.es?r=2",
+                    ),
                 ),
                 speedup_factor=4.0,
             )
@@ -3832,9 +3965,7 @@ class TestApiAndCommander(unittest.TestCase):
                 self.assertEqual(bridge._db.summary()["counts"]["bash_blocks"], 1)
 
                 # Subsequent attack command is immediately rejected without touching Selenium
-                atk_again = bridge.handle_command(
-                    {"command": "attack", "target_coords": "02:383:02", "dry_run": False}
-                )
+                atk_again = bridge.handle_command({"command": "attack", "target_coords": "02:383:02", "dry_run": False})
                 self.assertFalse(atk_again["executed"])
                 self.assertIn("BashTracker", atk_again["message"])
 
@@ -3844,18 +3975,13 @@ class TestApiAndCommander(unittest.TestCase):
                     enriched_state,
                     config=dc_replace(bridge.strategy_config, planner_mode="priority"),
                 )
-                self.assertFalse(
-                    any(a.kind == "ATTACK" and "02:383:02" in a.target_name for a in prio_plan)
-                )
+                self.assertFalse(any(a.kind == "ATTACK" and "02:383:02" in a.target_name for a in prio_plan))
                 legacy_plan = plan_actions(
                     enriched_state,
                     config=dc_replace(bridge.strategy_config, planner_mode="ga_nn"),
                 )
                 self.assertFalse(
-                    any(
-                        a.kind == "ATTACK" and "02:383:02" in a.target_name and a.executable_now
-                        for a in legacy_plan
-                    )
+                    any(a.kind == "ATTACK" and "02:383:02" in a.target_name and a.executable_now for a in legacy_plan)
                 )
             finally:
                 bridge.close()
@@ -4268,9 +4394,7 @@ class TestApiAndCommander(unittest.TestCase):
                     energy=EnergyBalance(100, 150),
                     buildings={"b1": 15, "b2": 10, "b3": 14, "b4": 14, "b5": 15, "b6": 0},
                 )
-                bid_tight, _, _ = _pick_best_power_building(
-                    tight_cold, dict(tight_cold.buildings), {"r2": 4}
-                )
+                bid_tight, _, _ = _pick_best_power_building(tight_cold, dict(tight_cold.buildings), {"r2": 4})
                 self.assertEqual(bid_tight, 5)  # Fusion plant (b5), preserving scarce fields
 
                 # Force snapshot cache expiry with unchanged unread total=13 -> zero extra open_messages calls
@@ -4366,7 +4490,9 @@ class TestApiAndCommander(unittest.TestCase):
             db_path = tmp_path / "spaceinvasion.db"
             log_dir = tmp_path / "logs"
             log_dir.mkdir(parents=True, exist_ok=True)
-            save_strategy_config(StrategyConfig(allow_multi_planet=True, allow_raids=True, allow_fleetsave=True), cfg_path)
+            save_strategy_config(
+                StrategyConfig(allow_multi_planet=True, allow_raids=True, allow_fleetsave=True), cfg_path
+            )
 
             planets = []
             for idx in range(5):
@@ -4395,7 +4521,12 @@ class TestApiAndCommander(unittest.TestCase):
                         can_build=True,
                         input_name=f"ship[{sid}]",
                     )
-                    for sid, sname in ((1, "Small transporter"), (4, "Small fighter"), (10, "Spy probe"), (11, "Recycler"))
+                    for sid, sname in (
+                        (1, "Small transporter"),
+                        (4, "Small fighter"),
+                        (10, "Spy probe"),
+                        (11, "Recycler"),
+                    )
                 )
                 planets.append(
                     PlanetState(
@@ -4424,8 +4555,28 @@ class TestApiAndCommander(unittest.TestCase):
                 active_planet_id=500,
                 researches={"r1": 2, "r2": 3, "r3": 3, "r4": 2, "r5": 2},
                 research_offers=(
-                    ResearchOffer(2, "r2", "Energy technology", 3, 4, Resources(0, 3200, 6400, 3200), True, "Available", "indexInternal.es?r=2"),
-                    ResearchOffer(5, "r5", "Spy technology", 2, 3, Resources(800, 4000, 800, 0), True, "Available", "indexInternal.es?r=5"),
+                    ResearchOffer(
+                        2,
+                        "r2",
+                        "Energy technology",
+                        3,
+                        4,
+                        Resources(0, 3200, 6400, 3200),
+                        True,
+                        "Available",
+                        "indexInternal.es?r=2",
+                    ),
+                    ResearchOffer(
+                        5,
+                        "r5",
+                        "Spy technology",
+                        2,
+                        3,
+                        Resources(800, 4000, 800, 0),
+                        True,
+                        "Available",
+                        "indexInternal.es?r=5",
+                    ),
                 ),
                 fleet_alerts=(
                     FleetAlert(
@@ -5113,9 +5264,7 @@ class TestApiAndCommander(unittest.TestCase):
                     patch.object(
                         bridge2, "_persist_runtime_state", wraps=bridge2._persist_runtime_state
                     ) as mock_persist,
-                    patch.object(
-                        api_srv, "build_action_graph", wraps=api_srv.build_action_graph
-                    ) as mock_bag,
+                    patch.object(api_srv, "build_action_graph", wraps=api_srv.build_action_graph) as mock_bag,
                 ):
                     cold_ai = bridge2.dashboard(refresh=False)
                     self.assertEqual(cold_ai["planner_mode"], "ai_planner")
@@ -5632,7 +5781,9 @@ class TestApiAndCommander(unittest.TestCase):
                 ),
                 ts=1700000070.0,
             )
-            bridge._db.record_target_block("02:378:15", blocked_until_ts=time.time() + 3600.0, reason="bash protection", is_bash=True)
+            bridge._db.record_target_block(
+                "02:378:15", blocked_until_ts=time.time() + 3600.0, reason="bash protection", is_bash=True
+            )
             bridge._db.record_raid("02:383:02", is_exempt=True, outcome="win", loot={"pig_iron": 3075, "spice": 2550})
 
             server = create_api_server(bridge, host="127.0.0.1", port=0)
@@ -5765,7 +5916,13 @@ class TestApiAndCommander(unittest.TestCase):
             try:
                 r1 = requests.post(
                     f"{base_url}/command",
-                    json={"command": "queue_add", "kind": "SPY", "priority": "P2", "target_coords": "02:381:12", "target_level": 1},
+                    json={
+                        "command": "queue_add",
+                        "kind": "SPY",
+                        "priority": "P2",
+                        "target_coords": "02:381:12",
+                        "target_level": 1,
+                    },
                     timeout=5,
                 ).json()
                 self.assertTrue(r1["ok"])
@@ -5773,7 +5930,15 @@ class TestApiAndCommander(unittest.TestCase):
 
                 r2 = requests.post(
                     f"{base_url}/command",
-                    json={"command": "queue_add", "kind": "BUILD", "priority": "P2", "position": "bottom", "planet_id": 12476, "target_id": 4, "target_level": 8},
+                    json={
+                        "command": "queue_add",
+                        "kind": "BUILD",
+                        "priority": "P2",
+                        "position": "bottom",
+                        "planet_id": 12476,
+                        "target_id": 4,
+                        "target_level": 8,
+                    },
                     timeout=5,
                 ).json()
                 self.assertTrue(r2["ok"])
@@ -5868,9 +6033,7 @@ class TestApiAndCommander(unittest.TestCase):
             fake_client.__enter__.return_value = fake_client
             fake_client.driver = MagicMock(current_url="https://spaceinvasion.bitmeup.com/indexGame.es?sid=tok")
             fake_client.read_full_snapshot.return_value = st
-            fake_client.navigate_menu.return_value = (
-                "<html><body><table><tr><td>Mining technology</td><td>21</td><td>TopMiner [01:015:08]</td></tr></table></body></html>"
-            )
+            fake_client.navigate_menu.return_value = "<html><body><table><tr><td>Mining technology</td><td>21</td><td>TopMiner [01:015:08]</td></tr></table></body></html>"
 
             bridge = GameApiBridge(
                 debug_port=19999,
@@ -6094,7 +6257,9 @@ class TestApiAndCommander(unittest.TestCase):
             timestamp=2000.0,
             planets=(p1, p2),
             active_planet_id=101,
-            active_queues=(QueueJob(category="fleet", name="Attack → 02:380:14", remaining_seconds=120.0, detail="Outbound"),),
+            active_queues=(
+                QueueJob(category="fleet", name="Attack → 02:380:14", remaining_seconds=120.0, detail="Outbound"),
+            ),
             researches={"r4": 4, "r5": 4},
         )
         with tempfile.TemporaryDirectory(prefix="si_tr_api_") as tmp:
@@ -6209,11 +6374,53 @@ class TestApiAndCommander(unittest.TestCase):
                 # 3. Verify 4-tier fleet slot holds: b10=2 (3 slots), 1 in flight -> 2 free slots.
                 # SPY reserves 1 -> TRANSPORT gets 1 -> COLONIZE, RECYCLE, ATTACK all held!
                 sample_actions = [
-                    PlannedAction(priority="P1", kind="SPY", planet_id=101, planet_coords="02:380:01", target_name="02:380:05", executable_now=True, reason="Spy"),
-                    PlannedAction(priority="P1", kind="TRANSPORT", planet_id=101, planet_coords="02:380:01", target_id=102, target_name="ColonyB [02:380:02]", cost=Resources(5000, 0, 0, 0), executable_now=True, reason="Supply"),
-                    PlannedAction(priority="P1", kind="COLONIZE", planet_id=101, planet_coords="02:380:01", target_name="02:380:07", executable_now=True, reason="Colonize"),
-                    PlannedAction(priority="P2", kind="RECYCLE", planet_id=101, planet_coords="02:380:01", target_name="Rubble -> 02:380:04", executable_now=True, reason="Recycle"),
-                    PlannedAction(priority="P2", kind="ATTACK", planet_id=101, planet_coords="02:380:01", target_name="02:380:03", executable_now=True, reason="Attack"),
+                    PlannedAction(
+                        priority="P1",
+                        kind="SPY",
+                        planet_id=101,
+                        planet_coords="02:380:01",
+                        target_name="02:380:05",
+                        executable_now=True,
+                        reason="Spy",
+                    ),
+                    PlannedAction(
+                        priority="P1",
+                        kind="TRANSPORT",
+                        planet_id=101,
+                        planet_coords="02:380:01",
+                        target_id=102,
+                        target_name="ColonyB [02:380:02]",
+                        cost=Resources(5000, 0, 0, 0),
+                        executable_now=True,
+                        reason="Supply",
+                    ),
+                    PlannedAction(
+                        priority="P1",
+                        kind="COLONIZE",
+                        planet_id=101,
+                        planet_coords="02:380:01",
+                        target_name="02:380:07",
+                        executable_now=True,
+                        reason="Colonize",
+                    ),
+                    PlannedAction(
+                        priority="P2",
+                        kind="RECYCLE",
+                        planet_id=101,
+                        planet_coords="02:380:01",
+                        target_name="Rubble -> 02:380:04",
+                        executable_now=True,
+                        reason="Recycle",
+                    ),
+                    PlannedAction(
+                        priority="P2",
+                        kind="ATTACK",
+                        planet_id=101,
+                        planet_coords="02:380:01",
+                        target_name="02:380:03",
+                        executable_now=True,
+                        reason="Attack",
+                    ),
                 ]
                 held = bridge._apply_fleet_slot_holds(st, sample_actions)
                 by_kind = {a.kind: a for a in held}
@@ -6270,7 +6477,9 @@ class TestApiAndCommander(unittest.TestCase):
                 body_bytes = b'{"command":"plan"}'
                 with socket.create_connection(("127.0.0.1", port), timeout=5) as sock:
                     sock.sendall(
-                        f"POST /command HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: {len(body_bytes)}\r\nConnection: close\r\n\r\n".encode("ascii")
+                        f"POST /command HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: {len(body_bytes)}\r\nConnection: close\r\n\r\n".encode(
+                            "ascii"
+                        )
                         + body_bytes
                     )
                     self.assertTrue(entered.wait(timeout=2.0))
@@ -6467,8 +6676,20 @@ class TestApiAndCommander(unittest.TestCase):
             planets=(p1_busy, p2_free, p3_raid),
             active_planet_id=101,
             active_queues=(
-                QueueJob(category="fleet", name="Transport → 02:380:08", remaining_seconds=120.0, detail="Outbound", origin_coords="02:380:12"),
-                QueueJob(category="fleet", name="Attack → 02:380:15", remaining_seconds=180.0, detail="Outbound", origin_coords="02:380:12"),
+                QueueJob(
+                    category="fleet",
+                    name="Transport → 02:380:08",
+                    remaining_seconds=120.0,
+                    detail="Outbound",
+                    origin_coords="02:380:12",
+                ),
+                QueueJob(
+                    category="fleet",
+                    name="Attack → 02:380:15",
+                    remaining_seconds=180.0,
+                    detail="Outbound",
+                    origin_coords="02:380:12",
+                ),
             ),
         )
         held_cmd = commander._hold_busy_fleet_slots([st_action], {101: 120.0})
@@ -6608,14 +6829,38 @@ class TestApiAndCommander(unittest.TestCase):
                 # 3. Strictly per-planet _apply_fleet_slot_holds:
                 # Planet 101 is 2/2 full -> Planet 101 ATTACK held, while Planet 102 (0/3 used) ATTACK & RECYCLE stay executable!
                 sample_iso = [
-                    PlannedAction(priority="P2", kind="ATTACK", planet_id=101, planet_coords="02:380:12", target_name="02:380:15", executable_now=True, reason="Hub raid"),
-                    PlannedAction(priority="P2", kind="RECYCLE", planet_id=102, planet_coords="02:380:08", target_name="Rubble -> 02:380:14", executable_now=True, reason="ColonyA recycle"),
-                    PlannedAction(priority="P2", kind="ATTACK", planet_id=102, planet_coords="02:380:08", target_name="02:380:16", executable_now=True, reason="ColonyA raid"),
+                    PlannedAction(
+                        priority="P2",
+                        kind="ATTACK",
+                        planet_id=101,
+                        planet_coords="02:380:12",
+                        target_name="02:380:15",
+                        executable_now=True,
+                        reason="Hub raid",
+                    ),
+                    PlannedAction(
+                        priority="P2",
+                        kind="RECYCLE",
+                        planet_id=102,
+                        planet_coords="02:380:08",
+                        target_name="Rubble -> 02:380:14",
+                        executable_now=True,
+                        reason="ColonyA recycle",
+                    ),
+                    PlannedAction(
+                        priority="P2",
+                        kind="ATTACK",
+                        planet_id=102,
+                        planet_coords="02:380:08",
+                        target_name="02:380:16",
+                        executable_now=True,
+                        reason="ColonyA raid",
+                    ),
                 ]
                 held_iso = bridge._apply_fleet_slot_holds(st_two, sample_iso)
                 self.assertFalse(held_iso[0].executable_now)  # Planet 101 full (2/2)
-                self.assertTrue(held_iso[1].executable_now)   # Planet 102 free (0/3)
-                self.assertTrue(held_iso[2].executable_now)   # Planet 102 free (0/3)
+                self.assertTrue(held_iso[1].executable_now)  # Planet 102 free (0/3)
+                self.assertTrue(held_iso[2].executable_now)  # Planet 102 free (0/3)
 
                 # Tier #3.5 STATION reservation on origin planet:
                 # Planet 101 with 1/2 used (1 free slot) & reserved_spy_slots=0 -> STATION gets the slot, ATTACK on 101 is held!
@@ -6628,17 +6873,31 @@ class TestApiAndCommander(unittest.TestCase):
                     planets=(p1_busy, p2_free),
                     active_planet_id=101,
                     active_queues=(
-                        QueueJob(category="fleet", name="Attack → 02:380:15", remaining_seconds=180.0, detail="Outbound", origin_coords="02:380:12"),
+                        QueueJob(
+                            category="fleet",
+                            name="Attack → 02:380:15",
+                            remaining_seconds=180.0,
+                            detail="Outbound",
+                            origin_coords="02:380:12",
+                        ),
                     ),
                 )
                 held_tier = bridge._apply_fleet_slot_holds(
                     st_one_free,
                     [
                         st_action,
-                        PlannedAction(priority="P2", kind="ATTACK", planet_id=101, planet_coords="02:380:12", target_name="02:380:16", executable_now=True, reason="Hub raid"),
+                        PlannedAction(
+                            priority="P2",
+                            kind="ATTACK",
+                            planet_id=101,
+                            planet_coords="02:380:12",
+                            target_name="02:380:16",
+                            executable_now=True,
+                            reason="Hub raid",
+                        ),
                     ],
                 )
-                self.assertTrue(held_tier[0].executable_now)   # STATION takes the last free slot
+                self.assertTrue(held_tier[0].executable_now)  # STATION takes the last free slot
                 self.assertFalse(held_tier[1].executable_now)  # ATTACK held behind STATION
             finally:
                 bridge.close()
@@ -7048,7 +7307,9 @@ class TestApiAndCommander(unittest.TestCase):
                 BuildingOffer(1, "Pig iron mine", 10, 11, Resources(15_000, 6_000, 0, 0), True, "Available", "?b=1"),
                 BuildingOffer(3, "Kryptonite mine", 8, 9, Resources(10_000, 5_000, 0, 0), True, "Available", "?b=3"),
                 BuildingOffer(4, "Spice mine", 7, 8, Resources(9_000, 4_000, 0, 0), True, "Available", "?b=4"),
-                BuildingOffer(5, "Fusion plant", 12, 13, Resources(20_000, 10_000, 5_000, 0), True, "Available", "?b=5"),
+                BuildingOffer(
+                    5, "Fusion plant", 12, 13, Resources(20_000, 10_000, 5_000, 0), True, "Available", "?b=5"
+                ),
             ),
             ship_offers=(
                 UnitOffer("ship", 4, "Small fighter", 4, Resources(3000, 1000, 0, 0), True, "ship[4]", "Available"),
@@ -7068,7 +7329,9 @@ class TestApiAndCommander(unittest.TestCase):
             buildings={"b1": 8, "b2": 5, "b3": 7, "b4": 6, "b5": 10, "b7": 4, "b10": 2},
             ships={},
             building_offers=(
-                BuildingOffer(1, "Pig iron mine", 8, 9, Resources(50_000, 25_000, 0, 0), False, "Not enough resources", None),
+                BuildingOffer(
+                    1, "Pig iron mine", 8, 9, Resources(50_000, 25_000, 0, 0), False, "Not enough resources", None
+                ),
             ),
         )
         st_1col = GameState(
@@ -7103,6 +7366,7 @@ class TestApiAndCommander(unittest.TestCase):
                 ensure_session_fn=lambda: None,
             )
             try:
+
                 def _seed_state(st_obj: GameState) -> None:
                     bridge._record_state(
                         st_obj,
@@ -7190,10 +7454,19 @@ class TestApiAndCommander(unittest.TestCase):
                 acts = plan_live["actions"]
                 # Emits executable AI-Planner BUILD b1 L11 on Alpha AND inter-planet TRANSPORT to Beta!
                 self.assertTrue(
-                    any(a["kind"] == "BUILD" and a["planet_id"] == 801 and a["target_id"] == 1 and a["executable_now"] for a in acts)
+                    any(
+                        a["kind"] == "BUILD" and a["planet_id"] == 801 and a["target_id"] == 1 and a["executable_now"]
+                        for a in acts
+                    )
                 )
                 self.assertTrue(
-                    any(a["kind"] == "TRANSPORT" and a["planet_id"] == 801 and a["target_id"] == 802 and a["executable_now"] for a in acts)
+                    any(
+                        a["kind"] == "TRANSPORT"
+                        and a["planet_id"] == 801
+                        and a["target_id"] == 802
+                        and a["executable_now"]
+                        for a in acts
+                    )
                 )
                 self.assertFalse(any(a["kind"] == "DEMOLISH_BUILDING" for a in acts))
 
@@ -7230,11 +7503,7 @@ class TestApiAndCommander(unittest.TestCase):
                 pending_fc = bridge._db.list_field_conflict_prompts(status="pending")
                 self.assertEqual(len(pending_fc), 1)
                 ck = pending_fc[0]["conflict_key"]
-                fc_notifs = [
-                    n
-                    for n in bridge._db.get_notifications(limit=50)
-                    if n.get("category") == "field_conflict"
-                ]
+                fc_notifs = [n for n in bridge._db.get_notifications(limit=50) if n.get("category") == "field_conflict"]
                 self.assertEqual(len(fc_notifs), 1)
 
                 # Energy-safety guard rejects demolishing Fusion plant (b5) when spare energy is tight
@@ -7505,8 +7774,18 @@ class TestApiAndCommander(unittest.TestCase):
                 # Seed stale has_debris=True for both targets (scanned long ago)
                 bridge._db.record_galaxy_slots(
                     [
-                        GalaxySlot(coords="02:380:14", position=14, name="Spacia Planet", owner="Spacia", status_color="yellow", has_debris=True, is_spacia=True),
-                        GalaxySlot(coords="02:379:01", position=1, name="", owner="", status_color="free", has_debris=True),
+                        GalaxySlot(
+                            coords="02:380:14",
+                            position=14,
+                            name="Spacia Planet",
+                            owner="Spacia",
+                            status_color="yellow",
+                            has_debris=True,
+                            is_spacia=True,
+                        ),
+                        GalaxySlot(
+                            coords="02:379:01", position=1, name="", owner="", status_color="free", has_debris=True
+                        ),
                     ],
                     ts=100.0,
                 )
@@ -7669,10 +7948,38 @@ class TestApiAndCommander(unittest.TestCase):
                 bridge._live_executor = _FakeExec()  # type: ignore[assignment]
                 bridge._db.record_galaxy_slots(
                     [
-                        GalaxySlot(coords="02:248:15", position=15, name="Spacia Planet", owner="Spacia", status_color="yellow", is_spacia=True),
-                        GalaxySlot(coords="02:208:09", position=9, name="Spacia Planet", owner="Spacia", status_color="yellow", is_spacia=True),
-                        GalaxySlot(coords="02:191:06", position=6, name="Spacia Planet", owner="Spacia", status_color="yellow", is_spacia=True),
-                        GalaxySlot(coords="02:258:01", position=1, name="Spacia Planet", owner="Spacia", status_color="yellow", is_spacia=True),
+                        GalaxySlot(
+                            coords="02:248:15",
+                            position=15,
+                            name="Spacia Planet",
+                            owner="Spacia",
+                            status_color="yellow",
+                            is_spacia=True,
+                        ),
+                        GalaxySlot(
+                            coords="02:208:09",
+                            position=9,
+                            name="Spacia Planet",
+                            owner="Spacia",
+                            status_color="yellow",
+                            is_spacia=True,
+                        ),
+                        GalaxySlot(
+                            coords="02:191:06",
+                            position=6,
+                            name="Spacia Planet",
+                            owner="Spacia",
+                            status_color="yellow",
+                            is_spacia=True,
+                        ),
+                        GalaxySlot(
+                            coords="02:258:01",
+                            position=1,
+                            name="Spacia Planet",
+                            owner="Spacia",
+                            status_color="yellow",
+                            is_spacia=True,
+                        ),
                     ],
                     ts=100.0,
                 )
@@ -7787,7 +8094,9 @@ class TestApiAndCommander(unittest.TestCase):
             energy=EnergyBalance(produced=4000, used=1200),
             buildings={"b1": 0, "b2": 0, "b3": 10, "b4": 6, "b5": 12, "b8": 8},
             building_offers=(
-                BuildingOffer(3, "Kryptonite mine", 10, 11, Resources(80_000, 60_000, 0, 0), False, "Not enough resources", None),
+                BuildingOffer(
+                    3, "Kryptonite mine", 10, 11, Resources(80_000, 60_000, 0, 0), False, "Not enough resources", None
+                ),
             ),
         )
         p_metal_off = PlanetState(
@@ -7804,7 +8113,9 @@ class TestApiAndCommander(unittest.TestCase):
             buildings={"b1": 14, "b2": 10, "b3": 4, "b4": 4, "b5": 12},
             economy_rates={"resource1": 100, "resource2": 0, "resource3": 100, "resource4": 100},
             building_offers=(
-                BuildingOffer(1, "Pig iron mine", 14, 15, Resources(100_000, 45_000, 0, 0), False, "Not enough resources", None),
+                BuildingOffer(
+                    1, "Pig iron mine", 14, 15, Resources(100_000, 45_000, 0, 0), False, "Not enough resources", None
+                ),
             ),
         )
         base_st = GameState(
@@ -7880,6 +8191,7 @@ class TestApiAndCommander(unittest.TestCase):
                 ensure_session_fn=lambda: None,
             )
             try:
+
                 def _seed(st_obj: GameState) -> None:
                     bridge._record_state(
                         st_obj,
@@ -7959,9 +8271,7 @@ class TestApiAndCommander(unittest.TestCase):
                 resp_pinned = bridge.handle_command({"command": "plan", "refresh": False})
                 self.assertTrue(
                     any(
-                        a["kind"] == "THROTTLE_BUILDING"
-                        and a["planet_id"] == 852
-                        and a["target_level"] == 0
+                        a["kind"] == "THROTTLE_BUILDING" and a["planet_id"] == 852 and a["target_level"] == 0
                         for a in resp_pinned["actions"]
                     ),
                     msg=f"AI-Planner b2->0% must NOT be overridden by pinned BUILD: {resp_pinned['actions']}",
@@ -7973,9 +8283,7 @@ class TestApiAndCommander(unittest.TestCase):
                 self.assertEqual(resp_prio_fallback["effective_planner_mode"], "priority")
                 self.assertFalse(
                     any(
-                        a["kind"] == "THROTTLE_BUILDING"
-                        and a["planet_id"] == 852
-                        and a["target_level"] == 0
+                        a["kind"] == "THROTTLE_BUILDING" and a["planet_id"] == 852 and a["target_level"] == 0
                         for a in resp_prio_fallback["actions"]
                     ),
                     msg=f"priority fallback should keep manual-queue b2 reconciliation: {resp_prio_fallback['actions']}",
@@ -7997,9 +8305,7 @@ class TestApiAndCommander(unittest.TestCase):
                 resp_manual_th = bridge.handle_command({"command": "plan", "refresh": False})
                 self.assertFalse(
                     any(
-                        a["kind"] == "THROTTLE_BUILDING"
-                        and a["planet_id"] == 852
-                        and a["target_level"] == 0
+                        a["kind"] == "THROTTLE_BUILDING" and a["planet_id"] == 852 and a["target_level"] == 0
                         for a in resp_manual_th["actions"]
                     ),
                     msg=f"Explicit manual THROTTLE_BUILDING should supersede auto b2->0%: {resp_manual_th['actions']}",
@@ -8381,9 +8687,13 @@ class TestApiAndCommander(unittest.TestCase):
                 with self.assertRaises(ApiRequestError):
                     bridge.handle_command({"command": "update_config", "config": {"fleet_research_targets": "r9"}})
                 with self.assertRaises(ApiRequestError):
-                    bridge.handle_command({"command": "update_config", "config": {"fleet_research_targets": {"r9": 101}}})
+                    bridge.handle_command(
+                        {"command": "update_config", "config": {"fleet_research_targets": {"r9": 101}}}
+                    )
                 with self.assertRaises(ApiRequestError):
-                    bridge.handle_command({"command": "update_config", "config": {"fleet_research_targets": {"r9": -1}}})
+                    bridge.handle_command(
+                        {"command": "update_config", "config": {"fleet_research_targets": {"r9": -1}}}
+                    )
 
                 # 2. Hybrid AI-Planner `plan` emits P2 Shield technology (r9) executable under spare budget!
                 plan_resp = bridge.handle_command({"command": "plan", "refresh": False})
@@ -8447,7 +8757,20 @@ class TestApiAndCommander(unittest.TestCase):
             resources=Resources(pig_iron=450_000, metal=300_000, kryptonite=200_000, spice=100_000),
             storage=Resources(2_000_000, 2_000_000, 2_000_000, 2_000_000),
             energy=EnergyBalance(produced=6000, used=2000),
-            buildings={"b1": 12, "b2": 8, "b3": 10, "b4": 8, "b5": 14, "b7": 6, "b8": 8, "b10": 4, "b11": 10, "b12": 10, "b13": 10, "b14": 10},
+            buildings={
+                "b1": 12,
+                "b2": 8,
+                "b3": 10,
+                "b4": 8,
+                "b5": 14,
+                "b7": 6,
+                "b8": 8,
+                "b10": 4,
+                "b11": 10,
+                "b12": 10,
+                "b13": 10,
+                "b14": 10,
+            },
             ships={"s2": 30, "s10": 5},
         )
         dest_busy_soon = PlanetState(
@@ -8461,7 +8784,19 @@ class TestApiAndCommander(unittest.TestCase):
             resources=Resources(pig_iron=1_000, metal=500, kryptonite=500, spice=500),
             storage=Resources(2_000_000, 2_000_000, 2_000_000, 2_000_000),
             energy=EnergyBalance(produced=5000, used=1500),
-            buildings={"b1": 14, "b2": 0, "b3": 0, "b4": 0, "b5": 16, "b7": 6, "b10": 2, "b11": 10, "b12": 10, "b13": 10, "b14": 10},
+            buildings={
+                "b1": 14,
+                "b2": 0,
+                "b3": 0,
+                "b4": 0,
+                "b5": 16,
+                "b7": 6,
+                "b10": 2,
+                "b11": 10,
+                "b12": 10,
+                "b13": 10,
+                "b14": 10,
+            },
             ships={},
         )
         st_soon = GameState(
@@ -8507,6 +8842,7 @@ class TestApiAndCommander(unittest.TestCase):
                 ensure_session_fn=lambda: None,
             )
             try:
+
                 def _seed(st_obj: GameState) -> None:
                     bridge._record_state(
                         st_obj,
@@ -8522,11 +8858,17 @@ class TestApiAndCommander(unittest.TestCase):
 
                 # Validation rejects out-of-range / non-numeric dispatch delay & non-bool refresh
                 with self.assertRaises(ApiRequestError):
-                    bridge.handle_command({"command": "ai_planner_run", "params": {"transport_dispatch_delay_minutes": -1}})
+                    bridge.handle_command(
+                        {"command": "ai_planner_run", "params": {"transport_dispatch_delay_minutes": -1}}
+                    )
                 with self.assertRaises(ApiRequestError):
-                    bridge.handle_command({"command": "ai_planner_run", "params": {"transport_dispatch_delay_minutes": 2000}})
+                    bridge.handle_command(
+                        {"command": "ai_planner_run", "params": {"transport_dispatch_delay_minutes": 2000}}
+                    )
                 with self.assertRaises(ApiRequestError):
-                    bridge.handle_command({"command": "ai_planner_run", "params": {"transport_dispatch_delay_minutes": True}})
+                    bridge.handle_command(
+                        {"command": "ai_planner_run", "params": {"transport_dispatch_delay_minutes": True}}
+                    )
                 with self.assertRaises(ApiRequestError):
                     bridge.handle_command({"command": "ai_planner_run", "refresh": "yes"})
 
@@ -8557,7 +8899,10 @@ class TestApiAndCommander(unittest.TestCase):
                             "name": "BuilderSoon",
                             "temperature": -10,
                             "fields_max": 300,
-                            "buildings": [{"key": k, "target_level": (16 if k == "b1" else v)} for k, v in dest_busy_soon.buildings.items()],
+                            "buildings": [
+                                {"key": k, "target_level": (16 if k == "b1" else v)}
+                                for k, v in dest_busy_soon.buildings.items()
+                            ],
                         },
                     ],
                 }
@@ -8688,7 +9033,10 @@ class TestApiAndCommander(unittest.TestCase):
                             subject="Battle report [02:378:15]",
                             coords="02:378:15",
                             body_text="You won the battle and stole 6000 Pig iron, 4000 Metal.",
-                            parsed_data={"outcome": "win", "loot": {"pig_iron": 6000, "metal": 4000, "kryptonite": 0, "spice": 0}},
+                            parsed_data={
+                                "outcome": "win",
+                                "loot": {"pig_iron": 6000, "metal": 4000, "kryptonite": 0, "spice": 0},
+                            },
                         ),
                         InboxMessage(
                             msg_uid="id:rc_rec_1",
@@ -8700,7 +9048,10 @@ class TestApiAndCommander(unittest.TestCase):
                             subject="Space rubble [02:381:06] recycling report",
                             coords="02:381:06",
                             body_text="Your fleet (4 Recycler) processed 2500 Kryptonite, 500 Spice pieces of rubble there.",
-                            parsed_data={"recycler_count": 4, "harvested": {"pig_iron": 0, "metal": 0, "kryptonite": 2500, "spice": 500}},
+                            parsed_data={
+                                "recycler_count": 4,
+                                "harvested": {"pig_iron": 0, "metal": 0, "kryptonite": 2500, "spice": 500},
+                            },
                         ),
                     ],
                     ts=now_ts - 60.0,
@@ -8848,9 +9199,7 @@ class TestApiAndCommander(unittest.TestCase):
                 self.assertEqual(ren["custom_planet_names"], {"501": "Capital Prime"})
 
                 # Batch rename
-                ren_b = bridge.handle_command(
-                    {"command": "rename_planet", "planet_names": {"502": "Metal Forge"}}
-                )
+                ren_b = bridge.handle_command({"command": "rename_planet", "planet_names": {"502": "Metal Forge"}})
                 self.assertTrue(ren_b["ok"])
                 self.assertEqual(ren_b["custom_planet_names"], {"501": "Capital Prime", "502": "Metal Forge"})
 
@@ -8881,17 +9230,13 @@ class TestApiAndCommander(unittest.TestCase):
                 self.assertEqual(trn_out_q["expected_cargo"]["pig_iron"], 20_000)
                 self.assertFalse(trn_out_q["delivered"])
 
-                trn_ret_matched = next(
-                    q for q in q_list if "Transport ↩" in q["name"] and "02:380:08" in q["name"]
-                )
+                trn_ret_matched = next(q for q in q_list if "Transport ↩" in q["name"] and "02:380:08" in q["name"])
                 self.assertTrue(trn_ret_matched["delivered"])
                 self.assertIsNotNone(trn_ret_matched["delivered_cargo"])
                 self.assertEqual(trn_ret_matched["delivered_cargo"]["pig_iron"], 18_000)
                 self.assertEqual(trn_ret_matched["delivered_cargo"]["metal"], 12_000)
 
-                trn_ret_unmatched = next(
-                    q for q in q_list if "Transport ↩" in q["name"] and "02:399:01" in q["name"]
-                )
+                trn_ret_unmatched = next(q for q in q_list if "Transport ↩" in q["name"] and "02:399:01" in q["name"])
                 self.assertTrue(trn_ret_unmatched["delivered"])
                 self.assertIsNone(trn_ret_unmatched["delivered_cargo"])
 
@@ -8952,24 +9297,38 @@ class TestApiAndCommander(unittest.TestCase):
             try:
                 # 1. Multi-planet building queue retention & active_builders count (#100)
                 p1 = PlanetState(
-                    planet_id=601, name="Alpha", coords="02:380:01", planet_type="normal",
-                    temperature=20, fields_used=20, fields_max=300,
+                    planet_id=601,
+                    name="Alpha",
+                    coords="02:380:01",
+                    planet_type="normal",
+                    temperature=20,
+                    fields_used=20,
+                    fields_max=300,
                     resources=Resources(10_000, 10_000, 5_000, 2_000),
                     storage=Resources(100_000, 100_000, 100_000, 100_000),
                     energy=EnergyBalance(produced=300, used=100),
                     buildings={"b1": 10},
                 )
                 p2 = PlanetState(
-                    planet_id=602, name="Beta", coords="02:380:02", planet_type="normal",
-                    temperature=20, fields_used=20, fields_max=300,
+                    planet_id=602,
+                    name="Beta",
+                    coords="02:380:02",
+                    planet_type="normal",
+                    temperature=20,
+                    fields_used=20,
+                    fields_max=300,
                     resources=Resources(10_000, 10_000, 5_000, 2_000),
                     storage=Resources(100_000, 100_000, 100_000, 100_000),
                     energy=EnergyBalance(produced=300, used=100),
                     buildings={"b1": 8},
                 )
                 st_a = GameState(
-                    universe_id=31, user_id=77, nickname="cmdr", timestamp=now_ts,
-                    planets=(p1, p2), active_planet_id=601,
+                    universe_id=31,
+                    user_id=77,
+                    nickname="cmdr",
+                    timestamp=now_ts,
+                    planets=(p1, p2),
+                    active_planet_id=601,
                     active_queues=(
                         QueueJob(
                             category="building",
@@ -8991,13 +9350,19 @@ class TestApiAndCommander(unittest.TestCase):
                         ),
                     ),
                 )
-                rec_a = bridge._record_state(st_a, fetched_buildings=True, fetched_home=True, observed_active_planet=True)
+                rec_a = bridge._record_state(
+                    st_a, fetched_buildings=True, fetched_home=True, observed_active_planet=True
+                )
                 self.assertEqual(rec_a.active_queues[0].origin_coords, "02:380:01")
 
                 # Switch to planet Beta (602) with its own active build: Alpha's unexpired job is preserved, expired dropped!
                 st_b = GameState(
-                    universe_id=31, user_id=77, nickname="cmdr", timestamp=now_ts + 5.0,
-                    planets=(p1, p2), active_planet_id=602,
+                    universe_id=31,
+                    user_id=77,
+                    nickname="cmdr",
+                    timestamp=now_ts + 5.0,
+                    planets=(p1, p2),
+                    active_planet_id=602,
                     active_queues=(
                         QueueJob(
                             category="building",
@@ -9010,7 +9375,9 @@ class TestApiAndCommander(unittest.TestCase):
                         ),
                     ),
                 )
-                rec_b = bridge._record_state(st_b, fetched_buildings=True, fetched_home=True, observed_active_planet=True)
+                rec_b = bridge._record_state(
+                    st_b, fetched_buildings=True, fetched_home=True, observed_active_planet=True
+                )
                 b_origins = {q.origin_coords for q in rec_b.active_queues if q.category == "building"}
                 self.assertEqual(b_origins, {"02:380:01", "02:380:02"})
                 self.assertEqual(len([q for q in rec_b.active_queues if q.category == "building"]), 2)
@@ -9018,6 +9385,7 @@ class TestApiAndCommander(unittest.TestCase):
 
                 # Non-home updates (e.g. galaxy scan) drop expired retained builds and never duplicate (origin, slot)
                 from dataclasses import replace as _dc_replace
+
                 bridge._last_state = _dc_replace(
                     rec_b,
                     active_queues=tuple(
@@ -9037,13 +9405,22 @@ class TestApiAndCommander(unittest.TestCase):
                     ),
                 )
                 st_scan = GameState(
-                    universe_id=31, user_id=77, nickname="cmdr", timestamp=now_ts + 10.0,
-                    planets=(p1, p2), active_planet_id=602, active_queues=(),
+                    universe_id=31,
+                    user_id=77,
+                    nickname="cmdr",
+                    timestamp=now_ts + 10.0,
+                    planets=(p1, p2),
+                    active_planet_id=602,
+                    active_queues=(),
                 )
-                rec_scan = bridge._record_state(st_scan, fetched_home=False, fetched_buildings=False, observed_active_planet=True)
+                rec_scan = bridge._record_state(
+                    st_scan, fetched_home=False, fetched_buildings=False, observed_active_planet=True
+                )
                 scan_b_jobs = [q for q in rec_scan.active_queues if q.category == "building"]
                 self.assertEqual(len(scan_b_jobs), 2)
-                self.assertEqual({(q.origin_coords, q.queue_slot) for q in scan_b_jobs}, {("02:380:01", 1), ("02:380:02", 1)})
+                self.assertEqual(
+                    {(q.origin_coords, q.queue_slot) for q in scan_b_jobs}, {("02:380:01", 1), ("02:380:02", 1)}
+                )
 
                 # Custom planet names from Config Optimizer propagate to fleet_planner_get, action_graph, buildings_eta, plan, and active_queues
                 bridge._last_state = _dc_replace(
@@ -9066,7 +9443,10 @@ class TestApiAndCommander(unittest.TestCase):
                 bridge.handle_command({"command": "rename_planet", "planet_id": 602, "name": "#TB Planet"})
                 dash_after_rename = bridge.dashboard()
                 self.assertTrue(
-                    any("#TB Planet" in str(q.get("name", "")) for q in (dash_after_rename["state"].get("active_queues") or [])),
+                    any(
+                        "#TB Planet" in str(q.get("name", ""))
+                        for q in (dash_after_rename["state"].get("active_queues") or [])
+                    ),
                 )
                 ag_cmd = bridge.handle_command({"command": "action_graph"})
                 ag_labels = [l.get("label") for l in (ag_cmd["action_graph"].get("lanes") or [])]
@@ -9427,12 +9807,8 @@ class TestApiAndCommander(unittest.TestCase):
 
                 # 1. action_graph strictly rejects non-bool spy_reserved_slots_only; update_config persists bool
                 with self.assertRaises(ApiRequestError):
-                    bridge.handle_command(
-                        {"command": "action_graph", "config": {"spy_reserved_slots_only": "yes"}}
-                    )
-                upd = bridge.handle_command(
-                    {"command": "update_config", "config": {"spy_reserved_slots_only": True}}
-                )
+                    bridge.handle_command({"command": "action_graph", "config": {"spy_reserved_slots_only": "yes"}})
+                upd = bridge.handle_command({"command": "update_config", "config": {"spy_reserved_slots_only": True}})
                 self.assertTrue(upd["ok"])
                 self.assertTrue(upd["config"]["spy_reserved_slots_only"])
                 self.assertTrue(bridge.strategy_config.spy_reserved_slots_only)
@@ -9468,9 +9844,24 @@ class TestApiAndCommander(unittest.TestCase):
                 st_3used = replace(
                     st,
                     active_queues=(
-                        QueueJob(category="fleet", name="Espionage → 02:380:04", origin_coords="02:380:12", remaining_seconds=60.0),
-                        QueueJob(category="fleet", name="Attack → 02:380:01", origin_coords="02:380:12", remaining_seconds=120.0),
-                        QueueJob(category="fleet", name="Attack → 02:380:02", origin_coords="02:380:12", remaining_seconds=120.0),
+                        QueueJob(
+                            category="fleet",
+                            name="Espionage → 02:380:04",
+                            origin_coords="02:380:12",
+                            remaining_seconds=60.0,
+                        ),
+                        QueueJob(
+                            category="fleet",
+                            name="Attack → 02:380:01",
+                            origin_coords="02:380:12",
+                            remaining_seconds=120.0,
+                        ),
+                        QueueJob(
+                            category="fleet",
+                            name="Attack → 02:380:02",
+                            origin_coords="02:380:12",
+                            remaining_seconds=120.0,
+                        ),
                     ),
                 )
                 held = bridge._apply_fleet_slot_holds(st_3used, [spy_a, atk_a])
@@ -9660,12 +10051,8 @@ class TestApiAndCommander(unittest.TestCase):
                 # 1. Default ai_adaptive_execution is False; strict bool validation rejects non-bool
                 self.assertFalse(bridge.strategy_config.ai_adaptive_execution)
                 with self.assertRaises(ApiRequestError):
-                    bridge.handle_command(
-                        {"command": "action_graph", "config": {"ai_adaptive_execution": "yes"}}
-                    )
-                upd = bridge.handle_command(
-                    {"command": "update_config", "config": {"ai_adaptive_execution": True}}
-                )
+                    bridge.handle_command({"command": "action_graph", "config": {"ai_adaptive_execution": "yes"}})
+                upd = bridge.handle_command({"command": "update_config", "config": {"ai_adaptive_execution": True}})
                 self.assertTrue(upd["ok"])
                 self.assertTrue(upd["config"]["ai_adaptive_execution"])
                 self.assertTrue(bridge.strategy_config.ai_adaptive_execution)
@@ -9727,13 +10114,9 @@ class TestApiAndCommander(unittest.TestCase):
 
                 # 4. 10-minute 24h idle bucket deduplication, pruning >24h, and persistence across restart
                 #    One bucket was already recorded by _record_state; re-recording in same 10m slot is a no-op
-                self.assertFalse(
-                    bridge._record_adaptive_idle_bucket_locked(st, fake_plan, now_ts=now_ts)
-                )
+                self.assertFalse(bridge._record_adaptive_idle_bucket_locked(st, fake_plan, now_ts=now_ts))
                 #    Record a previous 10m bucket + inject an expired (>24h) bucket
-                self.assertTrue(
-                    bridge._record_adaptive_idle_bucket_locked(st, fake_plan, now_ts=now_ts - 600.0)
-                )
+                self.assertTrue(bridge._record_adaptive_idle_bucket_locked(st, fake_plan, now_ts=now_ts - 600.0))
                 old_bk = int((now_ts - 200 * 600.0) // 600.0)
                 bridge._adaptive_idle_buckets[old_bk] = {
                     "bucket": old_bk,
@@ -10158,9 +10541,7 @@ class TestApiAndCommander(unittest.TestCase):
                     bridge.strategy_config = StrategyConfig(
                         planner_mode="ai_planner", max_planets=2, ai_adaptive_execution=False
                     )
-                    bridge.handle_command(
-                        {"command": "ai_planner_run", "sync": True, "params": {"patience": 0.25}}
-                    )
+                    bridge.handle_command({"command": "ai_planner_run", "sync": True, "params": {"patience": 0.25}})
                     self.assertNotIn("warm_start_genes", captured_params[-1])
                     bridge.handle_command({"command": "ai_planner_run", "sync": True})
                     self.assertNotIn("warm_start_genes", captured_params[-1])

@@ -51,9 +51,7 @@ SHIP_SLUG_BY_ID: dict[int, str] = {
     6: "starcruiser",
     9: "solar-cells",
 }
-FORBIDDEN_IMPORT_NAMES = frozenset(
-    {"api_server", "e2e_tests", "selenium", "requests"}
-)
+FORBIDDEN_IMPORT_NAMES = frozenset({"api_server", "e2e_tests", "selenium", "requests"})
 FORBIDDEN_WRITE_ATTRS = frozenset(
     {
         "write_text",
@@ -132,9 +130,7 @@ def _assert_action_prereqs_legal(
         bld = dict(planet.buildings) if planet is not None else {}
         res = dict(state.researches or {})
         if act.kind == "BUILD" and act.target_id is not None:
-            unmet = game_data.missing_prerequisites(
-                "buildings", int(act.target_id), buildings=bld, researches=res
-            )
+            unmet = game_data.missing_prerequisites("buildings", int(act.target_id), buildings=bld, researches=res)
             test_case.assertEqual(
                 unmet,
                 [],
@@ -142,9 +138,7 @@ def _assert_action_prereqs_legal(
             )
         elif act.kind == "RESEARCH" and act.target_id is not None:
             rkey = f"r{int(act.target_id)}"
-            unmet = game_data.missing_prerequisites(
-                "research", rkey, buildings=bld, researches=res
-            )
+            unmet = game_data.missing_prerequisites("research", rkey, buildings=bld, researches=res)
             test_case.assertEqual(
                 unmet,
                 [],
@@ -152,16 +146,12 @@ def _assert_action_prereqs_legal(
             )
         elif act.kind == "BUILD_SHIP" and act.target_id is not None:
             slug = SHIP_SLUG_BY_ID.get(int(act.target_id), str(act.target_id))
-            unmet = game_data.missing_prerequisites(
-                "ships", slug, buildings=bld, researches=res
-            )
+            unmet = game_data.missing_prerequisites("ships", slug, buildings=bld, researches=res)
             test_case.assertEqual(
                 unmet,
                 [],
                 f"Illegal executable BUILD_SHIP {slug} with unmet prereqs: {unmet}",
             )
-
-
 
 
 def _assert_notebook_cell_ast_safe(self: unittest.TestCase, src: str, label: str) -> None:
@@ -219,22 +209,13 @@ def _assert_notebook_cell_ast_safe(self: unittest.TestCase, src: str, label: str
                 ):
                     dst_node = node.args[1] if len(node.args) > 1 else None
                     self.assertIsNotNone(dst_node)
-                    dst_names = [
-                        n.id for n in ast.walk(dst_node) if isinstance(n, ast.Name)
-                    ]
+                    dst_names = [n.id for n in ast.walk(dst_node) if isinstance(n, ast.Name)]
                     self.assertTrue(
                         any(nm.startswith("tmp_") for nm in dst_names),
                         f"shutil.copy2 must copy only into tmp_* dir in {label}",
                     )
-            is_dyn_import = (
-                (
-                    isinstance(node.func, ast.Name)
-                    and node.func.id in ("__import__", "import_module")
-                )
-                or (
-                    isinstance(node.func, ast.Attribute)
-                    and node.func.attr == "import_module"
-                )
+            is_dyn_import = (isinstance(node.func, ast.Name) and node.func.id in ("__import__", "import_module")) or (
+                isinstance(node.func, ast.Attribute) and node.func.attr == "import_module"
             )
             if is_dyn_import:
                 dyn_targets: list[str] = []
@@ -260,7 +241,6 @@ def _assert_notebook_cell_ast_safe(self: unittest.TestCase, src: str, label: str
                     )
 
 
-
 # ---------------------------------------------------------------------------
 # notebooks/full_planner.ipynb
 # ---------------------------------------------------------------------------
@@ -277,7 +257,22 @@ FULL_PLANNER_METADATA_FILES = (
 )
 # Sections whose code cell generates data, in notebook order. Section 10 prints each one in its own cell.
 FULL_PLANNER_DATA_SECTIONS = [
-    "1.1", "1.6", "2.3", "3", "4", "5", "6", "6.1", "6.2", "6.3", "6.4", "7.2", "7.3", "8.1", "8.2", "9",
+    "1.1",
+    "1.6",
+    "2.3",
+    "3",
+    "4",
+    "5",
+    "6",
+    "6.1",
+    "6.2",
+    "6.3",
+    "6.4",
+    "7.2",
+    "7.3",
+    "8.1",
+    "8.2",
+    "9",
 ]
 # Section 11, the path to the saved configuration, follows the print cells. Its cells print their own data,
 # except 11.1, which only sets the meta parameters that 11.2 prints.
@@ -286,7 +281,10 @@ FULL_PLANNER_PATH_SECTIONS = ["11.1", "11.2", "11.3", "11.4", "11.5", "11.6", "1
 FULL_PLANNER_PATH_FILE = "full_planner_path.txt"
 # What Section 11 has in common with the optimizer cells of config_optimizer.ipynb, character for character.
 FULL_PLANNER_SHARED_WITH_OPTIMIZER = {
-    "WAREHOUSE_KEYS", "PRODUCTION_FLOW_KEYS", "building_level_flows", "warehouse_level_for",
+    "WAREHOUSE_KEYS",
+    "PRODUCTION_FLOW_KEYS",
+    "building_level_flows",
+    "warehouse_level_for",
 }
 # requirements.txt distributions whose import name differs from the distribution name.
 REQUIREMENT_IMPORT_NAMES = {"python-dotenv": "dotenv", "beautifulsoup4": "bs4"}
@@ -414,8 +412,20 @@ def _add_universe_research(db: GameDatabase) -> None:
             ("r2", 2, "energy-technology", "Energy technology", 1, 12, 21, 20, 40, "TopMiner", "01:010:02", 1.7e9),
             ("r3", 3, "engine-research", "Engine research", 0, 9, None, 13, 35, "OldRecord", "03:200:11", 1.7e9),
             ("r7", 7, "spy-technology", "Spy technology", 4, 0, None, 4, 35, "Me", "", 1.7e9),
-            ("urplasma-extraction", 16, "urplasma-extraction", "Urplasma-extraction", 0, 3, None, 3, None,
-             "Raider", "02:383:02", 1.7e9),
+            (
+                "urplasma-extraction",
+                16,
+                "urplasma-extraction",
+                "Urplasma-extraction",
+                0,
+                3,
+                None,
+                3,
+                None,
+                "Raider",
+                "02:383:02",
+                1.7e9,
+            ),
         ],
     )
     db._conn.executemany(
@@ -461,8 +471,34 @@ def _build_full_planner_workspace(
                 "attacker, defender, outcome, rounds, pig_iron, metal, kryptonite, spice, loot_spice_eq"
                 ") VALUES (?, ?, ?, ?, ?, ?, 'Me', 'Target', ?, 1, ?, ?, ?, ?, ?)",
                 [
-                    (1_700_000_300.0, "m1", "1", "b1", "2023-11-14 22:18:20", "02:383:02", "win", 6000, 2500, 3000, 1000, 4000.0),
-                    (1_700_001_360.0, "m2", "2", "b2", "2023-11-14 22:36:00", "02:383:02", "win", 3000, 1250, 1500, 500, 2000.0),
+                    (
+                        1_700_000_300.0,
+                        "m1",
+                        "1",
+                        "b1",
+                        "2023-11-14 22:18:20",
+                        "02:383:02",
+                        "win",
+                        6000,
+                        2500,
+                        3000,
+                        1000,
+                        4000.0,
+                    ),
+                    (
+                        1_700_001_360.0,
+                        "m2",
+                        "2",
+                        "b2",
+                        "2023-11-14 22:36:00",
+                        "02:383:02",
+                        "win",
+                        3000,
+                        1250,
+                        1500,
+                        500,
+                        2000.0,
+                    ),
                     (1_700_003_200.0, "m3", "3", "b3", "2023-11-14 23:06:40", "02:378:15", "loss", 0, 0, 0, 0, 0.0),
                 ],
             )
@@ -871,9 +907,7 @@ class TestFullPlannerNotebook(unittest.TestCase):
             if re.search(r"(?m)^## 9\. ", _cell_source(cls.cells[pos - 1]))
         )
         cls.metadata_cell_idx = next(
-            idx
-            for idx, cell in enumerate(cls.code_cells)
-            if re.search(r"(?m)^def load_metadata\(", _cell_source(cell))
+            idx for idx, cell in enumerate(cls.code_cells) if re.search(r"(?m)^def load_metadata\(", _cell_source(cell))
         )
         tmp = tempfile.TemporaryDirectory(prefix="si_fp_test_")
         cls.addClassCleanup(tmp.cleanup)
@@ -1037,10 +1071,7 @@ class TestFullPlannerNotebook(unittest.TestCase):
         cells_with_imports = [
             idx
             for idx, cell in enumerate(self.code_cells[1:], start=1)
-            if any(
-                isinstance(node, (ast.Import, ast.ImportFrom))
-                for node in ast.walk(ast.parse(_cell_source(cell)))
-            )
+            if any(isinstance(node, (ast.Import, ast.ImportFrom)) for node in ast.walk(ast.parse(_cell_source(cell))))
         ]
         self.assertEqual(cells_with_imports, [1], "Every import belongs in the Imports cell")
         imported_names: set[str] = set()
@@ -1066,9 +1097,7 @@ class TestFullPlannerNotebook(unittest.TestCase):
         # Section 1: helpers start in the Utils section, with resolve_repo_root in its first cell.
         self.assertIn("## 1. Utils", _cell_source(self.cells[self.code_positions[2] - 1]))
         utils_functions = {
-            node.name
-            for node in ast.parse(_cell_source(self.code_cells[2])).body
-            if isinstance(node, ast.FunctionDef)
+            node.name for node in ast.parse(_cell_source(self.code_cells[2])).body if isinstance(node, ast.FunctionDef)
         }
         self.assertIn("resolve_repo_root", utils_functions)
 
@@ -1131,9 +1160,7 @@ class TestFullPlannerNotebook(unittest.TestCase):
         ]
         self.assertEqual(writes, ["path.write_text"])
         saved_to = next(
-            node
-            for node in save_tree.body
-            if isinstance(node, ast.AnnAssign) and node.target.id == "PATH_ACTIONS_PATH"
+            node for node in save_tree.body if isinstance(node, ast.AnnAssign) and node.target.id == "PATH_ACTIONS_PATH"
         )
         self.assertEqual(ast.unparse(saved_to.value), "METADATA_DIR / PATH_ACTIONS_FILE_NAME")
         self.assertRegex(
@@ -1148,8 +1175,7 @@ class TestFullPlannerNotebook(unittest.TestCase):
             if line.strip() and not line.strip().startswith("#")
         }
         installed = {
-            _requirement_name(spec): spec
-            for spec in re.findall(r'"([^"]+)"', _cell_source(self.code_cells[0]))
+            _requirement_name(spec): spec for spec in re.findall(r'"([^"]+)"', _cell_source(self.code_cells[0]))
         }
         self.assertGreater(len(installed), 0)
         for name, spec in installed.items():
@@ -1409,7 +1435,9 @@ class TestFullPlannerNotebook(unittest.TestCase):
             # The edits change the roster, so the saved configuration no longer applies: stop before Section 11.
             last = self.path_idxs[0] - 1
             ns, _, _ = _run_full_planner(self.code_cells, self.attack_workspace, metadata_dir=meta_dir, last_cell=last)
-            cold_ns, _, _ = _run_full_planner(self.code_cells, self.cold_workspace, metadata_dir=meta_dir, last_cell=last)
+            cold_ns, _, _ = _run_full_planner(
+                self.code_cells, self.cold_workspace, metadata_dir=meta_dir, last_cell=last
+            )
 
         buildings = ns["buildings_catalog_df"].set_index("key")
         self.assertEqual(buildings.loc["b1", "category"], "probe_category")
@@ -1532,7 +1560,10 @@ class TestFullPlannerNotebook(unittest.TestCase):
         self.assertEqual(ns["origin_planet_coords"], "02:380:12")
 
         for name in (
-            "one_way_times_arr", "round_trip_times_arr", "inter_attack_intervals_arr", "attack_dispatch_ts_arr"
+            "one_way_times_arr",
+            "round_trip_times_arr",
+            "inter_attack_intervals_arr",
+            "attack_dispatch_ts_arr",
         ):
             self.assertIsInstance(ns[name], np.ndarray)
             self.assertEqual(ns[name].dtype, np.float64)
@@ -1562,9 +1593,7 @@ class TestFullPlannerNotebook(unittest.TestCase):
 
         # The row lists kept in telemetry_bundle are the rows of the tables and the values of the array.
         bundle = ns["telemetry_bundle"]
-        self.assertEqual(
-            [record["target_coords"] for record in bundle["records"]], list(attacks["target_coords"])
-        )
+        self.assertEqual([record["target_coords"] for record in bundle["records"]], list(attacks["target_coords"]))
         self.assertEqual(len(bundle["recycle_rows"]), len(ns["recycles_df"]))
         self.assertEqual(bundle["dispatch_timestamps"], ns["attack_dispatch_ts_arr"].tolist())
 
@@ -1627,9 +1656,7 @@ class TestFullPlannerNotebook(unittest.TestCase):
             [record["time_source"] for record in records],
             ["observed_dispatch_pair", "calibrated_distance", "calibrated_distance"],
         )
-        self.assertEqual(
-            [record["target_class"] for record in records], ["spacia", "yellow_inactive", "active_colony"]
-        )
+        self.assertEqual([record["target_class"] for record in records], ["spacia", "yellow_inactive", "active_colony"])
         self.assertEqual([record["won"] for record in records], [True, False, True])
         self.assertEqual([record["origin_coords"] for record in records], ["02:381:15", "02:380:12", "02:380:12"])
         self.assertEqual(
@@ -1649,9 +1676,7 @@ class TestFullPlannerNotebook(unittest.TestCase):
         # Without any observed pair, the rough estimate is the only source left.
         unpaired = ns["attack_records_from_battles"](battles[1:], clock[1:], [], "02:380:12", 0.0)
         self.assertEqual({record["time_source"] for record in unpaired}, {"physics_formula"})
-        self.assertEqual(
-            unpaired[0]["one_way_sec"], ns["estimate_physics_one_way_seconds"]("02:380:12", "02:390:07")
-        )
+        self.assertEqual(unpaired[0]["one_way_sec"], ns["estimate_physics_one_way_seconds"]("02:380:12", "02:390:07"))
 
         # Dispatches alone (no battle report yet): one record each, loot from loot_json.
         raid_records = ns["attack_records_from_raids"](raids, "02:380:12")
@@ -2109,9 +2134,7 @@ class TestFullPlannerNotebook(unittest.TestCase):
         self.assertEqual(list(cold_ns["planet_contexts_df"]["planet_status"]), ["empty_colony_slot"] * 11)
         cold_buildings = cold_ns["planet_buildings_df"]
         self.assertEqual(len(cold_buildings), 11 * 21)
-        self.assertEqual(
-            (set(cold_buildings["current_level"]), set(cold_buildings["next_level"])), ({0}, {1})
-        )
+        self.assertEqual((set(cold_buildings["current_level"]), set(cold_buildings["next_level"])), ({0}, {1}))
         self.assertEqual(set(cold_ns["planet_ships_df"]["stationed"]), {0})
 
         # An empty table has the columns of a filled one, in the same order.
@@ -2152,7 +2175,9 @@ class TestFullPlannerNotebook(unittest.TestCase):
         self.assertEqual(cold_ns["PATH_SEARCH_SUMMARY"]["why"], "no strategy can start any step")
         self.assertFalse(cold_ns["PATH_SEARCH_SUMMARY"]["genetic_algorithm_ran"])
         cold_summary = cold_ns["BEST_PATH_SUMMARY"]
-        self.assertEqual((cold_summary["status"], cold_summary["time"], cold_summary["discounted_reward"]), ("stuck", "never", 0.0))
+        self.assertEqual(
+            (cold_summary["status"], cold_summary["time"], cold_summary["discounted_reward"]), ("stuck", "never", 0.0)
+        )
         self.assertEqual((cold_summary["steps_started"], cold_summary["waiting_for"]), (0, "Colony ship 1"))
         self.assertEqual(cold_summary["colonies_founded"], 0)
         self.assertFalse(cold_summary["ends_with_the_output_of_the_configuration"])
@@ -2285,9 +2310,7 @@ class TestFullPlannerNotebook(unittest.TestCase):
         )
 
         self.assertEqual(ns["UNIVERSE_RESEARCH_MAX_LEVELS"]["r1"], 27)
-        self.assertEqual(
-            ns["UNIVERSE_RESEARCH_MAX_LEVELS"], dict(zip(table["key"], table["universe_max_level"]))
-        )
+        self.assertEqual(ns["UNIVERSE_RESEARCH_MAX_LEVELS"], dict(zip(table["key"], table["universe_max_level"])))
         self.assertEqual(
             ns["UNIVERSE_RESEARCH_SUMMARY"],
             {
@@ -2302,9 +2325,7 @@ class TestFullPlannerNotebook(unittest.TestCase):
         )
         sources = ns["universe_research_sources"]
         self.assertEqual([row["research_key"] for row in sources["ledger_rows"]][-1], "urplasma-extraction")
-        self.assertEqual(
-            sources["spied_levels"]["r8"], {"level": 9, "holder": "Late", "holder_coords": "02:391:07"}
-        )
+        self.assertEqual(sources["spied_levels"]["r8"], {"level": 9, "holder": "Late", "holder_coords": "02:391:07"})
         self.assertEqual(sorted(sources["spied_levels"]), ["r1", "r13", "r4", "r8", "r9"])
 
         # Ties: the server record names the source before a spy report does, a spy report before the own level.
@@ -2473,8 +2494,7 @@ class TestFullPlannerNotebook(unittest.TestCase):
         self.assertIn('  "b1": {"name": "Pig iron mine", ', section_out["1.6"])
         self.assertIn('"max_planets": 11', section_out["1.6"])
         self.assertIn(
-            "[attack_dispatch_ts_arr] numpy.ndarray, shape=(3,), dtype=float64\n"
-            "[1700000000 1700001000 1700003000]",
+            "[attack_dispatch_ts_arr] numpy.ndarray, shape=(3,), dtype=float64\n[1700000000 1700001000 1700003000]",
             section_out["2.3"],
         )
         top_b17_metal = game_data.building_cost(17, 50)["metal"]
@@ -2482,9 +2502,7 @@ class TestFullPlannerNotebook(unittest.TestCase):
         self.assertIn(f" {top_b17_metal} ", section_out["6.1"])
         s7_closure_line = next(ln for ln in section_out["7.2"].split("\n") if ln.startswith('  "s7": '))
         s7_closure = json.loads(s7_closure_line.split(": ", 1)[1].rstrip(","))
-        self.assertEqual(
-            set(s7_closure["all_prerequisites"]), set(ns["TECH_GRAPH"].transitive_requirements("s7"))
-        )
+        self.assertEqual(set(s7_closure["all_prerequisites"]), set(ns["TECH_GRAPH"].transitive_requirements("s7")))
         self.assertEqual(s7_closure["all_unlocks"], [])
         self.assertIn('"b5": 7', section_out["6"])
         self.assertEqual(section_out["6"].count('"fields_max": 300'), 10)
@@ -2554,10 +2572,9 @@ class TestFullPlannerNotebook(unittest.TestCase):
             ],
         )
 
-
-# ---------------------------------------------------------------------------
-# notebooks/config_optimizer.ipynb
-# ---------------------------------------------------------------------------
+    # ---------------------------------------------------------------------------
+    # notebooks/config_optimizer.ipynb
+    # ---------------------------------------------------------------------------
     # ------------------------------------------------------------------ Section 11: the W-week discounted path
 
     def _tiny_path(
@@ -2606,8 +2623,13 @@ class TestFullPlannerNotebook(unittest.TestCase):
             ],
         }
         problem = ns["build_path_problem"](
-            target, [planet], [context], [planet], {},
-            colony_founding_hours=0.0, demolition_time_factor=demolition_time_factor,
+            target,
+            [planet],
+            [context],
+            [planet],
+            {},
+            colony_founding_hours=0.0,
+            demolition_time_factor=demolition_time_factor,
         )
         simulator = ns["EmpirePathSimulator"](
             problem,
@@ -2631,7 +2653,9 @@ class TestFullPlannerNotebook(unittest.TestCase):
         horizon_hours = 168.0 * weeks
 
         # The problem: every level between the roster of today and the saved configuration, once.
-        self.assertEqual(ns["PATH_TARGET_PATH"], self._metadata_for(self.attack_workspace) / CONFIG_OPTIMIZER_RESULT_FILE)
+        self.assertEqual(
+            ns["PATH_TARGET_PATH"], self._metadata_for(self.attack_workspace) / CONFIG_OPTIMIZER_RESULT_FILE
+        )
         self.assertTrue(ns["path_target_checks_df"]["same_planet"].all())
         self.assertEqual(len(problem["planets"]), 11)
         self.assertEqual([planet["founded"] for planet in problem["planets"]], [True] + [False] * 10)
@@ -2709,16 +2733,16 @@ class TestFullPlannerNotebook(unittest.TestCase):
         weekly_df = ns["best_path_weekly_df"]
         self.assertEqual(len(weekly_df), weeks)
         self.assertEqual(list(weekly_df["week"]), list(range(1, weeks + 1)))
-        np.testing.assert_allclose(
-            weekly_df["discount_weight"], [discount ** w for w in range(weeks)], rtol=1e-12
-        )
+        np.testing.assert_allclose(weekly_df["discount_weight"], [discount**w for w in range(weeks)], rtol=1e-12)
         np.testing.assert_allclose(
             weekly_df["discounted_spice_eq"],
             weekly_df["discount_weight"] * weekly_df["spice_eq"],
             rtol=1e-12,
         )
         self.assertAlmostEqual(float(weekly_df["discounted_spice_eq"].sum()), best["discounted_reward"], places=5)
-        self.assertAlmostEqual(float(weekly_df["cumulative_discounted_spice_eq"].iloc[-1]), best["discounted_reward"], places=5)
+        self.assertAlmostEqual(
+            float(weekly_df["cumulative_discounted_spice_eq"].iloc[-1]), best["discounted_reward"], places=5
+        )
 
         levels_df = ns["best_path_levels_df"]
         self.assertEqual(levels_df.iloc[0]["factor_kind"], "colonies")
@@ -2726,7 +2750,9 @@ class TestFullPlannerNotebook(unittest.TestCase):
         for row in levels_df[levels_df["factor_kind"] == "building"].itertuples(index=False):
             expected_max = max((lv.get(row.key, 0) for lv in best["final_levels"]), default=0)
             self.assertEqual(int(row.reached_max_level), expected_max)
-            self.assertEqual(summary["max_building_levels_reached"][row.name], f"{expected_max}/{int(row.target_max_level)}")
+            self.assertEqual(
+                summary["max_building_levels_reached"][row.name], f"{expected_max}/{int(row.target_max_level)}"
+            )
         for row in levels_df[levels_df["factor_kind"] == "research"].itertuples(index=False):
             expected_r = int(best["final_research"].get(row.key, 0))
             self.assertEqual(int(row.reached_max_level), expected_r)
@@ -2741,7 +2767,11 @@ class TestFullPlannerNotebook(unittest.TestCase):
         np.testing.assert_allclose(path["end_hours"] - path["start_hours"], path["duration_hours"], rtol=0, atol=1e-9)
         position = {step: place for place, step in enumerate(best["order"])}
         self.assertEqual([steps[step]["name"] for step in best["order"]], list(path["name"]))
-        founding = {step["planet"]: position[step["id"]] for step in steps if step["kind"] == "colonize" and step["id"] in position}
+        founding = {
+            step["planet"]: position[step["id"]]
+            for step in steps
+            if step["kind"] == "colonize" and step["id"] in position
+        }
         chain_place: dict[tuple, int] = {}
         for step_id in best["order"]:
             step = steps[step_id]
@@ -2833,7 +2863,9 @@ class TestFullPlannerNotebook(unittest.TestCase):
                 "last_action": actions[-1],
             },
         )
-        self.assertIn(f"{len(rows)} actions ({weeks} weeks) saved in {FULL_PLANNER_PATH_FILE}", stdout[self.path_idxs[-1]])
+        self.assertIn(
+            f"{len(rows)} actions ({weeks} weeks) saved in {FULL_PLANNER_PATH_FILE}", stdout[self.path_idxs[-1]]
+        )
 
         # Whatever a strategy proposes, the simulator refuses a step on a planet that is not founded yet.
         simulator = ns["PATH_SIMULATOR"]
@@ -2878,7 +2910,7 @@ class TestFullPlannerNotebook(unittest.TestCase):
         rate_after = after_out[1] / 6.0 + after_out[3] / 3.0
         expected_w1 = rate_before * dur + rate_after * (168.0 - dur)
         expected_w2 = rate_after * 168.0
-        expected_disc = expected_w1 + 0.80 * expected_w2 + (0.80 ** 2) * expected_w2
+        expected_disc = expected_w1 + 0.80 * expected_w2 + (0.80**2) * expected_w2
         self.assertAlmostEqual(run["weekly_spice_eq"][0], expected_w1, places=9)
         self.assertAlmostEqual(run["weekly_spice_eq"][1], expected_w2, places=9)
         self.assertAlmostEqual(run["discounted_reward"], expected_disc, places=9)
@@ -2898,7 +2930,9 @@ class TestFullPlannerNotebook(unittest.TestCase):
         simulator = ns["EmpirePathSimulator"](
             problem, {"pig_iron": mined, "metal": 0.0, "kryptonite": kryptonite, "spice": 0.0}
         )
-        self.assertAlmostEqual(simulator.run(ns["PathStrategy"]("test", rule="cheapest"))["start"][0], wait / 2.0, places=9)
+        self.assertAlmostEqual(
+            simulator.run(ns["PathStrategy"]("test", rule="cheapest"))["start"][0], wait / 2.0, places=9
+        )
 
         # 3. The furnace runs only until the Metal of the next step is there, then the Pig iron is kept.
         levels = {"b1": 5, "b2": 5, "b5": 5}
@@ -2933,7 +2967,9 @@ class TestFullPlannerNotebook(unittest.TestCase):
             problem, run, _ = self._tiny_path(
                 ns, levels, {"b1": 3, "b5": 2}, stock=rich, fields_max=5, strategy=strategy, demolition_time_factor=0.5
             )
-            build, teardown = (next(s["id"] for s in problem["steps"] if s["kind"] == kind) for kind in ("build", "demolish"))
+            build, teardown = (
+                next(s["id"] for s in problem["steps"] if s["kind"] == kind) for kind in ("build", "demolish")
+            )
             self.assertEqual(run["start"][teardown], 0.0)
             self.assertAlmostEqual(run["end"][teardown], 0.5 * base_hours(3, 1) / speed, places=12)
             self.assertEqual(run["start"][build], run["end"][teardown])
@@ -2942,7 +2978,10 @@ class TestFullPlannerNotebook(unittest.TestCase):
 
         # 6. Stuck path and missing prerequisite check.
         problem, run, _ = self._tiny_path(ns, {}, {"b1": 1})
-        self.assertEqual((run["status"], run["hours"], run["steps_started"], run["discounted_reward"]), ("stuck", float("inf"), 0, 0.0))
+        self.assertEqual(
+            (run["status"], run["hours"], run["steps_started"], run["discounted_reward"]),
+            ("stuck", float("inf"), 0, 0.0),
+        )
         with self.assertRaisesRegex(ValueError, "Weapons factory 1 on 09:099:09 needs Energy technology 1, but"):
             self._tiny_path(ns, {}, {"b9": 1})
 
@@ -2950,15 +2989,23 @@ class TestFullPlannerNotebook(unittest.TestCase):
         levels = {"b1": 1, "b3": 1, "b5": 2}
         problem, run, simulator = self._tiny_path(ns, levels, {**levels, "b7": 2, "b1": 3})
         bounds = dict(simulator.lower_bounds())
-        queue = base_hours(7, 1) / speed + base_hours(7, 2) / (2 * speed) + (base_hours(1, 2) + base_hours(1, 3)) / (3 * speed)
+        queue = (
+            base_hours(7, 1) / speed
+            + base_hours(7, 2) / (2 * speed)
+            + (base_hours(1, 2) + base_hours(1, 3)) / (3 * speed)
+        )
         self.assertAlmostEqual(bounds["building queue of 09:099:09"], queue, places=12)
         need = [sum(step["cost"][position] for step in problem["steps"]) for position in range(4)]
         top = _catalog_planet_income({**levels, "b1": 3}, 0, 0, 0, 0, speed)
         self.assertAlmostEqual(bounds["supply of Kryptonite"], need[2] / top[3], places=9)
         self.assertEqual(bounds["supply of Metal"], float("inf"))
 
-        _, clipped, _ = self._tiny_path(ns, {"b1": 1, "b3": 1, "b5": 2}, {"b1": 2, "b3": 1, "b5": 2}, horizon_hours=0.01)
-        self.assertEqual((clipped["status"], clipped["steps_started"], clipped["stopped_at_hours"]), ("horizon", 0, 0.01))
+        _, clipped, _ = self._tiny_path(
+            ns, {"b1": 1, "b3": 1, "b5": 2}, {"b1": 2, "b3": 1, "b5": 2}, horizon_hours=0.01
+        )
+        self.assertEqual(
+            (clipped["status"], clipped["steps_started"], clipped["stopped_at_hours"]), ("horizon", 0, 0.01)
+        )
 
         # 8. Spare percentage deducts from both mine income and raid loot, and scales net weekly reward.
         for bad_spare in (
@@ -2998,8 +3045,12 @@ class TestFullPlannerNotebook(unittest.TestCase):
         )
         # Fixed fleet_command_center_level=3 gives 1 + 3 = 4 slots.
         _, run_cc, _ = self._tiny_path(
-            ns, levels_b10, {**levels_b10, "b10": 1}, stock=cost_of(10, 1),
-            slot_attack_income=slot_loot, fleet_command_center_level=3,
+            ns,
+            levels_b10,
+            {**levels_b10, "b10": 1},
+            stock=cost_of(10, 1),
+            slot_attack_income=slot_loot,
+            fleet_command_center_level=3,
         )
         self.assertEqual((run_cc["start_fleet_slots"], run_cc["final_fleet_slots"]), (4, 4))
 
@@ -3044,7 +3095,9 @@ class TestFullPlannerNotebook(unittest.TestCase):
         _, summary_fixed = ns["median_attack_income"](
             attacks, ns["round_trip_times_arr"], ns["live_planet_states"], attacks_per_day=24.0
         )
-        self.assertEqual((summary_fixed["attacks_per_day"], summary_fixed["pace_set_by"]), (24.0, "PATH_ATTACKS_PER_DAY"))
+        self.assertEqual(
+            (summary_fixed["attacks_per_day"], summary_fixed["pace_set_by"]), (24.0, "PATH_ATTACKS_PER_DAY")
+        )
         self.assertEqual(summary_fixed["income_per_hour"]["pig_iron"], 3000.0)
         for frame, rt, planets_arg, pace in (
             (ns["attacks_df"].iloc[:0], np.array([]), ns["live_planet_states"], None),
@@ -3117,7 +3170,9 @@ class TestFullPlannerNotebook(unittest.TestCase):
         scarcity = ns["PATH_RUNS"]["discounted payback at scarcity values"]["discounted_reward"]
         self.assertGreaterEqual(summary["tuned_reward"], scarcity * (1.0 - 1e-12))
         named = max(run["discounted_reward"] for run in ns["PATH_RUNS"].values())
-        self.assertGreaterEqual(ns["BEST_PATH_RUN"]["discounted_reward"], max(named, summary["tuned_reward"]) * (1.0 - 1e-12))
+        self.assertGreaterEqual(
+            ns["BEST_PATH_RUN"]["discounted_reward"], max(named, summary["tuned_reward"]) * (1.0 - 1e-12)
+        )
         # On this small configuration every step finishes within the 26 weeks (`status == "reached"`), covering all 5 kinds.
         self.assertEqual(ns["BEST_PATH_RUN"]["status"], "reached")
         self.assertTrue(ns["BEST_PATH_SUMMARY"]["ends_with_the_output_of_the_configuration"])
@@ -3140,12 +3195,24 @@ class TestFullPlannerNotebook(unittest.TestCase):
 
         # Same seed gives the exact same result; all 8 genes map onto strategy parameters.
         settings = dict(
-            population_size=4, generations=2, tournament_size=3, crossover_rate=0.9, mutation_rate=0.3,
-            elite_count=2, random_seed=ns["PATH_GA_RANDOM_SEED"], revalue_every_steps=ns["PATH_REVALUE_EVERY_STEPS"],
+            population_size=4,
+            generations=2,
+            tournament_size=3,
+            crossover_rate=0.9,
+            mutation_rate=0.3,
+            elite_count=2,
+            random_seed=ns["PATH_GA_RANDOM_SEED"],
+            revalue_every_steps=ns["PATH_REVALUE_EVERY_STEPS"],
         )
         start = (
-            ns["PATH_SCARCITY_FOCUS"], ns["PATH_CRITICAL_QUEUE_SHARE"], ns["PATH_PATIENCE"],
-            ns["PATH_SPEED_WEIGHT"], 0.0, 0.0, 0.0, 0.0,
+            ns["PATH_SCARCITY_FOCUS"],
+            ns["PATH_CRITICAL_QUEUE_SHARE"],
+            ns["PATH_PATIENCE"],
+            ns["PATH_SPEED_WEIGHT"],
+            0.0,
+            0.0,
+            0.0,
+            0.0,
         )
         genes, run, again = ns["tune_path_strategy"](ns["PATH_SIMULATOR"], start, **settings)
         self.assertEqual(run["discounted_reward"], summary["tuned_reward"])
@@ -3155,17 +3222,29 @@ class TestFullPlannerNotebook(unittest.TestCase):
         self.assertEqual(
             strategy.parameters(),
             {
-                "rule": "payback", "values": "scarcity", "focus": 2.0, "critical_share": 0.5,
-                "patience": 0.75, "speed_weight": 1.25, "bias": (2.0, 1.0, 0.5, 4.0),
+                "rule": "payback",
+                "values": "scarcity",
+                "focus": 2.0,
+                "critical_share": 0.5,
+                "patience": 0.75,
+                "speed_weight": 1.25,
+                "bias": (2.0, 1.0, 0.5, 4.0),
             },
         )
         self.assertEqual(strategy.revalue_every, 7)
         for off in ({"generations": 0}, {"population_size": 1}):
             _, best_run, empty, why = ns["search_fastest_path"](
-                ns["PATH_SIMULATOR"], ns["PATH_STRATEGIES"], ns["PATH_RUNS"], ns["PATH_REWARD_UPPER_BOUND"],
-                tolerance=-1.0, start_genes=start, **{**settings, **off},
+                ns["PATH_SIMULATOR"],
+                ns["PATH_STRATEGIES"],
+                ns["PATH_RUNS"],
+                ns["PATH_REWARD_UPPER_BOUND"],
+                tolerance=-1.0,
+                start_genes=start,
+                **{**settings, **off},
             )
-            self.assertEqual((best_run["discounted_reward"], len(empty), why["genetic_algorithm_ran"]), (named, 0, False))
+            self.assertEqual(
+                (best_run["discounted_reward"], len(empty), why["genetic_algorithm_ran"]), (named, 0, False)
+            )
             self.assertEqual(why["why"], "the genetic algorithm is switched off")
 
 
@@ -3174,8 +3253,26 @@ CONFIG_OPTIMIZER_PATH = REPO_ROOT / "notebooks" / "config_optimizer.ipynb"
 CONFIG_OPTIMIZER_RESULT_FILE = "config_optimizer_result.json"
 # Section number of the heading above every code cell, in notebook order.
 CONFIG_OPTIMIZER_SECTIONS = [
-    "0", "0.1", "1", "2.1", "2.2", "2.3", "2.4", "2.5", "2.6", "2.7", "2.8", "2.9", "3.1", "3.2",
-    "4.1", "4.2", "4.3", "4.4", "4.5", "5",
+    "0",
+    "0.1",
+    "1",
+    "2.1",
+    "2.2",
+    "2.3",
+    "2.4",
+    "2.5",
+    "2.6",
+    "2.7",
+    "2.8",
+    "2.9",
+    "3.1",
+    "3.2",
+    "4.1",
+    "4.2",
+    "4.3",
+    "4.4",
+    "4.5",
+    "5",
 ]
 # Sections whose code cell generates data and ends by printing it. Section 1, the meta parameters, only sets
 # values; Section 4.1 prints them.
@@ -3201,8 +3298,20 @@ def _config_optimizer_meta_parameters() -> dict[str, object]:
         "RESEARCH_PERCENT_OF_UNIVERSE_MAX": 100.0,
         "MIN_FLEET_PER_PLANET": {"s2": 10, "s10": 10, "s11": 10},
         "MISC_BUILDING_LEVELS": {
-            "b6": 0, "b7": 12, "b8": 0, "b10": 5, "b11": 0, "b12": 0, "b13": 0, "b14": 0,
-            "b15": 0, "b16": 0, "b18": 0, "b19": 0, "b20": 0, "b21": 0,
+            "b6": 0,
+            "b7": 12,
+            "b8": 0,
+            "b10": 5,
+            "b11": 0,
+            "b12": 0,
+            "b13": 0,
+            "b14": 0,
+            "b15": 0,
+            "b16": 0,
+            "b18": 0,
+            "b19": 0,
+            "b20": 0,
+            "b21": 0,
         },
         "MISC_BUILDING_LEVELS_BY_SLOT": {1: {"b8": 12}},
         "WAREHOUSE_HOURS_OF_PRODUCTION": 24.0,
@@ -3269,7 +3378,7 @@ def _top_level_definitions(code_cells: list[dict]) -> dict[str, tuple[int, str]]
             else:
                 continue
             first_line = min([node.lineno, *(decorator.lineno for decorator in getattr(node, "decorator_list", []))])
-            text = "\n".join(lines[first_line - 1:node.end_lineno])
+            text = "\n".join(lines[first_line - 1 : node.end_lineno])
             for name in names:
                 found[name] = (idx, text)
     return found
@@ -3414,10 +3523,7 @@ class TestConfigOptimizerNotebook(unittest.TestCase):
         cells_with_imports = [
             idx
             for idx, cell in enumerate(self.code_cells[1:], start=1)
-            if any(
-                isinstance(node, (ast.Import, ast.ImportFrom))
-                for node in ast.walk(ast.parse(_cell_source(cell)))
-            )
+            if any(isinstance(node, (ast.Import, ast.ImportFrom)) for node in ast.walk(ast.parse(_cell_source(cell))))
         ]
         self.assertEqual(cells_with_imports, [1], "Every import belongs in the Imports cell")
         imported_names: set[str] = set()
@@ -3469,9 +3575,7 @@ class TestConfigOptimizerNotebook(unittest.TestCase):
         # Every other cell only defines things: no statement of it prints or calls anything.
         for idx, section in enumerate(self.sections[2:], start=2):
             body = ast.parse(_cell_source(self.code_cells[idx])).body
-            top_level_calls = [
-                node for node in body if isinstance(node, ast.Expr) and isinstance(node.value, ast.Call)
-            ]
+            top_level_calls = [node for node in body if isinstance(node, ast.Expr) and isinstance(node.value, ast.Call)]
             if section in CONFIG_OPTIMIZER_PRINTING_SECTIONS:
                 printers = [
                     node.func.id
@@ -3539,8 +3643,7 @@ class TestConfigOptimizerNotebook(unittest.TestCase):
             if line.strip() and not line.strip().startswith("#")
         }
         installed = {
-            _requirement_name(spec): spec
-            for spec in re.findall(r'"([^"]+)"', _cell_source(self.code_cells[0]))
+            _requirement_name(spec): spec for spec in re.findall(r'"([^"]+)"', _cell_source(self.code_cells[0]))
         }
         self.assertGreater(len(installed), 0)
         for name, spec in installed.items():
@@ -3636,9 +3739,20 @@ class TestConfigOptimizerNotebook(unittest.TestCase):
         ):
             self.assertIn(name, helpers)
         # The statements that load the inputs are copies too.
-        for name in ("live_planet_states", "empire_planet_states", "PLANET_PARAM_CONTEXTS", "TECH_GRAPH",
-                     "universe_research_sources", "universe_research_df", "UNIVERSE_RESEARCH_MAX_LEVELS",
-                     "TECHNOLOGY_METADATA", "RESOURCE_METADATA", "PLANNER_SETTINGS", "METADATA_DIR", "LIVE_DB_PATH"):
+        for name in (
+            "live_planet_states",
+            "empire_planet_states",
+            "PLANET_PARAM_CONTEXTS",
+            "TECH_GRAPH",
+            "universe_research_sources",
+            "universe_research_df",
+            "UNIVERSE_RESEARCH_MAX_LEVELS",
+            "TECHNOLOGY_METADATA",
+            "RESOURCE_METADATA",
+            "PLANNER_SETTINGS",
+            "METADATA_DIR",
+            "LIVE_DB_PATH",
+        ):
             self.assertIn(name, shared)
         # What moved here is no longer in full_planner: the optimizer has one home. The path section of
         # full_planner needs four of its statements; they are copies like the helpers (checked above).
@@ -3752,7 +3866,8 @@ class TestConfigOptimizerNotebook(unittest.TestCase):
                 columns = [row[1] for row in conn.execute("PRAGMA table_info(planet_snapshots)") if row[1] != "id"]
                 copied = ", ".join("?" if column in ("ts", "researches_json") else column for column in columns)
                 for ts, researches in (
-                    (1_600_000_000.0, '{"r1": 3}'), (1_800_000_000.0, '{"r1": 9, "r2": 4, "r5": "x"}')
+                    (1_600_000_000.0, '{"r1": 3}'),
+                    (1_800_000_000.0, '{"r1": 9, "r2": 4, "r5": "x"}'),
                 ):
                     conn.execute(
                         f"INSERT INTO planet_snapshots ({', '.join(columns)}) SELECT {copied} FROM planet_snapshots "
@@ -3788,8 +3903,11 @@ class TestConfigOptimizerNotebook(unittest.TestCase):
         metadata_dir = ns["METADATA_DIR"]
         self.assertNotEqual(metadata_dir.resolve(), FULL_PLANNER_METADATA_DIR.resolve())
         self.assertEqual(ns["CONFIG_RESULT_PATH"], metadata_dir / CONFIG_OPTIMIZER_RESULT_FILE)
-        originals = {name: digest for name, digest in self.repository_metadata_before.items()
-                     if name != CONFIG_OPTIMIZER_RESULT_FILE}
+        originals = {
+            name: digest
+            for name, digest in self.repository_metadata_before.items()
+            if name != CONFIG_OPTIMIZER_RESULT_FILE
+        }
         after_run = self._folder_fingerprint(metadata_dir)
         self.assertEqual(sorted(set(after_run) - set(originals)), [CONFIG_OPTIMIZER_RESULT_FILE])
         self.assertEqual({name: after_run[name] for name in originals}, originals)
@@ -4456,7 +4574,7 @@ class TestConfigOptimizerNotebook(unittest.TestCase):
                 ns["PLAN_ACCOUNT_CONTEXT"],
                 plan["slot_index"],
                 ns["empire_planet_states"][index],
-                is_empty_slot=index > 0
+                is_empty_slot=index > 0,
             )
             for index, plan in enumerate(plans)
         ]
@@ -4876,7 +4994,7 @@ class TestConfigOptimizerNotebook(unittest.TestCase):
         # research of the plan: Graviton technology 10, Black hole research 2, ...
         self.assertEqual(
             plans[1]["capacity_needed_for"],
-            {"pig_iron": "s11", "metal": "b7 L12", "kryptonite": "b7 L12", "spice": "b7 L12"}
+            {"pig_iron": "s11", "metal": "b7 L12", "kryptonite": "b7 L12", "spice": "b7 L12"},
         )
         self.assertEqual(plans[1]["capacity_needed"]["metal"], float(game_data.building_cost(7, 12)["metal"]))
         own, planned = ns["colony_researches"], ns["PLANNED_RESEARCH_LEVELS"]
@@ -5063,7 +5181,11 @@ class TestConfigOptimizerNotebook(unittest.TestCase):
             ValueError, r"Planet EMPTY:01 \(slot 2\) has 32 fields, .* need 33: lower MISC_BUILDING_LEVELS"
         ):
             ns["EmpireProductionModel"](
-                [tiny], [generic_context], optimized_keys=model.optimized_keys, target_ship_key="s16", month_days=30.0,
+                [tiny],
+                [generic_context],
+                optimized_keys=model.optimized_keys,
+                target_ship_key="s16",
+                month_days=30.0,
                 warehouse_hours=24.0,
             )
         just_enough = ns["EmpireProductionModel"](
@@ -5076,9 +5198,9 @@ class TestConfigOptimizerNotebook(unittest.TestCase):
         )
         self.assertTrue(just_enough.is_feasible(just_enough.min_levels[None])[0])
         self.assertEqual(
-            simulated(
-                just_enough, 0, dict(zip(model.optimized_keys, just_enough.min_levels[0].tolist()))
-            )["planet_warehouse_levels"].tolist(),
+            simulated(just_enough, 0, dict(zip(model.optimized_keys, just_enough.min_levels[0].tolist())))[
+                "planet_warehouse_levels"
+            ].tolist(),
             [0, 4, 3, 3],
         )
 
@@ -5262,7 +5384,7 @@ class TestConfigOptimizerNotebook(unittest.TestCase):
                     np.testing.assert_allclose(
                         own_limits, toy.simulate(catalogue[:, None, :], [planet])["planet_limits"][:, 0]
                     )
-                    self.assertTrue((toy_limits[planet, toy_counts[planet]:] == 0.0).all())
+                    self.assertTrue((toy_limits[planet, toy_counts[planet] :] == 0.0).all())
                     for resource in range(2):
                         self.assertAlmostEqual(
                             own_limits[:, resource].max(), every_limit[planet][:, resource].max(), places=9
@@ -5542,13 +5664,13 @@ class TestConfigOptimizerNotebook(unittest.TestCase):
         self.assertEqual(rerun[0].tolist(), chosen.tolist())
         pd.testing.assert_frame_equal(rerun[1], history)
         # The polish ran on the model of the last round, with the reserve that this round started from.
-        last_reserve = rounds.iloc[-1][
-            [f"{resource}_reserved" for resource in ns["RESOURCE_KEYS"]]
-        ].to_numpy(dtype=float)
+        last_reserve = rounds.iloc[-1][[f"{resource}_reserved" for resource in ns["RESOURCE_KEYS"]]].to_numpy(
+            dtype=float
+        )
         round_model = ns["PRODUCTION_MODEL"].with_central_reserve(last_reserve)
         self.assertEqual(
             best.tolist(),
-            ns["polish_both_ways"](round_model, ns["ga_levels_arr"], ns["HILL_CLIMB_STEP_SIZES"]).tolist()
+            ns["polish_both_ways"](round_model, ns["ga_levels_arr"], ns["HILL_CLIMB_STEP_SIZES"]).tolist(),
         )
 
         # Limits: the bottleneck is used in full, and the result is its number of ships.
@@ -5687,12 +5809,12 @@ class TestConfigOptimizerNotebook(unittest.TestCase):
         self.assertAlmostEqual(
             summary["pig_iron_left_over_per_month"],
             720.0 * float(outcome["planet_net_per_hour"][:, 0].sum()),
-            delta=40.0
+            delta=40.0,
         )
         tables = ns["BEST_CONFIG_TABLES"]
         self.assertEqual(
             list(tables),
-            ["best_config_limits", "best_config_buildings", "best_config_planets", "best_config_warehouses"]
+            ["best_config_limits", "best_config_buildings", "best_config_planets", "best_config_warehouses"],
         )
         for table_name, table in tables.items():
             self.assertIs(table, ns[f"{table_name}_df"], f"{table_name} must be the {table_name}_df table itself")
@@ -5713,9 +5835,7 @@ class TestConfigOptimizerNotebook(unittest.TestCase):
         self.assertEqual(float(idle_tables[1]["ships_built_per_month"].sum()), 0.0)
         self.assertEqual(idle_tables[2]["used_percent"].tolist(), [0.0] * 4)
         idle_summary = ns["summarize_best_configuration"](model, model.min_levels, *idle_tables[:3], own, planned)
-        self.assertEqual(
-            (idle_summary["ships_per_month"], idle_summary["investment_in_months_of_output"]), (0.0, None)
-        )
+        self.assertEqual((idle_summary["ships_per_month"], idle_summary["investment_in_months_of_output"]), (0.0, None))
         self.assertEqual(idle_summary["bottleneck"], "metal, kryptonite, spice, shipyards")
 
         # Warehouses: one row per planet and resource, with the level that every rule asks for.
@@ -5730,7 +5850,10 @@ class TestConfigOptimizerNotebook(unittest.TestCase):
         )
         self.assertEqual(set(warehouses["built_level"]), {0})
         rule_columns = [
-            "level_for_largest_cost", "level_for_own_production", "level_for_empire_production", "minimum_level"
+            "level_for_largest_cost",
+            "level_for_own_production",
+            "level_for_empire_production",
+            "minimum_level",
         ]
         # The level is what the most demanding rule asks for: no warehouse is larger or smaller than it has to be.
         self.assertEqual(warehouses[rule_columns].max(axis=1).tolist(), warehouses["level"].tolist())
@@ -5767,7 +5890,7 @@ class TestConfigOptimizerNotebook(unittest.TestCase):
         central = warehouses[warehouses["slot_index"] == 1].set_index("resource")
         self.assertEqual(
             central["level_for_empire_production"].tolist(),
-            [self._warehouse_level_for(amount) for amount in model.central_reserve]
+            [self._warehouse_level_for(amount) for amount in model.central_reserve],
         )
         self.assertEqual(central["minimum_level"].tolist(), [15] * 4)
         self.assertEqual(central.loc["spice", ["level", "set_by"]].tolist(), [15, "central planet minimum"])
@@ -5775,10 +5898,16 @@ class TestConfigOptimizerNotebook(unittest.TestCase):
         others = warehouses[warehouses["slot_index"] > 1]
         self.assertEqual(set(others["level_for_empire_production"]) | set(others["minimum_level"]), {0})
         # On the shipyard planet the starbase is among the costs that the warehouses hold.
-        self.assertTrue(set(warehouses["set_by"]) <= {
-            "central planet minimum", "own production", "empire production", "nothing to store",
-            *(f"cost of {label}" for label in set(warehouses["largest_cost_of"])),
-        })
+        self.assertTrue(
+            set(warehouses["set_by"])
+            <= {
+                "central planet minimum",
+                "own production",
+                "empire production",
+                "nothing to store",
+                *(f"cost of {label}" for label in set(warehouses["largest_cost_of"])),
+            }
+        )
         self.assertIn("own production", set(warehouses["set_by"]))
         # One round was enough here: the minimum level of the central planet already holds the production.
         self.assertEqual(len(rounds), 1)
@@ -6001,9 +6130,7 @@ class TestConfigOptimizerNotebook(unittest.TestCase):
         # Shield technology 5 and Ion technology 5, the Teleporter of slot 3 Hyperspace technology 6.
         required = changed["PLAN_REQUIRED_RESEARCH"]
         self.assertEqual({key: required[key] for key in ("r9", "r12", "r14")}, {"r9": 5, "r12": 5, "r14": 6})
-        self.assertEqual(
-            {key for key in ("r9", "r12", "r14") if key in default_ns["PLAN_REQUIRED_RESEARCH"]}, set()
-        )
+        self.assertEqual({key for key in ("r9", "r12", "r14") if key in default_ns["PLAN_REQUIRED_RESEARCH"]}, set())
         self.assertEqual(changed["PLANNED_RESEARCH_LEVELS"]["r14"], 6)
         # The only Research lab stands on slot 2 now: that planet pays for the research, and its warehouses
         # hold the dearest research level, Hyperspace technology 6.
@@ -6016,7 +6143,7 @@ class TestConfigOptimizerNotebook(unittest.TestCase):
         )
         self.assertEqual(
             lab_warehouses.loc["metal", "largest_cost"],
-            float(game_data.RESEARCH_BY_ID["r14"]["levels"][6]["cost"]["metal"])
+            float(game_data.RESEARCH_BY_ID["r14"]["levels"][6]["cost"]["metal"]),
         )
         self.assertGreater(lab_warehouses.loc["metal", "level"], 4)
         # The search ran with the changed settings: 10 priority mixes and the all-rounder at most, and the
@@ -6120,7 +6247,7 @@ class TestConfigOptimizerNotebook(unittest.TestCase):
         self.assertAlmostEqual(
             outcome["planet_net_per_hour"][2],
             5.0 * 1.28 * game_data.BUILDING_BY_ID[3]["levels"][20]["prod"],
-            delta=1e-6
+            delta=1e-6,
         )
         self.assertAlmostEqual(
             outcome["planet_energy_produced"], 1.11 * game_data.BUILDING_BY_ID[5]["levels"][30]["energy"], delta=1e-6
@@ -6152,7 +6279,10 @@ class TestConfigOptimizerNotebook(unittest.TestCase):
         default_ns, _, _ = self._attack_run()
         default_summary = default_ns["BEST_CONFIG_SUMMARY"]
         rule_columns = [
-            "level_for_largest_cost", "level_for_own_production", "level_for_empire_production", "minimum_level"
+            "level_for_largest_cost",
+            "level_for_own_production",
+            "level_for_empire_production",
+            "minimum_level",
         ]
 
         def consistent(ns: dict, hours: float) -> pd.DataFrame:
@@ -6304,9 +6434,7 @@ class TestConfigOptimizerNotebook(unittest.TestCase):
         self.assertEqual([self.sections[idx] for idx in data_idxs], ["1", *CONFIG_OPTIMIZER_PRINTING_SECTIONS])
         # A cell prints its own data. The meta parameters of Section 1 are the exception: the cell only sets
         # values, and Section 4.1 prints them with the plan.
-        print_idx_of = {
-            idx: self.optimizer_idxs[0] if idx == self.parameters_idx else idx for idx in data_idxs
-        }
+        print_idx_of = {idx: self.optimizer_idxs[0] if idx == self.parameters_idx else idx for idx in data_idxs}
         for idx in range(1, len(self.code_cells)):
             if self.sections[idx] not in CONFIG_OPTIMIZER_PRINTING_SECTIONS:
                 self.assertEqual(stdout[idx], "", f"The cell of Section {self.sections[idx]} must print nothing")
@@ -6383,7 +6511,7 @@ class TestConfigOptimizerNotebook(unittest.TestCase):
         self.assertIn('"b5": 7', section_out["3.1"])
         self.assertEqual(section_out["3.1"].count('"fields_max": 300'), 10)
         self.assertIn('"coords": "EMPTY:10"', section_out["3.1"])
-        self.assertIn('[ACCOUNT_SNAPSHOT] dict, len=2', section_out["3.1"])
+        self.assertIn("[ACCOUNT_SNAPSHOT] dict, len=2", section_out["3.1"])
         self.assertIn('"universe_speedup_factor": 5.0', section_out["3.1"])
         self.assertIn("[universe_research_df] pandas.DataFrame, shape=(15, 15)", section_out["3.2"])
         # Section 4: the meta parameters of the run, then the plan, the model, and the result in the titles.

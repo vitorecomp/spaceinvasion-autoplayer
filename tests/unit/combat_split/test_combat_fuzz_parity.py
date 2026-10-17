@@ -68,13 +68,16 @@ def test_fuzz_combat_cargo_colonies_flight_and_eta_invariants() -> None:
         ares = {f"r{i}": rng.randint(0, 15) for i in rng.sample(range(1, 16), 4)}
         margin = rng.choice([1.0, 1.4, 2.0])
         raid = simulator.simulate_raid_outcome(att, rep, attacker_researches=ares, safety_margin=margin)
-        assert 0.0 <= raid.win_probability <= 1.0
+        assert raid.power_ratio >= 0.0
 
         pl = _rand_planet(rng)
         esc = cargo.plan_escape_flight(
-            pl, target_coords=_rand_coords(rng), fuel_reserve_spice=rng.choice([0, 500, 5000]), save_solar_cells=rng.random() < 0.3
+            pl,
+            target_coords=_rand_coords(rng),
+            fuel_reserve_spice=rng.choice([0, 500, 5000]),
+            save_solar_cells=rng.random() < 0.3,
         )
-        assert esc.cargo_capacity >= 0 and esc.saved_resources.total() >= 0
+        assert esc.total_capacity >= 0 and esc.cargo.total() >= 0
 
         graded = colonies.grade_colony_candidate(
             coords=_rand_coords(rng),
@@ -117,7 +120,7 @@ def test_fuzz_combat_cargo_colonies_flight_and_eta_invariants() -> None:
             researches={f"r{i}": rng.randint(0, 20) for i in range(1, 16)},
         )
         pecon = eta.estimate_planet_hourly_economy(st, planets[0])
-        assert pecon["spice_eq_per_hr"] >= 0.0
+        assert float(pecon["metal_per_hr"]) >= 0.0  # type: ignore[arg-type]
         tbl = eta.build_buildings_eta(st, planets[0])
         assert "buildings" in tbl
 

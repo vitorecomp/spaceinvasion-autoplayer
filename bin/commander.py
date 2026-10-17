@@ -233,11 +233,7 @@ def _planned_action_from_dict(raw: Any) -> Optional[PlannedAction]:
         cost=_res(raw.get("cost")),
         missing=_res(raw.get("missing")),
         executable_now=bool(raw.get("executable_now", False)),
-        action_href=(
-            _safe_cmd_str(raw.get("action_href"))
-            if raw.get("action_href") is not None
-            else None
-        ),
+        action_href=(_safe_cmd_str(raw.get("action_href")) if raw.get("action_href") is not None else None),
         wait_hours=_safe_finite_float(raw.get("wait_hours")),
         wait_seconds=_safe_finite_float(raw.get("wait_seconds")),
         wait_eta=_safe_cmd_str(raw.get("wait_eta"), "Ready"),
@@ -246,11 +242,7 @@ def _planned_action_from_dict(raw: Any) -> Optional[PlannedAction]:
         total_hours=_safe_finite_float(raw.get("total_hours")),
         total_seconds=_safe_finite_float(raw.get("total_seconds")),
         total_eta=_safe_cmd_str(raw.get("total_eta"), "Ready"),
-        eta_bottleneck=(
-            _safe_cmd_str(raw.get("eta_bottleneck"))
-            if raw.get("eta_bottleneck") is not None
-            else None
-        ),
+        eta_bottleneck=(_safe_cmd_str(raw.get("eta_bottleneck")) if raw.get("eta_bottleneck") is not None else None),
         manual_queue_id=_safe_cmd_opt_int(raw.get("manual_queue_id")),
         manual_sort_rank=_safe_cmd_opt_int(raw.get("manual_sort_rank")),
     )
@@ -314,9 +306,7 @@ def _action_to_command_payload(action: PlannedAction, *, dry_run: bool) -> dict:
     if action.kind == "SCAN_GALAXY":
         t_name = _safe_cmd_str(action.target_name)
         p_coords = _safe_cmd_str(action.planet_coords)
-        m = re.search(r"(\d{1,2}):(\d{1,3})", t_name, re.ASCII) or re.search(
-            r"(\d{1,2}):(\d{1,3})", p_coords, re.ASCII
-        )
+        m = re.search(r"(\d{1,2}):(\d{1,3})", t_name, re.ASCII) or re.search(r"(\d{1,2}):(\d{1,3})", p_coords, re.ASCII)
         gal, sys_num = (int(m.group(1)), int(m.group(2))) if m else (1, 1)
         return {
             "command": "scan_galaxy",
@@ -437,12 +427,13 @@ def _hold_busy_fleet_slots(
     changed = False
     out: list[PlannedAction] = []
     for act in actions:
-        if act.kind in ("ATTACK", "SPY", "TRANSPORT", "STATION", "RECYCLE", "ESCAPE_FLIGHT", "COLONIZE") and act.planet_id in busy_pids:
+        if (
+            act.kind in ("ATTACK", "SPY", "TRANSPORT", "STATION", "RECYCLE", "ESCAPE_FLIGHT", "COLONIZE")
+            and act.planet_id in busy_pids
+        ):
             cur_reason = _safe_cmd_str(act.reason)
             new_reason = (
-                cur_reason
-                if "[Hold: fleet slots busy / returning]" in cur_reason
-                else f"{cur_reason}{hold_suffix}"
+                cur_reason if "[Hold: fleet slots busy / returning]" in cur_reason else f"{cur_reason}{hold_suffix}"
             )
             if act.executable_now or new_reason != cur_reason:
                 changed = True
@@ -527,11 +518,13 @@ def run_commander_tick(
             3600.0,
             float(_safe_cmd_int(getattr(cfg, "action_batch_interval_seconds", 120), 120)) * 10.0,
         )
-        if (not has_r2) or (last_econ_ts <= 0.0) or (include_buildings and (time.time() - last_econ_ts) >= econ_refresh_ttl):
+        if (
+            (not has_r2)
+            or (last_econ_ts <= 0.0)
+            or (include_buildings and (time.time() - last_econ_ts) >= econ_refresh_ttl)
+        ):
             try:
-                sync_res = api.send_command(
-                    {"command": "sync_economy", "planet_id": active_for_econ.planet_id}
-                )
+                sync_res = api.send_command({"command": "sync_economy", "planet_id": active_for_econ.planet_id})
                 if isinstance(sync_res, Mapping) and isinstance(sync_res.get("state"), Mapping):
                     state = game_state_from_dict(sync_res["state"])
             except (requests.RequestException, GameApiError) as sync_exc:
@@ -543,7 +536,9 @@ def run_commander_tick(
     cur_mq: Optional[Sequence[Mapping[str, Any]]] = manual_queue
     active_fsc: dict[int, float] = dict(fleet_slot_cooldowns) if fleet_slot_cooldowns else {}
 
-    def _compute_tick_actions(cur_st: GameState, mq_items: Optional[Sequence[Mapping[str, Any]]]) -> list[PlannedAction]:
+    def _compute_tick_actions(
+        cur_st: GameState, mq_items: Optional[Sequence[Mapping[str, Any]]]
+    ) -> list[PlannedAction]:
         if is_ai_planner and count_allocated_normal_planets(cur_st) >= max_planets_gate:
             try:
                 plan_resp = api.send_command({"command": "plan", "refresh": False})
@@ -553,9 +548,7 @@ def run_commander_tick(
                     and isinstance(plan_resp.get("actions"), list)
                 ):
                     parsed_ai = [
-                        act
-                        for item in plan_resp["actions"]
-                        if (act := _planned_action_from_dict(item)) is not None
+                        act for item in plan_resp["actions"] if (act := _planned_action_from_dict(item)) is not None
                     ]
                     if parsed_ai:
                         return _hold_busy_fleet_slots(parsed_ai, active_fsc, re_sort_priority=False)
@@ -638,11 +631,7 @@ def run_commander_tick(
         *,
         only_parallel_builds: bool = False,
     ) -> Optional[PlannedAction]:
-        candidates = [
-            a
-            for a in cur_actions
-            if a.executable_now and _action_dedup_key(a) not in attempted
-        ]
+        candidates = [a for a in cur_actions if a.executable_now and _action_dedup_key(a) not in attempted]
         if only_parallel_builds:
             candidates = [
                 a
@@ -666,11 +655,7 @@ def run_commander_tick(
             if pr == 1:
                 if act.kind == "THROTTLE_BUILDING":
                     rsn_l = _safe_cmd_str(act.reason).lower()
-                    if (
-                        "negative energy" in rsn_l
-                        or "metal storage full" in rsn_l
-                        or "metal overflow cleared" in rsn_l
-                    ):
+                    if "negative energy" in rsn_l or "metal storage full" in rsn_l or "metal overflow cleared" in rsn_l:
                         return (1, 0, 0, 0)
                     return (1, is_manual, 4, 0)
                 if act.kind in ("BUILD", "DEMOLISH_BUILDING"):
@@ -692,9 +677,7 @@ def run_commander_tick(
     max_failures = max(6, max_actions * 2)
     attempted_keys: set[tuple[str, int, Optional[int], Optional[int], str]] = set()
     built_planets: set[int] = set()
-    allow_parallel_build_overflow = bool(
-        live and max_actions > 1 and getattr(cfg, "allow_multi_planet", True)
-    )
+    allow_parallel_build_overflow = bool(live and max_actions > 1 and getattr(cfg, "allow_multi_planet", True))
     parallel_build_cap = max_actions + max(0, len(state.planets or ()))
     while True:
         only_parallel_builds = acted >= max_actions
@@ -733,9 +716,7 @@ def run_commander_tick(
                 raise
             raise
         if not isinstance(res, Mapping):
-            raise GameApiError(
-                f"Expected JSON object from send_command, got {type(res).__name__}"
-            )
+            raise GameApiError(f"Expected JSON object from send_command, got {type(res).__name__}")
         res_dict = dict(res) if not isinstance(res, dict) else res
         if isinstance(res_dict.get("manual_queue"), list):
             cur_mq = [x for x in res_dict["manual_queue"] if isinstance(x, Mapping)]
@@ -749,9 +730,8 @@ def run_commander_tick(
         if not res_dict.get("executed"):
             failed_attempts += 1
             fail_msg_l = _safe_cmd_str(res_dict.get("message", "")).lower()
-            if (
-                ready.kind in ("ATTACK", "SPY", "TRANSPORT", "STATION", "RECYCLE", "ESCAPE_FLIGHT", "COLONIZE")
-                and ("no ship input fields found on internalfleet" in fail_msg_l or "nofleet" in fail_msg_l)
+            if ready.kind in ("ATTACK", "SPY", "TRANSPORT", "STATION", "RECYCLE", "ESCAPE_FLIGHT", "COLONIZE") and (
+                "no ship input fields found on internalfleet" in fail_msg_l or "nofleet" in fail_msg_l
             ):
                 pid_busy = _safe_cmd_int(ready.planet_id, 0)
                 if pid_busy > 0:
@@ -802,11 +782,7 @@ def run_commander_tick(
         outcomes.append(actual_result)
 
     next_action = pick_next_action(actions, actual_action, after_live_execution=after_live)
-    if (
-        next_action is not None
-        and not next_action.executable_now
-        and any(a.executable_now for a in actions)
-    ):
+    if next_action is not None and not next_action.executable_now and any(a.executable_now for a in actions):
         next_ready = next((a for a in actions if a.executable_now), None)
         if next_ready is not None:
             next_action = next_ready
@@ -861,15 +837,19 @@ def compute_next_wakeup_seconds(
                 return floor_s, "awaiting spy report & next batch"
         else:
             out_msg_l = _safe_cmd_str(out.get("message", "")).lower()
-            if "no ship input fields found on internalfleet" in out_msg_l or "nofleet" in out_msg_l or "fleet slots busy" in out_msg_l:
+            if (
+                "no ship input fields found on internalfleet" in out_msg_l
+                or "nofleet" in out_msg_l
+                or "fleet slots busy" in out_msg_l
+            ):
                 slot_busy_seen = True
 
     cand_waits: list[tuple[float, str]] = []
-    if slot_busy_seen or (fleet_slot_cooldowns and any((_safe_finite_float(v) or 0.0) > 0.0 for v in fleet_slot_cooldowns.values())):
+    if slot_busy_seen or (
+        fleet_slot_cooldowns and any((_safe_finite_float(v) or 0.0) > 0.0 for v in fleet_slot_cooldowns.values())
+    ):
         fsc_vals = [
-            fv
-            for v in (fleet_slot_cooldowns or {}).values()
-            if (fv := _safe_finite_float(v)) is not None and fv > 0.0
+            fv for v in (fleet_slot_cooldowns or {}).values() if (fv := _safe_finite_float(v)) is not None and fv > 0.0
         ]
         slot_s = min(fsc_vals) + 2.0 if fsc_vals else max(floor_s, 90.0)
         cand_waits.append((slot_s, "fleet slot cooldown / returning ships"))
@@ -1064,9 +1044,7 @@ def main(argv: list[str] | None = None) -> int:
                         else:
                             raise
                     if not isinstance(bot_ctrl, Mapping):
-                        raise GameApiError(
-                            f"Expected JSON object from /bot_status, got {type(bot_ctrl).__name__}"
-                        )
+                        raise GameApiError(f"Expected JSON object from /bot_status, got {type(bot_ctrl).__name__}")
                     if is_captcha_error(bot_ctrl.get("captcha_message"), bot_ctrl=bot_ctrl):
                         cap_msg = _safe_cmd_str(
                             bot_ctrl.get("captcha_message"),
@@ -1100,9 +1078,7 @@ def main(argv: list[str] | None = None) -> int:
                                         and bot_ctrl["galaxy_sweep"].get("in_progress")
                                     )
                                 )
-                                and bool(
-                                    getattr(strategy_cfg, "galaxy_scan_block_other_actions", True)
-                                )
+                                and bool(getattr(strategy_cfg, "galaxy_scan_block_other_actions", True))
                             )
                         )
                         and not bool(bot_ctrl.get("p0_escape_flight_ready", False))
@@ -1192,10 +1168,7 @@ def main(argv: list[str] | None = None) -> int:
 
                 if not paused_via_ui:
                     now_mono = time.monotonic()
-                    need_buildings = (
-                        last_full_buildings_at <= 0.0
-                        or (now_mono - last_full_buildings_at) >= 60.0
-                    )
+                    need_buildings = last_full_buildings_at <= 0.0 or (now_mono - last_full_buildings_at) >= 60.0
 
                     eff_label = "LIVE" if effective_live else "DRY-RUN"
                     effective_max_actions = max(
@@ -1226,8 +1199,7 @@ def main(argv: list[str] | None = None) -> int:
                                     and _safe_cmd_str((o.get("action") or {}).get("kind")).upper()
                                     in ("BUILD", "CLAIM_TUTORIAL")
                                 )
-                                or _safe_cmd_str(o.get("command")).lower()
-                                in ("build", "claim_tutorial")
+                                or _safe_cmd_str(o.get("command")).lower() in ("build", "claim_tutorial")
                             )
                             for o in outcomes
                         )
@@ -1237,9 +1209,7 @@ def main(argv: list[str] | None = None) -> int:
                     planet = state.active_planet()
                     res_str = planet.resources.format_short() if planet else "?"
                     raw_msg = (
-                        actual_result.get("message", "no action")
-                        if isinstance(actual_result, Mapping)
-                        else "no action"
+                        actual_result.get("message", "no action") if isinstance(actual_result, Mapping) else "no action"
                     )
                     msg = redact_sensitive(_safe_cmd_str(raw_msg, "no action"))
                     coords_txt = (
@@ -1264,9 +1234,7 @@ def main(argv: list[str] | None = None) -> int:
                             ),
                         )
                         metal_tag = f" | MetalProd={'ON' if b2_pct > 0 else 'OFF'}({b2_pct}%)"
-                    executed_count = sum(
-                        1 for o in outcomes if isinstance(o, Mapping) and bool(o.get("executed"))
-                    )
+                    executed_count = sum(1 for o in outcomes if isinstance(o, Mapping) and bool(o.get("executed")))
                     batch_tag = f" | BatchExec={executed_count}" if executed_count > 1 else ""
                     print(
                         f"[CMD tick {game_data.fmt_compact_int(tick)} | {eff_label}] {coords_txt} | {res_str}{metal_tag}{batch_tag}",
@@ -1358,7 +1326,11 @@ def main(argv: list[str] | None = None) -> int:
                     if any(marker in err_lower for marker in _RATE_LIMIT_MARKERS):
                         try:
                             h_raw = api.health()
-                            health_info = h_raw if isinstance(h_raw, dict) else (dict(h_raw) if isinstance(h_raw, Mapping) else None)
+                            health_info = (
+                                h_raw
+                                if isinstance(h_raw, dict)
+                                else (dict(h_raw) if isinstance(h_raw, Mapping) else None)
+                            )
                         except Exception:
                             health_info = None
                     rl_backoff = compute_rate_limit_backoff(exc_txt, health_payload=health_info)

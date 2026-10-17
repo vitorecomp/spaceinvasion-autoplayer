@@ -368,8 +368,7 @@ class TestSmartGalaxyScanTwoPhaseEngine(unittest.TestCase):
             {"coords": "02:120:04", "owner": "FrequentVictim", "status_color": "yellow"},
         ]
         raid_history = [
-            {"target_coords": "02:120:04", "attacked_ts": now - 600.0, "loot": {"spice": 8000}}
-            for _ in range(7)
+            {"target_coords": "02:120:04", "attacked_ts": now - 600.0, "loot": {"spice": 8000}} for _ in range(7)
         ]
         batch = select_smart_galaxy_scan_batch(
             own_coords=["02:100:05"],
@@ -976,14 +975,16 @@ class TestSmartGalaxyScanTwoPhaseEngine(unittest.TestCase):
     def test_extract_galaxy_universe_bounds_and_8_galaxy_retro_targeted_refresh_smooth_walk(self) -> None:
         # 1. Nested json:{...} inside SI_TPL.galaxy precedes maxSystem:400,maxGalaxies:8 on live RETRO
         retro_html = (
-            '<html><body><script>'
+            "<html><body><script>"
             'SI_TPL.galaxy={sid:"REDACTED",galaxy:2,sun:380,'
             'json:{"b":{"k":"YwxQ","v":"tok"},"header":{"si":"classic","universe":{"id":31}}},'
-            'ts:1795046773.5,maxSystem:400,maxGalaxies:8,universeFlightSpeed:1};'
-            '</script></body></html>'
+            "ts:1795046773.5,maxSystem:400,maxGalaxies:8,universeFlightSpeed:1};"
+            "</script></body></html>"
         )
         self.assertEqual(extract_galaxy_universe_bounds(retro_html), (8, 400))
-        self.assertEqual(extract_galaxy_universe_bounds("<html><table><tr><td>1</td></tr></table></html>"), (None, None))
+        self.assertEqual(
+            extract_galaxy_universe_bounds("<html><table><tr><td>1</td></tr></table></html>"), (None, None)
+        )
 
         # 2. When all 8 real galaxies (3200 systems) are explored (even with a stale phantom 09:341 row),
         #    limiting galaxies to 1..8 cleanly flips to targeted_refresh with arrow-friendly (< 5) steps.

@@ -158,10 +158,7 @@ def main(argv: list[str] | None = None) -> int:
         api_cmd.extend(["--db-url", args.db_url])
     raw_iv = args.interval
     if raw_iv is None or (
-        isinstance(raw_iv, (int, float))
-        and not isinstance(raw_iv, bool)
-        and math.isfinite(raw_iv)
-        and raw_iv <= 0.0
+        isinstance(raw_iv, (int, float)) and not isinstance(raw_iv, bool) and math.isfinite(raw_iv) and raw_iv <= 0.0
     ):
         safe_interval = 0.0
     else:

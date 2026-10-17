@@ -280,7 +280,9 @@ def main() -> int:
         stops = [(a, b) for (a, _), (b, _) in zip(rows, rows[1:]) if b - a > STOPPED_GAP_SECONDS]
         stopped_h = sum(b - a for a, b in stops) / 3600.0
         print(f"    series {_fmt(rows[0][0])} .. {_fmt(rows[-1][0])}: {len(rows)} points over {span_h:.1f} h")
-        print(f"    stopped for {stopped_h:.1f} h of that ({100.0 * stopped_h / span_h if span_h else 0:.0f}%), in {len(stops)} stops:")
+        print(
+            f"    stopped for {stopped_h:.1f} h of that ({100.0 * stopped_h / span_h if span_h else 0:.0f}%), in {len(stops)} stops:"
+        )
         for a, b in stops:
             tag = "  [plan v4]" if a >= T_V4_LANDED else ("  [after switch-on]" if a >= T_SWITCH_ON else "")
             print(f"      {_fmt(a)} -> {_fmt(b)}  ({(b - a) / 60.0:.0f} min){tag}")
@@ -293,7 +295,9 @@ def main() -> int:
     before = [g for g in gates if since <= g < T_SWITCH_ON]
     after = [g for g in gates if g >= T_SWITCH_ON]
     after_v4 = [g for g in gates if g >= T_V4_LANDED]
-    print(f"    anti-bot gate alerts since {_fmt(since)}: {len(before)} before the switch, {len(after)} after, {len(after_v4)} since plan v4")
+    print(
+        f"    anti-bot gate alerts since {_fmt(since)}: {len(before)} before the switch, {len(after)} after, {len(after_v4)} since plan v4"
+    )
     print(f"      after: {[_fmt(g) for g in after]}")
 
     # ------------------------------------------------------------------ 2. builders busy
@@ -326,17 +330,23 @@ def main() -> int:
 
     # ------------------------------------------------------------------ 3. colony states
     print("\n[3] Why colonies are idle")
-    print(f"    now: {adaptive.get('active_builders')}/{adaptive.get('total_colonies')} building  {adaptive.get('counts')}")
+    print(
+        f"    now: {adaptive.get('active_builders')}/{adaptive.get('total_colonies')} building  {adaptive.get('counts')}"
+    )
     window = adaptive.get("window_24h") or {}
     idle_aff = _num(window.get("idle_with_affordable_share_pct"), float("nan"))
     ready_gap = _num(window.get("ready_not_started_share_pct"), float("nan"))
-    print(f"    recorded window: {window.get('bucket_count')} ten-minute buckets, {window.get('colony_samples')} colony samples")
+    print(
+        f"    recorded window: {window.get('bucket_count')} ten-minute buckets, {window.get('colony_samples')} colony samples"
+    )
     print(f"    shares %: {window.get('state_shares_pct')}")
     print(
         f"    idle with an affordable target step: {idle_aff}% (plan v3: {PLAN_V3_IDLE_AFFORDABLE_PCT}%)   "
         f"ready but not started: {ready_gap}%"
     )
-    print("    (the window is the last 24 h of recorded buckets: it mixes plan v3 and plan v4 until 24 h after the landing)")
+    print(
+        "    (the window is the last 24 h of recorded buckets: it mixes plan v3 and plan v4 until 24 h after the landing)"
+    )
 
     # ------------------------------------------------------------------ 4. furnaces
     print("\n[4] Blast furnaces")
@@ -360,9 +370,13 @@ def main() -> int:
     capacity = _furnace_capacity_per_hour(planets, economies, _num(state.get("speedup_factor"), 1.0) or 1.0)
     print(f"    furnaces on: {furnaces_on}/{len(planets)}   colonies with Pig iron at the warehouse cap: {pig_at_cap}")
     if capacity:
-        print(f"    Metal per hour now {metal_now:,.0f} of {capacity:,.0f} the furnaces can make ({100.0 * metal_now / capacity:.0f}%)")
+        print(
+            f"    Metal per hour now {metal_now:,.0f} of {capacity:,.0f} the furnaces can make ({100.0 * metal_now / capacity:.0f}%)"
+        )
     else:
-        print(f"    Metal per hour now {metal_now:,.0f} (furnace capacity unknown: the repo's game data could not be loaded)")
+        print(
+            f"    Metal per hour now {metal_now:,.0f} (furnace capacity unknown: the repo's game data could not be loaded)"
+        )
 
     # ------------------------------------------------------------------ 5. transports
     print("\n[5] Transport fleet against the plan")
@@ -384,10 +398,14 @@ def main() -> int:
     fleet = adaptive.get("transport_fleet") or {}
     demand = ai.get("transport_demand") or {}
     delivered_pct = _num(fleet.get("delivered_vs_planned_pct"), float("nan"))
-    print(f"    Small transports {parked['s1']} parked + {flying['small transport']} flying   Large transports {parked['s2']} parked + {flying['large transport']} flying   Transmitters {parked['s3']} parked + {flying['transmitter']} flying")
+    print(
+        f"    Small transports {parked['s1']} parked + {flying['small transport']} flying   Large transports {parked['s2']} parked + {flying['large transport']} flying   Transmitters {parked['s3']} parked + {flying['transmitter']} flying"
+    )
     for mission, hulls in sorted(by_mission.items()):
         cargo = sum(_HULL_CARGO[k] * v for k, v in hulls.items())
-        print(f"      flying as {mission:10s}: {hulls['small transport']:3d} Small  {hulls['large transport']:3d} Large  {hulls['transmitter']:2d} Transmitter  = {cargo:>9,} cargo")
+        print(
+            f"      flying as {mission:10s}: {hulls['small transport']:3d} Small  {hulls['large transport']:3d} Large  {hulls['transmitter']:2d} Transmitter  = {cargo:>9,} cargo"
+        )
     raid_cargo = sum(_HULL_CARGO[k] * v for k, v in (by_mission.get("attack") or {}).items())
     total_cargo = _num(fleet.get("total_fleet_cargo"))
     target_cargo = _num(fleet.get("target_fleet_cargo"))
@@ -412,7 +430,9 @@ def main() -> int:
     print(f"    executable actions queued ahead of the first ship build: {ahead or 'none'}")
     for a in plan:
         if a.get("kind") == "BUILD_SHIP" and "[Plan infra cargo target]" in str(a.get("reason")):
-            print(f"    {a.get('planet_coords')} {a.get('target_name')} executable={a.get('executable_now')}  {str(a.get('reason'))[:90]}")
+            print(
+                f"    {a.get('planet_coords')} {a.get('target_name')} executable={a.get('executable_now')}  {str(a.get('reason'))[:90]}"
+            )
 
     # ------------------------------------------------------------------ 6. plan and re-tune
     print("\n[6] Plan and background re-tune")
@@ -420,7 +440,9 @@ def main() -> int:
     summary = ai.get("active_summary") or {}
     plan_ts = _num(summary.get("live_snapshot_ts"))
     if plan_ts:
-        print(f"    active plan from {_fmt(plan_ts)} ({(now - plan_ts) / 3600.0:.1f} h old), {summary.get('actions_count')} steps")
+        print(
+            f"    active plan from {_fmt(plan_ts)} ({(now - plan_ts) / 3600.0:.1f} h old), {summary.get('actions_count')} steps"
+        )
     print(f"    last planner job: {job.get('status')}, trigger {job.get('trigger_source')}, run {job.get('run_id')}")
     print(f"    auto re-tune: {adaptive.get('auto_replan')}")
 
@@ -474,7 +496,9 @@ def main() -> int:
         hours = (now - ref_ts) / 3600.0
         if hours > 0:
             rate = (fields - ref_fields) / hours
-            print(f"    since {label} ({_fmt(ref_ts)}, {ref_fields}): +{fields - ref_fields} in {hours:.1f} h = {rate:.2f} per hour")
+            print(
+                f"    since {label} ({_fmt(ref_ts)}, {ref_fields}): +{fields - ref_fields} in {hours:.1f} h = {rate:.2f} per hour"
+            )
             if ref_ts == T_V4_LANDED:
                 levels_per_hour_v4 = rate
     print(f"    plan v3 made {PLAN_V3_LEVELS_PER_HOUR} per hour (5.1 before the switch)")
@@ -491,7 +515,9 @@ def main() -> int:
     for label, lo, hi in periods:
         vals = [metal for ts, _busy, metal in series if lo <= ts < hi]
         if vals:
-            print(f"      {label:26s}: {statistics.mean(vals):>9,.0f}  median {statistics.median(vals):>9,.0f}  ({len(vals)} points)")
+            print(
+                f"      {label:26s}: {statistics.mean(vals):>9,.0f}  median {statistics.median(vals):>9,.0f}  ({len(vals)} points)"
+            )
             if label.startswith("E"):
                 metal_v4 = statistics.mean(vals)
     now_prod = dash.get("current_hourly_production") or {}
@@ -515,9 +541,7 @@ def main() -> int:
             f"    furnace capacity: {readings[0][1]:,.0f} Metal per hour at the landing, {capacity:,.0f} now; "
             f"{len(readings)} readings since the landing ({len(logged)} from earlier runs on this machine)"
         )
-        print(
-            f"      this run's reading {'was added to' if kept else 'was not added to'} {args.capacity_log}"
-        )
+        print(f"      this run's reading {'was added to' if kept else 'was not added to'} {args.capacity_log}")
         if share_est == share_est:
             print(
                 f"      plan v4 made {100.0 * share_est:.0f}% of what the furnaces could make at the time "
@@ -526,14 +550,20 @@ def main() -> int:
 
     # ------------------------------------------------------------------ 8. request pressure
     print("\n[8] Page-view limit")
-    print(f"    page views in the last 60 s: {health.get('page_views_last_60s')} of {health.get('page_view_limit_per_minute')}")
+    print(
+        f"    page views in the last 60 s: {health.get('page_views_last_60s')} of {health.get('page_view_limit_per_minute')}"
+    )
     ctrl = health.get("bot_control") or {}
-    print(f"    health ok={health.get('ok')} in_game={health.get('in_game')} paused={ctrl.get('paused')} gate_active={ctrl.get('captcha_blocked')}")
+    print(
+        f"    health ok={health.get('ok')} in_game={health.get('in_game')} paused={ctrl.get('paused')} gate_active={ctrl.get('captcha_blocked')}"
+    )
     recent = (dash.get("db_summary") or {}).get("recent_actions") or []
     if recent:
         newest = max(_num(r.get("ts")) for r in recent)
         failed = sum(1 for r in recent if not r.get("executed"))
-        print(f"    last {len(recent)} recorded actions: newest {(now - newest) / 60.0:.0f} min ago, {failed} did not execute")
+        print(
+            f"    last {len(recent)} recorded actions: newest {(now - newest) / 60.0:.0f} min ago, {failed} did not execute"
+        )
 
     # ------------------------------------------------------------------ 9. raid income and ship budgets
     print("\n[9] Raid income the planner and the ship budgets assume")
@@ -600,12 +630,16 @@ def main() -> int:
     fills = [a for a in plan if str(a.get("reason") or "").startswith(FILL_PREFIX)]
     loans = [a for a in plan if a.get("kind") == "TRANSPORT" and LOAN_TAG in str(a.get("reason"))]
     smelt = [a for a in plan if a.get("kind") == "THROTTLE_BUILDING" and EMPIRE_SMELT_TAG in str(a.get("reason"))]
-    print(f"    fill steps ready to start: {len(fills)}   plan-order loans: {len(loans)}   furnaces being turned on for the empire: {len(smelt)}")
+    print(
+        f"    fill steps ready to start: {len(fills)}   plan-order loans: {len(loans)}   furnaces being turned on for the empire: {len(smelt)}"
+    )
     for a in fills + loans:
         print(f"      {a.get('planet_coords')} {str(a.get('reason'))[:150]}")
     next_steps = [
-        a for a in plan
-        if a.get("priority") == "P1" and a.get("kind") in ("BUILD", "WAIT_RESOURCES", "RESEARCH")
+        a
+        for a in plan
+        if a.get("priority") == "P1"
+        and a.get("kind") in ("BUILD", "WAIT_RESOURCES", "RESEARCH")
         and str(a.get("reason") or "").startswith("AI-Planner")
     ]
     stock = {rk: sum(_num((p.get("resources") or {}).get(rk)) for p in planets) for rk in RES_KEYS}
@@ -668,11 +702,17 @@ def main() -> int:
     if on_mean != on_mean:
         print("  2. builders busy:  no recorded points yet")
     elif on_mean >= V4_BUILDERS_WORKED:
-        print(f"  2. builders busy:  {on_mean:.2f} over {on_cov:.1f} running hours (mark {V4_BUILDERS_WORKED:.1f}; plan v3 {PLAN_V3_BUILDERS_BUSY})  PASS")
+        print(
+            f"  2. builders busy:  {on_mean:.2f} over {on_cov:.1f} running hours (mark {V4_BUILDERS_WORKED:.1f}; plan v3 {PLAN_V3_BUILDERS_BUSY})  PASS"
+        )
     elif on_mean < V4_BUILDERS_NO_EFFECT:
-        print(f"  2. builders busy:  {on_mean:.2f} over {on_cov:.1f} running hours (below {V4_BUILDERS_NO_EFFECT}: no measurable effect)  FAIL")
+        print(
+            f"  2. builders busy:  {on_mean:.2f} over {on_cov:.1f} running hours (below {V4_BUILDERS_NO_EFFECT}: no measurable effect)  FAIL"
+        )
     else:
-        print(f"  2. builders busy:  {on_mean:.2f} over {on_cov:.1f} running hours (better than before, short of {V4_BUILDERS_WORKED:.1f})  PARTIAL")
+        print(
+            f"  2. builders busy:  {on_mean:.2f} over {on_cov:.1f} running hours (better than before, short of {V4_BUILDERS_WORKED:.1f})  PARTIAL"
+        )
     print(
         f"  3. building levels: {levels_per_hour_v4:.2f} per hour since the landing "
         f"(mark {V4_LEVELS_PER_HOUR:.0f}; plan v3 {PLAN_V3_LEVELS_PER_HOUR})  {_verdict(levels_per_hour_v4 >= V4_LEVELS_PER_HOUR)}"
@@ -681,9 +721,15 @@ def main() -> int:
         f"  4. idle with an affordable step: {idle_aff}% of colony time, last 24 h "
         f"(mark {V4_IDLE_AFFORDABLE_MAX_PCT:.0f}% or less; plan v3 {PLAN_V3_IDLE_AFFORDABLE_PCT}%)  {_verdict(idle_aff <= V4_IDLE_AFFORDABLE_MAX_PCT)}"
     )
-    print(f"  raid income basis: live {live_basis}, active plan {plan_basis}; raid income pays for {100.0 * loot_share:.0f}% of the plan's spending")
-    print(f"  cargo delivered between colonies: {fleet.get('delivered_cargo_per_hour_24h')}/h = {delivered_pct}% of the plan (plan v3: {PLAN_V3_DELIVERED_CARGO_PER_HOUR:,}/h)")
-    print(f"  pre-queue gate (>{GATE_PREQUEUE_PCT:.0f}%): {ready_gap}%   cargo gate (<{GATE_CARGO_DELIVERED_PCT:.0f}%): {delivered_pct}%")
+    print(
+        f"  raid income basis: live {live_basis}, active plan {plan_basis}; raid income pays for {100.0 * loot_share:.0f}% of the plan's spending"
+    )
+    print(
+        f"  cargo delivered between colonies: {fleet.get('delivered_cargo_per_hour_24h')}/h = {delivered_pct}% of the plan (plan v3: {PLAN_V3_DELIVERED_CARGO_PER_HOUR:,}/h)"
+    )
+    print(
+        f"  pre-queue gate (>{GATE_PREQUEUE_PCT:.0f}%): {ready_gap}%   cargo gate (<{GATE_CARGO_DELIVERED_PCT:.0f}%): {delivered_pct}%"
+    )
     print(
         f"  Large transports: {parked['s2'] + flying['large transport']}   furnaces on: {furnaces_on}/{len(planets)}   "
         f"gate alerts since plan v4: {len(after_v4)}   stops since plan v4: {sum(1 for a, _b in stops if a >= T_V4_LANDED)}"

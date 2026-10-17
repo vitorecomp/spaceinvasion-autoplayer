@@ -219,9 +219,5 @@ class TestCombatInvariants(unittest.TestCase):
         self.assertFalse(tracker.can_attack(inactive_target, is_inactive=True, timestamp=t0 + 700.0))
         self.assertFalse(tracker.can_attack(spacia_target, is_spacia=True, timestamp=t0 + 700.0))
         # Once the server bash cooldown expires, exemptions resume.
-        self.assertTrue(
-            tracker.can_attack(inactive_target, is_inactive=True, timestamp=t0 + 600.0 + cooldown_s + 1.0)
-        )
-        self.assertTrue(
-            tracker.can_attack(spacia_target, is_spacia=True, timestamp=t0 + 600.0 + cooldown_s + 1.0)
-        )
+        self.assertTrue(tracker.can_attack(inactive_target, is_inactive=True, timestamp=t0 + 600.0 + cooldown_s + 1.0))
+        self.assertTrue(tracker.can_attack(spacia_target, is_spacia=True, timestamp=t0 + 600.0 + cooldown_s + 1.0))

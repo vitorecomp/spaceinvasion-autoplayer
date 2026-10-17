@@ -224,7 +224,10 @@ class TestFleetSlotAndGalaxyDiag(unittest.TestCase):
         self.assertIsNotNone(res_ok.updated_state)
         assert res_ok.updated_state is not None
         self.assertTrue(
-            any("02:390:10" in str(q.name) and q.origin_coords == "02:381:07" for q in res_ok.updated_state.active_queues)
+            any(
+                "02:390:10" in str(q.name) and q.origin_coords == "02:381:07"
+                for q in res_ok.updated_state.active_queues
+            )
         )
 
     def test_bridge_learns_retro_b10_slot_cap_and_skips_recycle_galaxy_load_when_slots_full(self) -> None:

@@ -219,7 +219,9 @@ class TestTier2R1(unittest.TestCase):
         )
 
     def test_r1_a2_t9_raid_colony_excluded_from_economy_builds(self) -> None:
-        home = make_planet(planet_id=1, coords="02:380:12", buildings={"b1": 4, "b2": 3, "b3": 4, "b5": 7}, auto_offers=True)
+        home = make_planet(
+            planet_id=1, coords="02:380:12", buildings={"b1": 4, "b2": 3, "b3": 4, "b5": 7}, auto_offers=True
+        )
         raid_col = make_planet(
             planet_id=999,
             name="RK Base",
@@ -265,15 +267,15 @@ class TestTier2R1(unittest.TestCase):
         p = make_planet(
             buildings={"b1": 3, "b5": 6, "b7": 2, "b8": 1},
             resources=Resources(50_000, 50_000, 50_000, 50_000),
-            building_offers=(
-                make_building_offer(1, 3, can_build=False, status_text="In construction", href=None),
-            ),
+            building_offers=(make_building_offer(1, 3, can_build=False, status_text="In construction", href=None),),
         )
         state = make_game_state(
             planets=(p,),
             researches={"r2": 1},
             research_offers=(
-                make_research_offer("r2", cur_lvl=1, can_research=False, status_text="In research", active=True, href=None),
+                make_research_offer(
+                    "r2", cur_lvl=1, can_research=False, status_text="In research", active=True, href=None
+                ),
             ),
         )
         cfg = StrategyConfig()
@@ -438,7 +440,11 @@ class TestTier2R1(unittest.TestCase):
             "defense": {},
         }
         cfg = StrategyConfig(allow_raids=True)
-        empty_stats = {"overall": {"attempts": 0, "wins": 0, "losses": 0, "success_rate": 0.0}, "per_target": {}, "history": []}
+        empty_stats = {
+            "overall": {"attempts": 0, "wins": 0, "losses": 0, "success_rate": 0.0},
+            "per_target": {},
+            "history": [],
+        }
 
         state_kw = {"planets": (p,), "raid_targets": (raid_target,)}
         if hasattr(GameState, "raid_stats"):

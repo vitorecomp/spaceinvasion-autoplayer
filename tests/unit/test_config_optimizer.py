@@ -420,9 +420,14 @@ class ConfigOptimizerUnitTests(unittest.TestCase):
             for stmt in tree.body:
                 if isinstance(stmt, (ast.FunctionDef, ast.ClassDef)):
                     kept.append(stmt)
-                elif isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name) and stmt.target.id in (
-                    "WAREHOUSE_KEYS",
-                    "PRODUCTION_FLOW_KEYS",
+                elif (
+                    isinstance(stmt, ast.AnnAssign)
+                    and isinstance(stmt.target, ast.Name)
+                    and stmt.target.id
+                    in (
+                        "WAREHOUSE_KEYS",
+                        "PRODUCTION_FLOW_KEYS",
+                    )
                 ):
                     kept.append(stmt)
             mod = ast.Module(body=kept, type_ignores=[])
@@ -823,7 +828,9 @@ class ConfigOptimizerUnitTests(unittest.TestCase):
 
     def test_min_warehouse_level_enforced_across_all_resources_and_colonies(self) -> None:
         p1 = _make_planet(401, "02:380:01", "Hub", temperature=20, fields_max=280, buildings={"b1": 10, "b5": 10})
-        p2 = _make_planet(402, "02:380:02", "MetalCol", temperature=10, fields_max=280, buildings={"b1": 12, "b2": 10, "b5": 12})
+        p2 = _make_planet(
+            402, "02:380:02", "MetalCol", temperature=10, fields_max=280, buildings={"b1": 12, "b2": 10, "b5": 12}
+        )
         p3 = _make_planet(403, "02:380:03", "SpiceCol", temperature=-40, fields_max=280, buildings={"b4": 12, "b5": 12})
         state = GameState(
             universe_id=31,
@@ -863,10 +870,7 @@ class ConfigOptimizerUnitTests(unittest.TestCase):
                     f"{pl['coords']} {wh_key}={b_by_key[wh_key]} < {min_expected}",
                 )
         non_central_wh_drivers = {
-            w["set_by"]
-            for pl in res["planets"]
-            if not pl["is_central_planet"]
-            for w in pl["warehouses"]
+            w["set_by"] for pl in res["planets"] if not pl["is_central_planet"] for w in pl["warehouses"]
         }
         self.assertIn("minimum warehouse level", non_central_wh_drivers)
 
@@ -1131,7 +1135,9 @@ class ConfigOptimizerUnitTests(unittest.TestCase):
           </form>
         </body></html>
         """
-        settings_after = settings_before.replace('name="planet_602" type="text" value="Colony"', 'name="planet_602" type="text" value="Starforge II"')
+        settings_after = settings_before.replace(
+            'name="planet_602" type="text" value="Colony"', 'name="planet_602" type="text" value="Starforge II"'
+        )
         executed_scripts: list[tuple[str, Any]] = []
 
         fake_client = MagicMock()

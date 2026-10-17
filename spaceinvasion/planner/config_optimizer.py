@@ -221,10 +221,7 @@ def unit_keys(slug_by_key: Mapping[str, str]) -> list[str]:
 def full_cost(raw_cost: Any) -> dict[str, int]:
     """Copy a cost mapping, adding 0 for any omitted primary resource."""
     src = raw_cost if isinstance(raw_cost, Mapping) else {}
-    return {
-        resource: max(0, game_data.safe_int(src.get(resource, 0), 0))
-        for resource in RESOURCE_KEYS
-    }
+    return {resource: max(0, game_data.safe_int(src.get(resource, 0), 0)) for resource in RESOURCE_KEYS}
 
 
 def build_monotonic_base_times(
@@ -333,9 +330,7 @@ def building_level_economy(
     if resource != "none":
         temperature = int(context["planet_temperature_c"])
         production_1x = float(
-            game_data.mine_production_per_hour(
-                int(building_id), lvl, temperature=temperature, mining_tech_level=0
-            )
+            game_data.mine_production_per_hour(int(building_id), lvl, temperature=temperature, mining_tech_level=0)
         )
         production = speedup * float(
             game_data.mine_production_per_hour(
@@ -404,9 +399,7 @@ def last_level_build_time(
     base_times = build_monotonic_base_times(levels_map, level)
     dev_center_level = max(0, int(planned_levels.get("b7", 0)) - (1 if key == "b7" else 0))
     microsystem_level = max(0, int(planned_levels.get("b17", 0)) - (1 if key == "b17" else 0))
-    return float(base_times[level]) / building_time_divisor(
-        dev_center_level, microsystem_level, speedup_factor
-    )
+    return float(base_times[level]) / building_time_divisor(dev_center_level, microsystem_level, speedup_factor)
 
 
 # ---------------------------------------------------------------------------
@@ -482,9 +475,7 @@ class TechnologyRequirementGraph:
                 if open_prereqs[dependent] == 0:
                     queue.append(dependent)
         if len(order) != len(self.nodes):
-            raise ValueError(
-                f"Cycle detected in technology requirement graph: {sorted(set(self.nodes) - set(order))}"
-            )
+            raise ValueError(f"Cycle detected in technology requirement graph: {sorted(set(self.nodes) - set(order))}")
         return tuple(order), layer
 
     def _close_transitively(self) -> tuple[dict[str, frozenset[str]], dict[str, frozenset[str]]]:
@@ -949,7 +940,9 @@ def _resolve_planet_specialization(
         lk = str(lookup_key).strip()
         if not lk:
             continue
-        lk_norm = normalize_coords(lk) if (":" in lk and not lk.startswith("EMPTY:") and not lk.startswith("slot:")) else lk
+        lk_norm = (
+            normalize_coords(lk) if (":" in lk and not lk.startswith("EMPTY:") and not lk.startswith("slot:")) else lk
+        )
         if (norm_coords and lk_norm == norm_coords) or lk.lower() == slot_key:
             spec = normalize_planet_specialization(raw_spec)
             if spec != "auto":
@@ -976,11 +969,7 @@ def _resolve_planet_display_name(
     if planet_names:
         pid = int(planet.planet_id)
         pid_str = str(pid) if pid > 0 else ""
-        norm_coords = (
-            normalize_coords(raw_coords)
-            if raw_coords and not raw_coords.startswith("EMPTY:")
-            else raw_coords
-        )
+        norm_coords = normalize_coords(raw_coords) if raw_coords and not raw_coords.startswith("EMPTY:") else raw_coords
         slot_key = f"slot:{int(slot_index)}"
         if pid_str and pid_str in planet_names:
             override_name = normalize_planet_name(planet_names[pid_str])
@@ -1055,9 +1044,7 @@ def check_optimizer_settings(
         raise ValueError("Building levels and fleet sizes must be whole numbers of 0 or more")
     top_wh = min(catalog_top_level(key) for key in WAREHOUSE_KEYS)
     if int(min_warehouse_level) > top_wh or int(central_min_warehouse_level) > top_wh:
-        raise ValueError(
-            f"Warehouse minimum levels cannot exceed catalog top level {top_wh}"
-        )
+        raise ValueError(f"Warehouse minimum levels cannot exceed catalog top level {top_wh}")
     if not (math.isfinite(warehouse_hours) and warehouse_hours >= 0.0):
         raise ValueError("warehouse_hours_of_production must be a finite number >= 0")
     for key in optimized_max_levels:
@@ -1153,9 +1140,7 @@ def build_planet_plan(
         for key, level in needs.items():
             required[key] = max(required.get(key, 0), level)
 
-    fixed_levels = {
-        key: max(level, required.get(key, 0)) for key, level in wanted.items() if key not in WAREHOUSE_KEYS
-    }
+    fixed_levels = {key: max(level, required.get(key, 0)) for key, level in wanted.items() if key not in WAREHOUSE_KEYS}
 
     min_levels: dict[str, int] = {}
     max_levels: dict[str, int] = {}
@@ -1530,9 +1515,8 @@ class EmpireProductionModel:
         planets_idx = self.planet_index(planets)
         planet_axis = planets_idx[None, :, None]
         building_axis = np.arange(levels.shape[2])[None, None, :]
-        totals = (
-            self.fixed_flows[:, None, planets_idx]
-            + self.flow_tables[:, planet_axis, building_axis, levels].sum(axis=3)
+        totals = self.fixed_flows[:, None, planets_idx] + self.flow_tables[:, planet_axis, building_axis, levels].sum(
+            axis=3
         )
         flows = dict(zip(PRODUCTION_FLOW_KEYS, totals))
 
@@ -1729,7 +1713,9 @@ def coarse_designs(model: EmpireProductionModel, planet: int, grid_size: int) ->
                     prereq_ok = False
                     break
                 seed[b_idx] = max(int(seed[b_idx]), int(req_lvl))
-            elif int(model.fixed_levels.get(key, np.zeros(len(model.free_fields), dtype=np.int64))[planet]) < int(req_lvl):
+            elif int(model.fixed_levels.get(key, np.zeros(len(model.free_fields), dtype=np.int64))[planet]) < int(
+                req_lvl
+            ):
                 prereq_ok = False
                 break
         if prereq_ok:
@@ -1936,8 +1922,7 @@ def polish_both_ways(
     rebal_changes = int(np.abs(rebalanced - model.built_opt_levels).sum())
     return (
         rebalanced
-        if (ships[1], -rebal_changes, -int(rebalanced.sum()))
-        > (ships[0], -direct_changes, -int(direct.sum()))
+        if (ships[1], -rebal_changes, -int(rebalanced.sum())) > (ships[0], -direct_changes, -int(direct.sum()))
         else direct
     )
 
@@ -2027,9 +2012,7 @@ def _polish_holding_central_reserve(
             tot_net = other_net[None, :] + own_net
             needed = model.warehouse_hours * np.maximum(tot_net, 0.0)
             held = (
-                model.warehouse_capacities[own_wh]
-                if planet == cp
-                else model.warehouse_capacities[cp_wh_fixed][None, :]
+                model.warehouse_capacities[own_wh] if planet == cp else model.warehouse_capacities[cp_wh_fixed][None, :]
             )
             excess = np.maximum(0.0, needed - held)
             rel_excess = (excess / np.maximum(held, 1.0)).sum(axis=1)
@@ -2138,11 +2121,7 @@ def search_in_rounds(
         best_levels = result[-1]
         needed = central_reserve_needed(round_model, best_levels)
         warehouses = round_model.simulate(best_levels[None])["planet_warehouse_levels"][0]
-        held = (
-            round_model.warehouse_capacities[warehouses[cp]]
-            if cp >= 0
-            else np.full(len(RESOURCE_KEYS), np.inf)
-        )
+        held = round_model.warehouse_capacities[warehouses[cp]] if cp >= 0 else np.full(len(RESOURCE_KEYS), np.inf)
         holds_the_production = not (needed > held).any()
         rounds.append(
             {
@@ -2212,8 +2191,7 @@ def search_in_rounds(
                                     for resource, amount in zip(RESOURCE_KEYS, needed_c)
                                 },
                                 **{
-                                    f"{resource}_held": float(amount)
-                                    for resource, amount in zip(RESOURCE_KEYS, held_c)
+                                    f"{resource}_held": float(amount) for resource, amount in zip(RESOURCE_KEYS, held_c)
                                 },
                                 "holds_the_production": True,
                             }
@@ -2367,15 +2345,17 @@ def detect_planet_specialization(
     shipyard_delta = float(d_b9) + 3.0 * float(d_b17)
     active_shipyard_growth = (float(shipyard_ships) > 0.0) and (d_b17 >= 1 or d_b9 >= 3)
     static_shipyard_role = (
-        (float(shipyard_ships) > 0.0)
-        and (best_mine_delta <= 0.0)
-        and (b17 >= 2 or (b9 >= 12 and top_mine_lvl < 15.0))
+        (float(shipyard_ships) > 0.0) and (best_mine_delta <= 0.0) and (b17 >= 2 or (b9 >= 12 and top_mine_lvl < 15.0))
     )
 
     if active_shipyard_growth or static_shipyard_role:
         if b4 >= 12 and (top_mine_role == "spice" or d_b4 >= 4 or float(b4) >= top_mine_lvl - 6.0):
             return "spice_shipyard"
-        if top_mine_lvl <= 15.0 or best_mine_delta <= 2.0 or (shipyard_delta >= best_mine_delta and top_mine_delta <= 8.0):
+        if (
+            top_mine_lvl <= 15.0
+            or best_mine_delta <= 2.0
+            or (shipyard_delta >= best_mine_delta and top_mine_delta <= 8.0)
+        ):
             return "shipyard"
 
     if top_mine_lvl > 0.0:
@@ -2776,10 +2756,7 @@ def run_config_optimizer(
     if not roster_planets:
         raise ValueError("No normal planets available in GameState (enable pad_generic_colonies for preview)")
 
-    own_researches = {
-        key: max(0, int((state.researches or {}).get(key, 0) or 0))
-        for key, _ in research_catalog()
-    }
+    own_researches = {key: max(0, int((state.researches or {}).get(key, 0) or 0)) for key, _ in research_catalog()}
     uni_max = {
         key: max(own_researches[key], max(0, int((universe_research_max or {}).get(key, 0) or 0)))
         for key in own_researches
@@ -2996,12 +2973,8 @@ def run_config_optimizer(
             else:
                 roles_preserved_count += 1
         warehouse_fields = int(sum(warehouses_map.values()))
-        levels_to_build = int(
-            sum(max(0, planned_map[key] - plan["built_levels"][key]) for key in planned_map)
-        )
-        levels_to_demolish = int(
-            sum(max(0, plan["built_levels"][key] - planned_map[key]) for key in planned_map)
-        )
+        levels_to_build = int(sum(max(0, planned_map[key] - plan["built_levels"][key]) for key in planned_map))
+        levels_to_demolish = int(sum(max(0, plan["built_levels"][key] - planned_map[key]) for key in planned_map))
         built_sum_now = int(sum(plan["built_levels"].values()))
         demolitions_when_full = min(
             levels_to_demolish,
@@ -3009,8 +2982,7 @@ def run_config_optimizer(
         )
         upgrade_cost_sp = round(
             sum(
-                building_upgrade_cost_spice_eq(key, plan["built_levels"][key], planned_map[key])
-                for key in planned_map
+                building_upgrade_cost_spice_eq(key, plan["built_levels"][key], planned_map[key]) for key in planned_map
             ),
             2,
         )
@@ -3078,8 +3050,7 @@ def run_config_optimizer(
                 "fields_used": fields_used_target,
                 "fields_free": fields_free,
                 "built_floors": {
-                    f"b{bid}": int(plan["built_levels"][f"b{bid}"])
-                    for bid in sorted(game_data.BUILDING_BY_ID)
+                    f"b{bid}": int(plan["built_levels"][f"b{bid}"]) for bid in sorted(game_data.BUILDING_BY_ID)
                 },
                 "reserved_floors": dict(plan["reserved_floors"]),
                 "detected_specialization": detected_spec,
@@ -3148,14 +3119,10 @@ def run_config_optimizer(
     }
 
     central_rec = (
-        planet_records[best_model.central_planet]
-        if 0 <= best_model.central_planet < len(planet_records)
-        else None
+        planet_records[best_model.central_planet] if 0 <= best_model.central_planet < len(planet_records) else None
     )
     resolved_planet_names = {
-        str(rec["planet_id"]): str(rec["name"])
-        for rec in planet_records
-        if int(rec["planet_id"]) > 0
+        str(rec["planet_id"]): str(rec["name"]) for rec in planet_records if int(rec["planet_id"]) > 0
     }
     summary = {
         "target_ship_key": best_model.target_ship_key,
@@ -3304,8 +3271,7 @@ def _evaluate_planet_map(
     net_vec = np.array([net[r] for r in RESOURCE_KEYS], dtype=np.float64)
 
     can_build = all(
-        int(planned_map.get(req_k, 0) or 0) >= int(req_lvl)
-        for req_k, req_lvl in target_requirements.items()
+        int(planned_map.get(req_k, 0) or 0) >= int(req_lvl) for req_k, req_lvl in target_requirements.items()
     )
     if can_build and base_ship_time_s > 0.0:
         shipyard_ships = (
@@ -3397,19 +3363,13 @@ def apply_manual_planet_override(
     if not roster_planets:
         raise ValueError("No normal planets available in GameState (enable pad_generic_colonies for preview)")
 
-    own_researches = {
-        key: max(0, int((state.researches or {}).get(key, 0) or 0))
-        for key, _ in research_catalog()
-    }
+    own_researches = {key: max(0, int((state.researches or {}).get(key, 0) or 0)) for key, _ in research_catalog()}
     uni_src = universe_research_max
     if uni_src is None and isinstance(base_result, Mapping) and isinstance(base_result.get("inputs"), Mapping):
         raw_u = base_result["inputs"].get("universe_research_max_levels")
         if isinstance(raw_u, Mapping):
             uni_src = raw_u
-    uni_max = {
-        key: max(own_researches[key], max(0, int((uni_src or {}).get(key, 0) or 0)))
-        for key in own_researches
-    }
+    uni_max = {key: max(own_researches[key], max(0, int((uni_src or {}).get(key, 0) or 0))) for key in own_researches}
     required_research = research_requirements(
         [
             cfg["target_ship_key"],
@@ -3452,7 +3412,9 @@ def apply_manual_planet_override(
 
     # Locate target planet in `planet_plans`
     target_idx: Optional[int] = None
-    norm_req_coords = normalize_coords(coords) if (coords and not str(coords).startswith("EMPTY:")) else str(coords or "").strip()
+    norm_req_coords = (
+        normalize_coords(coords) if (coords and not str(coords).startswith("EMPTY:")) else str(coords or "").strip()
+    )
     if planet_id is not None and int(planet_id) != 0:
         target_idx = next(
             (i for i, pl in enumerate(planet_plans) if int(pl["planet_id"]) == int(planet_id)),
@@ -3557,9 +3519,7 @@ def apply_manual_planet_override(
         tplan["fields_max"] = max(1, min(2000, int(fields_max_override)))
 
     planet_ident_key = (
-        str(int(tplan["planet_id"]))
-        if int(tplan["planet_id"]) > 0
-        else f"slot:{int(tplan['slot_index'])}"
+        str(int(tplan["planet_id"])) if int(tplan["planet_id"]) > 0 else f"slot:{int(tplan['slot_index'])}"
     )
 
     if locked_specialization is not None:
@@ -3665,9 +3625,7 @@ def apply_manual_planet_override(
         manual_pins[planet_ident_key] = {
             "target_buildings": dict(merged_target_map),
             "fields_max_override": (
-                int(fields_max_override)
-                if (fields_max_override is not None and int(fields_max_override) > 0)
-                else None
+                int(fields_max_override) if (fields_max_override is not None and int(fields_max_override) > 0) else None
             ),
             "auto_warehouses": bool(auto_warehouses),
         }
@@ -3738,22 +3696,15 @@ def apply_manual_planet_override(
                 roles_preserved_count += 1
 
         warehouse_fields = int(sum(int(pmap.get(wk, 0)) for wk in WAREHOUSE_KEYS))
-        levels_to_build = int(
-            sum(max(0, int(pmap[bk]) - int(plan["built_levels"][bk])) for bk in pmap)
-        )
-        levels_to_demolish = int(
-            sum(max(0, int(plan["built_levels"][bk]) - int(pmap[bk])) for bk in pmap)
-        )
+        levels_to_build = int(sum(max(0, int(pmap[bk]) - int(plan["built_levels"][bk])) for bk in pmap))
+        levels_to_demolish = int(sum(max(0, int(plan["built_levels"][bk]) - int(pmap[bk])) for bk in pmap))
         built_sum_now = int(sum(plan["built_levels"].values()))
         demolitions_when_full = min(
             levels_to_demolish,
             max(0, built_sum_now + levels_to_build - int(plan["fields_max"])),
         )
         upgrade_cost_sp = round(
-            sum(
-                building_upgrade_cost_spice_eq(bk, int(plan["built_levels"][bk]), int(pmap[bk]))
-                for bk in pmap
-            ),
+            sum(building_upgrade_cost_spice_eq(bk, int(plan["built_levels"][bk]), int(pmap[bk])) for bk in pmap),
             2,
         )
         fleet_cost_sp = round(float(plan["fleet_cost_spice_eq"]), 2)
@@ -3820,8 +3771,7 @@ def apply_manual_planet_override(
                 "fields_used": fields_used_t,
                 "fields_free": fields_free_t,
                 "built_floors": {
-                    f"b{bid}": int(plan["built_levels"][f"b{bid}"])
-                    for bid in sorted(game_data.BUILDING_BY_ID)
+                    f"b{bid}": int(plan["built_levels"][f"b{bid}"]) for bid in sorted(game_data.BUILDING_BY_ID)
                 },
                 "reserved_floors": dict(plan["reserved_floors"]),
                 "detected_specialization": detected_spec,
@@ -3864,15 +3814,9 @@ def apply_manual_planet_override(
     monthly_output = ships * ship_cost_sp
     limiting_factor = ", ".join(bottleneck_names)
     elapsed_ms = round((time.perf_counter() - t0) * 1000.0, 2)
-    central_rec = (
-        planet_records[central_planet_idx]
-        if 0 <= central_planet_idx < len(planet_records)
-        else None
-    )
+    central_rec = planet_records[central_planet_idx] if 0 <= central_planet_idx < len(planet_records) else None
     resolved_planet_names = {
-        str(rec["planet_id"]): str(rec["name"])
-        for rec in planet_records
-        if int(rec["planet_id"]) > 0
+        str(rec["planet_id"]): str(rec["name"]) for rec in planet_records if int(rec["planet_id"]) > 0
     }
     prev_search = (
         dict(base_result.get("search") or {})
@@ -4027,9 +3971,7 @@ def compute_yearly_ships_per_week_projection(
     }
 
     live_planets_by_id = (
-        {int(p.planet_id): p for p in (state.planets or ()) if int(p.planet_id) > 0}
-        if state is not None
-        else {}
+        {int(p.planet_id): p for p in (state.planets or ()) if int(p.planet_id) > 0} if state is not None else {}
     )
     raw_planets = result.get("planets") if isinstance(result.get("planets"), (list, tuple)) else []
 
@@ -4096,11 +4038,7 @@ def compute_yearly_ships_per_week_projection(
         )
 
     total_upgrade_levels = int(
-        sum(
-            max(0, int(sp["tgt"][bk]) - int(sp["cur"][bk]))
-            for sp in sim_planets
-            for bk in all_bkeys
-        )
+        sum(max(0, int(sp["tgt"][bk]) - int(sp["cur"][bk])) for sp in sim_planets for bk in all_bkeys)
         + sum(max(0, int(tgt_res[rk]) - int(cur_res[rk])) for rk in tgt_res)
     )
     completed_upgrade_levels = 0
@@ -4119,8 +4057,7 @@ def compute_yearly_ships_per_week_projection(
     b_cost_cache: dict[tuple[str, int], float] = {}
     r_cost_cache: dict[tuple[str, int], float] = {}
     solar_unit_by_temp: dict[int, float] = {
-        int(sp["temperature_c"]): solar_cell_energy_per_unit(float(sp["temperature_c"]))
-        for sp in sim_planets
+        int(sp["temperature_c"]): solar_cell_energy_per_unit(float(sp["temperature_c"])) for sp in sim_planets
     }
 
     def _cached_flows(temp_c: int, r1_lvl: int, r2_lvl: int, bk: str, lvl: int) -> list[float]:
@@ -4208,18 +4145,12 @@ def compute_yearly_ships_per_week_projection(
                     / base_ship_time_s
                 )
 
-        res_limits_wk = {
-            r: max(0.0, emp_net_hr[r] * 168.0 / ship_cost_map[r])
-            for r in cost_resources
-        }
+        res_limits_wk = {r: max(0.0, emp_net_hr[r] * 168.0 / ship_cost_map[r]) for r in cost_resources}
         res_cap_wk = min(res_limits_wk.values()) if res_limits_wk else 0.0
         ships_wk = min(res_cap_wk, shipyard_wk)
         all_limits = {**res_limits_wk, "shipyards": shipyard_wk}
         bottleneck = min(all_limits, key=lambda k: all_limits[k]) if all_limits else "shipyards"
-        sp_per_hr = sum(
-            max(0.0, emp_net_hr[r]) / float(merchant_sp[r])
-            for r in RESOURCE_KEYS
-        )
+        sp_per_hr = sum(max(0.0, emp_net_hr[r]) / float(merchant_sp[r]) for r in RESOURCE_KEYS)
         res_bottleneck = min(res_limits_wk, key=lambda k: res_limits_wk[k]) if res_limits_wk else "metal"
         return {
             "ships_per_week": ships_wk,
@@ -4331,9 +4262,11 @@ def compute_yearly_ships_per_week_projection(
                     weight = 80_000.0
                 elif planet_builds_ship and bk in ship_b_reqs and c_l < int(ship_b_reqs[bk]):
                     weight = 30_000.0
-                elif bk == "b8" and any(
-                    int(cur_res.get(srk, 0)) < int(srl) for srk, srl in ship_r_reqs.items()
-                ) and c_l < req_b8_for_ship:
+                elif (
+                    bk == "b8"
+                    and any(int(cur_res.get(srk, 0)) < int(srl) for srk, srl in ship_r_reqs.items())
+                    and c_l < req_b8_for_ship
+                ):
                     weight = 32_000.0
                 elif bk == "b7" and c_l < min(t_l, 12):
                     weight = 1600.0
@@ -4385,16 +4318,10 @@ def compute_yearly_ships_per_week_projection(
                     continue
                 n_l = c_l + 1
                 prereqs_r = TECH_GRAPH.prereqs_of.get(rk, ())
-                req_b8 = max(
-                    [1, *(int(pr_l) for pr_k, pr_l in prereqs_r if pr_k == "b8")]
-                )
+                req_b8 = max([1, *(int(pr_l) for pr_k, pr_l in prereqs_r if pr_k == "b8")])
                 if best_lab_b8 < req_b8:
                     continue
-                if any(
-                    int(cur_res.get(pr_k, 0)) < int(pr_l)
-                    for pr_k, pr_l in prereqs_r
-                    if pr_k.startswith("r")
-                ):
+                if any(int(cur_res.get(pr_k, 0)) < int(pr_l) for pr_k, pr_l in prereqs_r if pr_k.startswith("r")):
                     continue
                 cost = _r_cost_sp(rk, n_l)
                 dur = _r_dur_s(rk, n_l)
@@ -4547,11 +4474,7 @@ def compute_yearly_ships_per_week_projection(
         slice_wks = weeks_out[w_start + 1 : w_end + 1]
         start_rate = float(weeks_out[w_start]["ships_per_week"])
         end_rate = float(slice_wks[-1]["ships_per_week"]) if slice_wks else start_rate
-        avg_rate = (
-            sum(float(w["ships_per_week"]) for w in slice_wks) / len(slice_wks)
-            if slice_wks
-            else start_rate
-        )
+        avg_rate = sum(float(w["ships_per_week"]) for w in slice_wks) / len(slice_wks) if slice_wks else start_rate
         peak_rate = max((float(w["ships_per_week"]) for w in slice_wks), default=start_rate)
         yr_ships = sum(float(w["ships_per_week"]) for w in slice_wks)
         cumulative_ships += yr_ships
@@ -4588,4 +4511,3 @@ def compute_yearly_ships_per_week_projection(
             "weeks": weeks_out,
         }
     )
-

@@ -22,7 +22,10 @@ class TestSecurityInvariants(unittest.TestCase):
 
     def test_redact_sensitive_scrubs_sid_in_urls_and_headers(self) -> None:
         url_cases = [
-            ("https://spaceinvasion.bitmeup.com/indexInternal.es?action=internalHome&sid=SECRET_SID_9911&p=1", "SECRET_SID_9911"),
+            (
+                "https://spaceinvasion.bitmeup.com/indexInternal.es?action=internalHome&sid=SECRET_SID_9911&p=1",
+                "SECRET_SID_9911",
+            ),
             ("https://spaceinvasion.bitmeup.com/indexGame.es?SID=UPPER_SID_7722", "UPPER_SID_7722"),
             ("https://spaceinvasion.bitmeup.com/indexInternal.es?next=foo%3Fsid%3DENC_SID_4433%26ok=1", "ENC_SID_4433"),
             ("Cookie: sid=COOKIE_SID_5544; theme=dark", "COOKIE_SID_5544"),

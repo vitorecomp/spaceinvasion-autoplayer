@@ -256,7 +256,9 @@ def _legacy_workload_steps(gdb: GameDatabase) -> None:
     )
     for pig, met, kry, spi, tot, speq, pts in _PROD_SAMPLES:
         gdb.record_hourly_production(pig, met, kry, spi, tot, speq, 5, 2, ts=pts)
-    gdb.refresh_loot_recycle_hourly(ts=_T0)
+    with gdb._lock:
+        gdb._refresh_loot_recycle_hourly_locked(ts=_T0)
+        gdb._conn.commit()
     for ev, grade, score, msg, ats, pid, fields, temp in _ATTEMPT_ROWS:
         gdb.record_colony_attempt(
             target_coords="2:380:8",

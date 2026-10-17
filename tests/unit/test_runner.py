@@ -102,7 +102,10 @@ class TestRunnerDebugPortLifecycle(unittest.TestCase):
 
         err_buf = io.StringIO()
         with (
-            patch("run_stack.ensure_debug_browser_ready", side_effect=SpaceInvasionAuthError("bad ?sid=topsecret_stack_99")),
+            patch(
+                "run_stack.ensure_debug_browser_ready",
+                side_effect=SpaceInvasionAuthError("bad ?sid=topsecret_stack_99"),
+            ),
             patch("sys.stderr", err_buf),
         ):
             rc = run_stack.main(["--debug-port", "9222"])
@@ -136,7 +139,9 @@ class TestRunnerDebugPortLifecycle(unittest.TestCase):
 
         api_err = io.StringIO()
         with (
-            patch("game_api.ensure_debug_browser_ready", side_effect=SpaceInvasionAuthError("bad ?sid=topsecret_api_88")),
+            patch(
+                "game_api.ensure_debug_browser_ready", side_effect=SpaceInvasionAuthError("bad ?sid=topsecret_api_88")
+            ),
             patch("sys.stderr", api_err),
         ):
             rc_api_err = game_api.main(["--debug-port", "9222"])
@@ -428,11 +433,24 @@ class TestRunnerDebugPortLifecycle(unittest.TestCase):
         for sec in ("KEY_PATH_SEC", "KEY_TUP_SEC", "KEY_FSET_SEC"):
             self.assertNotIn(sec, keyed_str)
 
-        out = login_cli._safe_cli_json({"err": RuntimeError("?sid=CLI_EXC_SEC"), "cplx": complex(1, 2), "obj": object()})
+        out = login_cli._safe_cli_json(
+            {"err": RuntimeError("?sid=CLI_EXC_SEC"), "cplx": complex(1, 2), "obj": object()}
+        )
         parsed = json.loads(out)
         self.assertNotIn("CLI_EXC_SEC", json.dumps(parsed, allow_nan=False))
 
-        p = PlanetState(1, "P", "01:001:01", "normal", 20, 10, 200, Resources(10, 10, 10, 10), Resources(100, 100, 100, 100), EnergyBalance(50, 10))
+        p = PlanetState(
+            1,
+            "P",
+            "01:001:01",
+            "normal",
+            20,
+            10,
+            200,
+            Resources(10, 10, 10, 10),
+            Resources(100, 100, 100, 100),
+            EnergyBalance(50, 10),
+        )
         st = GameState(31, 1, "u", 1000.0, (p,), active_planet_id=1)
         with tempfile.TemporaryDirectory() as tmp:
             log_dir = Path(tmp)
@@ -497,8 +515,17 @@ class TestRunnerDebugPortLifecycle(unittest.TestCase):
                 self.assertEqual(rc, 0)
                 rendered = buf.getvalue()
                 for sec in (
-                    "ACC_SEC", "PROF_SEC", "COOK_SEC", "CNAME_SEC", "BROWSER_FINAL_SEC", "DBG_SEC",
-                    "HACC_SEC", "HLAND_SEC", "HTTP_FINAL_SEC", "HCOOK_SEC", "HCNAME_SEC",
+                    "ACC_SEC",
+                    "PROF_SEC",
+                    "COOK_SEC",
+                    "CNAME_SEC",
+                    "BROWSER_FINAL_SEC",
+                    "DBG_SEC",
+                    "HACC_SEC",
+                    "HLAND_SEC",
+                    "HTTP_FINAL_SEC",
+                    "HCOOK_SEC",
+                    "HCNAME_SEC",
                 ):
                     self.assertNotIn(sec, rendered, f"argv={argv} leaked {sec}")
         self.assertIn("sid=BROWSER_FINAL_SEC", b_res.final_url)
@@ -652,7 +679,9 @@ class TestRunnerDebugPortLifecycle(unittest.TestCase):
             '{"auth_header": "Authorization: Bearer REDACTED"}',
         )
         self.assertEqual(
-            redact_sensitive("?s\u0130d=LU_I1&?s\u0131d=LU_I2&?cook\u0130e=LU_CK&?ap\u0131_key=LU_AK&?cl\u0130ent_secret=LU_CS"),
+            redact_sensitive(
+                "?s\u0130d=LU_I1&?s\u0131d=LU_I2&?cook\u0130e=LU_CK&?ap\u0131_key=LU_AK&?cl\u0130ent_secret=LU_CS"
+            ),
             "?s\u0130d=REDACTED&?s\u0131d=REDACTED&?cook\u0130e=REDACTED&?ap\u0131_key=REDACTED&?cl\u0130ent_secret=REDACTED",
         )
         benign = "has_password=true&has_sid=false&no_secret=false&cookie_path=/x&cookie_names=a&token=ok&bsid=123"
@@ -677,7 +706,6 @@ class TestRunnerDebugPortLifecycle(unittest.TestCase):
         self.assertEqual(red_dict["cookie_path"], "/tmp/cookies.json")
         self.assertEqual(red_dict["has_sid"], "false")
 
-
     def test_r14_logging_urlenc_json_esc_quotes_pct20_redos_and_cli_dag20_cycles(self) -> None:
         import time
         from spaceinvasion.core import logging_utils as lu
@@ -687,26 +715,40 @@ class TestRunnerDebugPortLifecycle(unittest.TestCase):
         import game_api as ga_mod
 
         vectors = (
-            '%22password%22%3A%22LU_UE_PW%22',
-            '%22Bearer%20LU_UE_BR%22',
-            'Bearer %3CLU_UE_ANG%3E',
-            'Bearer %5BLU_UE_BRK%5D',
+            "%22password%22%3A%22LU_UE_PW%22",
+            "%22Bearer%20LU_UE_BR%22",
+            "Bearer %3CLU_UE_ANG%3E",
+            "Bearer %5BLU_UE_BRK%5D",
             '\\"password\\":\\"LU_ESC_PW\\"',
             '\\\\"password\\\\":\\\\"LU_DESC_PW\\\\"',
-            'Bearer [MY LU SECRET]',
-            'Bearer <MY LU ANG>',
+            "Bearer [MY LU SECRET]",
+            "Bearer <MY LU ANG>",
             'Bearer "UNCLOSED_LU_Q',
-            'Bearer LU_SCHEMELESS_BR',
+            "Bearer LU_SCHEMELESS_BR",
         )
         for v in vectors:
             red = lu.redact_sensitive(v)
-            for marker in ("LU_UE_PW", "LU_UE_BR", "LU_UE_ANG", "LU_UE_BRK", "LU_ESC_PW", "LU_DESC_PW", "MY LU SECRET", "MY LU ANG", "UNCLOSED_LU_Q", "LU_SCHEMELESS_BR"):
+            for marker in (
+                "LU_UE_PW",
+                "LU_UE_BR",
+                "LU_UE_ANG",
+                "LU_UE_BRK",
+                "LU_ESC_PW",
+                "LU_DESC_PW",
+                "MY LU SECRET",
+                "MY LU ANG",
+                "UNCLOSED_LU_Q",
+                "LU_SCHEMELESS_BR",
+            ):
                 self.assertNotIn(marker, red, f"Leaked {marker} in {red!r}")
 
         self.assertEqual(lu.redact_sensitive("Authorization: Bearer REDACTED"), "Authorization: Bearer REDACTED")
-        self.assertEqual(lu.redact_sensitive("has_sid=false&has_password=true&token=benign"), "has_sid=false&has_password=true&token=benign")
+        self.assertEqual(
+            lu.redact_sensitive("has_sid=false&has_password=true&token=benign"),
+            "has_sid=false&has_password=true&token=benign",
+        )
 
-        redos_s = 'password=' + ('\\' * 5000) + '"'
+        redos_s = "password=" + ("\\" * 5000) + '"'
         t0 = time.perf_counter()
         _ = lu.redact_sensitive(redos_s)
         self.assertLess((time.perf_counter() - t0) * 1000.0, 250.0)

@@ -100,9 +100,7 @@ def _make_state(*, hostile: bool = False) -> GameState:
         ships={},
     )
     alerts = (
-        (FleetAlert(mission="ATTACK", hostile=True, summary="Hostile fleet incoming to 02:380:01"),)
-        if hostile
-        else ()
+        (FleetAlert(mission="ATTACK", hostile=True, summary="Hostile fleet incoming to 02:380:01"),) if hostile else ()
     )
     return GameState(
         universe_id=31,
@@ -439,7 +437,18 @@ class GalaxyScanExclusivityTest(unittest.TestCase):
                 patch("sys.stdout", buf),
             ):
                 rc = commander_mod.main(
-                    ["--live", "--loop", "--max-ticks", "1", "--interval", "0.02", "--config", str(cfg_path), "--log-dir", ""]
+                    [
+                        "--live",
+                        "--loop",
+                        "--max-ticks",
+                        "1",
+                        "--interval",
+                        "0.02",
+                        "--config",
+                        str(cfg_path),
+                        "--log-dir",
+                        "",
+                    ]
                 )
             self.assertEqual(rc, 0)
             self.assertEqual(state_calls, 0)
@@ -452,7 +461,18 @@ class GalaxyScanExclusivityTest(unittest.TestCase):
                 patch("sys.stdout", buf_p0),
             ):
                 rc_p0 = commander_mod.main(
-                    ["--live", "--loop", "--max-ticks", "1", "--interval", "0.02", "--config", str(cfg_path), "--log-dir", ""]
+                    [
+                        "--live",
+                        "--loop",
+                        "--max-ticks",
+                        "1",
+                        "--interval",
+                        "0.02",
+                        "--config",
+                        str(cfg_path),
+                        "--log-dir",
+                        "",
+                    ]
                 )
             self.assertEqual(rc_p0, 0)
             self.assertGreaterEqual(state_calls, 1)

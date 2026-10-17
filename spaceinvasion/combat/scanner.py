@@ -68,9 +68,7 @@ def select_planner_scan_system(
     cooldown_s: float = _PLANNER_SCAN_COOLDOWN_S,
 ) -> Optional[dict[str, Any]]:
     """Pick ONE smart `SCAN_GALAXY` system for the planner (2-phase: explore outward -> weighted stale refresh)."""
-    own_list: list[str] = (
-        [origin_coords] if isinstance(origin_coords, str) else [str(c) for c in origin_coords if c]
-    )
+    own_list: list[str] = [origin_coords] if isinstance(origin_coords, str) else [str(c) for c in origin_coords if c]
     if not own_list:
         return None
     eff_now = _safe_float_any(now_ts, 0.0)

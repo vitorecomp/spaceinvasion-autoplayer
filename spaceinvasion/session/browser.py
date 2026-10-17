@@ -238,9 +238,7 @@ def launch_chrome_with_debug_port(config: BrowserConfig, port: int) -> subproces
         start_new_session=config.detach,
     )
 
-    deadline = time.monotonic() + _finite_bounded_timeout(
-        config.timeout, default=25.0, min_val=10.0, max_val=300.0
-    )
+    deadline = time.monotonic() + _finite_bounded_timeout(config.timeout, default=25.0, min_val=10.0, max_val=300.0)
     try:
         while time.monotonic() < deadline:
             if proc.poll() is not None:
@@ -255,9 +253,7 @@ def launch_chrome_with_debug_port(config: BrowserConfig, port: int) -> subproces
         raise
 
     _terminate_or_kill_process(proc)
-    raise SpaceInvasionAuthError(
-        f"Timed out waiting for Chrome debug port {config.debug_host}:{port}."
-    )
+    raise SpaceInvasionAuthError(f"Timed out waiting for Chrome debug port {config.debug_host}:{port}.")
 
 
 def _safe_browser_err(exc: BaseException) -> str:
@@ -569,15 +565,11 @@ def _handle_antibot_or_raise(
     if not issue:
         return
     if not config.headless and wait_for_manual_gate is not None:
-        wait_for_manual_gate(
-            f"{issue}. Complete the verification directly in the Chrome window"
-        )
+        wait_for_manual_gate(f"{issue}. Complete the verification directly in the Chrome window")
         still_blocked = detect_antibot_challenge(200, driver.page_source or "")
         if not still_blocked:
             return
-    raise AntiBotChallengeError(
-        f"{issue}. Automation stopped; complete verification manually in a browser."
-    )
+    raise AntiBotChallengeError(f"{issue}. Automation stopped; complete verification manually in a browser.")
 
 
 def _submit_two_factor_if_requested(
@@ -595,9 +587,7 @@ def _submit_two_factor_if_requested(
     if not code and two_factor_provider is not None:
         code = two_factor_provider().strip()
     if not code:
-        raise TwoFactorRequiredError(
-            "Account requires a 2FA code. Pass --2fa <code> or set SPACEINVASION_2FA_CODE."
-        )
+        raise TwoFactorRequiredError("Account requires a 2FA code. Pass --2fa <code> or set SPACEINVASION_2FA_CODE.")
 
     _type_naturally(tfa_input, code, config.typing_delay_range)
     tfa_input.send_keys(Keys.RETURN)
@@ -613,9 +603,7 @@ def _wait_for_landing_ready(
 
     Returns `True` if already authenticated, `False` if login form is ready.
     """
-    deadline = time.monotonic() + _finite_bounded_timeout(
-        config.timeout, default=25.0, min_val=0.05, max_val=300.0
-    )
+    deadline = time.monotonic() + _finite_bounded_timeout(config.timeout, default=25.0, min_val=0.05, max_val=300.0)
     while time.monotonic() < deadline:
         _handle_antibot_or_raise(driver, config, wait_for_manual_gate)
         if _is_portal_authenticated(driver):
@@ -627,9 +615,7 @@ def _wait_for_landing_ready(
             return False
         time.sleep(0.25)
 
-    raise SpaceInvasionAuthError(
-        "Timed out waiting for SpaceInvasion login form or portal to render in Chrome."
-    )
+    raise SpaceInvasionAuthError("Timed out waiting for SpaceInvasion login form or portal to render in Chrome.")
 
 
 def _wait_for_login_outcome(
@@ -641,9 +627,7 @@ def _wait_for_login_outcome(
 ) -> None:
     """Wait for login completion, handling optional 2FA or server error messages."""
     tfa_submitted = False
-    wait_secs = _finite_bounded_timeout(
-        config.timeout, default=25.0, min_val=0.05, max_val=300.0
-    )
+    wait_secs = _finite_bounded_timeout(config.timeout, default=25.0, min_val=0.05, max_val=300.0)
     deadline = time.monotonic() + wait_secs
     while time.monotonic() < deadline:
         _handle_antibot_or_raise(driver, config, wait_for_manual_gate)
@@ -663,9 +647,7 @@ def _wait_for_login_outcome(
 
         time.sleep(0.25)
 
-    raise SpaceInvasionAuthError(
-        "Timed out waiting for BitMeUp login to complete in Chrome."
-    )
+    raise SpaceInvasionAuthError("Timed out waiting for BitMeUp login to complete in Chrome.")
 
 
 def is_in_game_tab(driver) -> bool:
@@ -791,9 +773,7 @@ def _select_spaceinvasion_tab(driver, *, allow_new_tab: bool = True) -> None:
 
 def _extract_portal_universes(driver, wait_seconds: float = 2.5) -> tuple[UniverseOption, ...]:
     """Read portal universes from live `window.SI_TPL.startPortal` JS or HTML."""
-    deadline = time.monotonic() + _finite_bounded_timeout(
-        wait_seconds, default=2.5, min_val=0.0, max_val=60.0
-    )
+    deadline = time.monotonic() + _finite_bounded_timeout(wait_seconds, default=2.5, min_val=0.0, max_val=60.0)
     while True:
         try:
             js_data = driver.execute_script(
@@ -897,9 +877,7 @@ def _wait_for_universe_entry(
     previous_handles: Optional[list[str]] = None,
 ) -> bool:
     """Wait until universe navigation settles on `indexGame.es` (across open tabs)."""
-    deadline = time.monotonic() + _finite_bounded_timeout(
-        config.timeout, default=15.0, min_val=0.05, max_val=15.0
-    )
+    deadline = time.monotonic() + _finite_bounded_timeout(config.timeout, default=15.0, min_val=0.05, max_val=15.0)
     prev_set = set(previous_handles or [])
     while time.monotonic() < deadline:
         _handle_antibot_or_raise(driver, config, wait_for_manual_gate)
@@ -947,9 +925,7 @@ def login_with_browser(
     Supports persistent Chrome profiles, localhost debug-port attach/detach,
     2FA prompts, CAPTCHA/anti-bot manual handoff, and cookie syncing.
     """
-    cfg = config or BrowserConfig(
-        profile_dir=DEFAULT_PROFILE_ROOT / creds.account_name
-    )
+    cfg = config or BrowserConfig(profile_dir=DEFAULT_PROFILE_ROOT / creds.account_name)
     normalized_base = base_url.rstrip("/")
     landing_url = f"{normalized_base}/?locale={creds.locale}"
 
@@ -976,9 +952,7 @@ def login_with_browser(
             and _is_portal_authenticated(driver)
         )
         reused_live_page = (
-            was_already_open
-            and "spaceinvasion.bitmeup.com" in current_url
-            and (in_game_now or is_portal_now)
+            was_already_open and "spaceinvasion.bitmeup.com" in current_url and (in_game_now or is_portal_now)
         )
         if not reused_live_page:
             driver.get(landing_url)
@@ -1002,15 +976,11 @@ def login_with_browser(
             else:
                 pass_el.send_keys(Keys.RETURN)
 
-            _wait_for_login_outcome(
-                driver, creds, cfg, two_factor_provider, wait_for_manual_gate
-            )
+            _wait_for_login_outcome(driver, creds, cfg, two_factor_provider, wait_for_manual_gate)
 
         in_game_already = is_in_game_tab(driver)
         universes = () if in_game_already else _extract_portal_universes(driver)
-        cookie_path, cookie_names = _sync_browser_cookies(
-            driver, session_dir, creds, driver.current_url
-        )
+        cookie_path, cookie_names = _sync_browser_cookies(driver, session_dir, creds, driver.current_url)
         entered_universe: Optional[str] = None
 
         target_uni = enter_universe if enter_universe is not None else creds.universe
@@ -1033,9 +1003,7 @@ def login_with_browser(
             else:
                 matched = _resolve_universe_choice(universes, target_uni)
                 if matched is None:
-                    raise ConfigurationError(
-                        f"Configured universe '{target_uni}' not found on portal."
-                    )
+                    raise ConfigurationError(f"Configured universe '{target_uni}' not found on portal.")
                 if not matched.has_account and not allow_join:
                     raise ConfigurationError(
                         f"Universe '{matched.label}' has no active account yet ([JOIN]). "
@@ -1058,9 +1026,7 @@ def login_with_browser(
                         "Check Chrome for CAPTCHA, cookie prompt, or portal Play button."
                     )
                 entered_universe = matched.label
-                cookie_path, cookie_names = _sync_browser_cookies(
-                    driver, session_dir, creds, driver.current_url
-                )
+                cookie_path, cookie_names = _sync_browser_cookies(driver, session_dir, creds, driver.current_url)
         elif require_in_game and not in_game_already and not is_in_game_tab(driver):
             raise SpaceInvasionAuthError(
                 f"Browser is still outside SpaceInvasion game shell ({driver.current_url}). "

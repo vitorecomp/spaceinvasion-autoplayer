@@ -136,9 +136,7 @@ class FakeDriver:
                 self.title = "SpaceInvasion Portal"
                 self.elements = {(By.ID, "sip-tab-universe"): FakeElement("universe selection")}
             elif self.scenario == "bad_password":
-                self.elements[(By.ID, "form.error.login")] = FakeElement(
-                    "⚠ email or password wrong"
-                )
+                self.elements[(By.ID, "form.error.login")] = FakeElement("⚠ email or password wrong")
             elif self.scenario == "2fa":
                 tfa_el = FakeElement()
 
@@ -148,9 +146,7 @@ class FakeDriver:
                         self.current_url = "https://spaceinvasion.bitmeup.com/?sid=abc999"
                         self.page_source = PORTAL_PAGE_HTML
                         self.title = "SpaceInvasion Portal"
-                        self.elements = {
-                            (By.ID, "sip-tab-universe"): FakeElement("universe selection")
-                        }
+                        self.elements = {(By.ID, "sip-tab-universe"): FakeElement("universe selection")}
 
                 tfa_el.send_keys = _on_tfa_send  # type: ignore[method-assign]
                 self.elements[(By.ID, "2fa-bitmeup-code")] = tfa_el
@@ -315,9 +311,7 @@ class TestBrowserLogin(unittest.TestCase):
 
     def test_attach_fails_cleanly_when_debug_port_closed(self) -> None:
         cfg = BrowserConfig(attach=True, debug_port=19999)
-        with unittest.mock.patch(
-            "spaceinvasion.session.browser.is_debug_port_open", return_value=False
-        ):
+        with unittest.mock.patch("spaceinvasion.session.browser.is_debug_port_open", return_value=False):
             with self.assertRaises(SpaceInvasionAuthError):
                 open_browser_session(cfg)
 
@@ -336,9 +330,7 @@ class TestBrowserLogin(unittest.TestCase):
                 attach=True,
                 detach=True,
             )
-            creds = Credentials(
-                email="pilot@example.com", password="secret", universe="RETRO"
-            )
+            creds = Credentials(email="pilot@example.com", password="secret", universe="RETRO")
 
             with unittest.mock.patch(
                 "spaceinvasion.session.browser.open_browser_session",
@@ -498,7 +490,9 @@ class TestBrowserLogin(unittest.TestCase):
                 with (
                     unittest.mock.patch("spaceinvasion.session.browser.is_debug_port_open", return_value=False),
                     unittest.mock.patch("spaceinvasion.session.browser.launch_chrome_with_debug_port", return_value=p2),
-                    unittest.mock.patch("spaceinvasion.session.browser.attach_chrome_driver", side_effect=RuntimeError("attach boom")),
+                    unittest.mock.patch(
+                        "spaceinvasion.session.browser.attach_chrome_driver", side_effect=RuntimeError("attach boom")
+                    ),
                 ):
                     with self.assertRaises(RuntimeError):
                         browser.open_browser_session(cfg)
@@ -515,7 +509,9 @@ class TestBrowserLogin(unittest.TestCase):
             try:
                 cfg3 = BrowserConfig(profile_dir=tp / "prof3", debug_port=19997, timeout=0.1)
                 with (
-                    unittest.mock.patch("spaceinvasion.session.browser.find_chrome_binary", return_value="/usr/bin/true"),
+                    unittest.mock.patch(
+                        "spaceinvasion.session.browser.find_chrome_binary", return_value="/usr/bin/true"
+                    ),
                     unittest.mock.patch("spaceinvasion.session.browser.is_debug_port_open", return_value=False),
                     unittest.mock.patch("spaceinvasion.session.browser.subprocess.Popen", return_value=p3),
                     unittest.mock.patch("spaceinvasion.session.browser.time.monotonic", side_effect=[0.0, 0.0, 20.0]),
@@ -625,7 +621,9 @@ class TestLoginCli(unittest.TestCase):
             for ok_flag, exp_rc in ((True, 0), (False, 1)):
                 out = io.StringIO()
                 with (
-                    patch.object(login_cli, "verify_saved_session", return_value=(ok_flag, raw_url, f"Title ?sid={secret_sid}")),
+                    patch.object(
+                        login_cli, "verify_saved_session", return_value=(ok_flag, raw_url, f"Title ?sid={secret_sid}")
+                    ),
                     patch("sys.stdout", out),
                 ):
                     rc = login_cli.main(["--verify-session", "--json"])
@@ -683,7 +681,9 @@ class TestLoginCli(unittest.TestCase):
 
             err_buf = io.StringIO()
             with (
-                patch.object(login_cli, "load_credentials", side_effect=SpaceInvasionAuthError(f"boom ?sid={secret_sid}")),
+                patch.object(
+                    login_cli, "load_credentials", side_effect=SpaceInvasionAuthError(f"boom ?sid={secret_sid}")
+                ),
                 patch("sys.stderr", err_buf),
             ):
                 rc_err = login_cli.main(["--mode", "http"])
@@ -892,6 +892,7 @@ class TestLoginCli(unittest.TestCase):
             stderr=subprocess.DEVNULL,
         )
         try:
+
             class _StubbornService:
                 def __init__(self, proc: subprocess.Popen) -> None:
                     self.process = proc
@@ -927,6 +928,7 @@ class TestLoginCli(unittest.TestCase):
             stderr=subprocess.DEVNULL,
         )
         try:
+
             class _FailService:
                 def __init__(self) -> None:
                     self.process = fail_proc

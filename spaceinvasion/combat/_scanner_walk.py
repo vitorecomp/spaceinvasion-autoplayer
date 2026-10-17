@@ -46,7 +46,14 @@ def _parse_cursor(current_cursor: Optional[tuple[int, int]], n_sys: int) -> tupl
     return None, None
 
 
-def _pick_arc_start(sys_sorted: list[int], sys_map: dict[int, dict[str, Any]], anchor_sys: int, n_sys: int, cur_match: bool, cur_s: Optional[int]) -> int:
+def _pick_arc_start(
+    sys_sorted: list[int],
+    sys_map: dict[int, dict[str, Any]],
+    anchor_sys: int,
+    n_sys: int,
+    cur_match: bool,
+    cur_s: Optional[int],
+) -> int:
     k = len(sys_sorted)
     if k >= n_sys:
         if cur_match and cur_s is not None and cur_s in sys_map:
@@ -142,7 +149,9 @@ def order_sectors_for_smooth_walk(
         if cur_g == g and cur_s is not None:
             best_seq = min(
                 (arc_fwd, list(reversed(arc_fwd)), _nearest_neighbor_walk(sys_sorted, cur_s, n_sys, eff_arrow_max)),
-                key=lambda seq: _score_walk_sequence(seq, start_sys=cur_s, systems_per_galaxy=n_sys, arrow_max_distance=eff_arrow_max),
+                key=lambda seq: _score_walk_sequence(
+                    seq, start_sys=cur_s, systems_per_galaxy=n_sys, arrow_max_distance=eff_arrow_max
+                ),
             )
             ordered.extend(sys_map[s_val] for s_val in best_seq)
         else:
@@ -158,7 +167,14 @@ def _pick_cursor_anchored_run(
     n_sys: int,
     eff_arrow_max: int,
 ) -> None:
-    s0 = min(rem.keys(), key=lambda s: (circular_system_delta(cur_s, s, systems_per_galaxy=n_sys)[0], 0 if circular_system_delta(cur_s, s, systems_per_galaxy=n_sys)[1] >= 0 else 1, rem[s][0]))
+    s0 = min(
+        rem.keys(),
+        key=lambda s: (
+            circular_system_delta(cur_s, s, systems_per_galaxy=n_sys)[0],
+            0 if circular_system_delta(cur_s, s, systems_per_galaxy=n_sys)[1] >= 0 else 1,
+            rem[s][0],
+        ),
+    )
     _, init_dir = circular_system_delta(cur_s, s0, systems_per_galaxy=n_sys)
     pref_dir = init_dir if init_dir != 0 else 1
     picked.append(rem.pop(s0)[1])
@@ -172,7 +188,14 @@ def _pick_cursor_anchored_run(
                     nxt, pref_dir = c_o, -pref_dir
                     break
         if nxt is None:
-            nxt = min(rem.keys(), key=lambda s: (circular_system_delta(head, s, systems_per_galaxy=n_sys)[0], 0 if circular_system_delta(head, s, systems_per_galaxy=n_sys)[1] == pref_dir else 1, rem[s][0]))
+            nxt = min(
+                rem.keys(),
+                key=lambda s: (
+                    circular_system_delta(head, s, systems_per_galaxy=n_sys)[0],
+                    0 if circular_system_delta(head, s, systems_per_galaxy=n_sys)[1] == pref_dir else 1,
+                    rem[s][0],
+                ),
+            )
             if (jdir := circular_system_delta(head, nxt, systems_per_galaxy=n_sys)[1]) != 0:
                 pref_dir = jdir
         picked.append(rem.pop(nxt)[1])
@@ -190,7 +213,9 @@ def _grow_arc_run(
     picked.append(rem.pop(s0)[1])
     arc_left, arc_right = s0, s0
     while len(picked) < target_count and rem:
-        r_cand = next(((d, c) for d in range(1, eff_arrow_max) if (c := ((arc_right - 1 + d) % n_sys) + 1) in rem), None)
+        r_cand = next(
+            ((d, c) for d in range(1, eff_arrow_max) if (c := ((arc_right - 1 + d) % n_sys) + 1) in rem), None
+        )
         l_cand = next(((d, c) for d in range(1, eff_arrow_max) if (c := ((arc_left - 1 - d) % n_sys) + 1) in rem), None)
         if r_cand is not None and l_cand is not None:
             r_k = (coerce_int(rem[r_cand[1]][1].get("distance"), 0), r_cand[0], 0, rem[r_cand[1]][0])

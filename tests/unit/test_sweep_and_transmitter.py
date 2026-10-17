@@ -289,7 +289,9 @@ class TestSweepAndTransmitter(unittest.TestCase):
         """
         home_after_bonus = "<html><body><div>Command Central - Bonus collected</div></body></html>"
 
-        def _make_tm_html(selected_pid: int, free_spins: int, reward_row: str = "<tr><td>---</td><td>---</td></tr>") -> str:
+        def _make_tm_html(
+            selected_pid: int, free_spins: int, reward_row: str = "<tr><td>---</td><td>---</td></tr>"
+        ) -> str:
             sel101 = ' selected="selected"' if selected_pid == 101 else ""
             sel102 = ' selected="selected"' if selected_pid == 102 else ""
             return f"""
@@ -368,9 +370,9 @@ class TestSweepAndTransmitter(unittest.TestCase):
 
         client.driver.execute_script.side_effect = _exec_script
         client._wait_frame_ready.side_effect = [
-            home_after_bonus,     # after clicking daily bonus
+            home_after_bonus,  # after clicking daily bonus
             tm_on_homeworld_101,  # after switching planet 102 -> 101 on internalTransmitter
-            tm_after_spin,        # after clicking #tm.submit
+            tm_after_spin,  # after clicking #tm.submit
         ]
         client.read_planets_overview.return_value = GameState(
             31, 7, "cmdr", 1_700_000_010.0, (p1, p2), active_planet_id=102
@@ -598,10 +600,7 @@ class TestSweepAndTransmitter(unittest.TestCase):
         self.assertIn("RECYCLE", kinds_under)
 
         # 11 normal planets (== 11 max_planets) -> COLONIZE / free-slot SPY suppressed, SPY player + RECYCLE debris remain!
-        planets_at_cap = tuple(
-            _make_planet(100 + i, f"02:{370 + i:03d}:07", ptype="normal")
-            for i in range(1, 12)
-        )
+        planets_at_cap = tuple(_make_planet(100 + i, f"02:{370 + i:03d}:07", ptype="normal") for i in range(1, 12))
         st_full = GameState(
             31,
             7,
@@ -837,9 +836,13 @@ class TestSweepAndTransmitter(unittest.TestCase):
             try:
                 assert bridge._db is not None
                 with self.assertRaises(ApiRequestError):
-                    bridge.handle_command({"command": "update_config", "config": {"galaxy_scan_click_delay_seconds": 0.05}})
+                    bridge.handle_command(
+                        {"command": "update_config", "config": {"galaxy_scan_click_delay_seconds": 0.05}}
+                    )
                 with self.assertRaises(ApiRequestError):
-                    bridge.handle_command({"command": "update_config", "config": {"galaxy_scan_click_jitter_seconds": -1.0}})
+                    bridge.handle_command(
+                        {"command": "update_config", "config": {"galaxy_scan_click_jitter_seconds": -1.0}}
+                    )
 
                 dry_sw = bridge.handle_command({"command": "galaxy_sweep", "pages": 3, "dry_run": True})
                 self.assertAlmostEqual(dry_sw["click_delay_seconds"], 1.8)
@@ -1015,7 +1018,9 @@ class TestSweepAndTransmitter(unittest.TestCase):
             )
             try:
                 assert bridge10._db is not None
-                bridge10._db.record_target_block("02:380:08", blocked_until_ts=9_999_999_999.0, reason="This user can't be attacked!")
+                bridge10._db.record_target_block(
+                    "02:380:08", blocked_until_ts=9_999_999_999.0, reason="This user can't be attacked!"
+                )
                 bridge10._db.record_galaxy_slots(exec_inst.last_galaxy_slots, ts=3000.0)
                 cands10 = bridge10._db.get_colony_candidates(origin_coords="02:380:12", min_fields_target=300)
                 self.assertEqual(len(cands10), 1)
@@ -1034,7 +1039,11 @@ class TestSweepAndTransmitter(unittest.TestCase):
             def send_command(self, payload):
                 sent_cmds.append(str(payload.get("command")))
                 if payload.get("command") == "throttle_building":
-                    return {"ok": True, "executed": False, "message": "No-op: Blast furnace 100% (resource2) is already at 100%."}
+                    return {
+                        "ok": True,
+                        "executed": False,
+                        "message": "No-op: Blast furnace 100% (resource2) is already at 100%.",
+                    }
                 return {"ok": True, "executed": True, "command": payload.get("command"), "message": "Probed free slot."}
 
         mq_noop = [
@@ -1130,7 +1139,9 @@ class TestSweepAndTransmitter(unittest.TestCase):
         )
         self.assertEqual(homeworld_planet_id(st_check), 12476)
         self.assertFalse(is_undersized_fresh_colony(homeworld, st_check, 300))
-        self.assertFalse(is_undersized_fresh_colony(replace(homeworld, fields_used=0, buildings={}, ships={}), st_check, 300))
+        self.assertFalse(
+            is_undersized_fresh_colony(replace(homeworld, fields_used=0, buildings={}, ships={}), st_check, 300)
+        )
         self.assertTrue(is_undersized_fresh_colony(fresh_undersized, st_check, 300))
         self.assertFalse(is_undersized_fresh_colony(developed_small, st_check, 300))
         self.assertFalse(is_undersized_fresh_colony(good_colony, st_check, 300))
@@ -1200,10 +1211,16 @@ class TestSweepAndTransmitter(unittest.TestCase):
         self.assertGreaterEqual(len(acts_top), 3)
         # #0 = ABANDON_COLONY (delete 215-field roll), then ready SPY (fleet priority #1), then COLONIZE -> 02:380:09
         # (fleet priority #2, executable even with 3/6 fleets in flight + 1 reserved spy slot!)
-        self.assertEqual((acts_top[0].priority, acts_top[0].kind, acts_top[0].planet_id, acts_top[0].executable_now), ("P1", "ABANDON_COLONY", 12999, True))
+        self.assertEqual(
+            (acts_top[0].priority, acts_top[0].kind, acts_top[0].planet_id, acts_top[0].executable_now),
+            ("P1", "ABANDON_COLONY", 12999, True),
+        )
         col_idx = next(i for i, a in enumerate(acts_top) if a.kind == "COLONIZE")
         self.assertTrue(all(a.kind == "SPY" and a.priority == "P1" for a in acts_top[1:col_idx]))
-        self.assertEqual((acts_top[col_idx].priority, acts_top[col_idx].kind, acts_top[col_idx].executable_now), ("P1", "COLONIZE", True))
+        self.assertEqual(
+            (acts_top[col_idx].priority, acts_top[col_idx].kind, acts_top[col_idx].executable_now),
+            ("P1", "COLONIZE", True),
+        )
         self.assertIn("02:380:09", acts_top[col_idx].target_name)
         # Zero buildings/ships planned on undersized colony 12999 slated for deletion
         self.assertFalse(
@@ -1371,7 +1388,10 @@ class TestSweepAndTransmitter(unittest.TestCase):
 
         # Commander maps ABANDON_COLONY -> {"command": "abandon_colony", ...}
         import importlib.util
-        spec_c = importlib.util.spec_from_file_location("commander_cli_ab", Path(__file__).resolve().parents[2] / "bin" / "commander.py")
+
+        spec_c = importlib.util.spec_from_file_location(
+            "commander_cli_ab", Path(__file__).resolve().parents[2] / "bin" / "commander.py"
+        )
         assert spec_c is not None and spec_c.loader is not None
         cmd_mod_ab = importlib.util.module_from_spec(spec_c)
         spec_c.loader.exec_module(cmd_mod_ab)
@@ -1552,9 +1572,15 @@ class TestSweepAndTransmitter(unittest.TestCase):
             for i in (1, 2, 3)
         )
         st = GameState(
-            31, 7, "cmdr", now, (home,), active_planet_id=101,
+            31,
+            7,
+            "cmdr",
+            now,
+            (home,),
+            active_planet_id=101,
             researches={"r1": 6, "r2": 6, "r3": 6, "r4": 8, "r7": 6},
-            raid_targets=raid_targets, active_queues=three_in_flight,
+            raid_targets=raid_targets,
+            active_queues=three_in_flight,
         )
         cfg = StrategyConfig(
             planner_mode="priority",
@@ -1788,9 +1814,7 @@ class TestSweepAndTransmitter(unittest.TestCase):
         self.assertIsNone(select_planner_scan_system("02:380:12", scanned_systems=fresh_all, cfg=cfg, now_ts=now))
 
         # plan_actions (priority planner) emits SCAN_GALAXY on the never-scanned neighbour, tagged as exploration.
-        st = GameState(
-            31, 7, "cmdr", now, (_make_planet(101, "02:380:12", ships={"s4": 10}),), active_planet_id=101
-        )
+        st = GameState(31, 7, "cmdr", now, (_make_planet(101, "02:380:12", ships={"s4": 10}),), active_planet_id=101)
         cfg_m = StrategyConfig(planner_mode="priority", allow_galaxy_scan=True, allow_raids=True)
         acts = plan_actions(st, config=cfg_m, scanned_systems=scanned, now_ts=now)
         scans = [a for a in acts if a.kind == "SCAN_GALAXY"]
@@ -1821,7 +1845,14 @@ class TestSweepAndTransmitter(unittest.TestCase):
                 bridge._last_state = GameState(31, 7, "cmdr", 1_700_000_500.0, (origin,), active_planet_id=101)
                 bridge._db.record_galaxy_slots(
                     [
-                        GalaxySlot(coords="02:383:02", position=2, name="Spacia", owner="Spacia", status_color="yellow", is_spacia=True),
+                        GalaxySlot(
+                            coords="02:383:02",
+                            position=2,
+                            name="Spacia",
+                            owner="Spacia",
+                            status_color="yellow",
+                            is_spacia=True,
+                        ),
                         GalaxySlot(coords="03:392:05", position=5, name="Far", owner="FarUser", status_color="yellow"),
                     ],
                     ts=1_700_000_400.0,

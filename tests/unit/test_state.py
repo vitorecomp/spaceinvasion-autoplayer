@@ -649,7 +649,7 @@ class TestStateParsers(unittest.TestCase):
         b_html = (
             f'<div class="build-card b-{huge}"><span class="title">Mine (Level {huge})</span></div>'
             f'<table><tr><td><a href="indexInternal.es?action=internalDetail&type=building&id={huge}">Mine</a></td>'
-            f'<td>Required: 100 Pig iron</td>'
+            f"<td>Required: 100 Pig iron</td>"
             f'<td><a class="bau" href="indexInternal.es?action=internalBuildItem&buildingID={huge}#{huge}">Build level {huge}</a></td>'
             f"</tr></table>"
         )
@@ -676,7 +676,7 @@ class TestStateParsers(unittest.TestCase):
         self.assertTrue(all(o.unit_id <= 10**200 for o in u_offers))
 
         t_html = (
-            f'<div>Tutorial {huge} / {huge}</div>'
+            f"<div>Tutorial {huge} / {huge}</div>"
             f'<div id="tutorial.text">Increase your Pig iron mine level {huge} / {huge}'
             f'<form><input name="tutorialComplete" value="{huge}"/></form></div>'
         )
@@ -1113,6 +1113,7 @@ class TestStateParsers(unittest.TestCase):
 
         # Roundtrip through game_state_from_dict preserves origin_coords
         from dataclasses import asdict
+
         gs_rt = game_state_from_dict(asdict(gs))
         self.assertEqual(count_in_flight_fleets_for_planet(gs_rt, p_home), 2)
         self.assertEqual(count_in_flight_fleets_for_planet(gs_rt, p_col_a), 1)
@@ -1126,7 +1127,9 @@ class TestStateParsers(unittest.TestCase):
             timestamp=2000.0,
             planets=(p_home, p_col_b),
             active_planet_id=1,
-            active_queues=(QueueJob(category="fleet", name="Attack → 02:380:15", remaining_seconds=100.0, detail="Outbound"),),
+            active_queues=(
+                QueueJob(category="fleet", name="Attack → 02:380:15", remaining_seconds=100.0, detail="Outbound"),
+            ),
         )
         self.assertEqual(count_in_flight_fleets_for_planet(gs_legacy, p_home), 1)
         self.assertEqual(count_in_flight_fleets_for_planet(gs_legacy, p_col_b), 1)
@@ -1183,14 +1186,25 @@ class TestStateParsers(unittest.TestCase):
 
         # JSON dict round-trip preserves cargo cleanly
         p1 = PlanetState(
-            planet_id=1, name="Main", coords="02:380:12", planet_type="normal",
-            temperature=20, fields_used=10, fields_max=250,
-            resources=Resources(1, 1, 1, 1), storage=Resources(10, 10, 10, 10),
+            planet_id=1,
+            name="Main",
+            coords="02:380:12",
+            planet_type="normal",
+            temperature=20,
+            fields_used=10,
+            fields_max=250,
+            resources=Resources(1, 1, 1, 1),
+            storage=Resources(10, 10, 10, 10),
             energy=EnergyBalance(10, 5),
         )
         gs = GameState(
-            universe_id=31, user_id=1, nickname="cmdr", timestamp=2000.0,
-            planets=(p1,), active_planet_id=1, active_queues=tuple(queues),
+            universe_id=31,
+            user_id=1,
+            nickname="cmdr",
+            timestamp=2000.0,
+            planets=(p1,),
+            active_planet_id=1,
+            active_queues=tuple(queues),
         )
         gs_rt = game_state_from_dict(asdict(gs))
         rec_rt = next(q for q in gs_rt.active_queues if "02:381:06" in q.name)
@@ -1237,20 +1251,37 @@ class TestStateParsers(unittest.TestCase):
             delivered_cargo=Resources(40000, 20000, 0, 5000),
         )
         p1 = PlanetState(
-            planet_id=101, name="Main", coords="02:380:12", planet_type="normal",
-            temperature=20, fields_used=5, fields_max=300,
-            resources=Resources(100, 100, 100, 100), storage=Resources(1000, 1000, 1000, 1000),
+            planet_id=101,
+            name="Main",
+            coords="02:380:12",
+            planet_type="normal",
+            temperature=20,
+            fields_used=5,
+            fields_max=300,
+            resources=Resources(100, 100, 100, 100),
+            storage=Resources(1000, 1000, 1000, 1000),
             energy=EnergyBalance(50, 10),
         )
         p2 = PlanetState(
-            planet_id=102, name="FreshColony", coords="02:380:08", planet_type="normal",
-            temperature=20, fields_used=0, fields_max=180,
-            resources=Resources(0, 0, 0, 0), storage=Resources(1000, 1000, 1000, 1000),
+            planet_id=102,
+            name="FreshColony",
+            coords="02:380:08",
+            planet_type="normal",
+            temperature=20,
+            fields_used=0,
+            fields_max=180,
+            resources=Resources(0, 0, 0, 0),
+            storage=Resources(1000, 1000, 1000, 1000),
             energy=EnergyBalance(0, 0),
         )
         gs = GameState(
-            universe_id=31, user_id=1, nickname="cmdr", timestamp=2000.0,
-            planets=(p1, p2), active_planet_id=101, active_queues=(q_exp, q_del),
+            universe_id=31,
+            user_id=1,
+            nickname="cmdr",
+            timestamp=2000.0,
+            planets=(p1, p2),
+            active_planet_id=101,
+            active_queues=(q_exp, q_del),
         )
         gs_rt = game_state_from_dict(asdict(gs))
         self.assertEqual(gs_rt.active_queues[0].expected_cargo, Resources(5000, 3000, 1000, 500))
@@ -1288,20 +1319,31 @@ class TestStateParsers(unittest.TestCase):
         h_trn_out = next(q for q in h_queues if q.category == "fleet" and "Transport →" in q.name)
         self.assertEqual(h_trn_out.expected_cargo, Resources(10000, 0, 0, 0))
         self.assertFalse(h_trn_out.delivered)
-        h_trn_ret = next(q for q in h_queues if q.category == "fleet" and "Transport" in q.name and "returning" in q.detail.lower())
+        h_trn_ret = next(
+            q for q in h_queues if q.category == "fleet" and "Transport" in q.name and "returning" in q.detail.lower()
+        )
         self.assertTrue(h_trn_ret.delivered)
 
         # is_undersized_fresh_colony scopes building queue checks by origin_coords
         gs_b = GameState(
-            universe_id=31, user_id=1, nickname="cmdr", timestamp=2000.0,
-            planets=(p1, p2), active_planet_id=101, active_queues=b_jobs,
+            universe_id=31,
+            user_id=1,
+            nickname="cmdr",
+            timestamp=2000.0,
+            planets=(p1, p2),
+            active_planet_id=101,
+            active_queues=b_jobs,
         )
         # p1 has the active building job -> p2 (fresh undersized colony) is STILL detected as undersized!
         self.assertTrue(is_undersized_fresh_colony(p2, gs_b, 300))
         # Building job on p2 itself protects p2 from abandonment
         gs_b2 = GameState(
-            universe_id=31, user_id=1, nickname="cmdr", timestamp=2000.0,
-            planets=(p1, p2), active_planet_id=101,
+            universe_id=31,
+            user_id=1,
+            nickname="cmdr",
+            timestamp=2000.0,
+            planets=(p1, p2),
+            active_planet_id=101,
             active_queues=(QueueJob(category="building", name="Pig iron mine (Level 1)", origin_coords="02:380:08"),),
         )
         self.assertFalse(is_undersized_fresh_colony(p2, gs_b2, 300))

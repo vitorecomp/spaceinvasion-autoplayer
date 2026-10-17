@@ -127,7 +127,7 @@ def test_ai_planner_reproduces_all_golden_reference_outputs_byte_for_byte(state_
     diag_new = new_ai.diagnose_ai_colony_idle_states(state, plan, actions, cfg)
     assert isinstance(diag_new, dict)
     needs_new = new_ai.compute_early_transport_needs(state, plan, actions, config=cfg)
-    assert isinstance(needs_new, list)
+    assert isinstance(needs_new, dict)
     assert "AI-Planner" in new_ai.export_ai_planner_txt(plan) or len(new_ai.export_ai_planner_txt(plan)) > 0
 
     model_gs = new_model.game_state_from_dict(dataclasses.asdict(state))
@@ -152,7 +152,7 @@ def test_plan_v4_adaptive_live_fill_rule_parity(monkeypatch: pytest.MonkeyPatch)
     """Run every `TestLiveFillRule` Plan v4 test case against `spaceinvasion.planner.ai`."""
     from tests.unit import test_adaptive_v4 as v4
 
-    assert new_ai.AI_FILL_REASON_PREFIX.startswith("[AI")
+    assert new_ai.AI_FILL_REASON_PREFIX == "AI-Planner fill"
     assert new_ai.AI_FILL_MIN_PATIENCE > 0
     assert new_ai.AI_FILL_MAX_PATIENCE >= new_ai.AI_FILL_MIN_PATIENCE
     assert new_ai.AI_FILL_POOL_LEAD_HOURS > 0

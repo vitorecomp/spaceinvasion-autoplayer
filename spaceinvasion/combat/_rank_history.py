@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 import json
+import math
 from pathlib import Path
 import time
 
 from spaceinvasion.combat._points_helpers import (
     MAX_JSON_SAFE,
+    cap_eta_float,
     estimate_hourly_economy,
     safe_finite_float,
     safe_nonneg_int,
@@ -92,3 +94,50 @@ def record_rank_snapshot(
             safe_samples = sanitize_json_tree(samples, max_int=MAX_JSON_SAFE, nonfinite_float=None)
             history_path.write_text(json.dumps(safe_samples, indent=2, allow_nan=False), encoding="utf-8")
     return samples
+
+
+def compute_observed_trend(history: Sequence[Mapping[str, object]] | None) -> dict[str, object]:
+    """Compute observed points/rank deltas and hourly climb rate from recorded rank snapshots."""
+    samples: list[dict[str, object]] = [
+        sanitize_json_tree(s, max_int=MAX_JSON_SAFE, nonfinite_float=None)
+        for s in (history or ())
+        if isinstance(s, Mapping)
+    ]
+    observed_delta_pts: float | None = None
+    observed_delta_rank: int | None = None
+    observed_rate_hr: float | None = None
+    elapsed_hours = 0.0
+    if len(samples) >= 2:
+        first, last = samples[0], samples[-1]
+        dt_sec = cap_eta_float(
+            safe_finite_float(last.get("ts", 0.0), 0.0) - safe_finite_float(first.get("ts", 0.0), 0.0),
+            allow_negative=True,
+        )
+        elapsed_hours = cap_eta_float(max(0.0, dt_sec / 3600.0))
+        p0, p1 = (
+            safe_optional_finite_float(first.get("server_points")),
+            safe_optional_finite_float(last.get("server_points")),
+        )
+        if p0 is not None and p1 is not None and p1 != p0:
+            raw_delta = p1 - p0
+        else:
+            raw_delta = safe_finite_float(last.get("estimated_points", 0.0), 0.0) - safe_finite_float(
+                first.get("estimated_points", 0.0), 0.0
+            )
+        observed_delta_pts = round(cap_eta_float(raw_delta, allow_negative=True), 1)
+        if elapsed_hours >= 0.05 and math.isfinite(observed_delta_pts):
+            rate_val = observed_delta_pts / elapsed_hours
+            observed_rate_hr = (
+                round(cap_eta_float(rate_val, allow_negative=True), 2) if math.isfinite(rate_val) else None
+            )
+        r0, r1 = safe_optional_finite_int(first.get("server_rank")), safe_optional_finite_int(last.get("server_rank"))
+        if r0 is not None and r1 is not None:
+            observed_delta_rank = max(-MAX_JSON_SAFE, min(MAX_JSON_SAFE, r0 - r1))
+    return {
+        "sample_count": len(samples),
+        "elapsed_hours": round(cap_eta_float(elapsed_hours), 2),
+        "delta_points": observed_delta_pts,
+        "rank_climbed": observed_delta_rank,
+        "observed_pts_per_hr": observed_rate_hr,
+        "samples": samples[-20:],
+    }

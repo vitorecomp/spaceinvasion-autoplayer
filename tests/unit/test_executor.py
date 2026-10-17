@@ -379,7 +379,9 @@ class TestActionExecutor(unittest.TestCase):
         pla_inp = MagicMock()
         cont_btn = MagicMock()
         attack_radio = MagicMock()
-        attack_radio.get_attribute.side_effect = lambda attr: {"value": "1", "id": "mission_1", "name": "mission"}.get(attr, "")
+        attack_radio.get_attribute.side_effect = lambda attr: {"value": "1", "id": "mission_1", "name": "mission"}.get(
+            attr, ""
+        )
         attack_radio.is_selected.return_value = True
         launch_btn = MagicMock()
 
@@ -399,7 +401,10 @@ class TestActionExecutor(unittest.TestCase):
         atk_client = MagicMock(spec=GameBrowserClient)
         atk_client.driver = driver
         atk_client.navigate_menu.return_value = '<form name="fleet"></form>'
-        atk_client._wait_frame_ready.side_effect = ["<form><input type='radio' value='1'>Attack</form>", "<div>Fleet sent</div>"]
+        atk_client._wait_frame_ready.side_effect = [
+            "<form><input type='radio' value='1'>Attack</form>",
+            "<div>Fleet sent</div>",
+        ]
         atk_client.read_planets_overview.return_value = state
 
         raid_ex = ActionExecutor(dry_run=False, action_delay_range=(0.0, 0.0), allow_raids=True)
@@ -703,7 +708,10 @@ class TestActionExecutor(unittest.TestCase):
         self.assertTrue(res.executed)
         # JS click fallback ran for cont_btn
         self.assertTrue(
-            any("arguments[0].click();" in c.args[0] and c.args[1] is cont_btn for c in driver.execute_script.call_args_list)
+            any(
+                "arguments[0].click();" in c.args[0] and c.args[1] is cont_btn
+                for c in driver.execute_script.call_args_list
+            )
         )
         fresh_launch.click.assert_called_once()
 
@@ -942,9 +950,15 @@ class TestActionExecutor(unittest.TestCase):
         </form>
         """
         soup6 = BeautifulSoup(pre_br_html, "html.parser")
-        pg1, pgm1, pgm6 = _mk_radio("1", "geschwindigkeit", "g1"), _mk_radio("1", "mission", "gm1"), _mk_radio("6", "mission", "gm6")
+        pg1, pgm1, pgm6 = (
+            _mk_radio("1", "geschwindigkeit", "g1"),
+            _mk_radio("1", "mission", "gm1"),
+            _mk_radio("6", "mission", "gm6"),
+        )
         self.assertIs(
-            ActionExecutor._match_mission_radio(soup6, 'form[action*="internalSendFleet"]', [pg1, pgm1, pgm6], "ATTACK"),
+            ActionExecutor._match_mission_radio(
+                soup6, 'form[action*="internalSendFleet"]', [pg1, pgm1, pgm6], "ATTACK"
+            ),
             pgm1,
         )
         self.assertIs(
@@ -1023,7 +1037,7 @@ class TestActionExecutor(unittest.TestCase):
         # 1. Label-before multi-radio <tr> with trailing control, link, plain text, or foreign label
         for tail in (
             '<td><button type="submit">Send</button></td>',
-            '<td><select><option>100%</option></select></td>',
+            "<td><select><option>100%</option></select></td>",
             '<td><a href="#">Help</a></td>',
             "<td>Help</td>",
             "<td>Note: Spying requires probes</td>",
@@ -1407,7 +1421,9 @@ class TestActionExecutor(unittest.TestCase):
                 self.nav_token = None
 
             def _on_step1(self, _el) -> None:
-                self.frames["F_Hauptframe"]["href"] = "https://spaceinvasion.bitmeup.com/indexInternal.es?action=internalSendFleet"
+                self.frames["F_Hauptframe"]["href"] = (
+                    "https://spaceinvasion.bitmeup.com/indexInternal.es?action=internalSendFleet"
+                )
                 self.frames["F_Hauptframe"]["html"] = fleet_step2_html
                 self.nav_token = None
 
@@ -1565,7 +1581,9 @@ class TestActionExecutor(unittest.TestCase):
             now[0] += 100.0
             limiter.reset()
             limiter.record_view(18)
-            drv.frames["F_Hauptframe"]["href"] = "https://spaceinvasion.bitmeup.com/indexInternal.es?action=internalHome"
+            drv.frames["F_Hauptframe"]["href"] = (
+                "https://spaceinvasion.bitmeup.com/indexInternal.es?action=internalHome"
+            )
             res = ex.execute_action(client, st_case, act_case)
             self.assertTrue(res.executed, f"{act_case.kind} failed: {res.message}")
             self.assertLessEqual(limiter.views_last_60s(), 24)
@@ -1587,7 +1605,9 @@ class TestActionExecutor(unittest.TestCase):
                 return state
 
             def open_galaxy(self, galaxy=None, system=None) -> str:
-                return "<table><tr><td>4</td><td><span class='galaxy_yellow'>Idle</span></td><td>Sleepy</td></tr></table>"
+                return (
+                    "<table><tr><td>4</td><td><span class='galaxy_yellow'>Idle</span></td><td>Sleepy</td></tr></table>"
+                )
 
             def _switch_frame(self, frame_id: str) -> None:
                 return None
@@ -1676,23 +1696,23 @@ class TestActionExecutor(unittest.TestCase):
         # 2. Real GameState returns populated updated_state across live action kinds
         buildings_html = (
             '<table><tr><td><a href="indexInternal.es?action=internalDetail&type=building&id=1">Pig iron mine</a></td>'
-            '<td>Required: 100 Pig iron</td>'
+            "<td>Required: 100 Pig iron</td>"
             '<td><a class="bau" href="indexInternal.es?action=internalBuildItem&buildingID=1">Build level 6</a></td></tr></table>'
         )
         buildings_after_html = (
             '<select name="planet"><option selected value="indexInternal.es?action=internalBuildings&newPlanet=12476">Home</option></select>'
-            '<table><tr><td>Construction queue ( 1 Elements ) Pig iron mine (Level 6)</td></tr></table>'
+            "<table><tr><td>Construction queue ( 1 Elements ) Pig iron mine (Level 6)</td></tr></table>"
             '<table><tr><td><a href="indexInternal.es?action=internalDetail&type=building&id=1">Pig iron mine</a></td>'
-            '<td>Required: 150 Pig iron</td><td><span>In construction</span></td></tr></table>'
+            "<td>Required: 150 Pig iron</td><td><span>In construction</span></td></tr></table>"
         )
         research_html = (
             '<table><tr><td><a href="indexInternal.es?action=internalDetail&type=research&id=1">Mining technology</a></td>'
-            '<td>Required: 200 Pig iron</td>'
+            "<td>Required: 200 Pig iron</td>"
             '<td><a class="bau" href="indexInternal.es?action=internalBuildItem&researchID=1">Research level 2</a></td></tr></table>'
         )
         research_after_html = (
             '<table><tr><td><a href="indexInternal.es?action=internalDetail&type=research&id=1">Mining technology</a></td>'
-            '<td>Required: 400 Pig iron</td><td><span>In research (Cancel)</span></td></tr></table>'
+            "<td>Required: 400 Pig iron</td><td><span>In research (Cancel)</span></td></tr></table>"
         )
         ship_html = (
             '<form action="indexInternal.es?action=internalBuildItem&buildShip=1">'
@@ -1709,8 +1729,7 @@ class TestActionExecutor(unittest.TestCase):
             '<option selected value="0">0%</option></select></form>'
         )
         tut_after_html = (
-            '<script>SI_TPL={planetID:12476};</script>'
-            '<div>Tutorial 2 / 11</div><div>active factor: x20.0</div>'
+            "<script>SI_TPL={planetID:12476};</script><div>Tutorial 2 / 11</div><div>active factor: x20.0</div>"
         )
 
         ov_after_ship = GameState(
@@ -1750,7 +1769,17 @@ class TestActionExecutor(unittest.TestCase):
         res_b = ex.execute_action(
             c_build,
             state,
-            PlannedAction("P2", "BUILD", 12476, "02:380:12", "Pig iron mine", "b1", target_id=1, target_level=6, executable_now=True),
+            PlannedAction(
+                "P2",
+                "BUILD",
+                12476,
+                "02:380:12",
+                "Pig iron mine",
+                "b1",
+                target_id=1,
+                target_level=6,
+                executable_now=True,
+            ),
         )
         self.assertTrue(res_b.executed)
         assert res_b.updated_state is not None
@@ -1769,7 +1798,17 @@ class TestActionExecutor(unittest.TestCase):
         res_r = ex.execute_action(
             c_res,
             state,
-            PlannedAction("P2", "RESEARCH", 12476, "02:380:12", "Mining technology", "r1", target_id=1, target_level=2, executable_now=True),
+            PlannedAction(
+                "P2",
+                "RESEARCH",
+                12476,
+                "02:380:12",
+                "Mining technology",
+                "r1",
+                target_id=1,
+                target_level=2,
+                executable_now=True,
+            ),
         )
         self.assertTrue(res_r.executed)
         assert res_r.updated_state is not None
@@ -1786,7 +1825,17 @@ class TestActionExecutor(unittest.TestCase):
         res_s = ex.execute_action(
             c_ship,
             state,
-            PlannedAction("P2", "BUILD_SHIP", 12476, "02:380:12", "Small transport", "s1", target_id=1, target_level=2, executable_now=True),
+            PlannedAction(
+                "P2",
+                "BUILD_SHIP",
+                12476,
+                "02:380:12",
+                "Small transport",
+                "s1",
+                target_id=1,
+                target_level=2,
+                executable_now=True,
+            ),
         )
         self.assertTrue(res_s.executed)
         assert res_s.updated_state is not None
@@ -1804,7 +1853,17 @@ class TestActionExecutor(unittest.TestCase):
             res_t = ex.execute_action(
                 c_thr,
                 state,
-                PlannedAction("P1", "THROTTLE_BUILDING", 12476, "02:380:12", "Blast furnace 0%", "Pause", target_id=2, target_level=0, executable_now=True),
+                PlannedAction(
+                    "P1",
+                    "THROTTLE_BUILDING",
+                    12476,
+                    "02:380:12",
+                    "Blast furnace 0%",
+                    "Pause",
+                    target_id=2,
+                    target_level=0,
+                    executable_now=True,
+                ),
             )
         self.assertTrue(res_t.executed)
         assert res_t.updated_state is not None
@@ -1850,7 +1909,9 @@ class TestActionExecutor(unittest.TestCase):
         opt_2.get_attribute.return_value = "indexInternal.es?action=internalBuildings&newPlanet=12477"
         opt_2.is_selected.return_value = False
         planet_sel.find_elements.return_value = [opt_1, opt_2]
-        c_flt.driver.find_element.side_effect = lambda by, val: planet_sel if 'select[name="planet"]' in str(val) else MagicMock()
+        c_flt.driver.find_element.side_effect = lambda by, val: (
+            planet_sel if 'select[name="planet"]' in str(val) else MagicMock()
+        )
         atk_radio = MagicMock()
         atk_radio.get_attribute.side_effect = lambda a: {"value": "1", "name": "mission", "id": "m1"}.get(a, "")
         atk_radio.is_selected.return_value = False
@@ -1938,7 +1999,9 @@ class TestActionExecutor(unittest.TestCase):
         self.assertFalse(client.last_snapshot_observed_active_planet)
         self.assertEqual(state.active_planet_id, 12476)
 
-        spy_act = PlannedAction("P2", "SPY", 12476, "02:380:12", "02:380:04", "Recon", target_level=1, executable_now=True)
+        spy_act = PlannedAction(
+            "P2", "SPY", 12476, "02:380:12", "02:380:04", "Recon", target_level=1, executable_now=True
+        )
         res = ex.execute_action(client, state, spy_act, active_planet_confirmed=False)
         self.assertTrue(res.executed, res.message)
         self.assertEqual(srv.launched_fleets[-1]["origin_planet_id"], 12476)
@@ -2064,10 +2127,50 @@ class TestActionExecutor(unittest.TestCase):
         ex = ActionExecutor(dry_run=False, action_delay_range=(0.0, 0.0))
 
         actions = [
-            PlannedAction("P2", "BUILD", 12477, "02:380:14", "Pig iron mine", "b1", target_id=1, target_level=3, executable_now=True),
-            PlannedAction("P2", "RESEARCH", 12477, "02:380:14", "Mining technology", "r1", target_id=1, target_level=1, executable_now=True),
-            PlannedAction("P2", "BUILD_SHIP", 12477, "02:380:14", "Small transport", "s1", target_id=1, target_level=2, executable_now=True),
-            PlannedAction("P1", "THROTTLE_BUILDING", 12477, "02:380:14", "Blast furnace 0%", "Pause", target_id=2, target_level=0, executable_now=True),
+            PlannedAction(
+                "P2",
+                "BUILD",
+                12477,
+                "02:380:14",
+                "Pig iron mine",
+                "b1",
+                target_id=1,
+                target_level=3,
+                executable_now=True,
+            ),
+            PlannedAction(
+                "P2",
+                "RESEARCH",
+                12477,
+                "02:380:14",
+                "Mining technology",
+                "r1",
+                target_id=1,
+                target_level=1,
+                executable_now=True,
+            ),
+            PlannedAction(
+                "P2",
+                "BUILD_SHIP",
+                12477,
+                "02:380:14",
+                "Small transport",
+                "s1",
+                target_id=1,
+                target_level=2,
+                executable_now=True,
+            ),
+            PlannedAction(
+                "P1",
+                "THROTTLE_BUILDING",
+                12477,
+                "02:380:14",
+                "Blast furnace 0%",
+                "Pause",
+                target_id=2,
+                target_level=0,
+                executable_now=True,
+            ),
         ]
         for act in actions:
             res = ex.execute_action(client, state, act)
@@ -2131,7 +2234,9 @@ class TestActionExecutor(unittest.TestCase):
         client_empty.driver.find_element.return_value = sel_empty
 
         ex_b = ActionExecutor(dry_run=False, action_delay_range=(0.0, 0.0))
-        switched_b, updated_b = ex_b._select_planet_if_needed(client_empty, 12477, html=stale_html, require_confirm=True)
+        switched_b, updated_b = ex_b._select_planet_if_needed(
+            client_empty, 12477, html=stale_html, require_confirm=True
+        )
         self.assertFalse(switched_b)
         self.assertIsNone(updated_b)
         client_empty._wait_frame_ready.assert_not_called()
@@ -2145,7 +2250,9 @@ class TestActionExecutor(unittest.TestCase):
         client_ok._wait_frame_ready.return_value = "<div>switched</div>"
         ex_c = ActionExecutor(dry_run=False, action_delay_range=(0.0, 0.0))
         with patch("spaceinvasion.session.executor.Select"):
-            switched_c, updated_c = ex_c._select_planet_if_needed(client_ok, 12477, html=stale_html, require_confirm=True)
+            switched_c, updated_c = ex_c._select_planet_if_needed(
+                client_ok, 12477, html=stale_html, require_confirm=True
+            )
         self.assertTrue(switched_c)
         self.assertEqual(updated_c, "<div>switched</div>")
         client_ok._wait_frame_ready.assert_called_once()
@@ -2294,7 +2401,9 @@ class TestActionExecutor(unittest.TestCase):
         client_bounce._wait_frame_ready.return_value = bounced_html
         ex_b = ActionExecutor(dry_run=False, action_delay_range=(0.0, 0.0))
         with patch("spaceinvasion.session.executor.Select"):
-            switched_b, _ = ex_b._select_planet_if_needed(client_bounce, 12477, html=html_with_select, require_confirm=True)
+            switched_b, _ = ex_b._select_planet_if_needed(
+                client_bounce, 12477, html=html_with_select, require_confirm=True
+            )
         self.assertFalse(switched_b)
         self.assertEqual(ex_b.last_observed_active_planet_id, 12476)
 
@@ -2327,7 +2436,9 @@ class TestActionExecutor(unittest.TestCase):
         client_u.read_menu_status.return_value = {}
         ex_u = ActionExecutor(dry_run=False, action_delay_range=(0.0, 0.0))
         updated_ov = GameState(31, 1, "u", 105.0, (p0,), active_planet_id=12476)
-        st_out = ex_u._build_updated_state(client_u, prev_st, act_b, updated_ov, page_html="<html></html>", is_home=True)
+        st_out = ex_u._build_updated_state(
+            client_u, prev_st, act_b, updated_ov, page_html="<html></html>", is_home=True
+        )
         self.assertIsNotNone(st_out)
         assert st_out is not None
         self.assertEqual(st_out.raid_stats, {"overall": {"attempts": 5}})
@@ -2376,7 +2487,7 @@ class TestActionExecutor(unittest.TestCase):
         client_ship.navigate_menu.return_value = (
             '<html><body><form action="indexInternal.es?action=internalBuildItem&buildShip=1" method="POST">'
             '<table><tr><td><a href="indexInternal.es?action=internalDetail&type=ship&id=1">Small transport</a> '
-            'Available: 0 Required: 3.000 Metal 3.000 Kryptonite '
+            "Available: 0 Required: 3.000 Metal 3.000 Kryptonite "
             '<input type="text" name="ship[1]" value="0"/></td></tr></table>'
             '<input type="submit" value="Build"/></form></body></html>'
         )
@@ -2408,7 +2519,7 @@ class TestActionExecutor(unittest.TestCase):
             '<form id="f2"><table>'
             '<tr><td>Angreifen</td><td><input type="radio" name="m" value="1"></td><td>Hinweis: Tipp</td></tr>'
             '<tr><td>Spionieren</td><td><input type="radio" name="m" value="6"></td><td>Hinweis: Tipp</td></tr>'
-            '</table></form>',
+            "</table></form>",
             "html.parser",
         )
         r_m1, r_m6 = _mk_r("1", "m"), _mk_r("6", "m")
@@ -2419,7 +2530,7 @@ class TestActionExecutor(unittest.TestCase):
             '<form id="f3">'
             '<label><input type="radio" name="m" value="1">Halten</label>'
             '<label><input type="radio" name="m" value="2">Angreifen</label>'
-            '</form>',
+            "</form>",
             "html.parser",
         )
         h1, a2 = _mk_r("1", "m"), _mk_r("2", "m")
@@ -2429,13 +2540,11 @@ class TestActionExecutor(unittest.TestCase):
             '<form id="f4">'
             '<label><input type="radio" name="m" value="1">Halten</label>'
             '<label><input type="radio" name="m" value="6">Spionieren</label>'
-            '</form>',
+            "</form>",
             "html.parser",
         )
         self.assertIsNone(
-            ActionExecutor._match_mission_radio(
-                soup_hold_only, "form#f4", [_mk_r("1", "m"), _mk_r("6", "m")], "ATTACK"
-            )
+            ActionExecutor._match_mission_radio(soup_hold_only, "form#f4", [_mk_r("1", "m"), _mk_r("6", "m")], "ATTACK")
         )
 
         for label_txt in ("Defend", "Verteidigen", "Escort", "Eskortieren", "Deploy", "Hold", "Expedition", "Explore"):
@@ -2445,9 +2554,7 @@ class TestActionExecutor(unittest.TestCase):
                 "html.parser",
             )
             self.assertIsNone(
-                ActionExecutor._match_mission_radio(
-                    soup_non_atk, "form#f_na", [_mk_r("1"), _mk_r("6")], "ATTACK"
-                ),
+                ActionExecutor._match_mission_radio(soup_non_atk, "form#f_na", [_mk_r("1"), _mk_r("6")], "ATTACK"),
                 f"Pass 2 wrongly matched {label_txt!r} as ATTACK",
             )
 
@@ -2815,9 +2922,9 @@ class TestActionExecutor(unittest.TestCase):
         # _execute_build_ship with target_level=10**5000 sends capped int string cleanly
         wf_html = (
             '<form action="indexInternal.es?action=internalBuildItem&buildShip=1" method="POST">'
-            '<table><tr><td>'
+            "<table><tr><td>"
             '<a href="indexInternal.es?action=internalDetail&type=ship&id=1">Small transport</a>'
-            'Required: 3.000 Metal 3.000 Kryptonite '
+            "Required: 3.000 Metal 3.000 Kryptonite "
             '<input type="text" name="ship[1]" value="0"/>'
             "</td></tr></table></form>"
         )
@@ -2866,7 +2973,17 @@ class TestActionExecutor(unittest.TestCase):
         client.driver.find_element.side_effect = NoSuchElementException("missing")
         client.navigate_menu.return_value = "<html></html>"
         for fn, kind in ((ex_live._execute_build, "BUILD"), (ex_live._execute_research, "RESEARCH")):
-            act_k = PlannedAction("P2", kind, 10**5000, "02:380:12", "T", "R", target_id=10**5000, target_level=10**5000, executable_now=True)
+            act_k = PlannedAction(
+                "P2",
+                kind,
+                10**5000,
+                "02:380:12",
+                "T",
+                "R",
+                target_id=10**5000,
+                target_level=10**5000,
+                executable_now=True,
+            )
             res_k = fn(client, state, act_k)
             self.assertFalse(res_k.executed)
 
@@ -3017,7 +3134,9 @@ class TestActionExecutor(unittest.TestCase):
             reason=None,  # type: ignore[arg-type]
             executable_now=True,
         )
-        scan_res = ActionExecutor(dry_run=False, action_delay_range=(0.0, 0.0))._execute_scan_galaxy(client, st, scan_none)
+        scan_res = ActionExecutor(dry_run=False, action_delay_range=(0.0, 0.0))._execute_scan_galaxy(
+            client, st, scan_none
+        )
         self.assertTrue(scan_res.executed)
 
         atk_none = PlannedAction(
@@ -3373,15 +3492,21 @@ class TestActionExecutor(unittest.TestCase):
         save_radio.get_attribute.side_effect = lambda k: {"value": "SAVE", "name": "todo", "id": ""}.get(k, "")
         save_radio.is_selected.return_value = False
         atk_radio = MagicMock()
-        atk_radio.get_attribute.side_effect = lambda k: {"value": "ATTACK_a8a41403ec", "name": "todo", "id": ""}.get(k, "")
+        atk_radio.get_attribute.side_effect = lambda k: {"value": "ATTACK_a8a41403ec", "name": "todo", "id": ""}.get(
+            k, ""
+        )
         atk_radio.is_selected.return_value = False
         cont_btn = MagicMock()
         go_btn = MagicMock()
 
         driver = MagicMock()
-        driver.execute_script.side_effect = lambda script, el=None, val=None: setattr(el, "value", val) if (el is not None and val is not None) else "tok"
+        driver.execute_script.side_effect = lambda script, el=None, val=None: (
+            setattr(el, "value", val) if (el is not None and val is not None) else "tok"
+        )
         driver.find_elements.side_effect = lambda by, sel: (
-            [s4_inp] if sel == "ship_4" else ([s1_inp] if sel == "ship_1" else ([save_radio, atk_radio] if "radio" in str(sel) else []))
+            [s4_inp]
+            if sel == "ship_4"
+            else ([s1_inp] if sel == "ship_1" else ([save_radio, atk_radio] if "radio" in str(sel) else []))
         )
 
         def _find_el(by: str, sel: str):
@@ -3440,7 +3565,9 @@ class TestActionExecutor(unittest.TestCase):
         client_err.driver = driver
         client_err.navigate_menu.return_value = step1_html
         client._wait_frame_ready.side_effect = None
-        client_err._wait_frame_ready.return_value = '<a href="indexInternal.es?action=internalFleet&err=fleetErr.noFleet">err</a>'
+        client_err._wait_frame_ready.return_value = (
+            '<a href="indexInternal.es?action=internalFleet&err=fleetErr.noFleet">err</a>'
+        )
         res_err = ex.execute_action(client_err, st, atk_act)
         self.assertFalse(res_err.executed)
         self.assertIn("fleetErr.noFleet", res_err.message)
@@ -3465,11 +3592,11 @@ class TestActionExecutor(unittest.TestCase):
 
         # 1. CLAIM_TUTORIAL succeeds when form action="" and submit is a nested button
         claim_html = (
-            '<html><body><div>Tutorial 6 / 11</div>'
+            "<html><body><div>Tutorial 6 / 11</div>"
             '<form action="" method="POST">'
             '<input type="hidden" name="tutorialComplete" value="1"/>'
             '<div><button type="submit">Mission complete</button></div>'
-            '</form></body></html>'
+            "</form></body></html>"
         )
         submit_btn = MagicMock()
         driver_claim = MagicMock()
@@ -3477,7 +3604,7 @@ class TestActionExecutor(unittest.TestCase):
         client_claim = MagicMock(spec=GameBrowserClient)
         client_claim.driver = driver_claim
         client_claim.navigate_menu.return_value = claim_html
-        client_claim._wait_frame_ready.return_value = '<html><body><div>Tutorial 7 / 11</div></body></html>'
+        client_claim._wait_frame_ready.return_value = "<html><body><div>Tutorial 7 / 11</div></body></html>"
         client_claim.read_planets_overview.return_value = st
 
         ex = ActionExecutor(dry_run=False, action_delay_range=(0.0, 0.0))
@@ -3498,7 +3625,7 @@ class TestActionExecutor(unittest.TestCase):
         wf_html = (
             '<html><body><form action="indexInternal.es?action=internalBuildItem&buildShip=1" method="POST">'
             '<table><tr><td><a href="indexInternal.es?action=internalDetail&type=ship&id=10">Spy probe</a> '
-            'Available: 0 Required: 1.000 Kryptonite '
+            "Available: 0 Required: 1.000 Kryptonite "
             '<input type="text" name="ship_10" value="0" maxlength="2"/></td></tr></table>'
             '<input type="submit" value="Build"/></form></body></html>'
         )
@@ -3529,7 +3656,10 @@ class TestActionExecutor(unittest.TestCase):
         res_ship = ex.execute_action(client_wf, st, ship_act)
         self.assertTrue(res_ship.executed, msg=res_ship.message)
         self.assertTrue(
-            any("arguments[0].value = arguments[1]" in str(c.args[0]) and c.args[2] == "2" for c in driver_wf.execute_script.call_args_list)
+            any(
+                "arguments[0].value = arguments[1]" in str(c.args[0]) and c.args[2] == "2"
+                for c in driver_wf.execute_script.call_args_list
+            )
         )
         wf_submit.click.assert_called_once()
 
@@ -3550,7 +3680,7 @@ class TestActionExecutor(unittest.TestCase):
             '<label><input name="todo" onclick="javascript:goFleet(this.value)" type="radio" value="TRANSPORT"/> Transport</label>'
             '<label><input name="todo" onclick="javascript:goFleet(this.value)" type="radio" value="SAVE"/> Escape flight</label>'
             '<input id="goButton" class="fleet-start-button" onclick="startFleet()" type="button" value="LAUNCH"/>'
-            '</form></body></html>'
+            "</form></body></html>"
         )
 
         def _mk_inp() -> MagicMock:
@@ -3582,9 +3712,7 @@ class TestActionExecutor(unittest.TestCase):
                 by_name_els.get(sel, []) if by == "name" else [r_trn, r_save]
             )
             drv_esc.find_element.side_effect = lambda by, sel: (
-                by_name_el[sel]
-                if by == "name"
-                else (launch_el if "goButton" in sel else cont_el)
+                by_name_el[sel] if by == "name" else (launch_el if "goButton" in sel else cont_el)
             )
             p_esc = replace(planet, ships={"s1": 6, "s4": 12, "s9": 5})
             st_esc = GameState(31, 103603, "u", 1000.0, (p_esc,), active_planet_id=12476)
@@ -3627,7 +3755,9 @@ class TestActionExecutor(unittest.TestCase):
         ):
             html = f"<html><body><div class='error'>{banner}</div></body></html>"
             self.assertTrue(ex_mod._is_unattackable_target_html(html), banner)
-            self.assertIn(banner.split(".")[0][:18].lower(), (ex_mod._extract_mission_forbidden_reason(html, mkind) or "").lower())
+            self.assertIn(
+                banner.split(".")[0][:18].lower(), (ex_mod._extract_mission_forbidden_reason(html, mkind) or "").lower()
+            )
 
         base_st, _ = _make_state_and_action()
         p_fleet = dc_replace(
@@ -3653,7 +3783,7 @@ class TestActionExecutor(unittest.TestCase):
             '<label><input name="todo" type="radio" value="TRANSPORT"/> Transport</label>'
             '<label><input name="todo" type="radio" value="SAVE"/> Escape flight</label>'
             '<input id="goButton" type="button" value="LAUNCH"/>'
-            '</form></body></html>'
+            "</form></body></html>"
         )
 
         def _mk_inp() -> MagicMock:
@@ -3833,6 +3963,7 @@ class TestActionExecutor(unittest.TestCase):
           <input id="goButton" type="submit" value="Launch"/>
         </form>
         """
+
         def _mk_el(attrs: dict[str, str] | None = None):
             el = MagicMock()
             el.is_displayed.return_value = True
@@ -3847,11 +3978,11 @@ class TestActionExecutor(unittest.TestCase):
         launch_no_cargo = _mk_el({"id": "goButton"})
         drv_nc = MagicMock()
         drv_nc.find_elements.side_effect = lambda by, sel: (
-            [_mk_el({"name": "ship_2"})] if (by == "name" and sel == "ship_2") else ([r_trn] if "radio" in str(sel) else [])
+            [_mk_el({"name": "ship_2"})]
+            if (by == "name" and sel == "ship_2")
+            else ([r_trn] if "radio" in str(sel) else [])
         )
-        drv_nc.find_element.side_effect = lambda by, sel: (
-            launch_no_cargo if "goButton" in str(sel) else _mk_el()
-        )
+        drv_nc.find_element.side_effect = lambda by, sel: launch_no_cargo if "goButton" in str(sel) else _mk_el()
         drv_nc.page_source = step2_no_cargo_html
         cli_nc = MagicMock(spec=GameBrowserClient)
         cli_nc.driver = drv_nc
@@ -3899,9 +4030,7 @@ class TestActionExecutor(unittest.TestCase):
                 else ([inp_pig, inp_met, inp_kry, inp_spi] if 'input[type="text"]' in str(sel) else [])
             )
         )
-        drv_ok.find_element.side_effect = lambda by, sel: (
-            launch_ok if "goButton" in str(sel) else _mk_el()
-        )
+        drv_ok.find_element.side_effect = lambda by, sel: launch_ok if "goButton" in str(sel) else _mk_el()
         drv_ok.page_source = step2_ok_html
         cli_ok = MagicMock(spec=GameBrowserClient)
         cli_ok.driver = drv_ok
@@ -3953,9 +4082,7 @@ class TestActionExecutor(unittest.TestCase):
                 else ([f_roh, f_met, f_kry, f_spi] if 'input[type="text"]' in str(sel) else [])
             )
         )
-        drv_retro.find_element.side_effect = lambda by, sel: (
-            launch_retro if "goButton" in str(sel) else _mk_el()
-        )
+        drv_retro.find_element.side_effect = lambda by, sel: launch_retro if "goButton" in str(sel) else _mk_el()
         drv_retro.page_source = step2_retro_html
         cli_retro = MagicMock(spec=GameBrowserClient)
         cli_retro.driver = drv_retro
@@ -4006,15 +4133,15 @@ class TestActionExecutor(unittest.TestCase):
             '<input type="submit" value="Continue"/></form></body></html>'
         )
         step2_az_with_recycle_html = (
-            '<html><body>'
-            '<div>Attack (forbidden): out of your attackzone range</div>'
-            '<div>Spy (forbidden): out of your attackzone range</div>'
-            '<div>Transport (forbidden): player outside alliance</div>'
+            "<html><body>"
+            "<div>Attack (forbidden): out of your attackzone range</div>"
+            "<div>Spy (forbidden): out of your attackzone range</div>"
+            "<div>Transport (forbidden): player outside alliance</div>"
             '<form id="fleet" action="indexInternal.es?action=internalSendFleetFinish" method="POST">'
             '<label><input name="todo" type="radio" value="RECYCLE"/> Recycle</label>'
             '<label><input name="todo" type="radio" value="SAVE"/> Escape flight</label>'
             '<input id="goButton" class="fleet-start-button" type="button" value="LAUNCH"/>'
-            '</form></body></html>'
+            "</form></body></html>"
         )
 
         def _mk_el(attrs: dict[str, str] | None = None) -> MagicMock:
@@ -4032,7 +4159,9 @@ class TestActionExecutor(unittest.TestCase):
 
         # _extract_mission_forbidden_reason must ignore AZ banners for RECYCLE
         self.assertIsNone(ex_mod._extract_mission_forbidden_reason(step2_az_with_recycle_html, "RECYCLE"))
-        self.assertIn("attackzone", (ex_mod._extract_mission_forbidden_reason(step2_az_with_recycle_html, "ATTACK") or "").lower())
+        self.assertIn(
+            "attackzone", (ex_mod._extract_mission_forbidden_reason(step2_az_with_recycle_html, "ATTACK") or "").lower()
+        )
 
         # 1. RECYCLE succeeds on Step 2 with Attack/Spy out-of-attackzone notices + RECYCLE radio
         r_rec = _mk_el({"name": "todo", "value": "RECYCLE"})
@@ -4077,19 +4206,21 @@ class TestActionExecutor(unittest.TestCase):
 
         # 2. RECYCLE succeeds on Step 2 with bash protection notice on Attack + RECYCLE radio
         step2_bash_rec_html = (
-            '<html><body>'
-            '<div>Attack (forbidden): Player was attacked too often by you (bash protection)</div>'
+            "<html><body>"
+            "<div>Attack (forbidden): Player was attacked too often by you (bash protection)</div>"
             '<form id="fleet" action="indexInternal.es?action=internalSendFleetFinish" method="POST">'
             '<label><input name="todo" type="radio" value="RECYCLE"/> Recycle</label>'
             '<label><input name="todo" type="radio" value="SAVE"/> Escape flight</label>'
             '<input id="goButton" type="button" value="LAUNCH"/>'
-            '</form></body></html>'
+            "</form></body></html>"
         )
         r_rec2 = _mk_el({"name": "todo", "value": "RECYCLE"})
         launch2 = _mk_el({"id": "goButton"})
         drv2 = MagicMock()
         drv2.find_elements.side_effect = lambda by, sel: (
-            {"ship_11": [_mk_el({"name": "ship_11"})]}.get(sel, []) if by == "name" else [r_rec2, _mk_el({"name": "todo", "value": "SAVE"})]
+            {"ship_11": [_mk_el({"name": "ship_11"})]}.get(sel, [])
+            if by == "name"
+            else [r_rec2, _mk_el({"name": "todo", "value": "SAVE"})]
         )
         drv2.find_element.side_effect = lambda by, sel: (
             {"gal": _mk_el(), "sun": _mk_el(), "pla": _mk_el()}[sel]
@@ -4110,16 +4241,18 @@ class TestActionExecutor(unittest.TestCase):
         # 3. RECYCLE when Step 2 omits RECYCLE radio (only SAVE rendered alongside AZ notice)
         #    -> clears stale debris cleanly without blaming attackzone!
         step2_no_rec_radio_html = (
-            '<html><body>'
-            '<div>Attack (forbidden): out of your attackzone range</div>'
+            "<html><body>"
+            "<div>Attack (forbidden): out of your attackzone range</div>"
             '<form id="fleet" action="indexInternal.es?action=internalSendFleetFinish" method="POST">'
             '<label><input name="todo" type="radio" value="SAVE"/> Escape flight</label>'
             '<input id="goButton" type="button" value="LAUNCH"/>'
-            '</form></body></html>'
+            "</form></body></html>"
         )
         drv3 = MagicMock()
         drv3.find_elements.side_effect = lambda by, sel: (
-            {"ship_11": [_mk_el({"name": "ship_11"})]}.get(sel, []) if by == "name" else [_mk_el({"name": "todo", "value": "SAVE"})]
+            {"ship_11": [_mk_el({"name": "ship_11"})]}.get(sel, [])
+            if by == "name"
+            else [_mk_el({"name": "todo", "value": "SAVE"})]
         )
         drv3.find_element.side_effect = lambda by, sel: (
             {"gal": _mk_el(), "sun": _mk_el(), "pla": _mk_el()}[sel] if by == "name" else _mk_el()
@@ -4143,7 +4276,9 @@ class TestActionExecutor(unittest.TestCase):
         launch4 = _mk_el({"id": "goButton"})
         drv4 = MagicMock()
         drv4.find_elements.side_effect = lambda by, sel: (
-            {"ship_11": [_mk_el({"name": "ship_11"})]}.get(sel, []) if by == "name" else [r_rec4, _mk_el({"name": "todo", "value": "SAVE"})]
+            {"ship_11": [_mk_el({"name": "ship_11"})]}.get(sel, [])
+            if by == "name"
+            else [r_rec4, _mk_el({"name": "todo", "value": "SAVE"})]
         )
         drv4.find_element.side_effect = lambda by, sel: (
             {"gal": _mk_el(), "sun": _mk_el(), "pla": _mk_el()}[sel]
@@ -4163,19 +4298,21 @@ class TestActionExecutor(unittest.TestCase):
 
         # 5. SPY succeeds on Step 2 when only Attack is bash-blocked and SPY radio is available
         step2_bash_spy_html = (
-            '<html><body>'
-            '<div>Attack (forbidden): Player was attacked too often by you (bash protection)</div>'
+            "<html><body>"
+            "<div>Attack (forbidden): Player was attacked too often by you (bash protection)</div>"
             '<form id="fleet" action="indexInternal.es?action=internalSendFleetFinish" method="POST">'
             '<label><input name="todo" type="radio" value="SPY"/> Spy</label>'
             '<label><input name="todo" type="radio" value="SAVE"/> Escape flight</label>'
             '<input id="goButton" type="button" value="LAUNCH"/>'
-            '</form></body></html>'
+            "</form></body></html>"
         )
         r_spy5 = _mk_el({"name": "todo", "value": "SPY"})
         launch5 = _mk_el({"id": "goButton"})
         drv5 = MagicMock()
         drv5.find_elements.side_effect = lambda by, sel: (
-            {"ship_10": [_mk_el({"name": "ship_10"})]}.get(sel, []) if by == "name" else [r_spy5, _mk_el({"name": "todo", "value": "SAVE"})]
+            {"ship_10": [_mk_el({"name": "ship_10"})]}.get(sel, [])
+            if by == "name"
+            else [r_spy5, _mk_el({"name": "todo", "value": "SAVE"})]
         )
         drv5.find_element.side_effect = lambda by, sel: (
             {"gal": _mk_el(), "sun": _mk_el(), "pla": _mk_el()}[sel]

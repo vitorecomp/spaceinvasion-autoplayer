@@ -178,7 +178,13 @@ class TestGameData(unittest.TestCase):
                     "slug": "pig-iron-mine",
                     "name": "Pig iron mine",
                     "id": 1,
-                    "levels": {1: {"cost": {"pig_iron": 60, "metal": 0, "kryptonite": 20, "spice": 0}, "base_time_s": 10.0, "prod": 20}},
+                    "levels": {
+                        1: {
+                            "cost": {"pig_iron": 60, "metal": 0, "kryptonite": 20, "spice": 0},
+                            "base_time_s": 10.0,
+                            "prod": 20,
+                        }
+                    },
                 }
             },
             "researches": {},
@@ -239,6 +245,7 @@ class TestGameData(unittest.TestCase):
             "defenses": game_data.DEFENSES,
         }
         import tempfile
+
         with tempfile.TemporaryDirectory() as tmp_tables:
             sync_wiki_data.write_catalog_tables(payload, Path(tmp_tables))
             tables_dir = Path("spaceinvasion/core/catalog/tables")
@@ -259,9 +266,7 @@ class TestGameData(unittest.TestCase):
         fk = game_data.safe_key(frozenset({huge}))
         self.assertTrue(isinstance(tk, str) and tk)
         self.assertTrue(isinstance(fk, str) and fk)
-        sanitized = game_data.sanitize_json_tree(
-            {(huge, 1): frozenset({huge, b"z"}), "neg": frozenset({-1})}
-        )
+        sanitized = game_data.sanitize_json_tree({(huge, 1): frozenset({huge, b"z"}), "neg": frozenset({-1})})
         dumped = json.dumps(sanitized, allow_nan=False)
         self.assertIn("1" + ("0" * 200), dumped)
 
@@ -275,7 +280,8 @@ class TestGameData(unittest.TestCase):
         self.assertTrue(
             math.isfinite(
                 game_data.interpolate_temp_value(
-                    {"min": 10, "max": 20, "100": huge}, 50  # type: ignore[arg-type]
+                    {"min": 10, "max": 20, "100": huge},
+                    50,  # type: ignore[arg-type]
                 )
             )
         )
@@ -355,6 +361,7 @@ class TestGameData(unittest.TestCase):
             "defenses": game_data.DEFENSES,
         }
         import tempfile
+
         with tempfile.TemporaryDirectory() as tmp_tables:
             sync_wiki_data.write_catalog_tables(payload, Path(tmp_tables))
             tables_dir = Path("spaceinvasion/core/catalog/tables")
@@ -363,7 +370,6 @@ class TestGameData(unittest.TestCase):
                     json.loads((Path(tmp_tables) / fname).read_text(encoding="utf-8")),
                     json.loads((tables_dir / fname).read_text(encoding="utf-8")),
                 )
-
 
     def test_r14_safe_key_and_sanitize_json_dag20_cycles_and_sync_parity(self) -> None:
         import time

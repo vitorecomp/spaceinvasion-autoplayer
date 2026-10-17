@@ -21,7 +21,6 @@ from spaceinvasion.combat._points_helpers import (
     safe_big_mul_div,
     safe_eta_str,
     safe_nonneg_int,
-    safe_optional_finite_float,
     safe_optional_finite_int,
 )
 from spaceinvasion.combat._points_helpers import (
@@ -29,6 +28,9 @@ from spaceinvasion.combat._points_helpers import (
 )
 from spaceinvasion.combat._points_helpers import (
     format_eta as format_eta,
+)
+from spaceinvasion.combat._rank_history import (
+    compute_observed_trend as _compute_observed_trend,
 )
 from spaceinvasion.combat._rank_history import (
     load_rank_history as load_rank_history,
@@ -44,7 +46,6 @@ from spaceinvasion.core.catalog import (
     building_cost,
     resolve_unit,
     safe_finite_float,
-    sanitize_json_tree,
     spice_equivalent,
 )
 from spaceinvasion.core.model import GameState, PlanetState
@@ -291,52 +292,6 @@ def _build_ranking_milestones(
             }
         )
     return milestones
-
-
-def _compute_observed_trend(history: Sequence[Mapping[str, object]] | None) -> dict[str, object]:
-    samples: list[dict[str, object]] = [
-        sanitize_json_tree(s, max_int=MAX_JSON_SAFE, nonfinite_float=None)
-        for s in (history or ())
-        if isinstance(s, Mapping)
-    ]
-    observed_delta_pts: float | None = None
-    observed_delta_rank: int | None = None
-    observed_rate_hr: float | None = None
-    elapsed_hours = 0.0
-    if len(samples) >= 2:
-        first, last = samples[0], samples[-1]
-        dt_sec = cap_eta_float(
-            safe_finite_float(last.get("ts", 0.0), 0.0) - safe_finite_float(first.get("ts", 0.0), 0.0),
-            allow_negative=True,
-        )
-        elapsed_hours = cap_eta_float(max(0.0, dt_sec / 3600.0))
-        p0 = safe_optional_finite_float(first.get("server_points"))
-        p1 = safe_optional_finite_float(last.get("server_points"))
-        if p0 is not None and p1 is not None and p1 != p0:
-            raw_delta = p1 - p0
-        else:
-            raw_delta = safe_finite_float(last.get("estimated_points", 0.0), 0.0) - safe_finite_float(
-                first.get("estimated_points", 0.0), 0.0
-            )
-        observed_delta_pts = round(cap_eta_float(raw_delta, allow_negative=True), 1)
-        if elapsed_hours >= 0.05 and math.isfinite(observed_delta_pts):
-            rate_val = observed_delta_pts / elapsed_hours
-            observed_rate_hr = (
-                round(cap_eta_float(rate_val, allow_negative=True), 2) if math.isfinite(rate_val) else None
-            )
-        r0 = safe_optional_finite_int(first.get("server_rank"))
-        r1 = safe_optional_finite_int(last.get("server_rank"))
-        if r0 is not None and r1 is not None:
-            observed_delta_rank = max(-MAX_JSON_SAFE, min(MAX_JSON_SAFE, r0 - r1))
-
-    return {
-        "sample_count": len(samples),
-        "elapsed_hours": round(cap_eta_float(elapsed_hours), 2),
-        "delta_points": observed_delta_pts,
-        "rank_climbed": observed_delta_rank,
-        "observed_pts_per_hr": observed_rate_hr,
-        "samples": samples[-20:],
-    }
 
 
 def build_ranking_evolution(

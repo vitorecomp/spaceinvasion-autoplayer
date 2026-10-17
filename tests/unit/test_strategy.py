@@ -196,9 +196,7 @@ class TestStrategyPlanner(unittest.TestCase):
         tut = TutorialStatus(
             step=1,
             total_steps=11,
-            tasks=(
-                TutorialTask("Increase your Fusion plant level 3 / 3", "Fusion plant", 5, 3, 3),
-            ),
+            tasks=(TutorialTask("Increase your Fusion plant level 3 / 3", "Fusion plant", 5, 3, 3),),
             reward_text="5232 Pig iron",
             can_complete=True,
         )
@@ -401,7 +399,11 @@ class TestStrategyPlanner(unittest.TestCase):
             1,
             "u",
             0.0,
-            (_sample_planet(resources=Resources(5000, 5000, 5000, 2000), energy=EnergyBalance(100, 40), buildings={"b8": 1}),),
+            (
+                _sample_planet(
+                    resources=Resources(5000, 5000, 5000, 2000), energy=EnergyBalance(100, 40), buildings={"b8": 1}
+                ),
+            ),
             tutorial=tut,
             research_offers=(r_offer,),
         )
@@ -437,7 +439,9 @@ class TestStrategyPlanner(unittest.TestCase):
             storage=Resources(100000, 100000, 100000, 100000),
             energy=EnergyBalance(40, 38),
             buildings={"b1": 5, "b2": 4, "b3": 4, "b4": 2, "b5": 4, "b9": 1},
-            ship_offers=(UnitOffer("ship", SOLAR_CELLS_ID, "Solar cells", 0, Resources(0, 2000, 200, 400), True, "ship[9]"),),
+            ship_offers=(
+                UnitOffer("ship", SOLAR_CELLS_ID, "Solar cells", 0, Resources(0, 2000, 200, 400), True, "ship[9]"),
+            ),
         )
         state = GameState(31, 1, "u", 0.0, (home, hot_tight_colony), active_planet_id=home.planet_id)
         actions = plan_actions(state, config=StrategyConfig(allow_multi_planet=True, allow_shipyard=True))
@@ -470,7 +474,9 @@ class TestStrategyPlanner(unittest.TestCase):
 
     def test_tutorial_defers_extra_fusion_when_ample_spare_energy_exists(self) -> None:
         offers = (
-            BuildingOffer(FUSION_PLANT, "Fusion plant", 10, 11, Resources(8000, 0, 3500, 0), True, "Build level 11", "h5"),
+            BuildingOffer(
+                FUSION_PLANT, "Fusion plant", 10, 11, Resources(8000, 0, 3500, 0), True, "Build level 11", "h5"
+            ),
             BuildingOffer(SPICE_MINE, "Spice mine", 2, 3, Resources(0, 400, 150, 0), True, "Build level 3", "h4"),
         )
         tut = TutorialStatus(
@@ -587,9 +593,7 @@ class TestStrategyPlanner(unittest.TestCase):
             energy=p.energy,
             buildings=p.buildings,
             building_offers=p.building_offers,
-            ship_offers=(
-                UnitOffer("ship", 1, "Small transport", 1, Resources(0, 3000, 3000, 0), True, "ship[1]"),
-            ),
+            ship_offers=(UnitOffer("ship", 1, "Small transport", 1, Resources(0, 3000, 3000, 0), True, "ship[1]"),),
         )
         tut = TutorialStatus(
             step=6,
@@ -647,11 +651,15 @@ class TestStrategyPlanner(unittest.TestCase):
                 },
             ),
         )
-        guarded_atk = [a for a in plan_actions(st_with_target, config=StrategyConfig(allow_raids=False)) if a.kind == "ATTACK"]
+        guarded_atk = [
+            a for a in plan_actions(st_with_target, config=StrategyConfig(allow_raids=False)) if a.kind == "ATTACK"
+        ]
         self.assertEqual(len(guarded_atk), 1)
         self.assertFalse(guarded_atk[0].executable_now)
 
-        live_atk = [a for a in plan_actions(st_with_target, config=StrategyConfig(allow_raids=True)) if a.kind == "ATTACK"]
+        live_atk = [
+            a for a in plan_actions(st_with_target, config=StrategyConfig(allow_raids=True)) if a.kind == "ATTACK"
+        ]
         self.assertEqual(len(live_atk), 1)
         self.assertTrue(live_atk[0].executable_now)
 
@@ -722,7 +730,9 @@ class TestStrategyPlanner(unittest.TestCase):
             buildings={"b1": 10, "b2": 8, "b3": 9, "b4": 5, "b5": 11, "b7": 3},
             building_offers=(
                 BuildingOffer(1, "Pig iron mine", 10, 11, Resources(2000, 0, 800, 0), False, "Not enough resources"),
-                BuildingOffer(7, "Development center", 3, 4, Resources(0, 4800, 2400, 1600), False, "Not enough resources"),
+                BuildingOffer(
+                    7, "Development center", 3, 4, Resources(0, 4800, 2400, 1600), False, "Not enough resources"
+                ),
             ),
             economy_rates={"resource1": 100, "resource2": 0, "resource3": 100, "resource4": 100},
         )
@@ -755,7 +765,9 @@ class TestStrategyPlanner(unittest.TestCase):
         )
         st = GameState(31, 1, "u", 1_700_000_000.0, (p,), researches={"r2": 1}, speedup_factor=5.0)
         acts_ga = plan_actions(st, config=StrategyConfig(planner_mode="ga_nn", ga_generations=4, ga_population_size=8))
-        acts_ws = plan_actions(st, config=StrategyConfig(planner_mode=" GA_NN ", ga_generations=4, ga_population_size=8))
+        acts_ws = plan_actions(
+            st, config=StrategyConfig(planner_mode=" GA_NN ", ga_generations=4, ga_population_size=8)
+        )
         self.assertGreater(len(acts_ga), 0)
         self.assertEqual(acts_ga, acts_ws)
         for act in acts_ga:
@@ -1035,11 +1047,7 @@ class TestStrategyPlanner(unittest.TestCase):
         )
         st = GameState(31, 1, "u", 1_700_000_000.0, (full_home, ast_planet), active_planet_id=1)
         acts = plan_actions(st, config=StrategyConfig(planner_mode="priority", allow_multi_planet=True))
-        ast_forbidden = [
-            a
-            for a in acts
-            if a.planet_id == 99 and a.target_id in {1, 2, 3, 4, 5, 6, 8, 11, 12, 13, 14}
-        ]
+        ast_forbidden = [a for a in acts if a.planet_id == 99 and a.target_id in {1, 2, 3, 4, 5, 6, 8, 11, 12, 13, 14}]
         self.assertEqual(ast_forbidden, [])
         home_builds = [a for a in acts if a.planet_id == 1 and a.kind == "BUILD"]
         self.assertEqual(home_builds, [])
@@ -1059,13 +1067,17 @@ class TestStrategyPlanner(unittest.TestCase):
             energy=full_home.energy,
             buildings=full_home.buildings,
             building_offers=full_home.building_offers,
-            ship_offers=(UnitOffer("ship", SOLAR_CELLS_ID, "Solar cells", 0, Resources(0, 2000, 200, 400), True, "ship[9]"),),
+            ship_offers=(
+                UnitOffer("ship", SOLAR_CELLS_ID, "Solar cells", 0, Resources(0, 2000, 200, 400), True, "ship[9]"),
+            ),
         )
         acts_s9 = plan_actions(
             GameState(31, 1, "u", 1_700_000_000.0, (full_with_s9,), active_planet_id=1),
             config=StrategyConfig(planner_mode="priority", allow_shipyard=True),
         )
-        self.assertTrue(any(a.kind == "BUILD_SHIP" and a.target_id == SOLAR_CELLS_ID and a.executable_now for a in acts_s9))
+        self.assertTrue(
+            any(a.kind == "BUILD_SHIP" and a.target_id == SOLAR_CELLS_ID and a.executable_now for a in acts_s9)
+        )
         self.assertEqual([a for a in acts_s9 if a.kind == "BUILD"], [])
 
     def test_r10_zero_free_fields_blocks_power_even_with_deficit_and_raid_case_normalization(self) -> None:
@@ -1117,13 +1129,19 @@ class TestStrategyPlanner(unittest.TestCase):
             tutorial=TutorialStatus(
                 step=1,
                 total_steps=5,
-                tasks=(TutorialTask("Build Fusion plant level 1", building_name="Fusion plant", building_id=5, current=0, target=1),),
+                tasks=(
+                    TutorialTask(
+                        "Build Fusion plant level 1", building_name="Fusion plant", building_id=5, current=0, target=1
+                    ),
+                ),
                 can_complete=False,
             ),
         )
         acts_full = plan_actions(tut_st, config=StrategyConfig(planner_mode="priority", allow_shipyard=True))
         self.assertEqual([a for a in acts_full if a.kind == "BUILD"], [])
-        self.assertTrue(any(a.kind == "BUILD_SHIP" and a.target_id == SOLAR_CELLS_ID and a.executable_now for a in acts_full))
+        self.assertTrue(
+            any(a.kind == "BUILD_SHIP" and a.target_id == SOLAR_CELLS_ID and a.executable_now for a in acts_full)
+        )
 
         # 2. Hot tight-field planet (0 < fields_rem <= min_free_fields_warning) prefers Solar cells over b6
         hot_tight_p = PlanetState(
@@ -1148,7 +1166,12 @@ class TestStrategyPlanner(unittest.TestCase):
         )
         acts_tight = plan_actions(
             GameState(31, 1, "u", 1_700_000_000.0, (hot_tight_p,), active_planet_id=102),
-            config=StrategyConfig(planner_mode="priority", allow_shipyard=True, hot_planet_solar_temp_threshold=60, min_free_fields_warning=5),
+            config=StrategyConfig(
+                planner_mode="priority",
+                allow_shipyard=True,
+                hot_planet_solar_temp_threshold=60,
+                min_free_fields_warning=5,
+            ),
         )
         self.assertEqual([a for a in acts_tight if a.kind == "BUILD" and a.target_id == 6], [])
         self.assertTrue(any(a.kind == "BUILD_SHIP" and a.target_id == SOLAR_CELLS_ID for a in acts_tight))
@@ -1167,7 +1190,9 @@ class TestStrategyPlanner(unittest.TestCase):
             energy=EnergyBalance(10, 100),
             buildings={"b1": 5, "b2": 3},
             building_offers=(BuildingOffer(1, "Pig iron mine", 5, 6, Resources(100, 50, 0, 0), True, "?b=1"),),
-            ship_offers=(UnitOffer("ship", SOLAR_CELLS_ID, "Solar cells", 0, Resources(0, 2000, 200, 400), True, "ship[9]"),),
+            ship_offers=(
+                UnitOffer("ship", SOLAR_CELLS_ID, "Solar cells", 0, Resources(0, 2000, 200, 400), True, "ship[9]"),
+            ),
         )
         self.assertEqual(_norm_planet_type(raid_case_p), "raid")
         self.assertFalse(_is_building_allowed_on_planet(raid_case_p, 1, raid_case_p.building_offers))
@@ -1284,9 +1309,7 @@ class TestStrategyPlanner(unittest.TestCase):
                 BuildingOffer(1, "Pig iron mine", 0, 1, Resources(60, 15, 0, 0), True, "Build", "?b=1"),
                 BuildingOffer(7, "Development center", 1, 2, Resources(400, 120, 200, 0), True, "Build", "?b=7"),
             ),
-            ship_offers=(
-                UnitOffer("ship", 4, "Small fighter", 0, Resources(3000, 1000, 0, 0), True, "ship[4]"),
-            ),
+            ship_offers=(UnitOffer("ship", 4, "Small fighter", 0, Resources(3000, 1000, 0, 0), True, "ship[4]"),),
         )
         tut_mix = TutorialStatus(
             step=4,
@@ -1365,9 +1388,7 @@ class TestStrategyPlanner(unittest.TestCase):
         )
         self.assertFalse(forged_r_ast.executable_now)
         self.assertIsNone(forged_r_ast.action_href)
-        self.assertFalse(
-            any(a.kind == "RESEARCH" and a.executable_now for a in plan_actions(st_ast, config=cfg))
-        )
+        self.assertFalse(any(a.kind == "RESEARCH" and a.executable_now for a in plan_actions(st_ast, config=cfg)))
 
         for bad_rew in (10**5000, _RaiseFspath(), _RaiseStrRepr()):
             st_claim = GameState(
@@ -1409,10 +1430,18 @@ class TestStrategyPlanner(unittest.TestCase):
                 UnitOffer("ship", 9, "Solar cells", 0, Resources(0, 2000, 200, 400), True, "ship[9]"),
             ),
         )
-        r2_offer = ResearchOffer(2, "r2", "Energy technology", 0, 1, Resources(0, 400, 800, 400), True, "Research", "?r=2")
-        r1_offer = ResearchOffer(1, "r1", "Mining technology", 0, 1, Resources(200, 100, 100, 0), True, "Research", "?r=1")
-        tut_r2 = TutorialStatus(4, 11, (TutorialTask("Upgrade Energy technology 0/1", "Energy technology", None, 0, 1, "research", "r2"),))
-        st_r2 = GameState(31, 1, "u", 1000.0, (p_no_b8_b9,), active_planet_id=701, tutorial=tut_r2, research_offers=(r2_offer,))
+        r2_offer = ResearchOffer(
+            2, "r2", "Energy technology", 0, 1, Resources(0, 400, 800, 400), True, "Research", "?r=2"
+        )
+        r1_offer = ResearchOffer(
+            1, "r1", "Mining technology", 0, 1, Resources(200, 100, 100, 0), True, "Research", "?r=1"
+        )
+        tut_r2 = TutorialStatus(
+            4, 11, (TutorialTask("Upgrade Energy technology 0/1", "Energy technology", None, 0, 1, "research", "r2"),)
+        )
+        st_r2 = GameState(
+            31, 1, "u", 1000.0, (p_no_b8_b9,), active_planet_id=701, tutorial=tut_r2, research_offers=(r2_offer,)
+        )
         acts_r2 = plan_actions(st_r2, config=StrategyConfig(allow_research=True))
         res_acts = [a for a in acts_r2 if a.kind == "RESEARCH"]
         self.assertTrue(res_acts)
@@ -1433,8 +1462,20 @@ class TestStrategyPlanner(unittest.TestCase):
             energy=EnergyBalance(500, 100),
             buildings={"b1": 5, "b5": 5, "b7": 3, "b8": 1, "b9": 0},
         )
-        tut_r1 = TutorialStatus(4, 11, (TutorialTask("Upgrade Mining technology 0/1", "Mining technology", None, 0, 1, "research", "r1"),))
-        st_r1 = GameState(31, 1, "u", 1000.0, (p_b8_1,), active_planet_id=702, researches={"r2": 0}, tutorial=tut_r1, research_offers=(r1_offer,))
+        tut_r1 = TutorialStatus(
+            4, 11, (TutorialTask("Upgrade Mining technology 0/1", "Mining technology", None, 0, 1, "research", "r1"),)
+        )
+        st_r1 = GameState(
+            31,
+            1,
+            "u",
+            1000.0,
+            (p_b8_1,),
+            active_planet_id=702,
+            researches={"r2": 0},
+            tutorial=tut_r1,
+            research_offers=(r1_offer,),
+        )
         acts_r1 = plan_actions(st_r1, config=StrategyConfig(allow_research=True))
         self.assertFalse(any(a.kind == "RESEARCH" and a.executable_now for a in acts_r1))
 
@@ -1509,8 +1550,12 @@ class TestStrategyPlanner(unittest.TestCase):
                 TutorialTask("Upgrade Energy technology 0/1", "Energy technology", None, 0, 1, "research", "r2"),
             ),
         )
-        st_raid_solo = GameState(31, 1, "u", 1000.0, (raid_p,), active_planet_id=704, tutorial=tut_bld_res, research_offers=(r2_offer,))
-        self.assertEqual(plan_actions(st_raid_solo, config=StrategyConfig(planner_mode="priority", allow_multi_planet=False)), [])
+        st_raid_solo = GameState(
+            31, 1, "u", 1000.0, (raid_p,), active_planet_id=704, tutorial=tut_bld_res, research_offers=(r2_offer,)
+        )
+        self.assertEqual(
+            plan_actions(st_raid_solo, config=StrategyConfig(planner_mode="priority", allow_multi_planet=False)), []
+        )
 
         ast_p = PlanetState(
             planet_id=705,
@@ -1525,7 +1570,9 @@ class TestStrategyPlanner(unittest.TestCase):
             energy=EnergyBalance(500, 100),
             buildings={"b7": 1},
         )
-        st_ast_solo = GameState(31, 1, "u", 1000.0, (ast_p,), active_planet_id=705, tutorial=tut_bld_res, research_offers=(r2_offer,))
+        st_ast_solo = GameState(
+            31, 1, "u", 1000.0, (ast_p,), active_planet_id=705, tutorial=tut_bld_res, research_offers=(r2_offer,)
+        )
         ast_prio = plan_actions(st_ast_solo, config=StrategyConfig(planner_mode="priority", allow_multi_planet=False))
         self.assertEqual(ast_prio, [])
         tut_ast_mix = TutorialStatus(
@@ -1538,7 +1585,9 @@ class TestStrategyPlanner(unittest.TestCase):
             ),
         )
         ast_b7_prio = plan_actions(
-            GameState(31, 1, "u", 1000.0, (ast_p,), active_planet_id=705, tutorial=tut_ast_mix, research_offers=(r2_offer,)),
+            GameState(
+                31, 1, "u", 1000.0, (ast_p,), active_planet_id=705, tutorial=tut_ast_mix, research_offers=(r2_offer,)
+            ),
             config=StrategyConfig(planner_mode="priority", allow_multi_planet=False),
         )
         self.assertEqual([(a.kind, a.target_id) for a in ast_b7_prio], [("WAIT_RESOURCES", 7)])
@@ -1566,8 +1615,12 @@ class TestStrategyPlanner(unittest.TestCase):
             tutorial=tut_bld_res,
             research_offers=(r2_offer,),
         )
-        multi_acts = plan_actions(st_multi, config=StrategyConfig(planner_mode="priority", allow_multi_planet=True, allow_research=True))
-        self.assertTrue(any(a.planet_id == 706 and a.kind == "BUILD" and a.target_id == 8 and a.executable_now for a in multi_acts))
+        multi_acts = plan_actions(
+            st_multi, config=StrategyConfig(planner_mode="priority", allow_multi_planet=True, allow_research=True)
+        )
+        self.assertTrue(
+            any(a.planet_id == 706 and a.kind == "BUILD" and a.target_id == 8 and a.executable_now for a in multi_acts)
+        )
         self.assertFalse(any(a.kind == "RESEARCH" and a.executable_now for a in multi_acts))
 
     def test_r14_stale_queued_forged_build_offers_tutorial_ship_delegation_and_shipyard_aliases(self) -> None:
@@ -1674,11 +1727,18 @@ class TestStrategyPlanner(unittest.TestCase):
             st_del,
             config=StrategyConfig(planner_mode="priority", allow_multi_planet=True, allow_shipyard=True),
         )
-        self.assertTrue(any(a.planet_id == 713 and a.kind == "BUILD_SHIP" and a.target_id == 4 and a.executable_now for a in del_acts))
+        self.assertTrue(
+            any(
+                a.planet_id == 713 and a.kind == "BUILD_SHIP" and a.target_id == 4 and a.executable_now
+                for a in del_acts
+            )
+        )
         self.assertFalse(any(a.planet_id == 711 and a.executable_now for a in del_acts))
 
         # 4. Alias normalization in strategy.shipyard_targets (last-wins; bare digits skipped)
-        cfg_alias = StrategyConfig(planner_mode="priority", allow_shipyard=True, shipyard_targets={"s4": 0, "Small fighter": 2, "1": 99})
+        cfg_alias = StrategyConfig(
+            planner_mode="priority", allow_shipyard=True, shipyard_targets={"s4": 0, "Small fighter": 2, "1": 99}
+        )
         st_alias = GameState(
             31,
             1,
@@ -1691,7 +1751,9 @@ class TestStrategyPlanner(unittest.TestCase):
         alias_acts = plan_actions(st_alias, config=cfg_alias)
         ship4 = [a for a in alias_acts if a.kind == "BUILD_SHIP" and a.target_id == 4]
         self.assertTrue(ship4 and "0/2" in ship4[0].reason)
-        cfg_zero = StrategyConfig(planner_mode="priority", allow_shipyard=True, shipyard_targets={"Small fighter": 2, "s4": 0})
+        cfg_zero = StrategyConfig(
+            planner_mode="priority", allow_shipyard=True, shipyard_targets={"Small fighter": 2, "s4": 0}
+        )
         zero_acts = plan_actions(st_alias, config=cfg_zero)
         self.assertFalse(any(a.kind == "BUILD_SHIP" and a.target_id == 4 for a in zero_acts))
 
@@ -1763,9 +1825,7 @@ class TestStrategyPlanner(unittest.TestCase):
             BuildingOffer(5, "Fusion plant", 19, 20, Resources(201_212, 0, 88_030, 0), False, "Wait"),
             BuildingOffer(11, "Pig iron warehouse", 1, 2, Resources(4_000, 1_600, 0, 0), True, "Build", "?b=11"),
         )
-        s_offers = (
-            UnitOffer("ship", 4, "Small fighter", 0, Resources(3_000, 1_000, 0, 0), True, "ship_4"),
-        )
+        s_offers = (UnitOffer("ship", 4, "Small fighter", 0, Resources(3_000, 1_000, 0, 0), True, "ship_4"),)
         p_cap = PlanetState(
             planet_id=12476,
             name="Colony",
@@ -1828,7 +1888,9 @@ class TestStrategyPlanner(unittest.TestCase):
             tutorial=tut_spy,
         )
         acts_build_probe = plan_actions(st_no_probe, config=StrategyConfig(allow_shipyard=True, allow_galaxy_scan=True))
-        self.assertTrue(any(a.kind == "BUILD_SHIP" and a.target_id == 10 and a.executable_now for a in acts_build_probe))
+        self.assertTrue(
+            any(a.kind == "BUILD_SHIP" and a.target_id == 10 and a.executable_now for a in acts_build_probe)
+        )
 
         p_has_probe = replace(p_no_probe, ships={"s10": 2})
         st_has_probe = GameState(
@@ -1839,7 +1901,9 @@ class TestStrategyPlanner(unittest.TestCase):
             (p_has_probe,),
             active_planet_id=12476,
             tutorial=tut_spy,
-            raid_targets=({"coords": "02:378:15", "owner": "Sigilo_respec", "status_color": "yellow", "last_scanned_ts": 990.0},),
+            raid_targets=(
+                {"coords": "02:378:15", "owner": "Sigilo_respec", "status_color": "yellow", "last_scanned_ts": 990.0},
+            ),
         )
         acts_spy = plan_actions(st_has_probe, config=StrategyConfig(allow_galaxy_scan=True), now_ts=1000.0)
         self.assertTrue(any(a.kind == "SPY" and a.executable_now for a in acts_spy))
@@ -1942,7 +2006,9 @@ class TestStrategyPlanner(unittest.TestCase):
 
         # Once b8=3, Spy tech r7 L1 executes; when r7 L2 is active in lab (1/2 + 1 active), research doesn't block mines
         p7_b8_3 = replace(p6, buildings={**p6.buildings, "b8": 3})
-        r7_offer = ResearchOffer(7, "r7", "Spy technology", 0, 1, Resources(200, 1000, 200, 0), True, "Research", "?r=7")
+        r7_offer = ResearchOffer(
+            7, "r7", "Spy technology", 0, 1, Resources(200, 1000, 200, 0), True, "Research", "?r=7"
+        )
         st7_r7 = GameState(
             31,
             103603,
@@ -1996,7 +2062,9 @@ class TestStrategyPlanner(unittest.TestCase):
             scanned_systems={"02:380": 1290.0},
             now_ts=1300.0,
         )
-        self.assertTrue(any(a.kind == "SCAN_GALAXY" and "02:381" in a.target_name and a.executable_now for a in acts7_spiral))
+        self.assertTrue(
+            any(a.kind == "SCAN_GALAXY" and "02:381" in a.target_name and a.executable_now for a in acts7_spiral)
+        )
 
         # Steps 8–11: Recycle -> s11 prereq unlock (b9 L4 + r3 L6 + r5 L4), Colonize -> s8 prereq unlock (b9 L4 + r4 L8),
         # Defense/Escape advisories keep executable_now=False, non-urgent Fusion stays after mines (bucket=4),
@@ -2017,7 +2085,9 @@ class TestStrategyPlanner(unittest.TestCase):
         p_late = replace(
             p7_with_probes,
             resources=Resources(120_000, 10_000, 200_000, 45_000),
-            storage=Resources(500_000, 40_000, 800_000, 500_000),  # Spice mine needs 46,680 Metal > 40,000 cap (fill 25% < 85%)!
+            storage=Resources(
+                500_000, 40_000, 800_000, 500_000
+            ),  # Spice mine needs 46,680 Metal > 40,000 cap (fill 25% < 85%)!
             buildings={**p7_with_probes.buildings, "b12": 1},
             building_offers=(
                 BuildingOffer(4, "Spice mine", 13, 14, Resources(0, 46_680, 16_975, 0), False, "Cap"),
@@ -2062,7 +2132,10 @@ class TestStrategyPlanner(unittest.TestCase):
         # Escape milestone emits P2 ESCAPE_FLIGHT targeting adjacent same-system slot; remaining 3 advisories stay executable_now=False
         esc_late = [a for a in acts_late if a.kind == "ESCAPE_FLIGHT"]
         self.assertEqual(len(esc_late), 1)
-        self.assertEqual((esc_late[0].priority, esc_late[0].target_name, esc_late[0].executable_now), ("P2", "Save -> 02:380:13", False))
+        self.assertEqual(
+            (esc_late[0].priority, esc_late[0].target_name, esc_late[0].executable_now),
+            ("P2", "Save -> 02:380:13", False),
+        )
         tut_advisories = [a for a in acts_late if a.kind == "TUTORIAL_TASK"]
         self.assertEqual(len(tut_advisories), 3)
         self.assertTrue(all(not a.executable_now and a.action_href is None for a in tut_advisories))
@@ -2081,7 +2154,16 @@ class TestStrategyPlanner(unittest.TestCase):
             ships={"s9": 10},
             ship_offers=(UnitOffer("ship", 1, "Small transport", 0, Resources(0, 3_000, 3_000, 0), True, "ship[1]"),),
         )
-        st_esc_need_s1 = GameState(31, 103603, "u", 1500.0, (p_only_s9,), active_planet_id=12476, researches={"r2": 4, "r3": 2, "r4": 4}, tutorial=tut_esc7)
+        st_esc_need_s1 = GameState(
+            31,
+            103603,
+            "u",
+            1500.0,
+            (p_only_s9,),
+            active_planet_id=12476,
+            researches={"r2": 4, "r3": 2, "r4": 4},
+            tutorial=tut_esc7,
+        )
         acts_esc_s1 = plan_actions(st_esc_need_s1, config=StrategyConfig(allow_shipyard=True, allow_fleetsave=True))
         self.assertTrue(any(a.kind == "BUILD_SHIP" and a.target_id == 1 and a.executable_now for a in acts_esc_s1))
 
@@ -2095,7 +2177,9 @@ class TestStrategyPlanner(unittest.TestCase):
             active_planet_id=12476,
             researches={"r2": 4, "r3": 2, "r4": 4},
             tutorial=tut_esc7,
-            raid_targets=({"coords": "02:380:04", "owner": "Idle", "status_color": "yellow", "resources": {"pig_iron": 50_000}},),
+            raid_targets=(
+                {"coords": "02:380:04", "owner": "Idle", "status_color": "yellow", "resources": {"pig_iron": 50_000}},
+            ),
         )
         acts_esc_go = plan_actions(
             st_esc_ready,
@@ -2105,7 +2189,9 @@ class TestStrategyPlanner(unittest.TestCase):
         esc_go = next((a for a in acts_esc_go if a.kind == "ESCAPE_FLIGHT"), None)
         self.assertIsNotNone(esc_go)
         assert esc_go is not None
-        self.assertEqual((esc_go.priority, esc_go.target_name, esc_go.executable_now), ("P2", "Save -> 02:380:01", True))
+        self.assertEqual(
+            (esc_go.priority, esc_go.target_name, esc_go.executable_now), ("P2", "Save -> 02:380:01", True)
+        )
         self.assertFalse(any(a.kind == "ATTACK" and a.executable_now for a in acts_esc_go))
 
     def test_forbid_planetary_solar_demolish_b6_and_300_plus_colonization_in_priority_and_ga_nn(self) -> None:
@@ -2130,13 +2216,23 @@ class TestStrategyPlanner(unittest.TestCase):
                 BuildingOffer(5, "Fusion plant", 21, 22, Resources(20_000, 10_000, 5_000, 0), True, "Build", "?b=5"),
                 BuildingOffer(6, "Thermosolar plant", 10, 11, Resources(1_000, 500, 0, 0), True, "Build", "?b=6"),
             ),
-            ship_offers=(
-                UnitOffer("ship", 9, "Solar cells", 0, Resources(0, 2_000, 200, 400), True, "ship[9]"),
-            ),
+            ship_offers=(UnitOffer("ship", 9, "Solar cells", 0, Resources(0, 2_000, 200, 400), True, "ship[9]"),),
         )
         raid_targets = (
-            {"coords": "02:380:08", "owner": "", "status_color": "free", "uninhabited_fields": 240, "last_spied_ts": 1000.0},
-            {"coords": "02:380:09", "owner": "", "status_color": "free", "uninhabited_fields": 318, "last_spied_ts": 1005.0},
+            {
+                "coords": "02:380:08",
+                "owner": "",
+                "status_color": "free",
+                "uninhabited_fields": 240,
+                "last_spied_ts": 1000.0,
+            },
+            {
+                "coords": "02:380:09",
+                "owner": "",
+                "status_color": "free",
+                "uninhabited_fields": 318,
+                "last_spied_ts": 1005.0,
+            },
         )
         st_dem_col = GameState(
             31,
@@ -2193,15 +2289,20 @@ class TestStrategyPlanner(unittest.TestCase):
             storage=Resources(100_000, 100_000, 100_000, 100_000),
             energy=EnergyBalance(50, 120),
             buildings={"b7": 2, "b9": 2, "b19": 1},
-            ship_offers=(
-                UnitOffer("ship", 9, "Solar cells", 2, Resources(0, 2_000, 200, 400), True, "ship[9]"),
-            ),
+            ship_offers=(UnitOffer("ship", 9, "Solar cells", 2, Resources(0, 2_000, 200, 400), True, "ship[9]"),),
         )
-        st_mixed = GameState(31, 103603, "ventkx86", 2000.0, (hot_planet, asteroid), active_planet_id=12477, researches={"r2": 4})
+        st_mixed = GameState(
+            31, 103603, "ventkx86", 2000.0, (hot_planet, asteroid), active_planet_id=12477, researches={"r2": 4}
+        )
         acts_mixed = plan_actions(st_mixed, config=cfg_strict, now_ts=2000.0)
         self.assertFalse(any(a.planet_id == 12477 and a.kind == "BUILD_SHIP" and a.target_id == 9 for a in acts_mixed))
         self.assertTrue(any(a.planet_id == 12477 and a.target_id == 5 for a in acts_mixed))
-        self.assertTrue(any(a.planet_id == 12478 and a.kind == "BUILD_SHIP" and a.target_id == 9 and a.executable_now for a in acts_mixed))
+        self.assertTrue(
+            any(
+                a.planet_id == 12478 and a.kind == "BUILD_SHIP" and a.target_id == 9 and a.executable_now
+                for a in acts_mixed
+            )
+        )
 
     def test_manual_queue_merge_priority_reorder_resource_reservation_and_auto_satisfaction(self) -> None:
         from spaceinvasion.planner.heuristics import merge_manual_queue_actions
@@ -2221,11 +2322,11 @@ class TestStrategyPlanner(unittest.TestCase):
             ships={"s4": 6, "s8": 1, "s10": 5, "s11": 2},
             building_offers=(
                 BuildingOffer(1, "Pig iron mine", 10, 11, Resources(12_000, 8_000, 0, 0), True, "Build", "?b=1"),
-                BuildingOffer(4, "Spice mine", 8, 9, Resources(25_000, 30_000, 10_000, 0), False, "Not enough resources", "?b=4"),
+                BuildingOffer(
+                    4, "Spice mine", 8, 9, Resources(25_000, 30_000, 10_000, 0), False, "Not enough resources", "?b=4"
+                ),
             ),
-            ship_offers=(
-                UnitOffer("ship", 4, "Small fighter", 6, Resources(3_000, 1_000, 0, 0), True, "ship[4]"),
-            ),
+            ship_offers=(UnitOffer("ship", 4, "Small fighter", 6, Resources(3_000, 1_000, 0, 0), True, "ship[4]"),),
         )
         st = GameState(31, 103603, "ventkx86", 3000.0, (planet,), active_planet_id=12476, researches={"r1": 3, "r6": 3})
         cfg = StrategyConfig(allow_shipyard=True, shipyard_targets={"small-fighter": 12})
@@ -2277,7 +2378,11 @@ class TestStrategyPlanner(unittest.TestCase):
         self.assertEqual(merged[1].priority, "P1")
         self.assertEqual(merged[1].kind, "BUILD")
         self.assertFalse(merged[1].executable_now)
-        p2_spenders = [a for a in merged if a.manual_queue_id is None and a.kind in ("BUILD", "BUILD_SHIP") and a.target_id in (1, 4)]
+        p2_spenders = [
+            a
+            for a in merged
+            if a.manual_queue_id is None and a.kind in ("BUILD", "BUILD_SHIP") and a.target_id in (1, 4)
+        ]
         self.assertTrue(p2_spenders)
         for act in p2_spenders:
             self.assertFalse(act.executable_now)
@@ -2298,11 +2403,32 @@ class TestStrategyPlanner(unittest.TestCase):
             resources=Resources(120_000, 200_000, 90_000, 60_000),
             storage=Resources(400_000, 200_000, 400_000, 400_000),
             energy=EnergyBalance(2500, 1200),
-            buildings={"b1": 16, "b2": 14, "b3": 15, "b4": 14, "b5": 18, "b7": 8, "b8": 6, "b9": 5, "b10": 1, "b11": 2, "b12": 1},
+            buildings={
+                "b1": 16,
+                "b2": 14,
+                "b3": 15,
+                "b4": 14,
+                "b5": 18,
+                "b7": 8,
+                "b8": 6,
+                "b9": 5,
+                "b10": 1,
+                "b11": 2,
+                "b12": 1,
+            },
             ships={"s1": 9, "s4": 20, "s8": 1, "s10": 11},
             economy_rates={"resource1": 100, "resource2": 100},
             building_offers=(
-                BuildingOffer(7, "Development center", 8, 9, Resources(0, 307_200, 153_600, 102_400), False, "Not enough resources", "?b=7"),
+                BuildingOffer(
+                    7,
+                    "Development center",
+                    8,
+                    9,
+                    Resources(0, 307_200, 153_600, 102_400),
+                    False,
+                    "Not enough resources",
+                    "?b=7",
+                ),
                 BuildingOffer(10, "Fleet base", 1, 2, Resources(0, 4_000, 1_000, 1_600), True, "Build", "?b=10"),
                 BuildingOffer(12, "Metal warehouse", 1, 2, Resources(4_000, 1_600, 0, 0), True, "Build", "?b=12"),
             ),
@@ -2349,7 +2475,9 @@ class TestStrategyPlanner(unittest.TestCase):
         p_paused = replace(p_met_full, economy_rates={"resource1": 100, "resource2": 0})
         st_paused = replace(st_full, planets=(p_paused,))
         paused_acts = plan_actions(st_paused, config=cfg, now_ts=4000.0)
-        self.assertFalse(any(a.kind == "THROTTLE_BUILDING" and a.target_id == 2 and a.target_level == 100 for a in paused_acts))
+        self.assertFalse(
+            any(a.kind == "THROTTLE_BUILDING" and a.target_id == 2 and a.target_level == 100 for a in paused_acts)
+        )
 
     def test_pinned_metal_item_reviews_blast_furnace_based_on_queue_position(self) -> None:
         from spaceinvasion.planner.heuristics import merge_manual_queue_actions
@@ -2588,9 +2716,7 @@ class TestStrategyPlanner(unittest.TestCase):
         )
         big_p1 = replace(colony_ship_p1, cost=Resources(0, 900_000, 0, 0), missing=Resources(0, 100_000, 0, 0))
         st_full = replace(st, planets=(full,))
-        full_act = _plan_blast_furnace_throttle(
-            st_full, full, [big_p1], cfg, now_ts=10_000.0, _check_bounce=False
-        )
+        full_act = _plan_blast_furnace_throttle(st_full, full, [big_p1], cfg, now_ts=10_000.0, _check_bounce=False)
         self.assertIsNotNone(full_act)
         assert full_act is not None
         self.assertEqual(full_act.target_level, 0)
@@ -2604,7 +2730,9 @@ class TestStrategyPlanner(unittest.TestCase):
             )
         )
 
-    def test_fadata_dedup_spy_first_closest_distance_reserved_slots_designated_planet_and_colony_quota_probing(self) -> None:
+    def test_fadata_dedup_spy_first_closest_distance_reserved_slots_designated_planet_and_colony_quota_probing(
+        self,
+    ) -> None:
         from spaceinvasion.core.model import (
             QueueJob,
             is_in_flight_fleet_job,
@@ -2653,9 +2781,7 @@ class TestStrategyPlanner(unittest.TestCase):
             energy=EnergyBalance(2000, 800),
             buildings={"b1": 10, "b2": 8, "b3": 8, "b4": 7, "b5": 14, "b8": 4, "b9": 4, "b10": 3},
             ships={"s1": 20, "s4": 30, "s8": 1, "s10": 5},
-            building_offers=(
-                BuildingOffer(1, "Pig iron mine", 10, 11, Resources(2000, 1000, 500, 0), True, "Build"),
-            ),
+            building_offers=(BuildingOffer(1, "Pig iron mine", 10, 11, Resources(2000, 1000, 500, 0), True, "Build"),),
         )
         p2_no_probes = PlanetState(
             planet_id=102,
@@ -2737,7 +2863,9 @@ class TestStrategyPlanner(unittest.TestCase):
         st_quota_met = replace(st, raid_targets=rt_quota_met)
         acts_met = plan_actions(st_quota_met, config=replace(cfg, max_planets=3), now_ts=2000.0)
         self.assertFalse(any(a.kind == "SPY" and "02:380:09" in a.target_name for a in acts_met))
-        self.assertTrue(any(a.kind == "COLONIZE" and "02:380:08" in a.target_name and a.executable_now for a in acts_met))
+        self.assertTrue(
+            any(a.kind == "COLONIZE" and "02:380:08" in a.target_name and a.executable_now for a in acts_met)
+        )
 
         # 4. reserved_spy_slots=1 with b10=3 (max_slots=4) and 3 fleets in flight -> ATTACK held, SPY still executable!
         three_fleets = tuple(
@@ -2759,9 +2887,7 @@ class TestStrategyPlanner(unittest.TestCase):
         self.assertTrue(spy_desig)
         self.assertTrue(all(a.planet_id == 102 and not a.executable_now for a in spy_desig))
         self.assertIn("designated spy colony", spy_desig[0].reason)
-        self.assertTrue(
-            any(a.kind == "BUILD_SHIP" and a.planet_id == 102 and a.target_id == 10 for a in acts_desig)
-        )
+        self.assertTrue(any(a.kind == "BUILD_SHIP" and a.planet_id == 102 and a.target_id == 10 for a in acts_desig))
 
     def test_fleet_usage_four_tier_priority_and_resource_per_time_ranking(self) -> None:
         """Verify 4-tier fleet order (SPY -> TRANSPORT -> COLONIZE -> ATTACK/RECYCLE by res/time) across priority & ga_nn."""
@@ -2881,7 +3007,9 @@ class TestStrategyPlanner(unittest.TestCase):
 
         # 1. Verify strict 4-tier ordering AND unified ATTACK/RECYCLE interleaving in priority mode
         acts_prio = plan_actions(st, config=replace(base_cfg, planner_mode="priority"), now_ts=2000.0)
-        fleet_prio = [a for a in acts_prio if a.kind in ("SPY", "TRANSPORT", "COLONIZE", "ATTACK", "RECYCLE") and a.executable_now]
+        fleet_prio = [
+            a for a in acts_prio if a.kind in ("SPY", "TRANSPORT", "COLONIZE", "ATTACK", "RECYCLE") and a.executable_now
+        ]
         idx_spy = next(i for i, a in enumerate(fleet_prio) if a.kind == "SPY")
         idx_tr = next(i for i, a in enumerate(fleet_prio) if a.kind == "TRANSPORT")
         idx_col = next(i for i, a in enumerate(fleet_prio) if a.kind == "COLONIZE")
@@ -2932,7 +3060,9 @@ class TestStrategyPlanner(unittest.TestCase):
         st_tight = replace(
             st,
             planets=(p1_tight, p2),
-            active_queues=(QueueJob(category="fleet", name="Attack → 02:380:15", remaining_seconds=200.0, detail="Outbound"),),
+            active_queues=(
+                QueueJob(category="fleet", name="Attack → 02:380:15", remaining_seconds=200.0, detail="Outbound"),
+            ),
         )
         acts_tight = plan_actions(st_tight, config=replace(base_cfg, planner_mode="priority"), now_ts=2000.0)
         spy_t = [a for a in acts_tight if a.kind == "SPY" and "02:380:05" in a.target_name]
@@ -3042,7 +3172,9 @@ class TestStrategyPlanner(unittest.TestCase):
         # 3. Inbound transport already in flight to 02:380:02 -> skipped!
         st_inflight = replace(
             st,
-            active_queues=(QueueJob(category="fleet", name="Transport → 02:380:02", remaining_seconds=120.0, detail="Outbound"),),
+            active_queues=(
+                QueueJob(category="fleet", name="Transport → 02:380:02", remaining_seconds=120.0, detail="Outbound"),
+            ),
         )
         self.assertEqual(plan_interplanet_transports(st_inflight, cfg_on, [shortfall_build]), [])
 
@@ -3153,9 +3285,7 @@ class TestStrategyPlanner(unittest.TestCase):
         p1_main = next(a for a in merged if a.planet_id == 12476 and a.manual_queue_id == 4)
         self.assertFalse(p1_main.executable_now)  # Main still waiting on pig_iron
 
-        remote_ready_builds = [
-            a for a in merged if a.planet_id == 12453 and a.kind == "BUILD" and a.executable_now
-        ]
+        remote_ready_builds = [a for a in merged if a.planet_id == 12453 and a.kind == "BUILD" and a.executable_now]
         self.assertTrue(
             any(a.target_id in (1, 3) for a in remote_ready_builds),
             f"Expected remote colony 12453 mines to unlock in parallel; got: {[(a.kind, a.target_id, a.executable_now) for a in merged if a.planet_id == 12453]}",
@@ -3257,7 +3387,9 @@ class TestStrategyPlanner(unittest.TestCase):
         )
         plan_m = plan_actions(st_b10, config=cfg_m, now_ts=2000.0)
         # Young colony defers Weapons factory (b9) while empire already has hub shipyard
-        col_b9 = [a for a in plan_m if a.planet_id == 302 and a.kind in ("BUILD", "WAIT_RESOURCES") and a.target_id == 9]
+        col_b9 = [
+            a for a in plan_m if a.planet_id == 302 and a.kind in ("BUILD", "WAIT_RESOURCES") and a.target_id == 9
+        ]
         self.assertEqual(col_b9, [], msg=f"expected young colony b9 deferred, got {col_b9}")
         # Young colony proactively schedules zero-prereq Fleet base (b10) L1 at P2 even with b9 == 0
         col_b10 = [a for a in plan_m if a.planet_id == 302 and a.kind == "BUILD" and a.target_id == 10]
@@ -3267,9 +3399,23 @@ class TestStrategyPlanner(unittest.TestCase):
         )
 
         # 2. One-way STATION deployment (plan_interplanet_stationing) + safety filters + Tier #3.5 in priority & ga_nn
-        col_ready = replace(young_staging, planet_id=302, name="ReadyBase", coords="02:380:08", buildings={**young_staging.buildings, "b10": 2})
-        col_nob10 = replace(young_staging, planet_id=303, name="NoFleetBase", coords="02:380:09", buildings={**young_staging.buildings, "b10": 0})
-        col_raid = replace(young_staging, planet_id=304, name="RaidBase", coords="02:380:10", planet_type="raid", buildings={"b10": 2})
+        col_ready = replace(
+            young_staging,
+            planet_id=302,
+            name="ReadyBase",
+            coords="02:380:08",
+            buildings={**young_staging.buildings, "b10": 2},
+        )
+        col_nob10 = replace(
+            young_staging,
+            planet_id=303,
+            name="NoFleetBase",
+            coords="02:380:09",
+            buildings={**young_staging.buildings, "b10": 0},
+        )
+        col_raid = replace(
+            young_staging, planet_id=304, name="RaidBase", coords="02:380:10", planet_type="raid", buildings={"b10": 2}
+        )
         col_under = PlanetState(
             planet_id=305,
             name="TinyRoll",
@@ -3362,7 +3508,17 @@ class TestStrategyPlanner(unittest.TestCase):
             resources=Resources(50_000, 50_000, 30_000, 10_000),
             storage=Resources(200_000, 200_000, 200_000, 200_000),
             energy=EnergyBalance(600, 200),
-            buildings={"b1": 10, "b2": 9, "b3": 10, "b4": 8, "b5": 10, "b7": 4, "b8": 2, "b9": 1, "b10": 2},  # 3 slots free!
+            buildings={
+                "b1": 10,
+                "b2": 9,
+                "b3": 10,
+                "b4": 8,
+                "b5": 10,
+                "b7": 4,
+                "b8": 2,
+                "b9": 1,
+                "b10": 2,
+            },  # 3 slots free!
             ships={"s11": 8, "s4": 18, "s1": 6},
             ship_offers=(
                 UnitOffer(
@@ -3426,8 +3582,20 @@ class TestStrategyPlanner(unittest.TestCase):
             researches={"r1": 5, "r2": 6, "r3": 4, "r4": 5, "r5": 4, "r8": 4, "r9": 4, "r10": 4},
             raid_targets=multi_targets,
             active_queues=(
-                QueueJob(category="fleet", name="Attack → 02:380:02", remaining_seconds=180.0, detail="Outbound", origin_coords="02:380:12"),
-                QueueJob(category="fleet", name="Recycle → 02:380:03", remaining_seconds=210.0, detail="Outbound", origin_coords="02:380:12"),
+                QueueJob(
+                    category="fleet",
+                    name="Attack → 02:380:02",
+                    remaining_seconds=180.0,
+                    detail="Outbound",
+                    origin_coords="02:380:12",
+                ),
+                QueueJob(
+                    category="fleet",
+                    name="Recycle → 02:380:03",
+                    remaining_seconds=210.0,
+                    detail="Outbound",
+                    origin_coords="02:380:12",
+                ),
             ),
         )
         cfg_iso = StrategyConfig(
@@ -3442,9 +3610,15 @@ class TestStrategyPlanner(unittest.TestCase):
         )
         acts_iso = plan_actions(st_isolated, config=cfg_iso, now_ts=2000.0)
         # Colony2 (planet 302) must launch executable ATTACK and RECYCLE despite Hub being 2/2 full!
-        col2_harvest = [a for a in acts_iso if a.planet_id == 302 and a.kind in ("ATTACK", "RECYCLE") and a.executable_now]
-        self.assertTrue(any(a.kind == "ATTACK" for a in col2_harvest), f"Expected executable ATTACK from Colony2: {acts_iso}")
-        self.assertTrue(any(a.kind == "RECYCLE" for a in col2_harvest), f"Expected executable RECYCLE from Colony2: {acts_iso}")
+        col2_harvest = [
+            a for a in acts_iso if a.planet_id == 302 and a.kind in ("ATTACK", "RECYCLE") and a.executable_now
+        ]
+        self.assertTrue(
+            any(a.kind == "ATTACK" for a in col2_harvest), f"Expected executable ATTACK from Colony2: {acts_iso}"
+        )
+        self.assertTrue(
+            any(a.kind == "RECYCLE" for a in col2_harvest), f"Expected executable RECYCLE from Colony2: {acts_iso}"
+        )
         # Hub's own BUILD_SHIP s4 is held (hub has in-flight fleet), while Colony2's BUILD_SHIP s4 is executable!
         hub_ship_acts = [a for a in acts_iso if a.planet_id == 301 and a.kind == "BUILD_SHIP" and a.target_id == 4]
         col2_ship_acts = [a for a in acts_iso if a.planet_id == 302 and a.kind == "BUILD_SHIP" and a.target_id == 4]
@@ -3765,8 +3939,12 @@ class TestStrategyPlanner(unittest.TestCase):
         rec_targets = [a.target_name for a in acts if a.kind == "RECYCLE"]
         # 02:082:11 is skipped (already in flight), 06:180:13 is skipped (>12h RT cross-galaxy), 02:379:01 IS planned!
         self.assertTrue(any("02:379:01" in t for t in rec_targets), msg=f"Expected 02:379:01 in {rec_targets}")
-        self.assertFalse(any("02:082:11" in t for t in rec_targets), msg=f"Duplicate in-flight 02:082:11 in {rec_targets}")
-        self.assertFalse(any("06:180:13" in t for t in rec_targets), msg=f"Cross-galaxy >12h 06:180:13 in {rec_targets}")
+        self.assertFalse(
+            any("02:082:11" in t for t in rec_targets), msg=f"Duplicate in-flight 02:082:11 in {rec_targets}"
+        )
+        self.assertFalse(
+            any("06:180:13" in t for t in rec_targets), msg=f"Cross-galaxy >12h 06:180:13 in {rec_targets}"
+        )
 
     def test_ai_planner_blast_furnace_throttles_empire_and_safety_rules(self) -> None:
         from spaceinvasion.planner.heuristics import plan_ai_blast_furnace_throttles
@@ -4219,17 +4397,26 @@ class TestStrategyPlanner(unittest.TestCase):
         #    If r2=2 (< 4 required by r9 Shield) and r5=5 (meets Starcruiser Diffusion L5),
         #    r9 itself is skipped and r2 Energy is emitted transitively for Starcruiser!
         st_low_r2 = replace(st, researches={**st.researches, "r2": 2})
-        res_trans = _plan_fleet_research_actions(st_low_r2, replace(cfg, shipyard_targets={"starcruiser": 6}, fleet_research_targets={}))
+        res_trans = _plan_fleet_research_actions(
+            st_low_r2, replace(cfg, shipyard_targets={"starcruiser": 6}, fleet_research_targets={})
+        )
         self.assertEqual([a.target_id for a in res_trans], [2])
         self.assertTrue(res_trans[0].executable_now)
         self.assertIn("Starcruiser", res_trans[0].reason)
 
         # 2b. Multi-planet remote Research Lab: when another colony (b8=2) is active while Homeworld (b8=8)
         #     holds the main Research Lab & resources, Fleet research still marks executable_now=True on Homeworld!
-        p_col = replace(p_home, planet_id=502, name="Colony 2", coords="02:380:13", buildings={"b1": 10, "b8": 2, "b9": 1})
+        p_col = replace(
+            p_home, planet_id=502, name="Colony 2", coords="02:380:13", buildings={"b1": 10, "b8": 2, "b9": 1}
+        )
         st_remote = replace(st, planets=(p_home, p_col), active_planet_id=502, research_offers=())
         res_remote = _plan_fleet_research_actions(st_remote, replace(cfg, allow_multi_planet=True))
-        self.assertTrue(res_remote and res_remote[0].planet_id == 501 and res_remote[0].target_id == 9 and res_remote[0].executable_now)
+        self.assertTrue(
+            res_remote
+            and res_remote[0].planet_id == 501
+            and res_remote[0].target_id == 9
+            and res_remote[0].executable_now
+        )
 
         # 3. Spare-budget filtering evaluates Fleet RESEARCH before BUILD_SHIP and caps at 1 approved RESEARCH/tick
         #    so the 2nd ready RESEARCH does NOT drain `rem` from BUILD_SHIP!
@@ -4319,7 +4506,9 @@ class TestStrategyPlanner(unittest.TestCase):
             executable_now=False,
         )
         ai_held = _plan_fleet_research_actions(st, cfg, existing_plan=[ai_wait_res])
-        self.assertTrue(ai_held and all(not a.executable_now and "holding Research Lab for AI-Planner" in a.reason for a in ai_held))
+        self.assertTrue(
+            ai_held and all(not a.executable_now and "holding Research Lab for AI-Planner" in a.reason for a in ai_held)
+        )
 
         # 5c. AI-Planner earliest waiting P1 is BUILD (not RESEARCH) -> fleet research NOT blocked by Research Lab guard
         ai_wait_bld = PlannedAction(
@@ -4482,7 +4671,9 @@ class TestStrategyPlanner(unittest.TestCase):
             storage=Resources(500_000, 500_000, 500_000, 500_000),
             energy=EnergyBalance(800, 300),
             buildings={"b1": 16, "b2": 14, "b3": 14, "b4": 12, "b10": 5},
-            ships={"s2": 2},  # 2 * 30,000 = 60,000 raw cap; hold_fuel_buf = min(6000, max(2500, 1800)) = 2500 -> 57,500 usable
+            ships={
+                "s2": 2
+            },  # 2 * 30,000 = 60,000 raw cap; hold_fuel_buf = min(6000, max(2500, 1800)) = 2500 -> 57,500 usable
         )
         dest_b = PlanetState(
             planet_id=302,
@@ -4669,9 +4860,15 @@ class TestStrategyPlanner(unittest.TestCase):
         st_1spy_2atk = replace(
             st,
             active_queues=(
-                QueueJob(category="fleet", name="Espionage → 02:380:04", origin_coords="02:380:12", remaining_seconds=60.0),
-                QueueJob(category="fleet", name="Attack → 02:380:01", origin_coords="02:380:12", remaining_seconds=120.0),
-                QueueJob(category="fleet", name="Attack → 02:380:02", origin_coords="02:380:12", remaining_seconds=120.0),
+                QueueJob(
+                    category="fleet", name="Espionage → 02:380:04", origin_coords="02:380:12", remaining_seconds=60.0
+                ),
+                QueueJob(
+                    category="fleet", name="Attack → 02:380:01", origin_coords="02:380:12", remaining_seconds=120.0
+                ),
+                QueueJob(
+                    category="fleet", name="Attack → 02:380:02", origin_coords="02:380:12", remaining_seconds=120.0
+                ),
             ),
         )
         acts_1 = plan_actions(st_1spy_2atk, config=cfg_strict, now_ts=2000.0)
@@ -4838,7 +5035,9 @@ class TestStrategyPlanner(unittest.TestCase):
                 step=10,
                 total_steps=11,
                 can_complete=False,
-                tasks=(TutorialTask("Recycle a rubble field 0 / 1", "Recycle a rubble field", None, 0, 1, "milestone"),),
+                tasks=(
+                    TutorialTask("Recycle a rubble field 0 / 1", "Recycle a rubble field", None, 0, 1, "milestone"),
+                ),
             ),
         )
         acts_tut_r = plan_actions(
@@ -4891,8 +5090,17 @@ def _colony(
     )
 
 
-def _ai_step(pid: int, coords: str, metal: int, *, kind: str = "WAIT_RESOURCES", name: str = "Kryptonite mine",
-             pig: int = 0, ready: bool = False, priority: str = "P1") -> PlannedAction:
+def _ai_step(
+    pid: int,
+    coords: str,
+    metal: int,
+    *,
+    kind: str = "WAIT_RESOURCES",
+    name: str = "Kryptonite mine",
+    pig: int = 0,
+    ready: bool = False,
+    priority: str = "P1",
+) -> PlannedAction:
     return PlannedAction(
         priority=priority,
         kind=kind,
@@ -4992,7 +5200,9 @@ class TestAdaptiveBlastFurnace(unittest.TestCase):
         self.assertEqual(
             self.plan(_state((p_off,)), ai, [], self.cfg, now_ts=5000.0, inbound_cargo_by_planet=inbound), []
         )
-        acts = self.plan(_state((p_on,)), ai, [], self.cfg, now_ts=5000.0, inbound_cargo_by_planet={901: {"metal": 40_000}})
+        acts = self.plan(
+            _state((p_on,)), ai, [], self.cfg, now_ts=5000.0, inbound_cargo_by_planet={901: {"metal": 40_000}}
+        )
         self.assertEqual([a.target_level for a in acts], [0])
         # Partial inbound leaves a gap -> ON.
         acts_gap = self.plan(_state((p_off,)), ai, [], self.cfg, now_ts=5000.0, inbound_cargo_by_planet={901: 30_000})
@@ -5015,12 +5225,20 @@ class TestAdaptiveBlastFurnace(unittest.TestCase):
         metal_per_h = game_data.blast_furnace_pig_iron_used(10) / 2.0
         smelt_sec = 1_000 / metal_per_h * 3600.0
         busy = self.plan(
-            _state((p_off,)), ai, [], self.cfg, now_ts=5000.0,
+            _state((p_off,)),
+            ai,
+            [],
+            self.cfg,
+            now_ts=5000.0,
             in_progress_rem_by_planet={901: smelt_sec * 2.0},
         )
         self.assertEqual(busy, [])
         soon = self.plan(
-            _state((p_off,)), ai, [], self.cfg, now_ts=5000.0,
+            _state((p_off,)),
+            ai,
+            [],
+            self.cfg,
+            now_ts=5000.0,
             in_progress_rem_by_planet={901: smelt_sec * 0.5},
         )
         self.assertEqual([a.target_level for a in soon], [100])
@@ -5054,7 +5272,9 @@ class TestAdaptiveBlastFurnace(unittest.TestCase):
         self.assertEqual(self.plan(st_low_pig, ai, [], self.cfg, now_ts=5000.0, enable_donor_smelting=True), [])
         # Empire pool already covers the need -> no empire smelting.
         rich = replace(donor, resources=Resources(60_000, 90_000, 0, 0))
-        self.assertEqual(self.plan(_state((needy, rich)), ai, [], self.cfg, now_ts=5000.0, enable_donor_smelting=True), [])
+        self.assertEqual(
+            self.plan(_state((needy, rich)), ai, [], self.cfg, now_ts=5000.0, enable_donor_smelting=True), []
+        )
 
     def test_metal_overflow_pause_and_resume_unchanged(self) -> None:
         full = _colony(901, "02:380:04", metal=500_000, b2_pct=100)
@@ -5065,16 +5285,19 @@ class TestAdaptiveBlastFurnace(unittest.TestCase):
         # Paused + Metal < 95% + colony still short -> immediate resume, bypassing cooldown.
         drained = _colony(901, "02:380:04", metal=100_000, b2_pct=0)
         acts_res = self.plan(
-            _state((drained,)), ai, [], self.cfg, now_ts=5000.0,
-            metal_overflow_paused=(901,), throttle_cooldowns={901: 4990.0},
+            _state((drained,)),
+            ai,
+            [],
+            self.cfg,
+            now_ts=5000.0,
+            metal_overflow_paused=(901,),
+            throttle_cooldowns={901: 4990.0},
         )
         self.assertEqual([a.target_level for a in acts_res], [100])
         self.assertIn("auto-resume", acts_res[0].reason)
         # Paused + 95..100% band -> hold.
         band = _colony(901, "02:380:04", metal=480_000, b2_pct=0)
-        self.assertEqual(
-            self.plan(_state((band,)), ai, [], self.cfg, now_ts=5000.0, metal_overflow_paused=(901,)), []
-        )
+        self.assertEqual(self.plan(_state((band,)), ai, [], self.cfg, now_ts=5000.0, metal_overflow_paused=(901,)), [])
         # Cooldown still applies to normal transitions.
         self.assertEqual(
             self.plan(_state((drained,)), ai, [], self.cfg, now_ts=5000.0, throttle_cooldowns={901: 4990.0}), []
@@ -5090,7 +5313,11 @@ class TestAdaptiveBlastFurnace(unittest.TestCase):
         ai = [_ai_step(901, "02:380:04", 80_000)]
         baseline = self.plan(st, ai, [], StrategyConfig(**self.base_kwargs), now_ts=5000.0)
         with_new = self.plan(
-            st, ai, [], self.cfg_off, now_ts=5000.0,
+            st,
+            ai,
+            [],
+            self.cfg_off,
+            now_ts=5000.0,
             inbound_cargo_by_planet={901: {"metal": 1_000_000}},
             in_progress_rem_by_planet={902: 1e9},
             enable_donor_smelting=True,
@@ -5104,12 +5331,21 @@ class TestAdaptiveInFlightHulls(unittest.TestCase):
 
     def setUp(self) -> None:
         self.yard = _colony(
-            701, "02:380:05", b2=0, ships={"s1": 2}, buildings={"b9": 4}, metal=100_000,
+            701,
+            "02:380:05",
+            b2=0,
+            ships={"s1": 2},
+            buildings={"b9": 4},
+            metal=100_000,
         )
         self.offers = {
             1: UnitOffer(
-                unit_type="ship", unit_id=1, name="Small transport", owned=2,
-                cost=Resources(0, 3000, 3000, 0), can_build=True,
+                unit_type="ship",
+                unit_id=1,
+                name="Small transport",
+                owned=2,
+                cost=Resources(0, 3000, 3000, 0),
+                can_build=True,
             )
         }
         self.cfg_kwargs = dict(allow_shipyard=True, shipyard_targets={"small-transport": 6})
@@ -5172,7 +5408,16 @@ class TestAdaptiveInFlightHulls(unittest.TestCase):
 
         def _run(cfg):
             _, adv = _plan_unlock_and_advisory_actions(
-                st, self.yard, dict(self.yard.buildings), {}, {}, self.offers, False, False, False, cfg,
+                st,
+                self.yard,
+                dict(self.yard.buildings),
+                {},
+                {},
+                self.offers,
+                False,
+                False,
+                False,
+                cfg,
             )
             return [a for a in adv if a.kind == "BUILD_SHIP" and a.target_id == 1]
 
@@ -5206,8 +5451,16 @@ class TestAdaptiveTransportFleet(unittest.TestCase):
         planets = []
         pid = 801
         for i in range(s2_ready):
-            planets.append(_colony(pid, f"02:381:{i + 1:02d}", b2=0, buildings={"b9": 6},
-                                   ships={"s1": parked_s1 if i == 0 else 0}, metal=200_000))
+            planets.append(
+                _colony(
+                    pid,
+                    f"02:381:{i + 1:02d}",
+                    b2=0,
+                    buildings={"b9": 6},
+                    ships={"s1": parked_s1 if i == 0 else 0},
+                    metal=200_000,
+                )
+            )
             pid += 1
         for i in range(s1_only):
             planets.append(_colony(pid, f"02:382:{i + 1:02d}", b2=0, buildings={"b9": 4}, metal=200_000))
@@ -5234,22 +5487,25 @@ class TestAdaptiveTransportFleet(unittest.TestCase):
         t2 = compute_infra_transport_targets(st, _adaptive_cfg(True), demand_small)
         n2 = math.ceil((math.ceil(300_000 / 2.5 / 0.5) - 84_000) / 30_000)
         self.assertEqual(sum(t["large-transport"] for t in t2.values()), n2)
-        self.assertLessEqual(max(t["large-transport"] for t in t2.values()) - min(t["large-transport"] for t in t2.values()), 1)
+        self.assertLessEqual(
+            max(t["large-transport"] for t in t2.values()) - min(t["large-transport"] for t in t2.values()), 1
+        )
 
         # Switch off / no demand / covered fleet -> no targets.
         self.assertEqual(compute_infra_transport_targets(st, _adaptive_cfg(False), self.DEMAND), {})
         self.assertEqual(compute_infra_transport_targets(st, _adaptive_cfg(True), None), {})
-        self.assertEqual(
-            compute_infra_transport_targets(st, _adaptive_cfg(True), {"cargo_per_hour_24h": 50_000.0}), {}
-        )
+        self.assertEqual(compute_infra_transport_targets(st, _adaptive_cfg(True), {"cargo_per_hour_24h": 50_000.0}), {})
 
     def test_in_flight_and_utilization_clamps(self) -> None:
         from spaceinvasion.planner.heuristics import compute_infra_transport_targets
 
         planets = self._yards(s2_ready=1, s1_only=0, parked_s1=0)
         flight = QueueJob(
-            category="fleet", name="Transport → 02:390:01", remaining_seconds=600.0,
-            origin_coords="02:381:01", detail="Outbound · 4 Large transport",
+            category="fleet",
+            name="Transport → 02:390:01",
+            remaining_seconds=600.0,
+            origin_coords="02:381:01",
+            detail="Outbound · 4 Large transport",
         )
         st = _state(planets, queues=(flight,), researches={"r4": 6})
         # util clamps to 0.9 -> ceil(270000/2.5/0.9) = 120000 cargo; 4 s2 in flight already cover it.
@@ -5321,10 +5577,14 @@ class TestAdaptiveTransportFleet(unittest.TestCase):
         planets = self._yards(s2_ready=1, s1_only=0)
         st = _state(planets, researches={"r4": 6})
         econ = {"pig_iron_per_hr": 0.0, "metal_per_hr": 40_000.0, "kryptonite_per_hr": 20_000.0, "spice_per_hr": 0.0}
-        with mock.patch("spaceinvasion.planner.heuristics._shipyard_budget_calc.estimate_hourly_economy", return_value=econ):
+        with mock.patch(
+            "spaceinvasion.planner.heuristics._shipyard_budget_calc.estimate_hourly_economy", return_value=econ
+        ):
             budget = compute_spare_ship_budget(st, 10.0)
             budget_tight = compute_spare_ship_budget(
-                st, 10.0, reserved_cost={"metal": 195_000.0, "kryptonite": 48_000.0},
+                st,
+                10.0,
+                reserved_cost={"metal": 195_000.0, "kryptonite": 48_000.0},
             )
         self.assertAlmostEqual(budget["infra_transport_budget"]["metal"], 10_000.0)  # 25% of 40k/h
         self.assertAlmostEqual(budget["infra_transport_budget"]["kryptonite"], 5_000.0)
@@ -5335,9 +5595,15 @@ class TestAdaptiveTransportFleet(unittest.TestCase):
 
         def _s2(tag: bool) -> PlannedAction:
             return PlannedAction(
-                priority="P2", kind="BUILD_SHIP", planet_id=801, planet_coords="02:381:01",
-                target_id=2, target_name="Large transport", target_level=1,
-                cost=Resources(0, 8000, 6000, 0), executable_now=True,
+                priority="P2",
+                kind="BUILD_SHIP",
+                planet_id=801,
+                planet_coords="02:381:01",
+                target_id=2,
+                target_name="Large transport",
+                target_level=1,
+                cost=Resources(0, 8000, 6000, 0),
+                executable_now=True,
                 reason="Fleet build target (0/4 Large transport)" + (f" {AI_INFRA_CARGO_TAG}" if tag else ""),
             )
 
@@ -5350,12 +5616,17 @@ class TestAdaptiveTransportFleet(unittest.TestCase):
         out = filter_shipyard_actions_by_spare_budget(st, [_s2(True), _s2(True), _s2(True), _s2(False)], b)
         self.assertEqual([a.executable_now for a in out], [True, True, False, False])
         # free_after_reserve caps infra funding even when the infra budget looks larger.
-        b_tight = {**b, "free_after_reserve": {"pig_iron": 0.0, "metal": 9_000.0, "kryptonite": 100_000.0, "spice": 0.0}}
+        b_tight = {
+            **b,
+            "free_after_reserve": {"pig_iron": 0.0, "metal": 9_000.0, "kryptonite": 100_000.0, "spice": 0.0},
+        }
         out_t = filter_shipyard_actions_by_spare_budget(st, [_s2(True), _s2(True)], b_tight)
         self.assertEqual([a.executable_now for a in out_t], [True, False])
         # Without infra budget, tagged infra builds are strictly held (never bypass via 10% spare budget!)
         b_none = {k: v for k, v in b.items() if k != "infra_transport_budget"}
-        self.assertEqual([a.executable_now for a in filter_shipyard_actions_by_spare_budget(st, [_s2(True)], b_none)], [False])
+        self.assertEqual(
+            [a.executable_now for a in filter_shipyard_actions_by_spare_budget(st, [_s2(True)], b_none)], [False]
+        )
         # R1: Exhausted 25%/h infra cap holds tagged build even when 10% spare budget is huge; below-floor untagged build still approved from 10%!
         b_exhausted = {
             "available_budget": {"pig_iron": 0.0, "metal": 100_000.0, "kryptonite": 100_000.0, "spice": 0.0},
@@ -5384,8 +5655,10 @@ class TestAdaptiveTransportFleet(unittest.TestCase):
         off = plan_fleet_and_attack_actions(st, config=_adaptive_cfg(False, **base), transport_demand=demand)
         baseline = plan_fleet_and_attack_actions(st, config=StrategyConfig(**base))
         self.assertFalse(any(AI_INFRA_CARGO_TAG in a.reason for a in off))
-        self.assertEqual([(a.kind, a.planet_id, a.target_id, a.reason) for a in off],
-                         [(a.kind, a.planet_id, a.target_id, a.reason) for a in baseline])
+        self.assertEqual(
+            [(a.kind, a.planet_id, a.target_id, a.reason) for a in off],
+            [(a.kind, a.planet_id, a.target_id, a.reason) for a in baseline],
+        )
 
     def test_lab_research_gated_on_research_queue_and_infra_spend_ledger_cap(self) -> None:
         """Verify F4 (research step uses research queue, not build queue + queue fallback) and F3 (1h spend ledger, zero income = 0, carryover)."""
@@ -5433,7 +5706,9 @@ class TestAdaptiveTransportFleet(unittest.TestCase):
         self.assertEqual([(a.planet_id, a.target_level) for a in acts_a], [(901, 100)])
 
         # F4-B: research slot busy 10h, build queue free, 1h smelting gap -> stays OFF
-        q_res = QueueJob(category="research", name="Energy technology", remaining_seconds=10 * 3600.0, finish_ts=5000.0 + 10 * 3600.0)
+        q_res = QueueJob(
+            category="research", name="Energy technology", remaining_seconds=10 * 3600.0, finish_ts=5000.0 + 10 * 3600.0
+        )
         st_busy_res = _state([lab], researches={"r1": 12}, queues=(q_res,))
         acts_b = plan_ai_blast_furnace_throttles(
             st_busy_res, [res_step], [], cfg, now_ts=5000.0, in_progress_rem_by_planet={}
@@ -5441,7 +5716,15 @@ class TestAdaptiveTransportFleet(unittest.TestCase):
         self.assertEqual(acts_b, [])
 
         # F4-C: in_progress_rem_by_planet=None falls back to deriving busy build queue from state.active_queues
-        q_bld = QueueJob(category="building", name="Pig iron mine", origin_coords="02:380:04", building_id=1, target_level=17, remaining_seconds=5 * 3600.0, finish_ts=5000.0 + 5 * 3600.0)
+        q_bld = QueueJob(
+            category="building",
+            name="Pig iron mine",
+            origin_coords="02:380:04",
+            building_id=1,
+            target_level=17,
+            remaining_seconds=5 * 3600.0,
+            finish_ts=5000.0 + 5 * 3600.0,
+        )
         bld_step = PlannedAction(
             priority="P1",
             kind="WAIT_RESOURCES",
@@ -5461,12 +5744,21 @@ class TestAdaptiveTransportFleet(unittest.TestCase):
         # F3: infra_spend_last_hour debits 1h cap, zero income -> 0.0, carryover accumulates up to 6h
         st_yards = _state(self._yards(s2_ready=1, s1_only=0), researches={"r4": 6})
         econ_zero = {"pig_iron_per_hr": 0.0, "metal_per_hr": 0.0, "kryptonite_per_hr": 0.0, "spice_per_hr": 0.0}
-        econ_low = {"pig_iron_per_hr": 0.0, "metal_per_hr": 16_000.0, "kryptonite_per_hr": 12_000.0, "spice_per_hr": 0.0}
-        with mock.patch("spaceinvasion.planner.heuristics._shipyard_budget_calc.estimate_hourly_economy", return_value=econ_zero):
+        econ_low = {
+            "pig_iron_per_hr": 0.0,
+            "metal_per_hr": 16_000.0,
+            "kryptonite_per_hr": 12_000.0,
+            "spice_per_hr": 0.0,
+        }
+        with mock.patch(
+            "spaceinvasion.planner.heuristics._shipyard_budget_calc.estimate_hourly_economy", return_value=econ_zero
+        ):
             b_zero = compute_spare_ship_budget(st_yards, 10.0)
         self.assertEqual(b_zero["infra_transport_budget"], {"metal": 0.0, "kryptonite": 0.0})
 
-        with mock.patch("spaceinvasion.planner.heuristics._shipyard_budget_calc.estimate_hourly_economy", return_value=econ_low):
+        with mock.patch(
+            "spaceinvasion.planner.heuristics._shipyard_budget_calc.estimate_hourly_economy", return_value=econ_low
+        ):
             b_spent = compute_spare_ship_budget(
                 st_yards, 10.0, infra_spend_last_hour={"metal": 3_000.0, "kryptonite": 3_500.0}
             )

@@ -99,9 +99,7 @@ class TestEmpireSmeltingArm(unittest.TestCase):
         # 1. The colony's own waiting step needs Pig iron: only what is above that cost may be smelted.
         own_pig_step = _ai_step(902, "02:380:08", 0, pig=55_000, name="Pig iron mine")
         tight = _colony(902, "02:380:08", metal=5_000, pig=60_000, b2_pct=0)
-        self.assertEqual(
-            self._plan(_state((needy, tight)), [needy_step, own_pig_step], enable_donor_smelting=True), []
-        )
+        self.assertEqual(self._plan(_state((needy, tight)), [needy_step, own_pig_step], enable_donor_smelting=True), [])
         roomy = replace(tight, resources=replace(tight.resources, pig_iron=55_000 + EMPIRE_SMELT_MIN_SPARE_PIG))
         acts = self._plan(_state((needy, roomy)), [needy_step, own_pig_step], enable_donor_smelting=True)
         self.assertEqual([(a.planet_id, a.target_level) for a in acts], [(902, 100)])
@@ -157,8 +155,13 @@ class TestEmpireSmeltingArm(unittest.TestCase):
         st = _state((colony, helper))
         baseline = plan_ai_blast_furnace_throttles(st, ai, [], StrategyConfig(**FURNACE_KWARGS), now_ts=5000.0)
         with_new = plan_ai_blast_furnace_throttles(
-            st, ai, [], self.cfg_off, now_ts=5000.0,
-            in_progress_rem_by_planet={901: 1e9}, enable_donor_smelting=True,
+            st,
+            ai,
+            [],
+            self.cfg_off,
+            now_ts=5000.0,
+            in_progress_rem_by_planet={901: 1e9},
+            enable_donor_smelting=True,
         )
         self.assertEqual(baseline, with_new)
 
@@ -188,7 +191,13 @@ KRY_MINE_L10 = full_cost(game_data.building_cost(3, 10))  # Pig iron 3,674 / Kry
 
 def _x(resources: Resources, *, pid: int = 101, coords: str = "02:380:12", buildings=None, **kwargs) -> PlanetState:
     return _make_planet(
-        pid, coords, f"X{pid}", buildings=dict(buildings or X_BUILDINGS), resources=resources, storage=BIG_STORE, **kwargs
+        pid,
+        coords,
+        f"X{pid}",
+        buildings=dict(buildings or X_BUILDINGS),
+        resources=resources,
+        storage=BIG_STORE,
+        **kwargs,
     )
 
 
@@ -281,9 +290,7 @@ class TestLiveFillRule(unittest.TestCase):
         short = _x(Resources(500_000, 0, 400_000, 200_000), pid=102, coords="02:380:13")
         # The two next steps need 614,400 Metal and the empire holds 400,000: the Metal stays for them.
         actions = self._reconcile(_game([holder, short]), plan)
-        self.assertEqual(
-            self._kinds(actions), [("WAIT_RESOURCES", 101, 7, 10), ("WAIT_RESOURCES", 102, 7, 10)]
-        )
+        self.assertEqual(self._kinds(actions), [("WAIT_RESOURCES", 101, 7, 10), ("WAIT_RESOURCES", 102, 7, 10)])
         # Once the empire holds more Metal than every next step needs, the same step is a valid fill.
         funded = replace(short, resources=replace(short.resources, metal=1_000_000))
         actions = self._reconcile(_game([holder, funded]), plan)
@@ -393,15 +400,18 @@ class TestLiveFillRule(unittest.TestCase):
         # but not when the colony makes no Kryptonite either.
         mines_off = {"resource1": 100, "resource2": 0, "resource3": 0, "resource4": 100}
         no_kry = replace(thin_kry, economy_rates=mines_off)
-        self.assertEqual(
-            self._kinds(self._reconcile(_game([no_kry, donor]), plan)), [("WAIT_RESOURCES", 101, 7, 10)]
-        )
+        self.assertEqual(self._kinds(self._reconcile(_game([no_kry, donor]), plan)), [("WAIT_RESOURCES", 101, 7, 10)])
 
     def test_research_waiting_on_the_colony_is_protected(self) -> None:
         lab = {**X_BUILDINGS, "b8": 3}
         # Colony 102 comes first in the plan and needs far more Metal than the empire holds, so the lab
         # colony's own steps are paid by the lab colony alone. It has Pig iron and Kryptonite to spare.
-        hog = _x(Resources(1_000_000, 0, 1_000_000, 1_000_000), pid=102, coords="02:380:13", buildings={**X_BUILDINGS, "b7": 11})
+        hog = _x(
+            Resources(1_000_000, 0, 1_000_000, 1_000_000),
+            pid=102,
+            coords="02:380:13",
+            buildings={**X_BUILDINGS, "b7": 11},
+        )
         hog_step = _step(1, 102, "02:380:13", "b7", 12)
         # The lab colony's building step lacks 458 Spice (about two hours); Mining technology L9 lacks
         # Pig iron and Kryptonite (about 54 hours), and a Kryptonite mine would add an hour to that.
@@ -437,9 +447,13 @@ class TestLiveFillRule(unittest.TestCase):
 
     def test_patience_comes_from_the_plan_and_is_bounded(self) -> None:
         self.assertEqual(ap._plan_fill_patience({}), ap.AI_FILL_MIN_PATIENCE)
-        self.assertEqual(ap._plan_fill_patience({"search": {"tuned_genes": {"patience": 0.05}}}), ap.AI_FILL_MIN_PATIENCE)
+        self.assertEqual(
+            ap._plan_fill_patience({"search": {"tuned_genes": {"patience": 0.05}}}), ap.AI_FILL_MIN_PATIENCE
+        )
         self.assertAlmostEqual(ap._plan_fill_patience({"search": {"tuned_genes": {"patience": 0.6}}}), 0.6)
-        self.assertEqual(ap._plan_fill_patience({"search": {"tuned_genes": {"patience": 1.0}}}), ap.AI_FILL_MAX_PATIENCE)
+        self.assertEqual(
+            ap._plan_fill_patience({"search": {"tuned_genes": {"patience": 1.0}}}), ap.AI_FILL_MAX_PATIENCE
+        )
         self.assertAlmostEqual(ap._plan_fill_patience({"meta_parameters": {"patience": 0.4}}), 0.4)
 
 

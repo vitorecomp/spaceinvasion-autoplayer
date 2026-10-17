@@ -26,7 +26,7 @@ from spaceinvasion.runtime.cli_support import maybe_reexec_venv, safe_cli_str  #
 
 maybe_reexec_venv(_REPO_ROOT, skip=os.environ.get("SPACEINVASION_NO_REEXEC") == "1")
 
-from spaceinvasion.core import catalog as game_data # noqa: E402
+from spaceinvasion.core import catalog as game_data  # noqa: E402
 from spaceinvasion.session.auth import (  # noqa: E402
     DEFAULT_SESSIONS_DIR,
     SpaceInvasionAuthError,
@@ -284,9 +284,7 @@ def _coerce_cli_json_scalars(
                 if budget[0] <= 0:
                     out_l.append("[Truncated]")
                     break
-                out_l.append(
-                    _coerce_cli_json_scalars(v, _depth=_depth + 1, _seen=seen, _budget=budget)
-                )
+                out_l.append(_coerce_cli_json_scalars(v, _depth=_depth + 1, _seen=seen, _budget=budget))
             return out_l
         finally:
             seen.discard(vid)
@@ -326,11 +324,7 @@ def _print_universes(universes: tuple[UniverseOption, ...]) -> None:
             status = "PLAY" if uni.has_account else "JOIN"
             sp_f = _safe_finite_float(uni.speed)
             fl_f = _safe_finite_float(uni.flight_speed)
-            speed = (
-                f"{sp_f:g}x/{fl_f:g}x"
-                if (sp_f is not None and fl_f is not None and sp_f > 0 and fl_f > 0)
-                else "?"
-            )
+            speed = f"{sp_f:g}x/{fl_f:g}x" if (sp_f is not None and fl_f is not None and sp_f > 0 and fl_f > 0) else "?"
             uid_txt = (
                 game_data.fmt_compact_int(uni.universe_id)
                 if isinstance(uni.universe_id, int) and not isinstance(uni.universe_id, bool)
@@ -382,8 +376,7 @@ def main(argv: list[str] | None = None) -> int:
                 print(_safe_cli_json(serializable))
             else:
                 cookies_txt = ", ".join(
-                    str(redact_sensitive(_safe_cli_str(name)))
-                    for name in (result.cookie_names or ())
+                    str(redact_sensitive(_safe_cli_str(name))) for name in (result.cookie_names or ())
                 )
                 print(
                     f"Login successful for {redact_sensitive(_safe_cli_str(result.email))} "
@@ -391,9 +384,7 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 print(f"Final URL:  {redact_sensitive(_safe_cli_str(result.final_url))}")
                 print(f"Page Title: {redact_sensitive(_safe_cli_str(result.page_title))}")
-                print(
-                    f"Cookies:    {cookies_txt} -> {redact_sensitive(_safe_cli_str(result.cookie_path))}"
-                )
+                print(f"Cookies:    {cookies_txt} -> {redact_sensitive(_safe_cli_str(result.cookie_path))}")
                 _print_universes(result.universes)
             return 0
 
@@ -438,10 +429,7 @@ def main(argv: list[str] | None = None) -> int:
             print(_safe_cli_json(serializable))
         else:
             reused = " (reused existing browser session)" if result.already_logged_in else ""
-            cookies_txt = ", ".join(
-                str(redact_sensitive(_safe_cli_str(name)))
-                for name in (result.cookie_names or ())
-            )
+            cookies_txt = ", ".join(str(redact_sensitive(_safe_cli_str(name))) for name in (result.cookie_names or ()))
             print(
                 f"Browser login successful for {redact_sensitive(_safe_cli_str(result.email))} "
                 f"(profile: {redact_sensitive(_safe_cli_str(result.account_name))}){reused}"
@@ -451,9 +439,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Chrome Dir:  {redact_sensitive(_safe_cli_str(result.profile_dir))}")
             if result.debug_address:
                 print(f"Debug Port:  {redact_sensitive(_safe_cli_str(result.debug_address))}")
-            print(
-                f"Cookies:     {cookies_txt} -> {redact_sensitive(_safe_cli_str(result.cookie_path))}"
-            )
+            print(f"Cookies:     {cookies_txt} -> {redact_sensitive(_safe_cli_str(result.cookie_path))}")
             if result.entered_universe:
                 print(f"Universe:    {redact_sensitive(_safe_cli_str(result.entered_universe))}")
             _print_universes(result.universes)

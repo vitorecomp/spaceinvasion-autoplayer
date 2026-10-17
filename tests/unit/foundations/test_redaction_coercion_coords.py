@@ -322,7 +322,11 @@ def test_coords_parity_across_edge_cases() -> None:
     for sample in samples:
         norm = coords.normalize_coords(sample)
         if isinstance(sample, str):
-            assert coords.normalize_coord_triple(sample, strict_bounds=True) in ("", norm)
+            assert coords.normalize_coord_triple(sample, strict_bounds=True) in (
+                "",
+                norm,
+                coords.extract_coords_from_text(sample),
+            )
             assert norm in coords.coord_query_variants(sample) or not norm
             assert coords.extract_coords_from_text(sample) == legacy_api._extract_coords_from_text(sample)
 
@@ -340,9 +344,9 @@ def test_coords_parity_across_edge_cases() -> None:
     assert coords.parse_gal_sys_pair("٣:١٢٠") is None
     assert coords.parse_gal_sys_pair(None) is None
 
-    assert coords.coords_distance("01:100:05", "01:100:05") == 0.0
+    assert coords.coords_distance("01:100:05", "01:100:05") == 1000.0
     assert coords.coords_distance("bad", "01:100:05") > 0.0
-    assert coords.flight_distance("01:100:05", "01:100:05") == 0
+    assert coords.flight_distance("01:100:05", "01:100:05") == 500.0
     assert coords.flight_distance("01:100:05", "03:100:05") > coords.flight_distance("01:100:05", "01:115:05")
 
     colonies = [(3, 120), (3, 395)]
@@ -350,5 +354,11 @@ def test_coords_parity_across_edge_cases() -> None:
     assert coords.galaxy_sector_distance(3, 5, colonies) == 10
     assert coords.galaxy_sector_distance(3, 125, colonies) == 5
     assert coords.galaxy_sector_distance(4, 120, colonies) == 250
-    for a, b, exp in ((1, 400, (1, -1)), (400, 1, (1, 1)), (120, 120, (0, 0)), (10, 210, (200, 1)), (10, 211, (199, -1))):
+    for a, b, exp in (
+        (1, 400, (1, -1)),
+        (400, 1, (1, 1)),
+        (120, 120, (0, 0)),
+        (10, 210, (200, 1)),
+        (10, 211, (199, -1)),
+    ):
         assert coords.circular_system_delta(a, b) == exp

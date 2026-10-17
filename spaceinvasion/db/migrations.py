@@ -55,10 +55,7 @@ def _clean_json_obj(obj: Any, *, _depth: int = 0) -> Any:
     if isinstance(obj, (str, Path)):
         return str(redact_sensitive(str(obj)))
     if isinstance(obj, Mapping):
-        return {
-            str(redact_sensitive(str(k))): _clean_json_obj(v, _depth=_depth + 1)
-            for k, v in obj.items()
-        }
+        return {str(redact_sensitive(str(k))): _clean_json_obj(v, _depth=_depth + 1) for k, v in obj.items()}
     if isinstance(obj, (list, tuple, set, frozenset)):
         return [_clean_json_obj(v, _depth=_depth + 1) for v in obj]
     return str(redact_sensitive(str(obj)))
@@ -173,13 +170,9 @@ class Migration:
 
     @property
     def checksum(self) -> str:
-        normalized_stmts = [
-            re.sub(r"\s+", " ", s.strip())
-            for s in split_sql_statements(self.sql)
-        ]
+        normalized_stmts = [re.sub(r"\s+", " ", s.strip()) for s in split_sql_statements(self.sql)]
         normalized_cols = [
-            f"{tbl}.{col}:{re.sub(r'\\s+', ' ', ddl.strip())}"
-            for tbl, col, ddl in self.column_additions
+            f"{tbl}.{col}:{re.sub(r'\\s+', ' ', ddl.strip())}" for tbl, col, ddl in self.column_additions
         ]
         canonical = _safe_json_dumps(
             {
@@ -1448,9 +1441,7 @@ class MigrationRunner:
         ts_now = float(now_ts) if now_ts is not None else time.time()
         eff_target = self.latest_version if target_version is None else int(target_version)
         if eff_target < 1 or eff_target > self.latest_version:
-            raise ValueError(
-                f"target_version={eff_target} out of supported range 1..{self.latest_version}"
-            )
+            raise ValueError(f"target_version={eff_target} out of supported range 1..{self.latest_version}")
 
         applied_before = self._read_applied_rows(conn)
         meta_before = self._read_meta_map(conn)
@@ -1463,11 +1454,7 @@ class MigrationRunner:
             status["backup_path"] = None
             return status
 
-        to_apply = [
-            m
-            for m in self.migrations
-            if m.version <= eff_target and m.version not in applied_before
-        ]
+        to_apply = [m for m in self.migrations if m.version <= eff_target and m.version not in applied_before]
 
         if dry_run:
             preview = self.inspect(conn, db_path=db_path, include_events=False)
@@ -1519,8 +1506,7 @@ class MigrationRunner:
                     q_col = _quote_ident(col_name)
                     if tbl_name not in cols_cache:
                         cols_cache[tbl_name] = {
-                            str(r[1])
-                            for r in conn.execute(f"PRAGMA table_info({q_tbl});").fetchall()
+                            str(r[1]) for r in conn.execute(f"PRAGMA table_info({q_tbl});").fetchall()
                         }
                     if col_name not in cols_cache[tbl_name]:
                         conn.execute(f"ALTER TABLE {q_tbl} ADD COLUMN {q_col} {col_ddl}")
@@ -1634,8 +1620,7 @@ class MigrationRunner:
         sqlite_ok = chk_messages == ["ok"]
 
         existing_tables = {
-            str(r[0])
-            for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
+            str(r[0]) for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
         }
         missing_tables = [t for t in self.required_tables if t not in existing_tables]
 
@@ -1644,18 +1629,14 @@ class MigrationRunner:
             for tbl_name, col_name, _ddl in mig.column_additions:
                 if tbl_name not in existing_tables:
                     continue
-                cols = {
-                    str(r[1])
-                    for r in conn.execute(f"PRAGMA table_info({_quote_ident(tbl_name)});").fetchall()
-                }
+                cols = {str(r[1]) for r in conn.execute(f"PRAGMA table_info({_quote_ident(tbl_name)});").fetchall()}
                 if col_name not in cols:
                     missing_columns.append(f"{tbl_name}.{col_name}")
 
         status = self.inspect(conn, db_path=db_path, include_events=False)
-        version_synced = (
-            status["user_version"] == status["version"]
-            and str(status["meta_schema_version"] or "") == str(status["version"])
-        )
+        version_synced = status["user_version"] == status["version"] and str(
+            status["meta_schema_version"] or ""
+        ) == str(status["version"])
         ok = (
             sqlite_ok
             and not missing_tables
@@ -2007,7 +1988,9 @@ def backfill_v012_hot_tables(conn: sqlite3.Connection, now_ts: float) -> dict[st
             st_buntil = "blocked_until_ts" if "blocked_until_ts" in spy_cols_set else "0.0"
             st_brsn = "block_reason" if "block_reason" in spy_cols_set else "''"
             st_cmax_or = "OR colonize_max_fields IS NOT NULL" if "colonize_max_fields" in spy_cols_set else ""
-            st_uf_cond = f"(uninhabited_fields IS NOT NULL {st_cmax_or})" if "uninhabited_fields" in spy_cols_set else "FALSE"
+            st_uf_cond = (
+                f"(uninhabited_fields IS NOT NULL {st_cmax_or})" if "uninhabited_fields" in spy_cols_set else "FALSE"
+            )
             for sr in cur.execute(
                 f"""
                 SELECT coords, {st_uf}, {st_cmin}, {st_cmax}, {st_temp},
@@ -2051,11 +2034,7 @@ def backfill_v012_hot_tables(conn: sqlite3.Connection, now_ts: float) -> dict[st
                 b_until = _v012_safe_float(sr[8], 0.0)
                 b_rsn = _v012_clean_text(sr[9])
                 b_low = b_rsn.lower()
-                if (
-                    "can't be attacked" not in b_low
-                    and "cannot be attacked" not in b_low
-                    and b_until > entry[7]
-                ):
+                if "can't be attacked" not in b_low and "cannot be attacked" not in b_low and b_until > entry[7]:
                     entry[7] = b_until
                     entry[8] = b_rsn
 
@@ -2461,10 +2440,7 @@ def backfill_v014_loot_recycle_hourly(conn: sqlite3.Connection, now_ts: float) -
             acc[8] += float(acnt)
 
     if MigrationRunner._table_exists(conn, "recycle_reports"):
-        cols = {
-            str(r[1])
-            for r in cur.execute("PRAGMA table_info(recycle_reports)").fetchall()
-        }
+        cols = {str(r[1]) for r in cur.execute("PRAGMA table_info(recycle_reports)").fetchall()}
         kry_expr = "harvested_kryptonite" if "harvested_kryptonite" in cols else "0"
         spi_expr = "harvested_spice" if "harvested_spice" in cols else "0"
         raw_expr = "raw_text" if "raw_text" in cols else "''"
@@ -2513,9 +2489,7 @@ def backfill_v014_loot_recycle_hourly(conn: sqlite3.Connection, now_ts: float) -
         rtot = round(rpig + rmet + rkry + rspi, 3)
         acnt = max(0, int(round(acc[8])))
         rcnt = max(0, int(round(acc[9])))
-        upsert_params.append(
-            (hb, spig, smet, skry, sspi, stot, rpig, rmet, rkry, rspi, rtot, acnt, rcnt, ts_r)
-        )
+        upsert_params.append((hb, spig, smet, skry, sspi, stot, rpig, rmet, rkry, rspi, rtot, acnt, rcnt, ts_r))
 
     if upsert_params:
         cur.executemany(
@@ -2558,6 +2532,7 @@ DEFAULT_GAME_MIGRATION_RUNNER = MigrationRunner(
 # ---------------------------------------------------------------------------
 # CLI Entrypoint (`python -m spaceinvasion.db.migrations` / `scripts/db_migrate.py`)
 # ---------------------------------------------------------------------------
+
 
 def build_cli_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -2666,7 +2641,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 if args.json:
                     print(_safe_json_dumps(payload, indent=2))
                 else:
-                    state_lbl = "UP-TO-DATE" if payload.get("up_to_date") else f"PENDING ({payload.get('pending_count', 0)})"
+                    state_lbl = (
+                        "UP-TO-DATE" if payload.get("up_to_date") else f"PENDING ({payload.get('pending_count', 0)})"
+                    )
                     print(
                         f"Active DB Backend: PostgreSQL | Schema: {payload.get('version_tag')} / "
                         f"V{LATEST_SCHEMA_VERSION:03d} [{state_lbl}]\n  [Postgres] {disp}"

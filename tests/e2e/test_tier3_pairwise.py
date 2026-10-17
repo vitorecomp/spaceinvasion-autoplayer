@@ -136,9 +136,33 @@ class TestTier3Pairwise(unittest.TestCase):
         )
         gal = {
             (2, 380): [
-                {"position": 4, "name": "YellowLoot", "owner": "IdleY", "status_color": "yellow", "has_debris": False, "is_spacia": False, "spy_href": None},
-                {"position": 6, "name": "BashedAZ", "owner": "RivalB", "status_color": "light_red", "has_debris": False, "is_spacia": False, "spy_href": None},
-                {"position": 7, "name": "BunkerY", "owner": "FortY", "status_color": "yellow", "has_debris": False, "is_spacia": False, "spy_href": None},
+                {
+                    "position": 4,
+                    "name": "YellowLoot",
+                    "owner": "IdleY",
+                    "status_color": "yellow",
+                    "has_debris": False,
+                    "is_spacia": False,
+                    "spy_href": None,
+                },
+                {
+                    "position": 6,
+                    "name": "BashedAZ",
+                    "owner": "RivalB",
+                    "status_color": "light_red",
+                    "has_debris": False,
+                    "is_spacia": False,
+                    "spy_href": None,
+                },
+                {
+                    "position": 7,
+                    "name": "BunkerY",
+                    "owner": "FortY",
+                    "status_color": "yellow",
+                    "has_debris": False,
+                    "is_spacia": False,
+                    "spy_href": None,
+                },
             ]
         }
         planets = {
@@ -160,9 +184,24 @@ class TestTier3Pairwise(unittest.TestCase):
             }
         }
         spy_reports = {
-            "02:380:04": {"owner": "IdleY", "resources": {"pig_iron": 25000, "metal": 20000, "kryptonite": 10000, "spice": 5000}, "fleet": {}, "defense": {"d1": 1}},
-            "02:380:06": {"owner": "RivalB", "resources": {"pig_iron": 60000, "metal": 40000, "kryptonite": 20000, "spice": 10000}, "fleet": {}, "defense": {}},
-            "02:380:07": {"owner": "FortY", "resources": {"pig_iron": 90000, "metal": 50000, "kryptonite": 20000, "spice": 10000}, "fleet": {}, "defense": {"d1": 500}},
+            "02:380:04": {
+                "owner": "IdleY",
+                "resources": {"pig_iron": 25000, "metal": 20000, "kryptonite": 10000, "spice": 5000},
+                "fleet": {},
+                "defense": {"d1": 1},
+            },
+            "02:380:06": {
+                "owner": "RivalB",
+                "resources": {"pig_iron": 60000, "metal": 40000, "kryptonite": 20000, "spice": 10000},
+                "fleet": {},
+                "defense": {},
+            },
+            "02:380:07": {
+                "owner": "FortY",
+                "resources": {"pig_iron": 90000, "metal": 50000, "kryptonite": 20000, "spice": 10000},
+                "fleet": {},
+                "defense": {"d1": 500},
+            },
         }
         clock = FakeClock()
         srv = FakeSpaceInvasionServer(clock=clock, planets=planets, galaxy_systems=gal, spy_reports=spy_reports)
@@ -265,16 +304,27 @@ class TestTier3Pairwise(unittest.TestCase):
         # Live harness verifies throttle_building(2, 0) surfaces blocked Metal ETA on /dashboard
         planets = {
             12476: {
-                "planet_id": 12476, "name": "Home", "coords": "02:380:12", "planet_type": "normal", "temperature": 31, "fields_max": 230,
-                "resources": [50, 0, 1000, 1000], "storage": [100000, 100000, 100000, 100000],
+                "planet_id": 12476,
+                "name": "Home",
+                "coords": "02:380:12",
+                "planet_type": "normal",
+                "temperature": 31,
+                "fields_max": 230,
+                "resources": [50, 0, 1000, 1000],
+                "storage": [100000, 100000, 100000, 100000],
                 "energy": {"produced": 250, "used": 140},
                 "buildings": {"b1": 12, "b2": 11, "b3": 8, "b4": 4, "b5": 11, "b7": 3},
-                "ships": {}, "defense": {}, "economy_rates": {"resource1": 100, "resource2": 100, "resource3": 100, "resource4": 100}, "building_queue": [],
+                "ships": {},
+                "defense": {},
+                "economy_rates": {"resource1": 100, "resource2": 100, "resource3": 100, "resource4": 100},
+                "building_queue": [],
             }
         }
         with E2ETestHarness(server=FakeSpaceInvasionServer(planets=planets), config=cfg_prio) as h:
             h.api.get_state(include_buildings=True)
-            thr = h.api.send_command({"command": "throttle_building", "building_id": 2, "percentage": 0, "dry_run": False})
+            thr = h.api.send_command(
+                {"command": "throttle_building", "building_id": 2, "percentage": 0, "dry_run": False}
+            )
             self.assertTrue(thr["executed"])
             dash = h.get_dashboard(refresh=1)
             dash_met = [a for a in dash["plan"] if a["cost"]["metal"] > 0 and a["missing"]["metal"] > 0]
@@ -374,12 +424,18 @@ class TestTier3Pairwise(unittest.TestCase):
         actions = plan_actions(state, config=cfg)
 
         # Asteroid must never schedule non-asteroid mines b1..b6
-        astro_mines = [a for a in actions if a.planet_id == 103 and a.kind == "BUILD" and a.target_id in (1, 2, 3, 4, 5, 6)]
+        astro_mines = [
+            a for a in actions if a.planet_id == 103 and a.kind == "BUILD" and a.target_id in (1, 2, 3, 4, 5, 6)
+        ]
         self.assertEqual(astro_mines, [], f"Asteroid scheduled forbidden mine: {astro_mines}")
 
         # Hot tight colony prefers 0-field Solar cells s9 when mines starve energy
         hot_s9 = [a for a in actions if a.planet_id == 102 and a.kind == "BUILD_SHIP" and a.target_id == 9]
-        self.assertGreater(len(hot_s9), 0, f"Expected 0-field s9 Solar cell build on hot tight colony; got {[a for a in actions if a.planet_id == 102]}")
+        self.assertGreater(
+            len(hot_s9),
+            0,
+            f"Expected 0-field s9 Solar cell build on hot tight colony; got {[a for a in actions if a.planet_id == 102]}",
+        )
 
         # Every action's ETA matches compute_action_eta evaluated against its own planet_id economy
         for act in actions:
@@ -572,7 +628,9 @@ class TestTier3Pairwise(unittest.TestCase):
             # scan_galaxy must not invoke redundant snapshot rebuilds
             actions_hit = [v["action"] for v in srv.page_view_log]
             for forbidden in ("internalBuildings", "internalResearch", "internalWeaponFactory", "internalHome"):
-                self.assertNotIn(forbidden, actions_hit, f"Redundant view {forbidden} during consecutive scans: {actions_hit}")
+                self.assertNotIn(
+                    forbidden, actions_hit, f"Redundant view {forbidden} during consecutive scans: {actions_hit}"
+                )
 
             coords = {t["coords"] for t in h.api.send_command({"command": "db_summary"})["db"]["spy_targets"]}
             self.assertIn("02:380:04", coords)
@@ -653,7 +711,9 @@ class TestTier3Pairwise(unittest.TestCase):
         with E2ETestHarness(server=srv, config=cfg) as h:
             h.api.get_state(include_buildings=True)
             h.api.send_command({"command": "scan_galaxy", "galaxy": 2, "system": 380, "dry_run": False})
-            spy_res = h.api.send_command({"command": "spy", "target_coords": "02:380:04", "planet_id": 12476, "dry_run": False})
+            spy_res = h.api.send_command(
+                {"command": "spy", "target_coords": "02:380:04", "planet_id": 12476, "dry_run": False}
+            )
             self.assertTrue(spy_res["executed"])
             sync_res = h.api.send_command({"command": "sync_messages"})
             self.assertGreaterEqual(sync_res["synced_reports"], 1)
@@ -677,7 +737,9 @@ class TestTier3Pairwise(unittest.TestCase):
             self.assertEqual(atk["wait_eta"], "Ready")
             self.assertEqual(atk["duration_text"], "Instant")
 
-            att_res = h.api.send_command({"command": "attack", "target_coords": "02:380:04", "planet_id": 12477, "dry_run": False})
+            att_res = h.api.send_command(
+                {"command": "attack", "target_coords": "02:380:04", "planet_id": 12477, "dry_run": False}
+            )
             self.assertTrue(att_res["executed"])
             self.assertEqual(srv.launched_fleets[-1]["origin_planet_id"], 12477)
 
@@ -769,7 +831,7 @@ class TestTier3Pairwise(unittest.TestCase):
         eta = compute_action_eta(state, ship_act)
         # Duration divisor = b9 * 2^b17 * speedup = 4 * 2 * 5.0 = 40.0
         # Wait/duration exact base formula for s4: (10 * 2133.333333) / 40.0 = 533.33s
-        expected_dur = (10 * 2133.333333) / (4 * (2 ** 1) * 5.0)
+        expected_dur = (10 * 2133.333333) / (4 * (2**1) * 5.0)
         self.assertAlmostEqual(float(eta["duration_seconds"]), expected_dur, delta=5.0)
         self.assertEqual(eta["wait_eta"], "Ready")
 
@@ -825,7 +887,14 @@ class TestTier3Pairwise(unittest.TestCase):
         with E2ETestHarness(server=srv) as h:
             h.api.get_state(include_buildings=True)
             before_plan = h.api.send_command({"command": "plan"})["actions"]
-            b1_before = next((a for a in before_plan if a["kind"] in ("BUILD", "WAIT_RESOURCES") and a.get("target_id") == PIG_IRON_MINE), None)
+            b1_before = next(
+                (
+                    a
+                    for a in before_plan
+                    if a["kind"] in ("BUILD", "WAIT_RESOURCES") and a.get("target_id") == PIG_IRON_MINE
+                ),
+                None,
+            )
             self.assertIsNotNone(b1_before)
             assert b1_before is not None
             _verify_eta_fields(self, b1_before)
@@ -833,11 +902,20 @@ class TestTier3Pairwise(unittest.TestCase):
             self.assertEqual(b1_before["eta_bottleneck"], "pig_iron")
             self.assertEqual(b1_before["total_eta"], "—")
 
-            th_res = h.api.send_command({"command": "throttle_building", "building_id": 2, "percentage": 0, "dry_run": False})
+            th_res = h.api.send_command(
+                {"command": "throttle_building", "building_id": 2, "percentage": 0, "dry_run": False}
+            )
             self.assertTrue(th_res["executed"])
 
             after_plan = h.api.send_command({"command": "plan", "refresh": True})["actions"]
-            b1_after = next((a for a in after_plan if a["kind"] in ("BUILD", "WAIT_RESOURCES") and a.get("target_id") == PIG_IRON_MINE), None)
+            b1_after = next(
+                (
+                    a
+                    for a in after_plan
+                    if a["kind"] in ("BUILD", "WAIT_RESOURCES") and a.get("target_id") == PIG_IRON_MINE
+                ),
+                None,
+            )
             self.assertIsNotNone(b1_after)
             assert b1_after is not None
             _verify_eta_fields(self, b1_after)
@@ -859,8 +937,24 @@ class TestTier3Pairwise(unittest.TestCase):
         _import_eta_helpers(self)
         gal = {
             (2, 380): [
-                {"position": 4, "name": "FarmGood", "owner": "IdleA", "status_color": "yellow", "has_debris": False, "is_spacia": False, "spy_href": None},
-                {"position": 5, "name": "TrapBad", "owner": "IdleB", "status_color": "yellow", "has_debris": False, "is_spacia": False, "spy_href": None},
+                {
+                    "position": 4,
+                    "name": "FarmGood",
+                    "owner": "IdleA",
+                    "status_color": "yellow",
+                    "has_debris": False,
+                    "is_spacia": False,
+                    "spy_href": None,
+                },
+                {
+                    "position": 5,
+                    "name": "TrapBad",
+                    "owner": "IdleB",
+                    "status_color": "yellow",
+                    "has_debris": False,
+                    "is_spacia": False,
+                    "spy_href": None,
+                },
             ]
         }
         planets = {
@@ -899,8 +993,20 @@ class TestTier3Pairwise(unittest.TestCase):
             try:
                 self.assertTrue(hasattr(db, "get_raid_stats"), "GameDatabase missing get_raid_stats()")
                 for i in range(6):
-                    db.record_raid("02:380:04", attacked_ts=1_700_000_000.0 + i * 60, is_exempt=True, outcome="Victory", loot={"pig_iron": 15000, "metal": 10000})
-                    db.record_raid("02:380:05", attacked_ts=1_700_000_000.0 + i * 60, is_exempt=True, outcome="Defeat / bounced", loot={})
+                    db.record_raid(
+                        "02:380:04",
+                        attacked_ts=1_700_000_000.0 + i * 60,
+                        is_exempt=True,
+                        outcome="Victory",
+                        loot={"pig_iron": 15000, "metal": 10000},
+                    )
+                    db.record_raid(
+                        "02:380:05",
+                        attacked_ts=1_700_000_000.0 + i * 60,
+                        is_exempt=True,
+                        outcome="Defeat / bounced",
+                        loot={},
+                    )
                 mirror = getattr(db, "attack_history_path", None) or (h.db_path.parent / "attack_history.json")
             finally:
                 db.close()

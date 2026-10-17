@@ -134,8 +134,20 @@ class TestRealizedRaidIncome(unittest.TestCase):
             101,
             "02:380:12",
             "Homeworld",
-            buildings={"b1": 6, "b2": 3, "b3": 5, "b4": 3, "b5": 8, "b7": 4, "b8": 3, "b10": 1,
-                       "b11": 8, "b12": 8, "b13": 8, "b14": 8},
+            buildings={
+                "b1": 6,
+                "b2": 3,
+                "b3": 5,
+                "b4": 3,
+                "b5": 8,
+                "b7": 4,
+                "b8": 3,
+                "b10": 1,
+                "b11": 8,
+                "b12": 8,
+                "b13": 8,
+                "b14": 8,
+            },
             resources=Resources(0, 0, 0, 0),
         )
         state = GameState(
@@ -155,8 +167,20 @@ class TestRealizedRaidIncome(unittest.TestCase):
                     101,
                     "02:380:12",
                     "Homeworld",
-                    {"b1": 22, "b2": 16, "b3": 20, "b4": 16, "b5": 24, "b7": 8, "b8": 4, "b10": 4,
-                     "b11": 8, "b12": 8, "b13": 8, "b14": 8},
+                    {
+                        "b1": 22,
+                        "b2": 16,
+                        "b3": 20,
+                        "b4": 16,
+                        "b5": 24,
+                        "b7": 8,
+                        "b8": 4,
+                        "b10": 4,
+                        "b11": 8,
+                        "b12": 8,
+                        "b13": 8,
+                        "b14": 8,
+                    },
                     is_central=True,
                     pays_for_research=True,
                 ),
@@ -255,13 +279,15 @@ class TestHourlyShipBudgets(unittest.TestCase):
         # A four-hour window lets the hourly rate save up, so a hull dearer than one hour's
         # allowance stays affordable, while the long-run rate is unchanged.
         on4 = compute_spare_ship_budget(
-            st, 10.0, attack_telemetry=tel, adaptive_execution=True,
-            spare_spend_in_window=spent, spare_window_hours=4.0,
+            st,
+            10.0,
+            attack_telemetry=tel,
+            adaptive_execution=True,
+            spare_spend_in_window=spent,
+            spare_window_hours=4.0,
         )
         self.assertAlmostEqual(on4["available_budget"]["metal"], 4.0 * rate_metal - 4_000.0, places=2)
-        self.assertAlmostEqual(
-            on4["available_budget"]["kryptonite"], max(0.0, 4.0 * rate_kry - 50_000.0), places=2
-        )
+        self.assertAlmostEqual(on4["available_budget"]["kryptonite"], max(0.0, 4.0 * rate_kry - 50_000.0), places=2)
         self.assertEqual(on4["spare_window_hours"], 4.0)
         self.assertEqual(on4["infra_transport_budget"], base["infra_transport_budget"])
 
@@ -300,9 +326,7 @@ class TestHourlyShipBudgets(unittest.TestCase):
             "infra_transport_budget": {"metal": 500_000.0, "kryptonite": 500_000.0},
             "free_after_reserve": {"pig_iron": 0.0, "metal": 41_000.0, "kryptonite": 500_000.0, "spice": 0.0},
         }
-        self.assertEqual(
-            filter_shipyard_actions_by_spare_budget(st, [_s2_action(10)], tight_free)[0].target_level, 5
-        )
+        self.assertEqual(filter_shipyard_actions_by_spare_budget(st, [_s2_action(10)], tight_free)[0].target_level, 5)
 
         # A batch that fits is left alone.
         roomy = {**budget, "infra_transport_budget": {"metal": 500_000.0, "kryptonite": 500_000.0}}
@@ -324,9 +348,7 @@ class TestHourlyShipBudgets(unittest.TestCase):
         two = filter_shipyard_actions_by_spare_budget(st, [_s2_action(2, tagged=False)], budget)[0]
         self.assertTrue(two.executable_now)
         # A zero-cost action still falls back to the catalog cost times quantity.
-        cat3 = filter_shipyard_actions_by_spare_budget(
-            st, [_s2_action(3, tagged=False, cost=Resources())], budget
-        )[0]
+        cat3 = filter_shipyard_actions_by_spare_budget(st, [_s2_action(3, tagged=False, cost=Resources())], budget)[0]
         self.assertFalse(cat3.executable_now)
 
 
@@ -373,8 +395,9 @@ class TestBatchedInfraTransportOrders(unittest.TestCase):
 
         # Hulls configured by the operator (not plan-sized) keep one unit per order.
         fighters = _yard(801, "02:381:01", metal=400_000, offers=(S4_OFFER,))
-        cfg_f = _adaptive_cfg(True, allow_shipyard=True, allow_multi_planet=True,
-                              shipyard_targets={"small-fighter": 12})
+        cfg_f = _adaptive_cfg(
+            True, allow_shipyard=True, allow_multi_planet=True, shipyard_targets={"small-fighter": 12}
+        )
         acts_f = _plan_planet_shipyard_targets(
             _state((fighters,), researches={"r4": 6}), fighters, _ship_offer_map(fighters), cfg_f
         )
@@ -399,20 +422,17 @@ class TestBatchedInfraTransportOrders(unittest.TestCase):
         self.assertLess(sum(t["large-transport"] for t in busy.values()), total_half)
 
         # Hulls ordered in the last hour count before they leave the Weapons factory.
-        pending = compute_infra_transport_targets(
-            st, cfg, {**self.DEMAND, "infra_cargo_ordered_last_hour": 300_000}
-        )
+        pending = compute_infra_transport_targets(st, cfg, {**self.DEMAND, "infra_cargo_ordered_last_hour": 300_000})
         self.assertEqual(sum(t["large-transport"] for t in pending.values()), total_half - 10)
-        covered = compute_infra_transport_targets(
-            st, cfg, {**self.DEMAND, "infra_cargo_ordered_last_hour": 10_000_000}
-        )
+        covered = compute_infra_transport_targets(st, cfg, {**self.DEMAND, "infra_cargo_ordered_last_hour": 10_000_000})
         self.assertEqual(covered, {})
 
     def test_infra_orders_rank_first_among_p2_and_switch_off_is_unchanged(self) -> None:
         yard = _yard(801, "02:381:01", metal=400_000, offers=(S4_OFFER, S2_OFFER))
         st = _state((yard,), researches={"r4": 6})
-        base = dict(allow_shipyard=True, allow_multi_planet=True,
-                    shipyard_targets={"small-fighter": 12, "large-transport": 0})
+        base = dict(
+            allow_shipyard=True, allow_multi_planet=True, shipyard_targets={"small-fighter": 12, "large-transport": 0}
+        )
         demand = {"cargo_per_hour_24h": 300_000.0, "round_trips_per_hour": 2.5, "realized_utilization": 0.5}
 
         on = plan_fleet_and_attack_actions(st, config=_adaptive_cfg(True, **base), transport_demand=demand)
@@ -520,10 +540,14 @@ class TestBridgeLedgersAndRealizedLoot(unittest.TestCase):
             "window_hours": 24,
             "attack_count": 4,
             "recycle_count": 80,
-            "stolen_pig_iron": 24_000.0, "stolen_metal": 24_000.0,
-            "stolen_kryptonite": 24_000.0, "stolen_spice": 24_000.0,
-            "recycled_pig_iron": 720_000.0, "recycled_metal": 1_176_000.0,
-            "recycled_kryptonite": 1_896_000.0, "recycled_spice": 696_000.0,
+            "stolen_pig_iron": 24_000.0,
+            "stolen_metal": 24_000.0,
+            "stolen_kryptonite": 24_000.0,
+            "stolen_spice": 24_000.0,
+            "recycled_pig_iron": 720_000.0,
+            "recycled_metal": 1_176_000.0,
+            "recycled_kryptonite": 1_896_000.0,
+            "recycled_spice": 696_000.0,
         }
         modelled_tel = {
             "median_loot": {"spice_eq": 2_907.0},
@@ -584,11 +608,22 @@ class TestBridgeLedgersAndRealizedLoot(unittest.TestCase):
         p1 = _make_planet(801, "02:380:01", "Prime", buildings={"b1": 12, "b10": 4})
         p2 = _make_planet(802, "02:380:02", "Secundus", buildings={"b1": 10, "b10": 3})
         st = GameState(
-            universe_id=31, user_id=1, nickname="Cmdr", timestamp=now_ts,
-            planets=(p1, p2), active_planet_id=801,
+            universe_id=31,
+            user_id=1,
+            nickname="Cmdr",
+            timestamp=now_ts,
+            planets=(p1, p2),
+            active_planet_id=801,
             active_queues=(
-                QueueJob(category="building", name="Pig iron mine", origin_coords="02:380:01", building_id=1,
-                         target_level=13, remaining_seconds=900.0, finish_ts=now_ts + 900.0),
+                QueueJob(
+                    category="building",
+                    name="Pig iron mine",
+                    origin_coords="02:380:01",
+                    building_id=1,
+                    target_level=13,
+                    remaining_seconds=900.0,
+                    finish_ts=now_ts + 900.0,
+                ),
             ),
         )
         plan_res = {

@@ -231,10 +231,7 @@ class ActionExecutor:
             obs_pid = self.last_observed_active_planet_id
         if obs_conf is None:
             obs_conf = self.last_observed_active_planet_confirmed
-        if (
-            obs_pid is result.observed_active_planet_id
-            and obs_conf is result.observed_active_planet_confirmed
-        ):
+        if obs_pid is result.observed_active_planet_id and obs_conf is result.observed_active_planet_confirmed:
             return result
         return replace(
             result,
@@ -292,11 +289,7 @@ class ActionExecutor:
         el.send_keys(value)
         with contextlib.suppress(Exception):
             cur_val = el.get_attribute("value")
-            if (
-                isinstance(cur_val, (str, int, float))
-                and not isinstance(cur_val, bool)
-                and str(cur_val) != value
-            ):
+            if isinstance(cur_val, (str, int, float)) and not isinstance(cur_val, bool) and str(cur_val) != value:
                 client.driver.execute_script(
                     "arguments[0].value = arguments[1]; "
                     "arguments[0].dispatchEvent(new Event('input', {bubbles: true})); "
@@ -408,11 +401,7 @@ class ActionExecutor:
         if callable(read_menu_fn):
             try:
                 menu_res = read_menu_fn()
-                if (
-                    isinstance(menu_res, tuple)
-                    and len(menu_res) == 3
-                    and isinstance(menu_res[0], dict)
-                ):
+                if isinstance(menu_res, tuple) and len(menu_res) == 3 and isinstance(menu_res[0], dict):
                     unread = dict(menu_res[0])
                     if menu_res[1] is not None:
                         account_points = menu_res[1]
@@ -481,10 +470,7 @@ class ActionExecutor:
             research_offers = parsed_offers
             active_res = [o for o in parsed_offers if o.active]
             if active_res:
-                res_jobs = [
-                    QueueJob(category="research", name=o.name, target_level=o.target_level)
-                    for o in active_res
-                ]
+                res_jobs = [QueueJob(category="research", name=o.name, target_level=o.target_level) for o in active_res]
                 merged_queues = [q for q in merged_queues if q.category != "research"] + res_jobs
             elif parsed_offers:
                 merged_queues = [q for q in merged_queues if q.category != "research"]
@@ -758,9 +744,9 @@ class ActionExecutor:
                 priority="interactive",
             )
 
-        is_real_selenium = getattr(
-            getattr(client, "driver", None), "__class__", object
-        ).__module__.startswith("selenium")
+        is_real_selenium = getattr(getattr(client, "driver", None), "__class__", object).__module__.startswith(
+            "selenium"
+        )
         html_str = ""
         if is_real_selenium:
             try:
@@ -798,8 +784,7 @@ class ActionExecutor:
             if switched and updated_html:
                 html = updated_html
         confirmed_target = (
-            self.last_observed_active_planet_id == planet_id
-            and self.last_observed_active_planet_confirmed is True
+            self.last_observed_active_planet_id == planet_id and self.last_observed_active_planet_confirmed is True
         )
         if self._confirmed_planet_mismatch(planet_id) is not None or (
             needs_switch and not switched and not confirmed_target
@@ -1047,11 +1032,7 @@ class ActionExecutor:
             if is_validated
             else f"Build {_safe_str(action.target_name)} -> L{tgt_lvl_opt} was clicked, yet neither construction queue, building level, nor resources changed."
         )
-        tgt_txt = (
-            game_data.fmt_compact_int(tgt_lvl_opt)
-            if tgt_lvl_opt is not None
-            else "None"
-        )
+        tgt_txt = game_data.fmt_compact_int(tgt_lvl_opt) if tgt_lvl_opt is not None else "None"
         new_lvl_txt = game_data.fmt_compact_int(new_lvl) if new_lvl is not None else "None"
         detail = (
             f"Built/queued {_safe_str(action.target_name)} -> L{tgt_txt} "
@@ -1141,8 +1122,7 @@ class ActionExecutor:
         tgt_txt = game_data.fmt_compact_int(tgt_lvl_opt) if tgt_lvl_opt is not None else "0"
         new_lvl_txt = game_data.fmt_compact_int(new_lvl) if new_lvl is not None else "None"
         detail = (
-            f"Demolished/queued downgrade of {_safe_str(action.target_name)} -> L{tgt_txt} "
-            f"(current_lvl={new_lvl_txt})."
+            f"Demolished/queued downgrade of {_safe_str(action.target_name)} -> L{tgt_txt} (current_lvl={new_lvl_txt})."
         )
         updated_state = self._build_updated_state(
             client,
@@ -1219,11 +1199,7 @@ class ActionExecutor:
             if res_validated
             else f"Research {_safe_str(action.target_name)} -> L{tgt_lvl_opt} was clicked, yet neither research queue nor level changed."
         )
-        tgt_txt = (
-            game_data.fmt_compact_int(tgt_lvl_opt)
-            if tgt_lvl_opt is not None
-            else "None"
-        )
+        tgt_txt = game_data.fmt_compact_int(tgt_lvl_opt) if tgt_lvl_opt is not None else "None"
         detail = (
             f"Started research {_safe_str(action.target_name)} -> L{tgt_txt} "
             f"(verified={'ok' if verified else 'submitted'}, current_lvl={game_data.fmt_compact_int(new_lvl)})."
@@ -1354,11 +1330,7 @@ class ActionExecutor:
         action: PlannedAction,
     ) -> ExecutionResult:
         planet_obj = next(
-            (
-                p
-                for p in getattr(state, "planets", ())
-                if getattr(p, "planet_id", None) == action.planet_id
-            ),
+            (p for p in getattr(state, "planets", ()) if getattr(p, "planet_id", None) == action.planet_id),
             None,
         )
         if planet_obj is not None:
@@ -1422,7 +1394,12 @@ class ActionExecutor:
         econ_soup = BeautifulSoup(html, "html.parser")
         if econ_soup.select_one('form[name="economy"] input[type="submit"][value="Calculate"]') is not None:
             submit_css = 'form[name="economy"] input[type="submit"][value="Calculate"]'
-        elif econ_soup.select_one('form[name="economy"] input[type="submit"], form[name="economy"] button[type="submit"]') is not None:
+        elif (
+            econ_soup.select_one(
+                'form[name="economy"] input[type="submit"], form[name="economy"] button[type="submit"]'
+            )
+            is not None
+        ):
             submit_css = 'form[name="economy"] input[type="submit"], form[name="economy"] button[type="submit"]'
         else:
             submit_css = 'form#ress input[type="submit"], form[action*="internalEconomy"] input[type="submit"], form input[type="submit"]'
@@ -1573,7 +1550,9 @@ class ActionExecutor:
                     fid = str(f.get("id") or "").strip()
                     if fid and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_-]*", fid):
                         return f"form#{fid}"
-        if send_soup.select_one('form[name="fleet"]') and send_soup.select_one('form[name="fleet"] input[type="radio"]'):
+        if send_soup.select_one('form[name="fleet"]') and send_soup.select_one(
+            'form[name="fleet"] input[type="radio"]'
+        ):
             return 'form[name="fleet"]'
         if send_forms:
             return 'form[action*="internalSendFleet"]'
@@ -1802,9 +1781,7 @@ class ActionExecutor:
         has_radio = [bool(c.select('input[type="radio"]')) for c in cells]
         cell_txts = [" ".join(c.get_text(" ", strip=True).split()) for c in cells]
         is_label = [
-            (not has_radio[i])
-            and (not cls._has_visible_form_control(cells[i]))
-            and bool(cell_txts[i])
+            (not has_radio[i]) and (not cls._has_visible_form_control(cells[i])) and bool(cell_txts[i])
             for i in range(len(cells))
         ]
         radio_ids: dict[int, str] = {}
@@ -1827,6 +1804,7 @@ class ActionExecutor:
         if before_hits > after_hits:
             direction = "before"
         elif before_hits == after_hits and before_hits > 0 and needs_sib:
+
             def _dir_score(offset: int) -> tuple[int, int, int, int, int]:
                 paired = [i + offset for i in needs_sib if _can_pair(i, i + offset)]
                 opt_hits = sum(1 for j in paired if cls._is_tr_option_label(cells[j], cell_txts[j]))
@@ -1903,9 +1881,8 @@ class ActionExecutor:
                         ctxt = " ".join(cell.get_text(" ", strip=True).split())
                         if ctxt:
                             lbl_parts.append(ctxt)
-                        elif (
-                            len(tr.select('input[type="radio"]')) == 1
-                            and not cls._has_other_visible_form_control(tr, inp)
+                        elif len(tr.select('input[type="radio"]')) == 1 and not cls._has_other_visible_form_control(
+                            tr, inp
                         ):
                             lbl_parts.append(" ".join(tr.get_text(" ", strip=True).split()))
                         else:
@@ -1938,17 +1915,15 @@ class ActionExecutor:
                             if ptxt:
                                 lbl_parts.append(ptxt)
                             else:
-                                sib_txt = (
-                                    cls._collect_adjacent_radio_text(parent, target_id=rid)
-                                    or cls._collect_adjacent_radio_text(parent, reverse=True, target_id=rid)
-                                )
+                                sib_txt = cls._collect_adjacent_radio_text(
+                                    parent, target_id=rid
+                                ) or cls._collect_adjacent_radio_text(parent, reverse=True, target_id=rid)
                                 if sib_txt:
                                     lbl_parts.append(sib_txt)
                         else:
-                            sib_txt = (
-                                cls._collect_adjacent_radio_text(wrapper, target_id=rid)
-                                or cls._collect_adjacent_radio_text(wrapper, reverse=True, target_id=rid)
-                            )
+                            sib_txt = cls._collect_adjacent_radio_text(
+                                wrapper, target_id=rid
+                            ) or cls._collect_adjacent_radio_text(wrapper, reverse=True, target_id=rid)
                             if sib_txt:
                                 lbl_parts.append(sib_txt)
                 radio_labels.append((rval, rid, rname, " ".join(lbl_parts).lower(), inp_disabled))
@@ -2002,7 +1977,9 @@ class ActionExecutor:
             r_id = str(r.get_attribute("id") or "").strip().lower()
             r_name = str(r.get_attribute("name") or "").strip().lower()
             raw_dis = r.get_attribute("disabled")
-            is_dis = (isinstance(raw_dis, str) and raw_dis.strip().lower() in ("true", "disabled", "1")) or raw_dis is True
+            is_dis = (
+                isinstance(raw_dis, str) and raw_dis.strip().lower() in ("true", "disabled", "1")
+            ) or raw_dis is True
             label_txt = ""
             matched_label = False
             if len(radios) == len(radio_labels) and idx < len(radio_labels):
@@ -2298,12 +2275,18 @@ class ActionExecutor:
             iid = str(inp.get_attribute("id") or "").strip().lower()
             if nm:
                 seen_names.append(nm)
-            if nm in ("gal", "sun", "pla", "sid", "todo") or any(k in nm for k in ("ship", "procent", "percent", "speed")):
+            if nm in ("gal", "sun", "pla", "sid", "todo") or any(
+                k in nm for k in ("ship", "procent", "percent", "speed")
+            ):
                 continue
             for rk, cands in self._TRANSPORT_INPUT_CANDIDATES.items():
                 if rk in by_key:
                     continue
-                if nm in cands or iid in cands or any(c == nm.replace("-", "_") or c == iid.replace("-", "_") for c in cands):
+                if (
+                    nm in cands
+                    or iid in cands
+                    or any(c == nm.replace("-", "_") or c == iid.replace("-", "_") for c in cands)
+                ):
                     by_key[rk] = inp
                     break
 
@@ -2420,11 +2403,7 @@ class ActionExecutor:
                     esc_action = faction.replace('"', '\\"')
                     st1_css = f'form[action="{esc_action}"]'
             sc_soup = st1_soup if st1_soup is not None else f_soup
-            in_names = {
-                str(inp.get("name") or "")
-                for inp in sc_soup.find_all("input")
-                if inp.get("name")
-            }
+            in_names = {str(inp.get("name") or "") for inp in sc_soup.find_all("input") if inp.get("name")}
             sub_css = (
                 f'{st1_css} input[type="submit"], {st1_css} button[type="submit"]'
                 if st1_css
@@ -2575,7 +2554,10 @@ class ActionExecutor:
                                 rb_cb = client.driver.find_element(By.CSS_SELECTOR, _scoped_field_css(rb_name))
                             else:
                                 rb_cb = client.driver.find_element(By.NAME, rb_name)
-                            if str(rb_cb.get_attribute("type") or "").strip().lower() == "checkbox" and not rb_cb.is_selected():
+                            if (
+                                str(rb_cb.get_attribute("type") or "").strip().lower() == "checkbox"
+                                and not rb_cb.is_selected()
+                            ):
                                 self._safe_click(client, rb_cb)
                             break
 
@@ -2680,8 +2662,8 @@ class ActionExecutor:
         launch_css = (
             f'{form_css} input[type="submit"], '
             f'{form_css} button[type="submit"], '
-            f'{form_css} input#goButton, '
-            f'{form_css} input.fleet-start-button, '
+            f"{form_css} input#goButton, "
+            f"{form_css} input.fleet-start-button, "
             f'{form_css} input[onclick*="startFleet"]'
         )
         paced2 = False
@@ -2720,7 +2702,9 @@ class ActionExecutor:
                             "mission_kind": mission_kind,
                             "target": tname_s,
                             "form_css": form_css,
-                            "radios_html": [redact_sensitive(str(r))[:300] for r in send_soup.select('input[type="radio"]')],
+                            "radios_html": [
+                                redact_sensitive(str(r))[:300] for r in send_soup.select('input[type="radio"]')
+                            ],
                             "forms_html": [redact_sensitive(str(f))[:1200] for f in send_soup.find_all("form")],
                             "page_text": " ".join(send_soup.get_text(" ", strip=True).split())[:1000],
                         },
@@ -2731,7 +2715,9 @@ class ActionExecutor:
                         for r_el in send_soup.select('input[type="radio"]'):
                             r_nm = str(r_el.get("name") or "").strip().lower()
                             r_vl = str(r_el.get("value") or "").strip()
-                            if r_vl and not any(tok in r_nm for tok in ("procent", "percent", "speed", "route", "geschwindigkeit")):
+                            if r_vl and not any(
+                                tok in r_nm for tok in ("procent", "percent", "speed", "route", "geschwindigkeit")
+                            ):
                                 if r_vl not in avail_vals:
                                     avail_vals.append(r_vl)
                         avail_hint = (
@@ -2750,11 +2736,7 @@ class ActionExecutor:
                             f"Target cannot be {verb_unavail} on internalSendFleet "
                             f"({mission_kind} mission unavailable; {avail_hint}{uninhab_hint})"
                         )
-                        out_msg = (
-                            f"Aborted: {inline_forb}."
-                            if inline_forb
-                            else f"Aborted: {blk_msg}."
-                        )
+                        out_msg = f"Aborted: {inline_forb}." if inline_forb else f"Aborted: {blk_msg}."
                         return ExecutionResult(
                             executed=False,
                             dry_run=False,
@@ -2771,7 +2753,9 @@ class ActionExecutor:
                         for r_el in send_soup.select('input[type="radio"]'):
                             r_nm = str(r_el.get("name") or "").strip().lower()
                             r_vl = str(r_el.get("value") or "").strip()
-                            if r_vl and not any(tok in r_nm for tok in ("procent", "percent", "speed", "route", "geschwindigkeit")):
+                            if r_vl and not any(
+                                tok in r_nm for tok in ("procent", "percent", "speed", "route", "geschwindigkeit")
+                            ):
                                 if r_vl not in avail_vals_r:
                                     avail_vals_r.append(r_vl)
                         if avail_vals_r:
@@ -2860,8 +2844,8 @@ class ActionExecutor:
                     launch_css = (
                         f'{form_css} input[type="submit"], '
                         f'{form_css} button[type="submit"], '
-                        f'{form_css} input#goButton, '
-                        f'{form_css} input.fleet-start-button, '
+                        f"{form_css} input#goButton, "
+                        f"{form_css} input.fleet-start-button, "
                         f'{form_css} input[onclick*="startFleet"]'
                     )
             except NoSuchElementException:
@@ -2873,9 +2857,13 @@ class ActionExecutor:
                     details={
                         "mission_kind": mission_kind,
                         "target": tname_s,
-                        "selected_radio_val": str(mission_radio.get_attribute("value") or "") if mission_radio else None,
+                        "selected_radio_val": str(mission_radio.get_attribute("value") or "")
+                        if mission_radio
+                        else None,
                         "selected_radio_id": str(mission_radio.get_attribute("id") or "") if mission_radio else None,
-                        "selected_radio_name": str(mission_radio.get_attribute("name") or "") if mission_radio else None,
+                        "selected_radio_name": str(mission_radio.get_attribute("name") or "")
+                        if mission_radio
+                        else None,
                         "form_css": form_css,
                         "forms_tail": [redact_sensitive(str(f))[-3500:] for f in post_soup.find_all("form")],
                         "page_text": " ".join(post_soup.get_text(" ", strip=True).split())[:1500],
@@ -2969,9 +2957,7 @@ class ActionExecutor:
             updated,
             is_fleet=True,
         )
-        ship_desc = ", ".join(
-            f"{game_data.fmt_compact_int(qty)}x {k}" for k, qty in ships_to_send.items()
-        )
+        ship_desc = ", ".join(f"{game_data.fmt_compact_int(qty)}x {k}" for k, qty in ships_to_send.items())
         if updated_state is not None:
             norm_orig_c = normalize_coords(coords_s)
             norm_dest_c = f"{t_gal:02d}:{t_sys:03d}:{t_pos:02d}"
@@ -3021,10 +3007,7 @@ class ActionExecutor:
             executed=True,
             dry_run=False,
             action=action,
-            message=(
-                f"Dispatched {verb} ({ship_desc}) to [{t_gal:02d}:{t_sys:03d}:{t_pos:02d}] "
-                f"from [{coords_s}]."
-            ),
+            message=(f"Dispatched {verb} ({ship_desc}) to [{t_gal:02d}:{t_sys:03d}:{t_pos:02d}] from [{coords_s}]."),
             updated_state=updated_state,
             clear_target_debris=(mission_kind == "RECYCLE"),
             observed_fleet_slots_available=obs_avail_ok,
@@ -3148,10 +3131,7 @@ class ActionExecutor:
         probe_count = min(avail, max(1, game_data.cap_json_int(game_data.safe_int(action.target_level, 1))))
         tname_s = _safe_str(action.target_name)
         reason_s = _safe_str(action.reason)
-        is_free_slot_probe = (
-            "(free slot)" in tname_s.lower()
-            or "probe free slot" in reason_s.lower()
-        )
+        is_free_slot_probe = "(free slot)" in tname_s.lower() or "probe free slot" in reason_s.lower()
         m_coords = re.search(r"(\d{1,2}):(\d{1,3}):(\d{1,2})", tname_s, re.ASCII)
         dispatch_fn = getattr(client, "dispatch_galaxy_spy", None)
         if (
@@ -3580,8 +3560,7 @@ class ActionExecutor:
         def _trigger_send_daily_login_js() -> bool:
             try:
                 res_js = client.driver.execute_script(
-                    "if (typeof sendDailyLogin === 'function') { sendDailyLogin(); return true; }"
-                    "return false;"
+                    "if (typeof sendDailyLogin === 'function') { sendDailyLogin(); return true; }return false;"
                 )
                 if res_js is True:
                     return True
@@ -3621,9 +3600,7 @@ class ActionExecutor:
                             candidates = []
                         for cand in candidates:
                             attr_txt = (
-                                str(cand.get_attribute("onclick") or "")
-                                + " "
-                                + str(cand.get_attribute("href") or "")
+                                str(cand.get_attribute("onclick") or "") + " " + str(cand.get_attribute("href") or "")
                             ).lower()
                             if "hideloginbonus" in attr_txt:
                                 continue
@@ -3683,8 +3660,7 @@ class ActionExecutor:
         hw_coords = _safe_str(getattr(hw_planet, "coords", "") or action.planet_coords).strip()
         effective_action = (
             replace(action, planet_id=hw_pid, planet_coords=hw_coords or action.planet_coords)
-            if hw_pid is not None
-            and (action.planet_id != hw_pid or (hw_coords and action.planet_coords != hw_coords))
+            if hw_pid is not None and (action.planet_id != hw_pid or (hw_coords and action.planet_coords != hw_coords))
             else action
         )
 
@@ -3734,9 +3710,7 @@ class ActionExecutor:
                     f"Could not select Homeworld [{hw_coords or hw_pid}] on internalTransmitter; "
                     "aborted so the free charge is not claimed on a secondary colony."
                 )
-                self.last_transmitter_info = _base_tm_meta(
-                    {"has_form": False, "free_spins": None, "activated": False}
-                )
+                self.last_transmitter_info = _base_tm_meta({"has_form": False, "free_spins": None, "activated": False})
                 return ExecutionResult(
                     executed=False,
                     dry_run=False,
@@ -3791,9 +3765,7 @@ class ActionExecutor:
             build_url_fn = getattr(client, "_build_internal_url", None)
             raw_href = _safe_str(info["free_src_href"]).strip()
             target_url = (
-                build_url_fn(raw_href.split("?", 1)[1])
-                if callable(build_url_fn) and "?" in raw_href
-                else raw_href
+                build_url_fn(raw_href.split("?", 1)[1]) if callable(build_url_fn) and "?" in raw_href else raw_href
             )
             self._pace_action(client, priority="interactive")
             nav_tok_sw = self._mark_frame_nav(client, "F_Hauptframe")
@@ -3852,11 +3824,7 @@ class ActionExecutor:
                     validated=False,
                     validation_error=err_bonus,
                 )
-            bonus_note = (
-                " (daily login bonus collected on Command Central)"
-                if daily_bonus_collected
-                else ""
-            )
+            bonus_note = " (daily login bonus collected on Command Central)" if daily_bonus_collected else ""
             return ExecutionResult(
                 executed=False,
                 dry_run=False,
@@ -4001,11 +3969,7 @@ class ActionExecutor:
                     updated_planets,
                     page_html=after_html if isinstance(after_html, str) else "",
                 )
-        bonus_prefix = (
-            "Collected daily login bonus on Command Central; "
-            if daily_bonus_collected
-            else ""
-        )
+        bonus_prefix = "Collected daily login bonus on Command Central; " if daily_bonus_collected else ""
         hw_label = f" on Homeworld [{hw_coords}]" if hw_coords else ""
         reward_note = f" — Won: {reward_txt}" if reward_txt else ""
         return ExecutionResult(
@@ -4092,7 +4056,9 @@ class ActionExecutor:
                 c_tot = c_dry.pig_iron + c_dry.metal + c_dry.kryptonite + c_dry.spice
                 suffix = f" ({game_data.fmt_compact_int(c_tot, grouped=True)} res)"
             elif action.kind == "STATION":
-                st_ships = parse_station_ships_spec(_safe_str(action.target_name)) or parse_station_ships_spec(_safe_str(action.reason))
+                st_ships = parse_station_ships_spec(_safe_str(action.target_name)) or parse_station_ships_spec(
+                    _safe_str(action.reason)
+                )
                 st_tot = sum(st_ships.values())
                 suffix = f" ({game_data.fmt_compact_int(st_tot, grouped=True)} ships)" if st_tot > 0 else ""
             elif action.kind == "ABANDON_COLONY":
@@ -4476,7 +4442,12 @@ class ActionExecutor:
                 time.sleep(random.uniform(*self.action_delay_range))
                 click_stage = "direct_delete"
                 _click_allow_js(del_trigger)
-        except (StaleElementReferenceException, NoSuchElementException, ElementNotInteractableException, WebDriverException) as exc:
+        except (
+            StaleElementReferenceException,
+            NoSuchElementException,
+            ElementNotInteractableException,
+            WebDriverException,
+        ) as exc:
             return ExecutionResult(
                 executed=False,
                 dry_run=False,

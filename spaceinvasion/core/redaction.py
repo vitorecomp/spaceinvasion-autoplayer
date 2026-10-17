@@ -7,8 +7,10 @@ import functools
 import itertools
 import os
 import re
-from typing import Any, overload
+from typing import TypeVar, overload
 from urllib.parse import parse_qs, urlparse, urlunparse
+
+_KT = TypeVar("_KT")
 
 SECRET_DICT_KEYS: frozenset[str] = frozenset("sid password passwd cookie api_key secret authorization".split())
 _SECRET_STEMS: tuple[str, ...] = tuple("password passwd cookie api_key api-key secret authorization sid".split())
@@ -45,13 +47,10 @@ def is_secret_dict_key(key: object) -> bool:
 _PRE = r"[_-]*(?:[a-z0-9]+[_-]+)*"
 _K_ALL = rf"(?P<key>{_PRE}(?:sid|password|passwd|cookie|api_key|api-key|secret|authorization))"
 _K_KV = rf"(?P<key>{_PRE}(?:password|passwd|cookie|api_key|api-key|secret))"
-_K_AUTH = rf"(?P<key>{_PRE}authorization)"
-_SCHEME = r"(?:bearer|basic|token|digest)"
-_KV_SEP = r"(?:[ \t]*[:=][ \t]*|%(?:25){0,4}3[ad])"
-_SCH_SEP = r"(?:[ \t]+|%(?:25){0,4}20|\+)"
-_SAFE_CH = r"[^\s&,;\"'`<>#)}\]\[]"
+_K_AUTH, _SCHEME = rf"(?P<key>{_PRE}authorization)", r"(?:bearer|basic|token|digest)"
+_KV_SEP, _SCH_SEP = r"(?:[ \t]*[:=][ \t]*|%(?:25){0,4}3[ad])", r"(?:[ \t]+|%(?:25){0,4}20|\+)"
+_SAFE_CH, _STOP = r"[^\s&,;\"'`<>#)}\]\[]", r"%(?:25){0,4}(?:26|23|3[bce]|22|27|5[bd])"
 _UNQ = rf"(?:(?!%(?:25){{0,4}}(?:26|23|20|09|0[ad]|22|27|3[bce]|5[bd])){_SAFE_CH})+"
-_STOP = r"%(?:25){0,4}(?:26|23|3[bce]|22|27|5[bd])"
 
 
 def _qpat(p: str) -> str:
@@ -80,19 +79,24 @@ def _dpat(p: str) -> str:
 
 
 def _fmt_val(match: re.Match[str], p: str, *, quoted_only: bool = False) -> str:
-    for ok, ck in ((f"{p}_vq", f"{p}_cq"), (f"{p}_evq2", f"{p}_ecq2"), (f"{p}_evq", f"{p}_ecq")):
+    rules: tuple[tuple[str, str, str | None], ...] = (
+        (f"{p}_vq", f"{p}_cq", None),
+        (f"{p}_evq2", f"{p}_ecq2", None),
+        (f"{p}_evq", f"{p}_ecq", None),
+    )
+    if not quoted_only:
+        rules += (
+            (f"{p}_bk", f"{p}_bkc", ">"),
+            (f"{p}_sb", f"{p}_sbc", "]"),
+            (f"{p}_pq", f"{p}_pqc", None),
+            (f"{p}_pb", f"{p}_pbc", None),
+            (f"{p}_psb", f"{p}_psbc", None),
+        )
+    for ok, ck, close_ch in rules:
         if (tok := match.group(ok)) is not None:
-            return f"{tok}REDACTED{tok if match.group(ck) is not None else ''}"
-    if quoted_only:
-        return ""
-    for ok, ck, close_ch in ((f"{p}_bk", f"{p}_bkc", ">"), (f"{p}_sb", f"{p}_sbc", "]")):
-        if (tok := match.group(ok)) is not None:
-            return f"{tok}REDACTED{close_ch if match.group(ck) is not None else ''}"
-    for ok, ck in ((f"{p}_pq", f"{p}_pqc"), (f"{p}_pb", f"{p}_pbc"), (f"{p}_psb", f"{p}_psbc")):
-        if (tok := match.group(ok)) is not None:
-            ctok = match.group(ck)
-            return f"{tok}REDACTED{ctok if ctok is not None else ''}"
-    return "REDACTED"
+            ctok = close_ch if close_ch is not None else tok
+            return f"{tok}REDACTED{ctok if match.group(ck) is not None else ''}"
+    return "" if quoted_only else "REDACTED"
 
 
 _JSON_KV_RE = re.compile(rf"(?P<prefix>(?P<kq>\\{{0,2}}[\"']){_K_ALL}(?P=kq)[ \t]*:[ \t]*)(?:{_qpat('j')})", re.I)
@@ -136,11 +140,9 @@ def _sub_html_input(match: re.Match[str]) -> str:
         return tag
 
     def _val(vm: re.Match[str]) -> str:
-        pre = vm.group("prefix")
-        if vm.group("dq") is not None:
-            return f'{pre}"REDACTED"'
-        if vm.group("sq") is not None:
-            return f"{pre}'REDACTED'"
+        pre, dq, sq = vm.group("prefix"), vm.group("dq"), vm.group("sq")
+        if dq is not None or sq is not None:
+            return f'{pre}"REDACTED"' if dq is not None else f"{pre}'REDACTED'"
         return vm.group(0) if (vm.group("uq") or "") in ('""', "''") else f"{pre}REDACTED"
 
     return _HTML_VAL_RE.sub(_val, tag)
@@ -169,7 +171,7 @@ def _sub_sid_kv(match: re.Match[str]) -> str:
     return _sub_secret(match, "sid", "sid")
 
 
-_TEXT_RULES: tuple[tuple[re.Pattern[str], str, str], ...] = (
+_TEXT_RULES = (
     (_JSON_KV_RE, "j", "quoted"),
     (_URLENC_JSON_RE, "uj", "urlenc"),
     (_QUOTED_KV_RE, "qk", "quoted"),
@@ -212,13 +214,13 @@ def redact_db_url(url_or_path: object) -> str:
         parsed = urlparse(txt)
         is_unix = any(str(h).strip().startswith("/") for h in parse_qs(parsed.query).get("host", ()))
         q = redact_text(parsed.query)
-        if parsed.password:
-            user = f"{parsed.username}:***" if parsed.username else "***"
-            host = parsed.hostname if parsed.hostname is not None else ("" if is_unix else "127.0.0.1")
-            netloc = f"{user}@{host}:{parsed.port}" if parsed.port else f"{user}@{host}"
+        if parsed.password or q != parsed.query:
+            netloc = parsed.netloc
+            if parsed.password:
+                user = f"{parsed.username}:***" if parsed.username else "***"
+                host = parsed.hostname if parsed.hostname is not None else ("" if is_unix else "127.0.0.1")
+                netloc = f"{user}@{host}:{parsed.port}" if parsed.port else f"{user}@{host}"
             return urlunparse((parsed.scheme, netloc, parsed.path, parsed.params, q, parsed.fragment))
-        if q != parsed.query:
-            return urlunparse((parsed.scheme, parsed.netloc, parsed.path, parsed.params, q, parsed.fragment))
         return txt
     except ValueError:
         return _DSN_RE.sub(r"\1***\2", txt)
@@ -259,16 +261,16 @@ def _safe_text(val: object, default: str, depth: int, seen: set[int], budget: li
                     return "" if str_fn is BaseException.__str__ else type(val).__name__
                 if len(args) == 1:
                     a0 = args[0]
-                    if isinstance(a0, str):
-                        return _clip(repr(a0) if isinstance(val, KeyError) else a0, 16_384)
-                    return _clip(_safe_text(a0, f"<{type(a0).__name__}>", d, seen, budget))
+                    return (
+                        _clip(repr(a0) if isinstance(val, KeyError) else a0, 16_384)
+                        if isinstance(a0, str)
+                        else _clip(_safe_text(a0, f"<{type(a0).__name__}>", d, seen, budget))
+                    )
                 parts = [
                     repr(a) if isinstance(a, str) else _safe_text(a, f"<{type(a).__name__}>", d, seen, budget)
                     for a in args[:8]
                     if budget[0] > 0
-                ]
-                if len(args) > 8:
-                    parts.append(f"...+{len(args) - 8}")
+                ] + ([f"...+{len(args) - 8}"] if len(args) > 8 else [])
                 return _clip(f"({', '.join(parts)})")
             if isinstance(val, Mapping):
                 pairs = [
@@ -368,34 +370,16 @@ def _redact_tree(obj: object, api: bool, depth: int, seen: set[int], budget: lis
 
 @overload
 def redact_sensitive(obj: str) -> str: ...
-
-
 @overload
-def redact_sensitive(obj: Mapping[Any, Any]) -> dict[str, Any]: ...
-
-
+def redact_sensitive(obj: Mapping[_KT, object]) -> dict[_KT, object]: ...
 @overload
-def redact_sensitive(obj: object) -> Any: ...
-
-
-def redact_sensitive(obj: object) -> Any:
+def redact_sensitive(obj: object) -> object: ...
+def redact_sensitive(obj: object) -> object:
     """Recursively mask session tokens, credentials, and secret key-value fields."""
     return _redact_tree(obj, False, 0, set(), [_MAX_TREE_NODES])
 
 
-@overload
-def redact_api_payload(value: str) -> str: ...
-
-
-@overload
-def redact_api_payload(value: Mapping[Any, Any]) -> dict[str, Any]: ...
-
-
-@overload
-def redact_api_payload(value: object) -> Any: ...
-
-
-def redact_api_payload(value: object) -> Any:
+def redact_api_payload(value: object) -> object:
     """Recursively scrub API response payloads using the cached ASCII-clean key fast path."""
     return _redact_tree(value, True, 0, set(), [_MAX_TREE_NODES])
 

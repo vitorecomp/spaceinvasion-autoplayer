@@ -71,8 +71,16 @@ class TestTier2R3(unittest.TestCase):
         )
         state = make_game_state(planets=(p,), speedup_factor=1.0)
         metal_act = PlannedAction(
-            "P2", "BUILD", p.planet_id, p.coords, "Development center", "needs metal",
-            target_id=7, target_level=3, cost=Resources(0, 2400, 1200, 800), missing=Resources(0, 500, 0, 0),
+            "P2",
+            "BUILD",
+            p.planet_id,
+            p.coords,
+            "Development center",
+            "needs metal",
+            target_id=7,
+            target_level=3,
+            cost=Resources(0, 2400, 1200, 800),
+            missing=Resources(0, 500, 0, 0),
         )
         e_met = compute_action_eta(state, metal_act)
         self.assertIsNone(e_met["wait_hours"])
@@ -84,8 +92,16 @@ class TestTier2R3(unittest.TestCase):
         self.assertEqual(e_met["eta_bottleneck"], "metal")
 
         pig_act = PlannedAction(
-            "P2", "BUILD", p.planet_id, p.coords, "Pig iron mine", "pig only",
-            target_id=1, target_level=5, cost=Resources(400, 0, 100, 0), missing=Resources(200, 0, 0, 0),
+            "P2",
+            "BUILD",
+            p.planet_id,
+            p.coords,
+            "Pig iron mine",
+            "pig only",
+            target_id=1,
+            target_level=5,
+            cost=Resources(400, 0, 100, 0),
+            missing=Resources(200, 0, 0, 0),
         )
         e_pig = compute_action_eta(state, pig_act)
         self.assertIsNotNone(e_pig["wait_hours"])
@@ -102,8 +118,15 @@ class TestTier2R3(unittest.TestCase):
         )
         state = make_game_state(planets=(p,))
         act = PlannedAction(
-            "P2", "BUILD", p.planet_id, p.coords, "Pig iron mine", "over-drained",
-            target_id=1, target_level=3, missing=Resources(100, 0, 0, 0),
+            "P2",
+            "BUILD",
+            p.planet_id,
+            p.coords,
+            "Pig iron mine",
+            "over-drained",
+            target_id=1,
+            target_level=3,
+            missing=Resources(100, 0, 0, 0),
         )
         eta = compute_action_eta(state, act)
         self.assertIsNone(eta["wait_hours"])
@@ -114,23 +137,43 @@ class TestTier2R3(unittest.TestCase):
     def test_t2_r3a_03_multi_planet_isolation_temp_and_r1_mining_tech(self) -> None:
         compute_action_eta, _ = _import_eta_helpers(self)
         p1_cold = make_planet(
-            planet_id=101, coords="02:380:15", temperature=-120,
+            planet_id=101,
+            coords="02:380:15",
+            temperature=-120,
             buildings={"b4": 5, "b5": 10, "b7": 6, "b17": 1},
             resources=Resources(10_000, 10_000, 10_000, 0),
         )
         p2_hot = make_planet(
-            planet_id=202, coords="02:380:02", temperature=120,
+            planet_id=202,
+            coords="02:380:02",
+            temperature=120,
             buildings={"b4": 5, "b5": 10, "b7": 0, "b17": 0},
             resources=Resources(10_000, 10_000, 10_000, 0),
         )
-        state = make_game_state(planets=(p1_cold, p2_hot), active_planet_id=202, researches={"r1": 5}, speedup_factor=1.0)
+        state = make_game_state(
+            planets=(p1_cold, p2_hot), active_planet_id=202, researches={"r1": 5}, speedup_factor=1.0
+        )
         act_p1 = PlannedAction(
-            "P2", "BUILD", 101, p1_cold.coords, "Spice mine", "cold spice",
-            target_id=4, target_level=6, missing=Resources(0, 0, 0, 1000),
+            "P2",
+            "BUILD",
+            101,
+            p1_cold.coords,
+            "Spice mine",
+            "cold spice",
+            target_id=4,
+            target_level=6,
+            missing=Resources(0, 0, 0, 1000),
         )
         act_p2 = PlannedAction(
-            "P2", "BUILD", 202, p2_hot.coords, "Spice mine", "hot spice",
-            target_id=4, target_level=6, missing=Resources(0, 0, 0, 1000),
+            "P2",
+            "BUILD",
+            202,
+            p2_hot.coords,
+            "Spice mine",
+            "hot spice",
+            target_id=4,
+            target_level=6,
+            missing=Resources(0, 0, 0, 1000),
         )
         e1 = compute_action_eta(state, act_p1)
         e2 = compute_action_eta(state, act_p2)
@@ -146,12 +189,27 @@ class TestTier2R3(unittest.TestCase):
         p = make_planet(buildings={"b3": 4, "b5": 8, "b7": 2, "b17": 0})
         state = make_game_state(planets=(p,), speedup_factor=1.0)
         wait_b = PlannedAction(
-            "P2", "WAIT_RESOURCES", p.planet_id, p.coords, "Kryptonite mine", "queued/waiting",
-            target_id=3, target_level=5, cost=Resources(pig_iron=600, kryptonite=300), missing=Resources(0, 0, 100, 0),
+            "P2",
+            "WAIT_RESOURCES",
+            p.planet_id,
+            p.coords,
+            "Kryptonite mine",
+            "queued/waiting",
+            target_id=3,
+            target_level=5,
+            cost=Resources(pig_iron=600, kryptonite=300),
+            missing=Resources(0, 0, 100, 0),
         )
         ship_adv = PlannedAction(
-            "P3", "SHIP", p.planet_id, p.coords, "Small transport", "advisory",
-            target_id=None, cost=Resources(0, 3000, 3000, 0), missing=Resources(0, 0, 500, 0),
+            "P3",
+            "SHIP",
+            p.planet_id,
+            p.coords,
+            "Small transport",
+            "advisory",
+            target_id=None,
+            cost=Resources(0, 3000, 3000, 0),
+            missing=Resources(0, 0, 500, 0),
         )
         ew = compute_action_eta(state, wait_b)
         es = compute_action_eta(state, ship_adv)
@@ -172,8 +230,16 @@ class TestTier2R3(unittest.TestCase):
         )
         state = make_game_state(planets=(p,), speedup_factor=1.0)
         act = PlannedAction(
-            "P2", "BUILD_SHIP", p.planet_id, p.coords, "Small transport", "blackout",
-            target_id=1, target_level=1, cost=Resources(0, 3000, 3000, 0), missing=Resources(0, 0, 500, 0),
+            "P2",
+            "BUILD_SHIP",
+            p.planet_id,
+            p.coords,
+            "Small transport",
+            "blackout",
+            target_id=1,
+            target_level=1,
+            cost=Resources(0, 3000, 3000, 0),
+            missing=Resources(0, 0, 500, 0),
         )
         eta = compute_action_eta(state, act)
         base_s = float(game_data.SHIPS["small-transport"]["base_build_time_s"])
@@ -187,8 +253,15 @@ class TestTier2R3(unittest.TestCase):
         p = make_planet(buildings={"b8": 4}, resources=Resources(0, 0, 0, 0))
         state = make_game_state(planets=(p,), researches={"r1": 41}, speedup_factor=1.0)
         res_42 = PlannedAction(
-            "P2", "RESEARCH", p.planet_id, p.coords, "Mining technology", "l42",
-            target_id=1, target_level=42, missing=Resources(),
+            "P2",
+            "RESEARCH",
+            p.planet_id,
+            p.coords,
+            "Mining technology",
+            "l42",
+            target_id=1,
+            target_level=42,
+            missing=Resources(),
         )
         e42 = compute_action_eta(state, res_42)
         l40_s = float(game_data.RESEARCH_BY_ID["r1"]["levels"][40]["base_time_s"])
@@ -277,7 +350,9 @@ class TestTier2R3(unittest.TestCase):
         _import_eta_helpers(self)
         with E2ETestHarness() as h:
             h.api.get_state(include_buildings=True)
-            res = h.api.send_command({"command": "throttle_building", "building_id": 2, "percentage": 0, "dry_run": False})
+            res = h.api.send_command(
+                {"command": "throttle_building", "building_id": 2, "percentage": 0, "dry_run": False}
+            )
             self.assertTrue(res["executed"])
             plan = h.api.send_command({"command": "plan"})["actions"]
             dash = requests.get(f"{h.base_url}/dashboard?refresh=0", timeout=5.0).json()
@@ -299,8 +374,15 @@ class TestTier2R3(unittest.TestCase):
         kry_rate = float(ranking.estimate_planet_hourly_economy(state, p)["kryptonite_per_hr"])
         miss_kry = round(200.0 * kry_rate)
         act = PlannedAction(
-            "P2", "BUILD", p.planet_id, p.coords, "Kryptonite mine", "long wait",
-            target_id=3, target_level=11, missing=Resources(0, 0, miss_kry, 0),
+            "P2",
+            "BUILD",
+            p.planet_id,
+            p.coords,
+            "Kryptonite mine",
+            "long wait",
+            target_id=3,
+            target_level=11,
+            missing=Resources(0, 0, miss_kry, 0),
         )
         eta = compute_action_eta(state, act)
         self.assertAlmostEqual(eta["wait_hours"], 200.0, delta=0.5)
@@ -464,26 +546,58 @@ class TestTier2R3(unittest.TestCase):
     def test_t2_r3c_04_ui_planet_select_switch_updates_bf_pill_and_etas(self) -> None:
         planets = {
             101: {
-                "planet_id": 101, "name": "Alpha", "coords": "02:380:12", "planet_type": "normal", "temperature": 30, "fields_max": 230,
-                "resources": [5000, 5000, 5000, 2000], "storage": [100000, 100000, 100000, 100000],
-                "energy": {"produced": 200, "used": 100}, "buildings": {"b1": 5, "b2": 4, "b5": 7},
-                "ships": {}, "defense": {}, "economy_rates": {"resource1": 100, "resource2": 100, "resource3": 100, "resource4": 100}, "building_queue": [],
+                "planet_id": 101,
+                "name": "Alpha",
+                "coords": "02:380:12",
+                "planet_type": "normal",
+                "temperature": 30,
+                "fields_max": 230,
+                "resources": [5000, 5000, 5000, 2000],
+                "storage": [100000, 100000, 100000, 100000],
+                "energy": {"produced": 200, "used": 100},
+                "buildings": {"b1": 5, "b2": 4, "b5": 7},
+                "ships": {},
+                "defense": {},
+                "economy_rates": {"resource1": 100, "resource2": 100, "resource3": 100, "resource4": 100},
+                "building_queue": [],
             },
             102: {
-                "planet_id": 102, "name": "Beta", "coords": "02:380:14", "planet_type": "normal", "temperature": -80, "fields_max": 230,
-                "resources": [5000, 0, 5000, 2000], "storage": [100000, 100000, 100000, 100000],
-                "energy": {"produced": 200, "used": 100}, "buildings": {"b1": 5, "b2": 4, "b5": 7},
-                "ships": {}, "defense": {}, "economy_rates": {"resource1": 100, "resource2": 100, "resource3": 100, "resource4": 100}, "building_queue": [],
+                "planet_id": 102,
+                "name": "Beta",
+                "coords": "02:380:14",
+                "planet_type": "normal",
+                "temperature": -80,
+                "fields_max": 230,
+                "resources": [5000, 0, 5000, 2000],
+                "storage": [100000, 100000, 100000, 100000],
+                "energy": {"produced": 200, "used": 100},
+                "buildings": {"b1": 5, "b2": 4, "b5": 7},
+                "ships": {},
+                "defense": {},
+                "economy_rates": {"resource1": 100, "resource2": 100, "resource3": 100, "resource4": 100},
+                "building_queue": [],
             },
         }
         srv = FakeSpaceInvasionServer(planets=planets, active_planet_id=101)
         with E2ETestHarness(server=srv) as h:
             h.api.get_state(include_buildings=True)
-            thr = h.api.send_command({"command": "throttle_building", "building_id": 2, "percentage": 0, "planet_id": 102, "dry_run": False})
+            thr = h.api.send_command(
+                {"command": "throttle_building", "building_id": 2, "percentage": 0, "planet_id": 102, "dry_run": False}
+            )
             self.assertTrue(thr["executed"], thr)
             # Switch active planet cleanly back to 101 at 100% before loading UI on planet 101
-            h.api.send_command({"command": "throttle_building", "building_id": 2, "percentage": 90, "planet_id": 101, "dry_run": False})
-            h.api.send_command({"command": "throttle_building", "building_id": 2, "percentage": 100, "planet_id": 101, "dry_run": False})
+            h.api.send_command(
+                {"command": "throttle_building", "building_id": 2, "percentage": 90, "planet_id": 101, "dry_run": False}
+            )
+            h.api.send_command(
+                {
+                    "command": "throttle_building",
+                    "building_id": 2,
+                    "percentage": 100,
+                    "planet_id": 101,
+                    "dry_run": False,
+                }
+            )
             st_home = h.api.get_state(include_buildings=True)
             self.assertEqual(st_home.active_planet_id, 101)
             res = run_ui_in_node(

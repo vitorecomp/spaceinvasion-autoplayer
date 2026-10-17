@@ -1266,8 +1266,15 @@ from typing import Any, Optional
 def write_catalog_tables(payload: dict[str, Any], tables_dir: Path = OUTPUT_TABLES_DIR) -> None:
     """Write scraped SpaceInvasion Classic tables into ``spaceinvasion/core/catalog/tables/*.json``."""
     tables_dir.mkdir(parents=True, exist_ok=True)
-    for filename, key in (("buildings.json", "buildings"), ("research.json", "researches"), ("ships.json", "ships"), ("defenses.json", "defenses")):
-        (tables_dir / filename).write_text(json.dumps(payload[key], indent=2, ensure_ascii=False, allow_nan=False) + "\n", encoding="utf-8")
+    for filename, key in (
+        ("buildings.json", "buildings"),
+        ("research.json", "researches"),
+        ("ships.json", "ships"),
+        ("defenses.json", "defenses"),
+    ):
+        (tables_dir / filename).write_text(
+            json.dumps(payload[key], indent=2, ensure_ascii=False, allow_nan=False) + "\n", encoding="utf-8"
+        )
 
 
 def main() -> int:
@@ -1276,7 +1283,9 @@ def main() -> int:
     args = parser.parse_args()
     payload = scrape_wiki()
     write_catalog_tables(payload, args.output_dir)
-    print(f"Wrote {args.output_dir}: {len(payload['buildings'])} buildings, {len(payload['researches'])} researches, {len(payload['ships'])} ships, {len(payload['defenses'])} defenses")
+    print(
+        f"Wrote {args.output_dir}: {len(payload['buildings'])} buildings, {len(payload['researches'])} researches, {len(payload['ships'])} ships, {len(payload['defenses'])} defenses"
+    )
     return 0
 
 

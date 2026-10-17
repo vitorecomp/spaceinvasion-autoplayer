@@ -218,9 +218,7 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
 
         self.assertIsNone(commander.compute_rate_limit_backoff("random socket timeout"))
         self.assertGreaterEqual(
-            commander.compute_rate_limit_backoff(
-                "SpaceInvasion per-minute page-view throttle hit; retry after 48s."
-            )
+            commander.compute_rate_limit_backoff("SpaceInvasion per-minute page-view throttle hit; retry after 48s.")
             or 0.0,
             48.0,
         )
@@ -279,7 +277,9 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
         fake_client.__enter__.return_value = fake_client
         fake_client.driver = MagicMock(current_url="https://spaceinvasion.bitmeup.com/indexGame.es?sid=abc")
         fake_client.read_full_snapshot.return_value = state
-        fake_client.open_galaxy.return_value = '<table><tr><td>4</td><td><span class="galaxy_yellow">Idle</span></td><td>Sleepy</td></tr></table>'
+        fake_client.open_galaxy.return_value = (
+            '<table><tr><td>4</td><td><span class="galaxy_yellow">Idle</span></td><td>Sleepy</td></tr></table>'
+        )
 
         bridge = GameApiBridge(
             debug_port=9222,
@@ -359,9 +359,7 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
             client_factory=lambda _port: fake_client,
             ensure_session_fn=lambda: None,
         )
-        res = bridge.handle_command(
-            {"command": "navigate", "action": "internalGalaxy", "galaxy": 2, "system": 385}
-        )
+        res = bridge.handle_command({"command": "navigate", "action": "internalGalaxy", "galaxy": 2, "system": 385})
         self.assertTrue(res["ok"])
         self.assertEqual(res["galaxy"], 2)
         self.assertEqual(res["system"], 385)
@@ -752,10 +750,7 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
 
         # 6. Commander backoff handles local page-view budget messages without sleeping 3s
         self.assertGreaterEqual(
-            commander.compute_rate_limit_backoff(
-                "Page-view budget reached (18/18 in 60s); retry after 60.0s."
-            )
-            or 0.0,
+            commander.compute_rate_limit_backoff("Page-view budget reached (18/18 in 60s); retry after 60.0s.") or 0.0,
             60.0,
         )
         fake_api = MagicMock(spec=GameApiClient)
@@ -1308,7 +1303,9 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
         )
         b2_energy = abs(int(game_data.building_level_stats(2, 12)["energy"]))
 
-        def _run_seq(cur0: int, extra_offers: tuple[BuildingOffer, ...], queues: tuple[QueueJob, ...] = ()) -> list[int]:
+        def _run_seq(
+            cur0: int, extra_offers: tuple[BuildingOffer, ...], queues: tuple[QueueJob, ...] = ()
+        ) -> list[int]:
             cur = cur0
             seq: list[int] = []
             for _ in range(6):
@@ -1353,10 +1350,7 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
             self.assertEqual(_run_seq(cur0, fusion_blocked), [])
             # 3. Fusion plant buildable, but 5/5 construction queue full
             fusion_ok = (BuildingOffer(5, "Fusion plant", 13, 14, Resources(16975, 0, 7427, 0), True, "Build"),)
-            full_q = tuple(
-                QueueJob("building", "Pig iron mine", building_id=1, target_level=10)
-                for _ in range(5)
-            )
+            full_q = tuple(QueueJob("building", "Pig iron mine", building_id=1, target_level=10) for _ in range(5))
             self.assertEqual(_run_seq(cur0, fusion_ok, queues=full_q), [])
 
         # 4. Fusion plant buildable & queue free -> cur0=0 resumes [100], cur0=100 stays stable []
@@ -1457,7 +1451,11 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
             ((False, False), (True, False), (True, True)),
         )
         for cur0, b2, pig, kryp, met, sp, mode, (has_fus, can_fus) in combos:
-            offers = () if mode == "no_offers" else (base_offers if mode == "3_affordable_plus_bf_wait" else wait_metal_offer)
+            offers = (
+                ()
+                if mode == "no_offers"
+                else (base_offers if mode == "3_affordable_plus_bf_wait" else wait_metal_offer)
+            )
             if has_fus:
                 offers = offers + (
                     BuildingOffer(5, "Fusion plant", 13, 14, Resources(16975, 0, 7427, 0), can_fus, "Fusion"),
@@ -1513,7 +1511,9 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
         fake_api = MagicMock(spec=GameApiClient)
         fake_api.get_bot_control.return_value = {"ok": True, "paused": False, "mode_override": None}
         fake_api.health.return_value = {"ok": True, "in_game": True, "rate_limited": True, "retry_after": 45.0}
-        fake_api.get_state.side_effect = GameApiError("SpaceInvasion per-minute page-view throttle hit; retry after 45s.")
+        fake_api.get_state.side_effect = GameApiError(
+            "SpaceInvasion per-minute page-view throttle hit; retry after 45s."
+        )
         sleeps: list[float] = []
         with tempfile.TemporaryDirectory() as tmp:
             cfg_path = Path(tmp) / "config.json"
@@ -1695,7 +1695,9 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
                 self.nav_token = None
 
             def _on_step1(self, _el) -> None:
-                self.frames["F_Hauptframe"]["href"] = "https://spaceinvasion.bitmeup.com/indexInternal.es?action=internalSendFleet"
+                self.frames["F_Hauptframe"]["href"] = (
+                    "https://spaceinvasion.bitmeup.com/indexInternal.es?action=internalSendFleet"
+                )
                 self.frames["F_Hauptframe"]["html"] = fleet_step2_html
                 self.nav_token = None
 
@@ -1784,7 +1786,9 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
                     elif "internalGalaxy" in url:
                         self.frames["F_Hauptframe"]["html"] = galaxy_html
                     elif "internalHome" in url:
-                        self.frames["F_Hauptframe"]["html"] = "<html><body><div>active factor: x20.0</div></body></html>"
+                        self.frames["F_Hauptframe"]["html"] = (
+                            "<html><body><div>active factor: x20.0</div></body></html>"
+                        )
                     self.nav_token = None
                     return None
                 if "typeof window.__siNavToken" in script:
@@ -1849,7 +1853,9 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
                         limiter.record_view(18)
                         bridge._last_snapshot_at = time.monotonic()
                         bridge._last_buildings_fetched = True
-                        drv.frames["F_Hauptframe"]["href"] = "https://spaceinvasion.bitmeup.com/indexInternal.es?action=internalHome"
+                        drv.frames["F_Hauptframe"]["href"] = (
+                            "https://spaceinvasion.bitmeup.com/indexInternal.es?action=internalHome"
+                        )
                         resp = requests.post(f"http://127.0.0.1:{port}/command", json=payload, timeout=5)
                         self.assertEqual(resp.status_code, 200, f"{payload} -> {resp.text}")
                         body = resp.json()
@@ -1873,7 +1879,9 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
                     drv.build_clicks = 0
                     bridge._last_snapshot_at = time.monotonic()
                     bridge._last_buildings_fetched = True
-                    drv.frames["F_Hauptframe"]["href"] = "https://spaceinvasion.bitmeup.com/indexInternal.es?action=internalHome"
+                    drv.frames["F_Hauptframe"]["href"] = (
+                        "https://spaceinvasion.bitmeup.com/indexInternal.es?action=internalHome"
+                    )
                     resp_b17 = requests.post(
                         f"http://127.0.0.1:{port}/command",
                         json={"command": "build", "building_id": 1, "dry_run": False},
@@ -1952,8 +1960,12 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
             energy=EnergyBalance(300, 100),
             buildings={"b8": 1},
         )
-        st_b8_0 = GameState(31, 103603, "u", 100.0, (p_b8_0,), active_planet_id=12476, researches={}, research_offers=())
-        st_b8_1 = GameState(31, 103603, "u", 101.0, (p_b8_1,), active_planet_id=12476, researches={}, research_offers=())
+        st_b8_0 = GameState(
+            31, 103603, "u", 100.0, (p_b8_0,), active_planet_id=12476, researches={}, research_offers=()
+        )
+        st_b8_1 = GameState(
+            31, 103603, "u", 101.0, (p_b8_1,), active_planet_id=12476, researches={}, research_offers=()
+        )
         fake_res_client = MagicMock()
         fake_res_client.__enter__.return_value = fake_res_client
         fake_res_client.read_full_snapshot.side_effect = [st_b8_0, st_b8_0, st_b8_1]
@@ -1980,12 +1992,26 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
         )
 
         # 1. Verify GameApiBridge executor_max_limiter_wait parameter behavior
-        b_def = GameApiBridge(debug_port=9222, log_dir=None, client_factory=lambda _p: MagicMock(), ensure_session_fn=lambda: None)
+        b_def = GameApiBridge(
+            debug_port=9222, log_dir=None, client_factory=lambda _p: MagicMock(), ensure_session_fn=lambda: None
+        )
         self.assertEqual(b_def._live_executor.max_limiter_wait, 8.0)
         self.assertEqual(b_def._dry_executor.max_limiter_wait, 8.0)
-        b_half = GameApiBridge(debug_port=9222, log_dir=None, client_factory=lambda _p: MagicMock(), ensure_session_fn=lambda: None, max_limiter_wait=0.5)
+        b_half = GameApiBridge(
+            debug_port=9222,
+            log_dir=None,
+            client_factory=lambda _p: MagicMock(),
+            ensure_session_fn=lambda: None,
+            max_limiter_wait=0.5,
+        )
         self.assertEqual(b_half._live_executor.max_limiter_wait, 0.5)
-        b_none = GameApiBridge(debug_port=9222, log_dir=None, client_factory=lambda _p: MagicMock(), ensure_session_fn=lambda: None, executor_max_limiter_wait=None)
+        b_none = GameApiBridge(
+            debug_port=9222,
+            log_dir=None,
+            client_factory=lambda _p: MagicMock(),
+            ensure_session_fn=lambda: None,
+            executor_max_limiter_wait=None,
+        )
         self.assertIsNone(b_none._live_executor.max_limiter_wait)
         self.assertIsNone(b_none._dry_executor.max_limiter_wait)
 
@@ -2128,9 +2154,18 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
                     },
                 }
                 self.frames = {
-                    "F_Navi": {"href": "https://spaceinvasion.bitmeup.com/indexInternal.es?action=internalMenu", "html": ""},
-                    "F_planets": {"href": "https://spaceinvasion.bitmeup.com/indexInternal.es?action=internalPlanetsOverview", "html": "<html><body><script id='json-container'></script></body></html>"},
-                    "F_Hauptframe": {"href": "https://spaceinvasion.bitmeup.com/indexInternal.es?action=internalHome", "html": ""},
+                    "F_Navi": {
+                        "href": "https://spaceinvasion.bitmeup.com/indexInternal.es?action=internalMenu",
+                        "html": "",
+                    },
+                    "F_planets": {
+                        "href": "https://spaceinvasion.bitmeup.com/indexInternal.es?action=internalPlanetsOverview",
+                        "html": "<html><body><script id='json-container'></script></body></html>",
+                    },
+                    "F_Hauptframe": {
+                        "href": "https://spaceinvasion.bitmeup.com/indexInternal.es?action=internalHome",
+                        "html": "",
+                    },
                 }
                 self._step1_inputs: dict[str, _El] = {}
                 self._ship_qty_inp: _El | None = None
@@ -2151,7 +2186,20 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
                             {
                                 k: v
                                 for k, v in p.items()
-                                if k in ("id", "name", "coords", "type", "temperature", "fields", "resources", "storage", "energy", "buildings", "defense")
+                                if k
+                                in (
+                                    "id",
+                                    "name",
+                                    "coords",
+                                    "type",
+                                    "temperature",
+                                    "fields",
+                                    "resources",
+                                    "storage",
+                                    "energy",
+                                    "buildings",
+                                    "defense",
+                                )
                             }
                             | {"ships": {sk: {"level": sv} for sk, sv in p["ships"].items()}}
                             for p in self.planets.values()
@@ -2175,15 +2223,17 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
                 )
 
             def _render_home(self) -> None:
-                self.frames["F_Hauptframe"]["href"] = "https://spaceinvasion.bitmeup.com/indexInternal.es?action=internalHome&sid=m2r4"
+                self.frames["F_Hauptframe"]["href"] = (
+                    "https://spaceinvasion.bitmeup.com/indexInternal.es?action=internalHome&sid=m2r4"
+                )
                 claim_btn = (
                     '<form action="indexInternal.es?action=internalHome"><input type="hidden" name="tutorialComplete" value="1"/><input type="submit" value="Claim"/></form>'
                     if self.tutorial_can_complete
                     else ""
                 )
                 self.frames["F_Hauptframe"]["html"] = (
-                    f'<script>SI_TPL={{planetID:{self.active_planet_id}}};</script>'
-                    f'<div>active factor: x20.0</div><div>Tutorial {self.tutorial_step} / 11</div>'
+                    f"<script>SI_TPL={{planetID:{self.active_planet_id}}};</script>"
+                    f"<div>active factor: x20.0</div><div>Tutorial {self.tutorial_step} / 11</div>"
                     f'<div id="tutorial.text">{claim_btn}</div>'
                 )
 
@@ -2198,7 +2248,9 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
                     if q_items
                     else f'<a class="bau" href="indexInternal.es?action=internalBuildItem&buildingID=1">Build level {cur_b1 + 1}</a>'
                 )
-                self.frames["F_Hauptframe"]["href"] = "https://spaceinvasion.bitmeup.com/indexInternal.es?action=internalBuildings&sid=m2r4"
+                self.frames["F_Hauptframe"]["href"] = (
+                    "https://spaceinvasion.bitmeup.com/indexInternal.es?action=internalBuildings&sid=m2r4"
+                )
                 self.frames["F_Hauptframe"]["html"] = (
                     f"<html><body>{self._switcher_html('internalBuildings')}{q_tbl}"
                     f'<table><tr><td><a href="indexInternal.es?action=internalDetail&type=building&id=1">Pig iron mine</a> '
@@ -2207,18 +2259,22 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
 
             def _render_research(self) -> None:
                 cur_r1 = int(self.researches["r1"])
-                self.frames["F_Hauptframe"]["href"] = "https://spaceinvasion.bitmeup.com/indexInternal.es?action=internalResearch&sid=m2r4"
+                self.frames["F_Hauptframe"]["href"] = (
+                    "https://spaceinvasion.bitmeup.com/indexInternal.es?action=internalResearch&sid=m2r4"
+                )
                 self.frames["F_Hauptframe"]["html"] = (
                     f"<html><body>{self._switcher_html('internalResearch')}"
                     f'<table><tr><td><a href="indexInternal.es?action=internalDetail&type=research&id=1">Mining technology</a> '
-                    f'Required: 1.000 Pig iron 500 Kryptonite '
+                    f"Required: 1.000 Pig iron 500 Kryptonite "
                     f'<a class="bau" href="indexInternal.es?action=internalBuildItem&researchID=1">Research level {cur_r1 + 1}</a></td></tr></table></body></html>'
                 )
 
             def _render_shipyard(self) -> None:
                 p = self.planets[self.active_planet_id]
                 owned = int(p["ships"].get("s1", 0))
-                self.frames["F_Hauptframe"]["href"] = "https://spaceinvasion.bitmeup.com/indexInternal.es?action=internalWeaponFactory&sid=m2r4"
+                self.frames["F_Hauptframe"]["href"] = (
+                    "https://spaceinvasion.bitmeup.com/indexInternal.es?action=internalWeaponFactory&sid=m2r4"
+                )
                 self.frames["F_Hauptframe"]["html"] = (
                     f"<html><body>{self._switcher_html('internalWeaponFactory')}"
                     f'<form action="indexInternal.es?action=internalBuildItem&buildShip=1" method="POST">'
@@ -2232,10 +2288,11 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
                 p = self.planets[self.active_planet_id]
                 cur = int(p["economy_rates"].get("resource2", 100))
                 opts = "".join(
-                    f'<option {"selected " if pct == cur else ""}value="{pct}">{pct}%</option>'
-                    for pct in (100, 0)
+                    f'<option {"selected " if pct == cur else ""}value="{pct}">{pct}%</option>' for pct in (100, 0)
                 )
-                self.frames["F_Hauptframe"]["href"] = "https://spaceinvasion.bitmeup.com/indexInternal.es?action=internalEconomy&sid=m2r4"
+                self.frames["F_Hauptframe"]["href"] = (
+                    "https://spaceinvasion.bitmeup.com/indexInternal.es?action=internalEconomy&sid=m2r4"
+                )
                 self.frames["F_Hauptframe"]["html"] = (
                     f"<html><body>{self._switcher_html('internalEconomy')}"
                     f'<form id="ress"><select name="resource2">{opts}</select><input type="submit" value="Save"/></form></body></html>'
@@ -2249,7 +2306,9 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
                     "sun": _El(tag="input", attrs={"name": "sun", "value": ""}),
                     "pla": _El(tag="input", attrs={"name": "pla", "value": ""}),
                 }
-                self.frames["F_Hauptframe"]["href"] = "https://spaceinvasion.bitmeup.com/indexInternal.es?action=internalFleet&sid=m2r4"
+                self.frames["F_Hauptframe"]["href"] = (
+                    "https://spaceinvasion.bitmeup.com/indexInternal.es?action=internalFleet&sid=m2r4"
+                )
                 self.frames["F_Hauptframe"]["html"] = (
                     '<form action="indexInternal.es?action=internalSendFleet">'
                     '<input name="ship_4" value="0"/><input name="ship_10" value="0"/>'
@@ -2261,7 +2320,9 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
                     _El(tag="input", attrs={"type": "radio", "name": "mission", "value": "1", "id": "m1"}),
                     _El(tag="input", attrs={"type": "radio", "name": "mission", "value": "6", "id": "m6"}),
                 ]
-                self.frames["F_Hauptframe"]["href"] = "https://spaceinvasion.bitmeup.com/indexInternal.es?action=internalSendFleet&sid=m2r4"
+                self.frames["F_Hauptframe"]["href"] = (
+                    "https://spaceinvasion.bitmeup.com/indexInternal.es?action=internalSendFleet&sid=m2r4"
+                )
                 self.frames["F_Hauptframe"]["html"] = (
                     '<form action="indexInternal.es?action=internalSendFleet">'
                     '<input type="radio" name="mission" value="1" id="m1"/> Attack '
@@ -2297,7 +2358,9 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
                 elif action_name == "internalFleet":
                     self._render_fleet_step1()
                 elif action_name == "internalGalaxy":
-                    self.frames["F_Hauptframe"]["href"] = "https://spaceinvasion.bitmeup.com/indexInternal.es?action=internalGalaxy&sid=m2r4"
+                    self.frames["F_Hauptframe"]["href"] = (
+                        "https://spaceinvasion.bitmeup.com/indexInternal.es?action=internalGalaxy&sid=m2r4"
+                    )
                     self.frames["F_Hauptframe"]["html"] = (
                         "<div>System [02:380]</div>"
                         '<table><tr><td>4</td><td><span class="galaxy_yellow">Idle</span></td><td>Sleepy (i)</td></tr></table>'
@@ -2305,7 +2368,9 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
                 elif action_name == "internalMessages":
                     self.unread_spio = 0
                     self._render_menu()
-                    self.frames["F_Hauptframe"]["href"] = "https://spaceinvasion.bitmeup.com/indexInternal.es?action=internalMessages&type=spio&sid=m2r4"
+                    self.frames["F_Hauptframe"]["href"] = (
+                        "https://spaceinvasion.bitmeup.com/indexInternal.es?action=internalMessages&type=spio&sid=m2r4"
+                    )
                     self.frames["F_Hauptframe"]["html"] = (
                         "<table><tr><td>02:380:04 Player: Sleepy Pig iron: 9.000 Metal: 4.000 Kryptonite: 2.000 Spice: 500</td></tr></table>"
                     )
@@ -2354,14 +2419,17 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
                         ]
                         return _El(tag="select", attrs={"name": "planet"}, children=opts)
                     if by == By.CSS_SELECTOR and "tutorialComplete" in value:
+
                         def _on_claim(_el) -> None:
                             self.page_view_log.append("internalHome[submit]")
                             self.tutorial_step += 1
                             self.tutorial_can_complete = False
                             self._render_home()
                             self.nav_token = None
+
                         return _El(tag="input", attrs={"type": "submit"}, on_click=_on_claim)
                     if by == By.CSS_SELECTOR and "buildingID=" in value:
+
                         def _on_build(_el) -> None:
                             self.page_view_log.append("internalBuildItem")
                             p = self.planets[self.active_planet_id]
@@ -2372,18 +2440,22 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
                                 p["building_queue"].append({"name": "Pig iron mine", "level": nxt})
                             self._render_buildings()
                             self.nav_token = None
+
                         return _El(tag="a", on_click=_on_build)
                     if by == By.CSS_SELECTOR and "researchID=" in value:
+
                         def _on_research(_el) -> None:
                             self.page_view_log.append("internalBuildItem")
                             self.researches["r1"] = int(self.researches["r1"]) + 1
                             self._render_research()
                             self.nav_token = None
+
                         return _El(tag="a", on_click=_on_research)
                     if by == By.NAME and value == "ship[1]":
                         self._ship_qty_inp = _El(tag="input", attrs={"name": "ship[1]", "value": "0"})
                         return self._ship_qty_inp
                     if by == By.CSS_SELECTOR and 'form[action*="buildShip=1"]' in value:
+
                         def _on_ship(_el) -> None:
                             self.page_view_log.append("internalBuildItem")
                             qty = int((self._ship_qty_inp.value if self._ship_qty_inp else "1") or 1)
@@ -2391,6 +2463,7 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
                             p["ships"]["s1"] = int(p["ships"].get("s1", 0)) + qty
                             self._render_shipyard()
                             self.nav_token = None
+
                         return _El(
                             tag="form",
                             children=[_El(tag="input", attrs={"type": "submit"}, on_click=_on_ship)],
@@ -2398,18 +2471,18 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
                     if by == By.NAME and value == "resource2":
                         p = self.planets[self.active_planet_id]
                         cur = int(p["economy_rates"].get("resource2", 100))
-                        opts = [
-                            _El(tag="option", attrs={"value": str(pct)}, selected=(pct == cur))
-                            for pct in (100, 0)
-                        ]
+                        opts = [_El(tag="option", attrs={"value": str(pct)}, selected=(pct == cur)) for pct in (100, 0)]
                         for opt in opts:
+
                             def _sel_opt(_o, target=opt, all_opts=opts):
                                 for x in all_opts:
-                                    x._selected = (x is target)
+                                    x._selected = x is target
+
                             opt._on_click = _sel_opt
                         self._econ_pct_sel = _El(tag="select", attrs={"name": "resource2"}, children=opts)
                         return self._econ_pct_sel
                     if by == By.CSS_SELECTOR and "internalEconomy" in value:
+
                         def _on_econ(_el) -> None:
                             self.page_view_log.append("internalEconomy")
                             chosen = next(
@@ -2423,11 +2496,13 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
                             self.planets[self.active_planet_id]["economy_rates"]["resource2"] = chosen
                             self._render_economy()
                             self.nav_token = None
+
                         return _El(tag="input", attrs={"type": "submit"}, on_click=_on_econ)
                     if by == By.NAME and value in self._step1_inputs:
                         return self._step1_inputs[value]
                     if by == By.CSS_SELECTOR and "internalSendFleet" in value and "submit" in value:
                         if "action=internalSendFleet" in self.frames["F_Hauptframe"]["href"]:
+
                             def _on_step2(_el) -> None:
                                 self.page_view_log.append("internalSendFleet")
                                 mission = next((r.value for r in self._mission_radios if r._selected), "1")
@@ -2454,11 +2529,14 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
                                 )
                                 self.frames["F_Hauptframe"]["html"] = "<div>Fleet dispatched</div>"
                                 self.nav_token = None
+
                             return _El(tag="input", attrs={"type": "submit"}, on_click=_on_step2)
+
                         def _on_step1(_el) -> None:
                             self.page_view_log.append("internalSendFleet")
                             self._render_fleet_step2()
                             self.nav_token = None
+
                         return _El(tag="input", attrs={"type": "submit"}, on_click=_on_step1)
                 raise NoSuchElementException(f"{self.active_frame}:{by}={value}")
 
@@ -2527,12 +2605,15 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
             bridge._live_executor.action_delay_range = (0.0, 0.0)
             assert bridge._db is not None
             try:
+
                 def _reset_budget_off_home(*, stale: bool = False, drop_cache: bool = False) -> None:
                     now[0] += 100.0
                     limiter.reset()
                     limiter.record_view(18)
                     drv.page_view_log.clear()
-                    drv.frames["F_Hauptframe"]["href"] = "https://spaceinvasion.bitmeup.com/indexInternal.es?action=internalGalaxy&sid=m2r4"
+                    drv.frames["F_Hauptframe"]["href"] = (
+                        "https://spaceinvasion.bitmeup.com/indexInternal.es?action=internalGalaxy&sid=m2r4"
+                    )
                     drv.frames["F_Hauptframe"]["html"] = "<div>System [02:380]</div>"
                     if drop_cache:
                         bridge._last_state = None
@@ -2551,25 +2632,96 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
                     ("research_warm", {"command": "research", "research_id": 1, "dry_run": False}, False, False),
                     ("research_stale", {"command": "research", "research_id": 1, "dry_run": False}, True, False),
                     ("research_missing", {"command": "research", "research_id": 1, "dry_run": False}, False, True),
-                    ("research_cross", {"command": "research", "research_id": 1, "planet_id": 12477, "dry_run": False}, False, False),
-                    ("build_ship_warm", {"command": "build_ship", "ship_id": 1, "quantity": 2, "dry_run": False}, False, False),
-                    ("build_ship_stale", {"command": "build_ship", "ship_id": 1, "quantity": 2, "dry_run": False}, True, False),
-                    ("build_ship_missing", {"command": "build_ship", "ship_id": 1, "quantity": 2, "dry_run": False}, False, True),
-                    ("build_ship_cross", {"command": "build_ship", "ship_id": 1, "quantity": 2, "planet_id": 12477, "dry_run": False}, False, False),
+                    (
+                        "research_cross",
+                        {"command": "research", "research_id": 1, "planet_id": 12477, "dry_run": False},
+                        False,
+                        False,
+                    ),
+                    (
+                        "build_ship_warm",
+                        {"command": "build_ship", "ship_id": 1, "quantity": 2, "dry_run": False},
+                        False,
+                        False,
+                    ),
+                    (
+                        "build_ship_stale",
+                        {"command": "build_ship", "ship_id": 1, "quantity": 2, "dry_run": False},
+                        True,
+                        False,
+                    ),
+                    (
+                        "build_ship_missing",
+                        {"command": "build_ship", "ship_id": 1, "quantity": 2, "dry_run": False},
+                        False,
+                        True,
+                    ),
+                    (
+                        "build_ship_cross",
+                        {"command": "build_ship", "ship_id": 1, "quantity": 2, "planet_id": 12477, "dry_run": False},
+                        False,
+                        False,
+                    ),
                     ("build_warm", {"command": "build", "building_id": 1, "dry_run": False}, False, False),
                     ("build_stale", {"command": "build", "building_id": 1, "dry_run": False}, True, False),
                     ("build_missing", {"command": "build", "building_id": 1, "dry_run": False}, False, True),
-                    ("build_cross", {"command": "build", "building_id": 1, "planet_id": 12477, "dry_run": False}, False, False),
-                    ("attack_warm", {"command": "attack", "target_coords": "02:380:04", "dry_run": False}, False, False),
-                    ("attack_stale", {"command": "attack", "target_coords": "02:380:04", "dry_run": False}, True, False),
-                    ("attack_missing", {"command": "attack", "target_coords": "02:380:04", "dry_run": False}, False, True),
-                    ("attack_cross", {"command": "attack", "target_coords": "02:380:04", "planet_id": 12477, "dry_run": False}, False, False),
+                    (
+                        "build_cross",
+                        {"command": "build", "building_id": 1, "planet_id": 12477, "dry_run": False},
+                        False,
+                        False,
+                    ),
+                    (
+                        "attack_warm",
+                        {"command": "attack", "target_coords": "02:380:04", "dry_run": False},
+                        False,
+                        False,
+                    ),
+                    (
+                        "attack_stale",
+                        {"command": "attack", "target_coords": "02:380:04", "dry_run": False},
+                        True,
+                        False,
+                    ),
+                    (
+                        "attack_missing",
+                        {"command": "attack", "target_coords": "02:380:04", "dry_run": False},
+                        False,
+                        True,
+                    ),
+                    (
+                        "attack_cross",
+                        {"command": "attack", "target_coords": "02:380:04", "planet_id": 12477, "dry_run": False},
+                        False,
+                        False,
+                    ),
                     ("spy_warm", {"command": "spy", "target_coords": "02:380:04", "dry_run": False}, False, False),
                     ("spy_stale_auto", {"command": "spy", "target_coords": "02:380:04", "dry_run": False}, True, False),
                     ("spy_missing", {"command": "spy", "target_coords": "02:380:04", "dry_run": False}, False, True),
-                    ("spy_cross", {"command": "spy", "target_coords": "02:380:04", "planet_id": 12477, "dry_run": False}, False, False),
-                    ("throttle_stale_cross", {"command": "throttle_building", "building_id": 2, "percentage": 0, "planet_id": 12477, "dry_run": False}, True, False),
-                    ("scan_uncached", {"command": "scan_galaxy", "galaxy": 2, "system": 380, "dry_run": False}, False, True),
+                    (
+                        "spy_cross",
+                        {"command": "spy", "target_coords": "02:380:04", "planet_id": 12477, "dry_run": False},
+                        False,
+                        False,
+                    ),
+                    (
+                        "throttle_stale_cross",
+                        {
+                            "command": "throttle_building",
+                            "building_id": 2,
+                            "percentage": 0,
+                            "planet_id": 12477,
+                            "dry_run": False,
+                        },
+                        True,
+                        False,
+                    ),
+                    (
+                        "scan_uncached",
+                        {"command": "scan_galaxy", "galaxy": 2, "system": 380, "dry_run": False},
+                        False,
+                        True,
+                    ),
                 ]
                 for label, payload, stale, drop_cache in cases:
                     drv.active_planet_id = 12476
@@ -2591,8 +2743,12 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
                 # Stale "Not enough resources" / "Locked / insufficient" cached offers still live-verify cleanly
                 assert bridge._last_state is not None
                 p0 = bridge._last_state.planets[0]
-                stale_res_offer = ResearchOffer(1, "r1", "Mining technology", 1, 2, Resources(1000, 0, 500, 0), False, "Not enough resources")
-                stale_ship_offer = UnitOffer("ship", 1, "Small transport", 2, Resources(0, 3000, 3000, 0), False, None, "Locked / insufficient")
+                stale_res_offer = ResearchOffer(
+                    1, "r1", "Mining technology", 1, 2, Resources(1000, 0, 500, 0), False, "Not enough resources"
+                )
+                stale_ship_offer = UnitOffer(
+                    "ship", 1, "Small transport", 2, Resources(0, 3000, 3000, 0), False, None, "Locked / insufficient"
+                )
                 bridge._last_state = replace(
                     bridge._last_state,
                     planets=(replace(p0, ship_offers=(stale_ship_offer,)), bridge._last_state.planets[1]),
@@ -2636,17 +2792,23 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
                 drv.active_planet_id = 12476
                 _reset_budget_off_home(stale=False, drop_cache=False)
                 bridge._last_state = replace(bridge._last_state, active_planet_id=12476)
-                r1 = bridge.handle_command({"command": "attack", "target_coords": "02:380:04", "planet_id": 12477, "dry_run": False})
+                r1 = bridge.handle_command(
+                    {"command": "attack", "target_coords": "02:380:04", "planet_id": 12477, "dry_run": False}
+                )
                 self.assertTrue(r1["executed"])
                 self.assertEqual(drv.launched_fleets[-1]["origin_planet_id"], 12477)
 
                 _reset_budget_off_home(stale=True, drop_cache=False)
-                r_scan = bridge.handle_command({"command": "scan_galaxy", "galaxy": 2, "system": 380, "refresh": True, "dry_run": False})
+                r_scan = bridge.handle_command(
+                    {"command": "scan_galaxy", "galaxy": 2, "system": 380, "refresh": True, "dry_run": False}
+                )
                 self.assertTrue(r_scan["executed"])
                 self.assertEqual(r_scan["state"]["active_planet_id"], 12477)
 
                 _reset_budget_off_home(stale=True, drop_cache=False)
-                r2 = bridge.handle_command({"command": "attack", "target_coords": "02:380:04", "planet_id": 12476, "dry_run": False})
+                r2 = bridge.handle_command(
+                    {"command": "attack", "target_coords": "02:380:04", "planet_id": 12476, "dry_run": False}
+                )
                 self.assertTrue(r2["executed"])
                 self.assertEqual(drv.launched_fleets[-1]["origin_planet_id"], 12476)
                 self.assertLessEqual(limiter.views_last_60s(), 24)
@@ -2770,7 +2932,13 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
                 bridge.get_state(include_buildings=True)
                 _at_18(lim, clock, drv)
                 r_noop = bridge.handle_command(
-                    {"command": "throttle_building", "building_id": 2, "percentage": 100, "planet_id": 12477, "dry_run": False}
+                    {
+                        "command": "throttle_building",
+                        "building_id": 2,
+                        "percentage": 100,
+                        "planet_id": 12477,
+                        "dry_run": False,
+                    }
                 )
                 self.assertFalse(r_noop["executed"])
                 self.assertEqual(srv.active_planet_id, 12477)
@@ -2792,7 +2960,9 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
                     f"<html><body>{srv._planet_switcher_html('internalBuildings')}<div>No build link</div></body></html>",
                 )
                 _at_18(lim, clock, drv)
-                r_b_abort = bridge.handle_command({"command": "build", "building_id": 1, "planet_id": 12477, "dry_run": False})
+                r_b_abort = bridge.handle_command(
+                    {"command": "build", "building_id": 1, "planet_id": 12477, "dry_run": False}
+                )
                 srv._render_buildings_html = orig_render_b
                 self.assertFalse(r_b_abort["executed"])
                 self.assertEqual(bridge._last_state.active_planet_id, 12477)
@@ -2810,7 +2980,10 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
             clock2, srv2, drv2, lim2, bridge2 = _make_two_planet_env(Path(tmp) / "e3b", 12476)
             try:
                 orig_launch = srv2._handle_fleet_launch
-                srv2._handle_fleet_launch = lambda ap, fd, sq: ("indexInternal.es?action=internalSendFleet", "<div>No free fleet slot.</div>")
+                srv2._handle_fleet_launch = lambda ap, fd, sq: (
+                    "indexInternal.es?action=internalSendFleet",
+                    "<div>No free fleet slot.</div>",
+                )
                 bridge2.get_state(include_buildings=True)
                 _at_18(lim2, clock2, drv2)
                 r_abort = bridge2.handle_command(
@@ -2948,14 +3121,22 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
             # 1A & 1B & 1E: Cold scan_galaxy -> claim_tutorial, cold build(dry_run=True) -> plan, navigate(internalEconomy)
             clock, srv, drv, lim, bridge = _make_env(
                 Path(tmp) / "home1",
-                tutorial={"step": 1, "total_steps": 11, "can_complete": True, "tasks": [], "reward_text": "5000 Pig iron"},
+                tutorial={
+                    "step": 1,
+                    "total_steps": 11,
+                    "can_complete": True,
+                    "tasks": [],
+                    "reward_text": "5000 Pig iron",
+                },
                 hostile_alerts=["Hostile Attack from 02:380:99 arriving in 00:05:00"],
             )
             try:
                 with patch("spaceinvasion.runtime.api_server.time", _TimeProxy(clock)):
                     lim.record_view(18)
                     drv._navigate_frame("F_Hauptframe", "indexInternal.es?action=internalGalaxy")
-                    r_scan = bridge.handle_command({"command": "scan_galaxy", "galaxy": 2, "system": 380, "dry_run": False})
+                    r_scan = bridge.handle_command(
+                        {"command": "scan_galaxy", "galaxy": 2, "system": 380, "dry_run": False}
+                    )
                     self.assertTrue(r_scan["executed"])
                     self.assertFalse(bridge._last_home_fetched)
                     self.assertLessEqual(lim.views_last_60s(), 24)
@@ -2971,7 +3152,13 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
 
             clock_b, srv_b, drv_b, lim_b, bridge_b = _make_env(
                 Path(tmp) / "home2",
-                tutorial={"step": 1, "total_steps": 11, "can_complete": True, "tasks": [], "reward_text": "5000 Pig iron"},
+                tutorial={
+                    "step": 1,
+                    "total_steps": 11,
+                    "can_complete": True,
+                    "tasks": [],
+                    "reward_text": "5000 Pig iron",
+                },
                 hostile_alerts=["Hostile Attack from 02:380:99 arriving in 00:05:00"],
             )
             try:
@@ -3065,7 +3252,13 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
                     "buildings": {"b1": 5, "b5": 8, "b7": 3, "b8": 1, "b9": 0},
                     "ships": {},
                     "defense": {},
-                    "economy_rates": {"resource1": 100, "resource2": 100, "resource3": 100, "resource4": 100, "resource5": 100},
+                    "economy_rates": {
+                        "resource1": 100,
+                        "resource2": 100,
+                        "resource3": 100,
+                        "resource4": 100,
+                        "resource5": 100,
+                    },
                     "building_queue": [],
                 },
                 12477: {
@@ -3081,7 +3274,13 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
                     "buildings": {"b1": 4, "b5": 8, "b7": 3, "b8": 5, "b9": 0},
                     "ships": {},
                     "defense": {},
-                    "economy_rates": {"resource1": 100, "resource2": 100, "resource3": 100, "resource4": 100, "resource5": 100},
+                    "economy_rates": {
+                        "resource1": 100,
+                        "resource2": 100,
+                        "resource3": 100,
+                        "resource4": 100,
+                        "resource5": 100,
+                    },
                     "building_queue": [],
                 },
             }
@@ -3094,13 +3293,19 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
                 # Edge 3D: 12476 has b8=1 (r1 Unavailable), 12477 has b8=5; r2=4
                 srv_t.researches["r2"] = 4
                 bridge_t.get_state(include_buildings=True)
-                self.assertFalse(next(o for o in bridge_t._last_state.research_offers if o.research_id == 1).can_research)
-                r_3d_fail = bridge_t.handle_command({"command": "research", "research_id": 1, "planet_id": 12476, "dry_run": False})
+                self.assertFalse(
+                    next(o for o in bridge_t._last_state.research_offers if o.research_id == 1).can_research
+                )
+                r_3d_fail = bridge_t.handle_command(
+                    {"command": "research", "research_id": 1, "planet_id": 12476, "dry_run": False}
+                )
                 self.assertFalse(r_3d_fail["executed"])
                 clock_t.advance(100.0)
                 lim_t.reset()
                 lim_t.record_view(18)
-                r_3d_ok = bridge_t.handle_command({"command": "research", "research_id": 1, "planet_id": 12477, "dry_run": False})
+                r_3d_ok = bridge_t.handle_command(
+                    {"command": "research", "research_id": 1, "planet_id": 12477, "dry_run": False}
+                )
                 self.assertTrue(r_3d_ok["executed"], r_3d_ok)
                 self.assertLessEqual(lim_t.views_last_60s() - 18, 6)
 
@@ -3114,18 +3319,24 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
                 bridge_t.get_state(include_buildings=True)
                 bridge_t.handle_command({"command": "build", "building_id": 8, "planet_id": 12476, "dry_run": False})
                 v_before = lim_t.views_last_60s()
-                r_e3_locked = bridge_t.handle_command({"command": "research", "research_id": 1, "planet_id": 12476, "dry_run": False})
+                r_e3_locked = bridge_t.handle_command(
+                    {"command": "research", "research_id": 1, "planet_id": 12476, "dry_run": False}
+                )
                 self.assertFalse(r_e3_locked["executed"])
                 self.assertEqual(lim_t.views_last_60s(), v_before)
 
                 bridge_t.handle_command({"command": "build", "building_id": 8, "planet_id": 12476, "dry_run": False})
                 self.assertEqual(bridge_t._last_state.research_offers, ())
-                r_e3_dry = bridge_t.handle_command({"command": "research", "research_id": 1, "planet_id": 12476, "dry_run": True})
+                r_e3_dry = bridge_t.handle_command(
+                    {"command": "research", "research_id": 1, "planet_id": 12476, "dry_run": True}
+                )
                 self.assertTrue(r_e3_dry["action"]["executable_now"])
                 clock_t.advance(100.0)
                 lim_t.reset()
                 lim_t.record_view(18)
-                r_e3_live = bridge_t.handle_command({"command": "research", "research_id": 1, "planet_id": 12476, "dry_run": False})
+                r_e3_live = bridge_t.handle_command(
+                    {"command": "research", "research_id": 1, "planet_id": 12476, "dry_run": False}
+                )
                 self.assertTrue(r_e3_live["executed"], r_e3_live)
                 self.assertLessEqual(lim_t.views_last_60s() - 18, 6)
 
@@ -3135,12 +3346,20 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
                 srv_t.researches["r2"] = 0
                 bridge_t._last_state = None
                 bridge_t.get_state(include_buildings=True)
-                self.assertFalse(next(o for o in bridge_t._last_state.active_planet().building_offers if o.building_id == 9).can_build)
-                r_res_r2 = bridge_t.handle_command({"command": "research", "research_id": 2, "planet_id": 12476, "dry_run": False})
+                self.assertFalse(
+                    next(
+                        o for o in bridge_t._last_state.active_planet().building_offers if o.building_id == 9
+                    ).can_build
+                )
+                r_res_r2 = bridge_t.handle_command(
+                    {"command": "research", "research_id": 2, "planet_id": 12476, "dry_run": False}
+                )
                 self.assertTrue(r_res_r2["executed"], r_res_r2)
                 self.assertEqual(bridge_t._last_state.active_planet().building_offers, ())
                 self.assertFalse(bridge_t._last_buildings_fetched)
-                r_b9 = bridge_t.handle_command({"command": "build", "building_id": 9, "planet_id": 12476, "dry_run": False})
+                r_b9 = bridge_t.handle_command(
+                    {"command": "build", "building_id": 9, "planet_id": 12476, "dry_run": False}
+                )
                 self.assertTrue(r_b9["executed"], r_b9)
 
                 # _find_ship_action qty > 1 affordability checks total_offer_cost & missing
@@ -3181,7 +3400,13 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
                     "buildings": {"b1": 5, "b2": 3, "b5": 9, "b8": 5, "b9": 2},
                     "ships": {"s1": 2},
                     "defense": {},
-                    "economy_rates": {"resource1": 100, "resource2": 100, "resource3": 100, "resource4": 100, "resource5": 100},
+                    "economy_rates": {
+                        "resource1": 100,
+                        "resource2": 100,
+                        "resource3": 100,
+                        "resource4": 100,
+                        "resource5": 100,
+                    },
                     "building_queue": [],
                 },
                 12477: {
@@ -3197,7 +3422,13 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
                     "buildings": {"b1": 3, "b2": 2, "b5": 7, "b8": 5, "b9": 2},
                     "ships": {"s1": 1},
                     "defense": {},
-                    "economy_rates": {"resource1": 100, "resource2": 100, "resource3": 100, "resource4": 100, "resource5": 100},
+                    "economy_rates": {
+                        "resource1": 100,
+                        "resource2": 100,
+                        "resource3": 100,
+                        "resource4": 100,
+                        "resource5": 100,
+                    },
                     "building_queue": [],
                 },
             },
@@ -3246,7 +3477,13 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
                     {"command": "build", "building_id": 1, "planet_id": 12477, "dry_run": False},
                     {"command": "research", "research_id": 1, "planet_id": 12477, "dry_run": False},
                     {"command": "build_ship", "ship_id": 1, "quantity": 2, "planet_id": 12477, "dry_run": False},
-                    {"command": "throttle_building", "building_id": 2, "percentage": 0, "planet_id": 12477, "dry_run": False},
+                    {
+                        "command": "throttle_building",
+                        "building_id": 2,
+                        "percentage": 0,
+                        "planet_id": 12477,
+                        "dry_run": False,
+                    },
                 ]
                 for payload in cmds:
                     clock.advance(100.0)
@@ -3277,7 +3514,9 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
         from tests.e2e.harness import FakeClock, FakeDriver, FakeSpaceInvasionServer
         from spaceinvasion.core.model import ResearchOffer
 
-        def _make_research_env(tmp_dir: Path, *, planets, researches=None, tutorial=None, research_offers=None, active_research_banner=None):
+        def _make_research_env(
+            tmp_dir: Path, *, planets, researches=None, tutorial=None, research_offers=None, active_research_banner=None
+        ):
             clock = FakeClock(initial=2000.0)
             srv = FakeSpaceInvasionServer(
                 planets=planets,
@@ -3435,7 +3674,9 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
             try:
                 bridge_0.get_state(include_buildings=True)
                 self.assertTrue(any(q.category == "research" for q in bridge_0._last_state.active_queues))
-                r_bld0 = bridge_0.handle_command({"command": "build", "building_id": 1, "planet_id": 12477, "dry_run": False})
+                r_bld0 = bridge_0.handle_command(
+                    {"command": "build", "building_id": 1, "planet_id": 12477, "dry_run": False}
+                )
                 self.assertTrue(r_bld0["executed"])
                 self.assertEqual(bridge_0._last_state.active_planet_id, 12477)
                 self.assertEqual(bridge_0._last_state.research_offers, ())
@@ -3460,7 +3701,9 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
 
                 # Also verify off-home on internalGalaxy (observed_active_planet=False) preserves active_planet_id=12477 & "research"
                 drv_0._navigate_frame("F_Hauptframe", "indexInternal.es?action=internalGalaxy")
-                r_dry0_gal = bridge_0.handle_command({"command": "research", "research_id": 1, "dry_run": True, "refresh": True})
+                r_dry0_gal = bridge_0.handle_command(
+                    {"command": "research", "research_id": 1, "dry_run": True, "refresh": True}
+                )
                 self.assertTrue(r_dry0_gal["ok"])
                 self.assertEqual(bridge_0._last_state.active_planet_id, 12477)
                 self.assertIn("research", [q.category for q in bridge_0._last_state.active_queues])
@@ -3485,7 +3728,9 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
             )
             try:
                 bridge_2.get_state(include_buildings=True)
-                r_bld2 = bridge_2.handle_command({"command": "build", "building_id": 1, "planet_id": 12477, "dry_run": False})
+                r_bld2 = bridge_2.handle_command(
+                    {"command": "build", "building_id": 1, "planet_id": 12477, "dry_run": False}
+                )
                 self.assertTrue(r_bld2["executed"])
                 self.assertEqual(bridge_2._last_state.active_planet_id, 12477)
                 self.assertEqual(bridge_2._last_state.research_offers, ())
@@ -3510,8 +3755,30 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
 
                 # Even if a stale ResearchOffer has can_research=True, res_busy (via active_queues or o.active) keeps executable_now=False
                 stale_can = (
-                    ResearchOffer(1, "r1", "Mining technology", 1, 2, Resources(1000, 0, 500, 0), True, "Research level 2", "indexInternal.es?action=internalBuildItem&researchID=1", active=False),
-                    ResearchOffer(2, "r2", "Energy technology", 3, 4, Resources(0, 800, 400, 0), False, "In research (Cancel)", None, active=True),
+                    ResearchOffer(
+                        1,
+                        "r1",
+                        "Mining technology",
+                        1,
+                        2,
+                        Resources(1000, 0, 500, 0),
+                        True,
+                        "Research level 2",
+                        "indexInternal.es?action=internalBuildItem&researchID=1",
+                        active=False,
+                    ),
+                    ResearchOffer(
+                        2,
+                        "r2",
+                        "Energy technology",
+                        3,
+                        4,
+                        Resources(0, 800, 400, 0),
+                        False,
+                        "In research (Cancel)",
+                        None,
+                        active=True,
+                    ),
                 )
                 self.assertFalse(
                     bridge_2._find_research_action(
@@ -3526,7 +3793,9 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
                 banner_b2["on"] = False
                 srv_2.research_offers = None
                 srv_2.researches["r2"] = 4
-                r_fin = bridge_2.handle_command({"command": "research", "research_id": 1, "dry_run": True, "refresh": True})
+                r_fin = bridge_2.handle_command(
+                    {"command": "research", "research_id": 1, "dry_run": True, "refresh": True}
+                )
                 self.assertTrue(r_fin["ok"])
                 self.assertTrue(r_fin["action"]["executable_now"])
                 cats_fin = [q.category for q in bridge_2._last_state.active_queues]
@@ -3543,7 +3812,9 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
             )
             try:
                 bridge_c.get_state(include_buildings=True)
-                self.assertTrue(next(o for o in bridge_c._last_state.research_offers if o.research_id == 1).can_research)
+                self.assertTrue(
+                    next(o for o in bridge_c._last_state.research_offers if o.research_id == 1).can_research
+                )
                 r_cross_dry = bridge_c.handle_command(
                     {"command": "research", "research_id": 1, "planet_id": 12477, "dry_run": True}
                 )
@@ -3597,7 +3868,9 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
                 log_dir=None,
                 db_path=tmp_path / "h.db",
                 page_limiter=lim_h,
-                client_factory=lambda _p: GameBrowserClient(drv_h, page_limiter=lim_h, min_nav_delay=(0.0, 0.0), timeout=2.0),
+                client_factory=lambda _p: GameBrowserClient(
+                    drv_h, page_limiter=lim_h, min_nav_delay=(0.0, 0.0), timeout=2.0
+                ),
                 ensure_session_fn=lambda: None,
             )
             try:
@@ -3632,7 +3905,13 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
                     "buildings": {"b1": 5, "b5": 8, "b8": 5, "b9": 1},
                     "ships": {},
                     "defense": {},
-                    "economy_rates": {"resource1": 100, "resource2": 100, "resource3": 100, "resource4": 100, "resource5": 100},
+                    "economy_rates": {
+                        "resource1": 100,
+                        "resource2": 100,
+                        "resource3": 100,
+                        "resource4": 100,
+                        "resource5": 100,
+                    },
                     "building_queue": [],
                 },
                 12477: {
@@ -3648,7 +3927,13 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
                     "buildings": {"b1": 4, "b5": 8, "b8": 1, "b9": 1},
                     "ships": {},
                     "defense": {},
-                    "economy_rates": {"resource1": 100, "resource2": 100, "resource3": 100, "resource4": 100, "resource5": 100},
+                    "economy_rates": {
+                        "resource1": 100,
+                        "resource2": 100,
+                        "resource3": 100,
+                        "resource4": 100,
+                        "resource5": 100,
+                    },
                     "building_queue": [],
                 },
             }
@@ -3667,7 +3952,9 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
                 log_dir=None,
                 db_path=tmp_path / "x.db",
                 page_limiter=lim_x,
-                client_factory=lambda _p: GameBrowserClient(drv_x, page_limiter=lim_x, min_nav_delay=(0.0, 0.0), timeout=2.0),
+                client_factory=lambda _p: GameBrowserClient(
+                    drv_x, page_limiter=lim_x, min_nav_delay=(0.0, 0.0), timeout=2.0
+                ),
                 ensure_session_fn=lambda: None,
             )
             try:
@@ -3677,26 +3964,49 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
                 self.assertTrue(next(o for o in st_x.research_offers if o.research_id == 8).can_research)
 
                 # Colony b8=1 < 3: r8 must be blocked in 0 views even though Home cached can_research=True
-                r8_dry = bridge_x.handle_command({"command": "research", "research_id": 8, "planet_id": 12477, "dry_run": True})
+                r8_dry = bridge_x.handle_command(
+                    {"command": "research", "research_id": 8, "planet_id": 12477, "dry_run": True}
+                )
                 self.assertFalse(r8_dry["action"]["executable_now"])
                 v_before = lim_x.views_last_60s()
-                r8_live = bridge_x.handle_command({"command": "research", "research_id": 8, "planet_id": 12477, "dry_run": False})
+                r8_live = bridge_x.handle_command(
+                    {"command": "research", "research_id": 8, "planet_id": 12477, "dry_run": False}
+                )
                 self.assertFalse(r8_live["executed"])
                 self.assertEqual(lim_x.views_last_60s(), v_before)
 
                 # s10 Locked/insufficient & fallback when r5=0 -> executable_now=False
-                s10_locked_offer = UnitOffer("ship", 10, "Spy probe", 0, Resources(0, 1000, 500, 0), False, None, "Locked / insufficient")
+                s10_locked_offer = UnitOffer(
+                    "ship", 10, "Spy probe", 0, Resources(0, 1000, 500, 0), False, None, "Locked / insufficient"
+                )
                 p_home = st_x.planets[0]
-                st_s10_offer = replace(st_x, planets=(replace(p_home, ship_offers=(s10_locked_offer,)), st_x.planets[1]))
-                self.assertFalse(bridge_x._find_ship_action(st_s10_offer, 10, 1, 12476, allow_live_verify=True).executable_now)
+                st_s10_offer = replace(
+                    st_x, planets=(replace(p_home, ship_offers=(s10_locked_offer,)), st_x.planets[1])
+                )
+                self.assertFalse(
+                    bridge_x._find_ship_action(st_s10_offer, 10, 1, 12476, allow_live_verify=True).executable_now
+                )
                 st_s10_empty = replace(st_x, planets=(replace(p_home, ship_offers=()), st_x.planets[1]))
-                self.assertFalse(bridge_x._find_ship_action(st_s10_empty, 10, 1, 12476, allow_live_verify=True).executable_now)
+                self.assertFalse(
+                    bridge_x._find_ship_action(st_s10_empty, 10, 1, 12476, allow_live_verify=True).executable_now
+                )
 
                 # External cancel clears carried o.active=True
                 bridge_x._last_state = replace(
                     st_x,
                     research_offers=(
-                        ResearchOffer(2, "r2", "Energy technology", 4, 5, Resources(0, 1600, 800, 0), False, "In research (Cancel)", None, active=True),
+                        ResearchOffer(
+                            2,
+                            "r2",
+                            "Energy technology",
+                            4,
+                            5,
+                            Resources(0, 1600, 800, 0),
+                            False,
+                            "In research (Cancel)",
+                            None,
+                            active=True,
+                        ),
                         next(o for o in st_x.research_offers if o.research_id == 8),
                     ),
                 )

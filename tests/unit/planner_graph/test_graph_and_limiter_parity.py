@@ -67,7 +67,7 @@ def test_build_action_graph_simulated_overrides_and_planet_filter_parity() -> No
     state = STATES["midgame_three_colonies"]()
     base_cfg = CONFIGS["default"]()
     overrides: dict[str, object] = {
-        "allow_attacks": True,
+        "allow_raids": True,
         "allow_spying": True,
         "storage_warn_ratio": 0.72,
         "shipyard_targets": {"small_transporter": 12, "spy_probe": 15},
@@ -75,7 +75,7 @@ def test_build_action_graph_simulated_overrides_and_planet_filter_parity() -> No
     }
     eff_new, ch_new = merge_strategy_config_overrides(base_cfg, overrides, planner_mode_override="ai_planner")
     assert eff_new.planner_mode == "ai_planner"
-    assert eff_new.allow_attacks is True
+    assert eff_new.allow_raids is True
     assert ch_new
 
     actions = plan_actions(state, config=eff_new)
