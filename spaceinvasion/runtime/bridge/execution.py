@@ -127,7 +127,7 @@ class ActionExecutionService:
     def execute_and_summarize(
         self,
         cmd: str,
-        client: GameBrowserClient,
+        client: GameBrowserClient | None,
         state: GameState,
         action: PlannedAction,
         *,
@@ -135,10 +135,12 @@ class ActionExecutionService:
         return_home: bool = False,
         active_planet_confirmed: bool = True,
         manual_queue_id: int | None = None,
-        source: str = "manual",
+        source: str = "api",
     ) -> dict[str, object]:
         """Run preflight checks, execute `action`, persist side-effects, refresh state, and summarize."""
         ctx = self._ctx
+        if client is None and not dry_run:
+            raise RuntimeError("Live action execution requires an active GameBrowserClient.")
         planned_list = attach_action_etas(state, [action])
         planned: PlannedAction = planned_list[0] if planned_list else action
 
@@ -152,9 +154,18 @@ class ActionExecutionService:
         res: ExecutionResult | None = None
         try:
             if supports_kwarg(executor.execute_action, "active_planet_confirmed"):
-                res = executor.execute_action(client, state, planned, active_planet_confirmed=eff_confirmed)
+                res = executor.execute_action(
+                    client,  # type: ignore[arg-type]
+                    state,
+                    planned,
+                    active_planet_confirmed=eff_confirmed,
+                )
             else:
-                res = executor.execute_action(client, state, planned)
+                res = executor.execute_action(
+                    client,  # type: ignore[arg-type]
+                    state,
+                    planned,
+                )
         finally:
             if res is None and not dry_run:
                 raw_pid = executor.last_observed_active_planet_id

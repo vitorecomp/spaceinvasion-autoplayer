@@ -36,7 +36,8 @@ from spaceinvasion.runtime.bridge._helpers import (
     safe_limiter_wait,
 )
 from spaceinvasion.runtime.bridge.snapshot import SnapshotPublisher
-from spaceinvasion.session.browser import DEFAULT_DEBUG_HOST, DEFAULT_DEBUG_PORT, is_debug_port_open
+from spaceinvasion.session import browser as browser_mod
+from spaceinvasion.session.browser import DEFAULT_DEBUG_HOST, DEFAULT_DEBUG_PORT
 from spaceinvasion.session.client import GameBrowserClient, PageViewLimiter, RateLimitError
 from spaceinvasion.session.executor import ActionExecutor
 
@@ -279,8 +280,8 @@ class BridgeContext:
     def is_browser_port_open(self) -> bool:
         """Return True when the configured Chrome DevTools debug port is open."""
         if self.debug_host == "127.0.0.1":
-            return bool(is_debug_port_open(self.debug_port))
-        return bool(is_debug_port_open(self.debug_port, self.debug_host))
+            return bool(browser_mod.is_debug_port_open(self.debug_port))
+        return bool(browser_mod.is_debug_port_open(self.debug_port, self.debug_host))
 
     def record_rate_limit(self, retry_after: float | None = None) -> float:
         """Record a server rate-limit cooldown on the page limiter."""

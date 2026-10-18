@@ -22,7 +22,7 @@ class ViewHooks:
 
     on_plan_with_summary: Callable[..., tuple[list[PlannedAction], dict[str, object] | None]] | None = None
     on_serialize_action: Callable[..., dict[str, object]] | None = None
-    on_get_co_building_goals: Callable[[], dict[str, object]] | None = None
+    on_get_co_building_goals: Callable[[], dict[str, object] | None] | None = None
     on_get_active_ai_planner: Callable[[], dict[str, object] | None] | None = None
     on_evaluate_ai_gate: Callable[..., dict[str, object]] | None = None
     on_get_planner_jobs_status: Callable[..., dict[str, object]] | None = None

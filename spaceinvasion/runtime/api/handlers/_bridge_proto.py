@@ -137,7 +137,7 @@ class BridgeApiFacade(Protocol):
         dry_run: bool,
         active_planet_confirmed: bool = True,
         manual_queue_id: int | None = None,
-        source: str = "manual",
+        source: str = "api",
     ) -> dict[str, object]: ...
 
     def get_planner_jobs_status(self) -> dict[str, object]: ...

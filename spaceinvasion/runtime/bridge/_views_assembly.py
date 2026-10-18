@@ -123,7 +123,7 @@ def _assemble_dashboard_result(
     db_summary_clean: dict[str, object] | None,
 ) -> dict[str, object]:
     ui_assets_clean = sanitize_json_dict(compute_ui_assets_state())
-    co_goals_raw = hooks.on_get_co_building_goals() if hooks.on_get_co_building_goals is not None else {}
+    co_goals_raw = hooks.on_get_co_building_goals() if hooks.on_get_co_building_goals is not None else None
     return {
         "ok": envelope["ok"],
         "server_boot_id": envelope["server_boot_id"],

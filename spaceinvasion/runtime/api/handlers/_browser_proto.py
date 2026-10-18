@@ -15,7 +15,7 @@ from spaceinvasion.session.client import GameBrowserClient
 class BrowserBridgeFacade(BridgeApiFacade, Protocol):
     """Typed facade for browser-capable handlers (superset of `BridgeApiFacade`)."""
 
-    def get_config_optimizer_building_goals_locked(self) -> dict[str, object]: ...
+    def get_config_optimizer_building_goals_locked(self) -> dict[str, object] | None: ...
 
     def evaluate_ai_planner_gate_locked(
         self,
