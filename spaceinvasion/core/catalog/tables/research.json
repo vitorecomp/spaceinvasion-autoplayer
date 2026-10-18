@@ -1,0 +1,5619 @@
+{
+  "black-hole-research": {
+    "slug": "black-hole-research",
+    "name": "Black hole research",
+    "url": "https://spaceinvasion.bitmeup.com/wiki/en/research/black-hole-research",
+    "base_cost": {
+      "pig_iron": 0,
+      "metal": 500000,
+      "kryptonite": 1000000,
+      "spice": 250000
+    },
+    "requirements": [
+      {
+        "category": "research",
+        "slug": "warp-engine",
+        "name": "Warp engine",
+        "level": 10
+      },
+      {
+        "category": "research",
+        "slug": "graviton-technology",
+        "name": "Graviton technology",
+        "level": 10
+      }
+    ],
+    "required_for": [
+      {
+        "category": "ships",
+        "slug": "imperial-starbase",
+        "name": "Imperial starbase",
+        "level": 2
+      }
+    ],
+    "id": "r15",
+    "max_table_level": 25,
+    "levels": {
+      "1": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 500000,
+          "kryptonite": 1000000,
+          "spice": 250000
+        },
+        "base_time_s": 2291667.0
+      },
+      "2": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 1000000,
+          "kryptonite": 2000000,
+          "spice": 500000
+        },
+        "base_time_s": 4583333.0
+      },
+      "3": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 2000000,
+          "kryptonite": 4000000,
+          "spice": 1000000
+        },
+        "base_time_s": 9166667.0
+      },
+      "4": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 4000000,
+          "kryptonite": 8000000,
+          "spice": 2000000
+        },
+        "base_time_s": 18333333.0
+      },
+      "5": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 8000000,
+          "kryptonite": 16000000,
+          "spice": 4000000
+        },
+        "base_time_s": 36666667.0
+      },
+      "6": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 16000000,
+          "kryptonite": 32000000,
+          "spice": 8000000
+        },
+        "base_time_s": 73333333.0
+      },
+      "7": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 32000000,
+          "kryptonite": 64000000,
+          "spice": 16000000
+        },
+        "base_time_s": 146666667.0
+      },
+      "8": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 64000000,
+          "kryptonite": 128000000,
+          "spice": 32000000
+        },
+        "base_time_s": 293333333.0
+      },
+      "9": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 128000000,
+          "kryptonite": 256000000,
+          "spice": 64000000
+        },
+        "base_time_s": 586666667.0
+      },
+      "10": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 256000000,
+          "kryptonite": 512000000,
+          "spice": 128000000
+        },
+        "base_time_s": 1173333333.0
+      },
+      "11": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 512000000,
+          "kryptonite": 1020000000,
+          "spice": 256000000
+        },
+        "base_time_s": 2346666667.0
+      },
+      "12": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 1020000000,
+          "kryptonite": 2050000000,
+          "spice": 512000000
+        },
+        "base_time_s": 4693333333.0
+      },
+      "13": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 2050000000,
+          "kryptonite": 4100000000,
+          "spice": 1020000000
+        },
+        "base_time_s": 9386666667.0
+      },
+      "14": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 4100000000,
+          "kryptonite": 8190000000,
+          "spice": 2050000000
+        },
+        "base_time_s": 18773333333.0
+      },
+      "15": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 8190000000,
+          "kryptonite": 16380000000,
+          "spice": 4100000000
+        },
+        "base_time_s": 37546666667.0
+      },
+      "16": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 16380000000,
+          "kryptonite": 32770000000,
+          "spice": 8190000000
+        },
+        "base_time_s": 75093333333.0
+      },
+      "17": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 32770000000,
+          "kryptonite": 65540000000,
+          "spice": 16380000000
+        },
+        "base_time_s": 150186666667.0
+      },
+      "18": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 65540000000,
+          "kryptonite": 131070000000,
+          "spice": 32770000000
+        },
+        "base_time_s": 300373333333.0
+      },
+      "19": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 131070000000,
+          "kryptonite": 262140000000,
+          "spice": 65540000000
+        },
+        "base_time_s": 600746666667.0
+      },
+      "20": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 262140000000,
+          "kryptonite": 524290000000,
+          "spice": 131070000000
+        },
+        "base_time_s": 1201493333333.0
+      },
+      "21": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 524290000000,
+          "kryptonite": 1050000000000,
+          "spice": 262140000000
+        },
+        "base_time_s": 2402986666667.0
+      },
+      "22": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 1050000000000,
+          "kryptonite": 2100000000000,
+          "spice": 524290000000
+        },
+        "base_time_s": 4805973333333.0
+      },
+      "23": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 2100000000000,
+          "kryptonite": 4190000000000,
+          "spice": 1050000000000
+        },
+        "base_time_s": 9611946666667.0
+      },
+      "24": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 4190000000000,
+          "kryptonite": 8390000000000,
+          "spice": 2100000000000
+        },
+        "base_time_s": 19223893333333.0
+      },
+      "25": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 8390000000000,
+          "kryptonite": 16780000000000,
+          "spice": 4190000000000
+        },
+        "base_time_s": 38447786666667.0
+      }
+    }
+  },
+  "defense-systems": {
+    "slug": "defense-systems",
+    "name": "Defense systems",
+    "url": "https://spaceinvasion.bitmeup.com/wiki/en/research/defense-systems",
+    "base_cost": {
+      "pig_iron": 0,
+      "metal": 2500,
+      "kryptonite": 0,
+      "spice": 0
+    },
+    "requirements": [
+      {
+        "category": "buildings",
+        "slug": "research-lab",
+        "name": "Research lab",
+        "level": 5
+      }
+    ],
+    "required_for": [
+      {
+        "category": "ships",
+        "slug": "phoenix",
+        "name": "Phoenix",
+        "level": 5
+      },
+      {
+        "category": "defense",
+        "slug": "positron-lighter",
+        "name": "Positron lighter",
+        "level": 6
+      }
+    ],
+    "id": "r10",
+    "max_table_level": 40,
+    "levels": {
+      "1": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 2500,
+          "kryptonite": 0,
+          "spice": 0
+        },
+        "base_time_s": 3125.0
+      },
+      "2": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 5000,
+          "kryptonite": 0,
+          "spice": 0
+        },
+        "base_time_s": 6250.0
+      },
+      "3": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 10000,
+          "kryptonite": 0,
+          "spice": 0
+        },
+        "base_time_s": 12500.0
+      },
+      "4": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 20000,
+          "kryptonite": 0,
+          "spice": 0
+        },
+        "base_time_s": 25000.0
+      },
+      "5": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 40000,
+          "kryptonite": 0,
+          "spice": 0
+        },
+        "base_time_s": 50000.0
+      },
+      "6": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 80000,
+          "kryptonite": 0,
+          "spice": 0
+        },
+        "base_time_s": 100000.0
+      },
+      "7": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 160000,
+          "kryptonite": 0,
+          "spice": 0
+        },
+        "base_time_s": 200000.0
+      },
+      "8": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 320000,
+          "kryptonite": 0,
+          "spice": 0
+        },
+        "base_time_s": 400000.0
+      },
+      "9": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 640000,
+          "kryptonite": 0,
+          "spice": 0
+        },
+        "base_time_s": 800000.0
+      },
+      "10": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 1280000,
+          "kryptonite": 0,
+          "spice": 0
+        },
+        "base_time_s": 1600000.0
+      },
+      "11": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 2560000,
+          "kryptonite": 0,
+          "spice": 0
+        },
+        "base_time_s": 3200000.0
+      },
+      "12": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 5120000,
+          "kryptonite": 0,
+          "spice": 0
+        },
+        "base_time_s": 6400000.0
+      },
+      "13": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 10240000,
+          "kryptonite": 0,
+          "spice": 0
+        },
+        "base_time_s": 12800000.0
+      },
+      "14": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 20480000,
+          "kryptonite": 0,
+          "spice": 0
+        },
+        "base_time_s": 25600000.0
+      },
+      "15": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 40960000,
+          "kryptonite": 0,
+          "spice": 0
+        },
+        "base_time_s": 51200000.0
+      },
+      "16": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 81920000,
+          "kryptonite": 0,
+          "spice": 0
+        },
+        "base_time_s": 102400000.0
+      },
+      "17": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 163840000,
+          "kryptonite": 0,
+          "spice": 0
+        },
+        "base_time_s": 204800000.0
+      },
+      "18": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 327680000,
+          "kryptonite": 0,
+          "spice": 0
+        },
+        "base_time_s": 409600000.0
+      },
+      "19": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 655360000,
+          "kryptonite": 0,
+          "spice": 0
+        },
+        "base_time_s": 819200000.0
+      },
+      "20": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 1310000000,
+          "kryptonite": 0,
+          "spice": 0
+        },
+        "base_time_s": 1638400000.0
+      },
+      "21": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 2620000000,
+          "kryptonite": 0,
+          "spice": 0
+        },
+        "base_time_s": 3276800000.0
+      },
+      "22": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 5240000000,
+          "kryptonite": 0,
+          "spice": 0
+        },
+        "base_time_s": 6553600000.0
+      },
+      "23": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 10490000000,
+          "kryptonite": 0,
+          "spice": 0
+        },
+        "base_time_s": 13107200000.0
+      },
+      "24": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 20970000000,
+          "kryptonite": 0,
+          "spice": 0
+        },
+        "base_time_s": 26214400000.0
+      },
+      "25": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 41940000000,
+          "kryptonite": 0,
+          "spice": 0
+        },
+        "base_time_s": 52428800000.0
+      },
+      "26": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 83890000000,
+          "kryptonite": 0,
+          "spice": 0
+        },
+        "base_time_s": 104857600000.0
+      },
+      "27": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 167770000000,
+          "kryptonite": 0,
+          "spice": 0
+        },
+        "base_time_s": 209715200000.0
+      },
+      "28": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 335540000000,
+          "kryptonite": 0,
+          "spice": 0
+        },
+        "base_time_s": 419430400000.0
+      },
+      "29": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 671090000000,
+          "kryptonite": 0,
+          "spice": 0
+        },
+        "base_time_s": 838860800000.0
+      },
+      "30": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 1340000000000,
+          "kryptonite": 0,
+          "spice": 0
+        },
+        "base_time_s": 1677721600000.0
+      },
+      "31": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 2680000000000,
+          "kryptonite": 0,
+          "spice": 0
+        },
+        "base_time_s": 3355443200000.0
+      },
+      "32": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 5370000000000,
+          "kryptonite": 0,
+          "spice": 0
+        },
+        "base_time_s": 6710886400000.0
+      },
+      "33": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 10740000000000,
+          "kryptonite": 0,
+          "spice": 0
+        },
+        "base_time_s": 13421772800000.0
+      },
+      "34": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 21470000000000,
+          "kryptonite": 0,
+          "spice": 0
+        },
+        "base_time_s": 26843545600000.0
+      },
+      "35": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 42950000000000,
+          "kryptonite": 0,
+          "spice": 0
+        },
+        "base_time_s": 53687091200000.0
+      },
+      "36": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 85900000000000,
+          "kryptonite": 0,
+          "spice": 0
+        },
+        "base_time_s": 1.0737
+      },
+      "37": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 171800000000000,
+          "kryptonite": 0,
+          "spice": 0
+        },
+        "base_time_s": 2.1475
+      },
+      "38": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 343600000000000,
+          "kryptonite": 0,
+          "spice": 0
+        },
+        "base_time_s": 4.295
+      },
+      "39": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 687190000000000,
+          "kryptonite": 0,
+          "spice": 0
+        },
+        "base_time_s": 8.5899
+      },
+      "40": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 1370000000000000,
+          "kryptonite": 0,
+          "spice": 0
+        },
+        "base_time_s": 1.718
+      }
+    }
+  },
+  "diffusion-engine": {
+    "slug": "diffusion-engine",
+    "name": "Diffusion engine",
+    "url": "https://spaceinvasion.bitmeup.com/wiki/en/research/diffusion-engine",
+    "base_cost": {
+      "pig_iron": 0,
+      "metal": 300,
+      "kryptonite": 300,
+      "spice": 200
+    },
+    "requirements": [
+      {
+        "category": "research",
+        "slug": "engine-research",
+        "name": "Engine research",
+        "level": 6
+      }
+    ],
+    "required_for": [
+      {
+        "category": "ships",
+        "slug": "recycler",
+        "name": "Recycler",
+        "level": 4
+      },
+      {
+        "category": "ships",
+        "slug": "starcruiser",
+        "name": "Starcruiser",
+        "level": 5
+      },
+      {
+        "category": "ships",
+        "slug": "transmitter",
+        "name": "Transmitter",
+        "level": 8
+      },
+      {
+        "category": "ships",
+        "slug": "phoenix",
+        "name": "Phoenix",
+        "level": 8
+      }
+    ],
+    "id": "r5",
+    "max_table_level": 40,
+    "levels": {
+      "1": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 300,
+          "kryptonite": 300,
+          "spice": 200
+        },
+        "base_time_s": 875.0
+      },
+      "2": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 600,
+          "kryptonite": 600,
+          "spice": 400
+        },
+        "base_time_s": 1750.0
+      },
+      "3": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 1200,
+          "kryptonite": 1200,
+          "spice": 800
+        },
+        "base_time_s": 3500.0
+      },
+      "4": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 2400,
+          "kryptonite": 2400,
+          "spice": 1600
+        },
+        "base_time_s": 7000.0
+      },
+      "5": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 4800,
+          "kryptonite": 4800,
+          "spice": 3200
+        },
+        "base_time_s": 14000.0
+      },
+      "6": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 9600,
+          "kryptonite": 9600,
+          "spice": 6400
+        },
+        "base_time_s": 28000.0
+      },
+      "7": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 19200,
+          "kryptonite": 19200,
+          "spice": 12800
+        },
+        "base_time_s": 56000.0
+      },
+      "8": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 38400,
+          "kryptonite": 38400,
+          "spice": 25600
+        },
+        "base_time_s": 112000.0
+      },
+      "9": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 76800,
+          "kryptonite": 76800,
+          "spice": 51200
+        },
+        "base_time_s": 224000.0
+      },
+      "10": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 153600,
+          "kryptonite": 153600,
+          "spice": 102400
+        },
+        "base_time_s": 448000.0
+      },
+      "11": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 307200,
+          "kryptonite": 307200,
+          "spice": 204800
+        },
+        "base_time_s": 896000.0
+      },
+      "12": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 614400,
+          "kryptonite": 614400,
+          "spice": 409600
+        },
+        "base_time_s": 1792000.0
+      },
+      "13": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 1228800,
+          "kryptonite": 1228800,
+          "spice": 819200
+        },
+        "base_time_s": 3584000.0
+      },
+      "14": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 2457600,
+          "kryptonite": 2457600,
+          "spice": 1638400
+        },
+        "base_time_s": 7168000.0
+      },
+      "15": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 4915200,
+          "kryptonite": 4915200,
+          "spice": 3276800
+        },
+        "base_time_s": 14336000.0
+      },
+      "16": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 9830400,
+          "kryptonite": 9830400,
+          "spice": 6553600
+        },
+        "base_time_s": 28672000.0
+      },
+      "17": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 19660800,
+          "kryptonite": 19660800,
+          "spice": 13107200
+        },
+        "base_time_s": 57344000.0
+      },
+      "18": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 39321600,
+          "kryptonite": 39321600,
+          "spice": 26214400
+        },
+        "base_time_s": 114688000.0
+      },
+      "19": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 78643200,
+          "kryptonite": 78643200,
+          "spice": 52428800
+        },
+        "base_time_s": 229376000.0
+      },
+      "20": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 157286400,
+          "kryptonite": 157286400,
+          "spice": 104857600
+        },
+        "base_time_s": 458752000.0
+      },
+      "21": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 314572800,
+          "kryptonite": 314572800,
+          "spice": 209715200
+        },
+        "base_time_s": 917504000.0
+      },
+      "22": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 629145600,
+          "kryptonite": 629145600,
+          "spice": 419430400
+        },
+        "base_time_s": 1835008000.0
+      },
+      "23": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 1260000000,
+          "kryptonite": 1260000000,
+          "spice": 838860800
+        },
+        "base_time_s": 3670016000.0
+      },
+      "24": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 2520000000,
+          "kryptonite": 2520000000,
+          "spice": 1680000000
+        },
+        "base_time_s": 7340032000.0
+      },
+      "25": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 5030000000,
+          "kryptonite": 5030000000,
+          "spice": 3360000000
+        },
+        "base_time_s": 14680064000.0
+      },
+      "26": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 10070000000,
+          "kryptonite": 10070000000,
+          "spice": 6710000000
+        },
+        "base_time_s": 29360128000.0
+      },
+      "27": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 20130000000,
+          "kryptonite": 20130000000,
+          "spice": 13420000000
+        },
+        "base_time_s": 58720256000.0
+      },
+      "28": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 40270000000,
+          "kryptonite": 40270000000,
+          "spice": 26840000000
+        },
+        "base_time_s": 117440512000.0
+      },
+      "29": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 80530000000,
+          "kryptonite": 80530000000,
+          "spice": 53690000000
+        },
+        "base_time_s": 234881024000.0
+      },
+      "30": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 161060000000,
+          "kryptonite": 161060000000,
+          "spice": 107370000000
+        },
+        "base_time_s": 469762048000.0
+      },
+      "31": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 322120000000,
+          "kryptonite": 322120000000,
+          "spice": 214750000000
+        },
+        "base_time_s": 939524096000.0
+      },
+      "32": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 644250000000,
+          "kryptonite": 644250000000,
+          "spice": 429500000000
+        },
+        "base_time_s": 1879048192000.0
+      },
+      "33": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 1290000000000,
+          "kryptonite": 1290000000000,
+          "spice": 858990000000
+        },
+        "base_time_s": 3758096384000.0
+      },
+      "34": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 2580000000000,
+          "kryptonite": 2580000000000,
+          "spice": 1720000000000
+        },
+        "base_time_s": 7516192768000.0
+      },
+      "35": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 5150000000000,
+          "kryptonite": 5150000000000,
+          "spice": 3440000000000
+        },
+        "base_time_s": 15032385536000.0
+      },
+      "36": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 10310000000000,
+          "kryptonite": 10310000000000,
+          "spice": 6870000000000
+        },
+        "base_time_s": 30064771072000.0
+      },
+      "37": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 20620000000000,
+          "kryptonite": 20620000000000,
+          "spice": 13740000000000
+        },
+        "base_time_s": 60129542144000.0
+      },
+      "38": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 41230000000000,
+          "kryptonite": 41230000000000,
+          "spice": 27490000000000
+        },
+        "base_time_s": 1.2026
+      },
+      "39": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 82460000000000,
+          "kryptonite": 82460000000000,
+          "spice": 54980000000000
+        },
+        "base_time_s": 2.4052
+      },
+      "40": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 164930000000000,
+          "kryptonite": 164930000000000,
+          "spice": 109950000000000
+        },
+        "base_time_s": 4.8104
+      }
+    }
+  },
+  "energy-technology": {
+    "slug": "energy-technology",
+    "name": "Energy technology",
+    "url": "https://spaceinvasion.bitmeup.com/wiki/en/research/energy-technology",
+    "base_cost": {
+      "pig_iron": 0,
+      "metal": 400,
+      "kryptonite": 800,
+      "spice": 400
+    },
+    "requirements": [
+      {
+        "category": "buildings",
+        "slug": "research-lab",
+        "name": "Research lab",
+        "level": 1
+      }
+    ],
+    "required_for": [
+      {
+        "category": "buildings",
+        "slug": "weapons-factory",
+        "name": "Weapons factory",
+        "level": 1
+      },
+      {
+        "category": "research",
+        "slug": "graviton-technology",
+        "name": "Graviton technology",
+        "level": 2
+      },
+      {
+        "category": "defense",
+        "slug": "light-graviton-cannon",
+        "name": "Light graviton cannon",
+        "level": 3
+      },
+      {
+        "category": "buildings",
+        "slug": "thermosolar-plant",
+        "name": "Thermosolar plant",
+        "level": 4
+      },
+      {
+        "category": "research",
+        "slug": "mining-technology",
+        "name": "Mining technology",
+        "level": 4
+      },
+      {
+        "category": "research",
+        "slug": "shield-technology",
+        "name": "Shield technology",
+        "level": 4
+      },
+      {
+        "category": "defense",
+        "slug": "small-shield-dome",
+        "name": "Small shield dome",
+        "level": 4
+      },
+      {
+        "category": "research",
+        "slug": "targeting-systems",
+        "name": "Targeting systems",
+        "level": 6
+      },
+      {
+        "category": "defense",
+        "slug": "turboflak",
+        "name": "Turboflak",
+        "level": 6
+      },
+      {
+        "category": "defense",
+        "slug": "laser-cannon-battery",
+        "name": "Laser cannon battery",
+        "level": 8
+      },
+      {
+        "category": "defense",
+        "slug": "large-shield-dome",
+        "name": "Large shield dome",
+        "level": 8
+      },
+      {
+        "category": "buildings",
+        "slug": "microsystem-accelerator",
+        "name": "Microsystem accelerator",
+        "level": 10
+      },
+      {
+        "category": "defense",
+        "slug": "solar-cannon",
+        "name": "Solar cannon",
+        "level": 10
+      }
+    ],
+    "id": "r2",
+    "max_table_level": 40,
+    "levels": {
+      "1": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 400,
+          "kryptonite": 800,
+          "spice": 400
+        },
+        "base_time_s": 1833.0
+      },
+      "2": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 800,
+          "kryptonite": 1600,
+          "spice": 800
+        },
+        "base_time_s": 3667.0
+      },
+      "3": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 1600,
+          "kryptonite": 3200,
+          "spice": 1600
+        },
+        "base_time_s": 7333.0
+      },
+      "4": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 3200,
+          "kryptonite": 6400,
+          "spice": 3200
+        },
+        "base_time_s": 14667.0
+      },
+      "5": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 6400,
+          "kryptonite": 12800,
+          "spice": 6400
+        },
+        "base_time_s": 29333.0
+      },
+      "6": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 12800,
+          "kryptonite": 25600,
+          "spice": 12800
+        },
+        "base_time_s": 58667.0
+      },
+      "7": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 25600,
+          "kryptonite": 51200,
+          "spice": 25600
+        },
+        "base_time_s": 117333.0
+      },
+      "8": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 51200,
+          "kryptonite": 102400,
+          "spice": 51200
+        },
+        "base_time_s": 234667.0
+      },
+      "9": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 102400,
+          "kryptonite": 204800,
+          "spice": 102400
+        },
+        "base_time_s": 469333.0
+      },
+      "10": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 204800,
+          "kryptonite": 409600,
+          "spice": 204800
+        },
+        "base_time_s": 938667.0
+      },
+      "11": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 409600,
+          "kryptonite": 819200,
+          "spice": 409600
+        },
+        "base_time_s": 1877333.0
+      },
+      "12": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 819200,
+          "kryptonite": 1638400,
+          "spice": 819200
+        },
+        "base_time_s": 3754667.0
+      },
+      "13": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 1638400,
+          "kryptonite": 3276800,
+          "spice": 1638400
+        },
+        "base_time_s": 7509333.0
+      },
+      "14": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 3276800,
+          "kryptonite": 6553600,
+          "spice": 3276800
+        },
+        "base_time_s": 15018667.0
+      },
+      "15": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 6553600,
+          "kryptonite": 13107200,
+          "spice": 6553600
+        },
+        "base_time_s": 30037333.0
+      },
+      "16": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 13107200,
+          "kryptonite": 26214400,
+          "spice": 13107200
+        },
+        "base_time_s": 60074667.0
+      },
+      "17": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 26214400,
+          "kryptonite": 52428800,
+          "spice": 26214400
+        },
+        "base_time_s": 120149333.0
+      },
+      "18": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 52428800,
+          "kryptonite": 104857600,
+          "spice": 52428800
+        },
+        "base_time_s": 240298667.0
+      },
+      "19": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 104857600,
+          "kryptonite": 209715200,
+          "spice": 104857600
+        },
+        "base_time_s": 480597333.0
+      },
+      "20": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 209715200,
+          "kryptonite": 419430400,
+          "spice": 209715200
+        },
+        "base_time_s": 961194667.0
+      },
+      "21": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 419430400,
+          "kryptonite": 838860800,
+          "spice": 419430400
+        },
+        "base_time_s": 1922389333.0
+      },
+      "22": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 838860800,
+          "kryptonite": 1680000000,
+          "spice": 838860800
+        },
+        "base_time_s": 3844778667.0
+      },
+      "23": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 1680000000,
+          "kryptonite": 3360000000,
+          "spice": 1680000000
+        },
+        "base_time_s": 7689557333.0
+      },
+      "24": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 3360000000,
+          "kryptonite": 6710000000,
+          "spice": 3360000000
+        },
+        "base_time_s": 15379114667.0
+      },
+      "25": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 6710000000,
+          "kryptonite": 13420000000,
+          "spice": 6710000000
+        },
+        "base_time_s": 30758229333.0
+      },
+      "26": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 13420000000,
+          "kryptonite": 26840000000,
+          "spice": 13420000000
+        },
+        "base_time_s": 61516458667.0
+      },
+      "27": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 26840000000,
+          "kryptonite": 53690000000,
+          "spice": 26840000000
+        },
+        "base_time_s": 123032917333.0
+      },
+      "28": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 53690000000,
+          "kryptonite": 107370000000,
+          "spice": 53690000000
+        },
+        "base_time_s": 246065834667.0
+      },
+      "29": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 107370000000,
+          "kryptonite": 214750000000,
+          "spice": 107370000000
+        },
+        "base_time_s": 492131669333.0
+      },
+      "30": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 214750000000,
+          "kryptonite": 429500000000,
+          "spice": 214750000000
+        },
+        "base_time_s": 984263338667.0
+      },
+      "31": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 429500000000,
+          "kryptonite": 858990000000,
+          "spice": 429500000000
+        },
+        "base_time_s": 1968526677333.0
+      },
+      "32": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 858990000000,
+          "kryptonite": 1720000000000,
+          "spice": 858990000000
+        },
+        "base_time_s": 3937053354667.0
+      },
+      "33": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 1720000000000,
+          "kryptonite": 3440000000000,
+          "spice": 1720000000000
+        },
+        "base_time_s": 7874106709333.0
+      },
+      "34": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 3440000000000,
+          "kryptonite": 6870000000000,
+          "spice": 3440000000000
+        },
+        "base_time_s": 15748213418667.0
+      },
+      "35": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 6870000000000,
+          "kryptonite": 13740000000000,
+          "spice": 6870000000000
+        },
+        "base_time_s": 31496426837333.0
+      },
+      "36": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 13740000000000,
+          "kryptonite": 27490000000000,
+          "spice": 13740000000000
+        },
+        "base_time_s": 62992853674667.0
+      },
+      "37": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 27490000000000,
+          "kryptonite": 54980000000000,
+          "spice": 27490000000000
+        },
+        "base_time_s": 1.2599
+      },
+      "38": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 54980000000000,
+          "kryptonite": 109950000000000,
+          "spice": 54980000000000
+        },
+        "base_time_s": 2.5197
+      },
+      "39": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 109950000000000,
+          "kryptonite": 219900000000000,
+          "spice": 109950000000000
+        },
+        "base_time_s": 5.0394
+      },
+      "40": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 219900000000000,
+          "kryptonite": 439800000000000,
+          "spice": 219900000000000
+        },
+        "base_time_s": 1.0079
+      }
+    }
+  },
+  "engine-research": {
+    "slug": "engine-research",
+    "name": "Engine research",
+    "url": "https://spaceinvasion.bitmeup.com/wiki/en/research/engine-research",
+    "base_cost": {
+      "pig_iron": 0,
+      "metal": 800,
+      "kryptonite": 0,
+      "spice": 250
+    },
+    "requirements": [
+      {
+        "category": "buildings",
+        "slug": "research-lab",
+        "name": "Research lab",
+        "level": 1
+      }
+    ],
+    "required_for": [
+      {
+        "category": "research",
+        "slug": "rocket-engine",
+        "name": "Rocket engine",
+        "level": 2
+      },
+      {
+        "category": "research",
+        "slug": "diffusion-engine",
+        "name": "Diffusion engine",
+        "level": 6
+      },
+      {
+        "category": "research",
+        "slug": "warp-engine",
+        "name": "Warp engine",
+        "level": 8
+      }
+    ],
+    "id": "r3",
+    "max_table_level": 35,
+    "levels": {
+      "1": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 800,
+          "kryptonite": 0,
+          "spice": 250
+        },
+        "base_time_s": 1000.0
+      },
+      "2": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 1600,
+          "kryptonite": 0,
+          "spice": 500
+        },
+        "base_time_s": 2000.0
+      },
+      "3": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 3200,
+          "kryptonite": 0,
+          "spice": 1000
+        },
+        "base_time_s": 4000.0
+      },
+      "4": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 6400,
+          "kryptonite": 0,
+          "spice": 2000
+        },
+        "base_time_s": 8000.0
+      },
+      "5": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 12800,
+          "kryptonite": 0,
+          "spice": 4000
+        },
+        "base_time_s": 16000.0
+      },
+      "6": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 25600,
+          "kryptonite": 0,
+          "spice": 8000
+        },
+        "base_time_s": 32000.0
+      },
+      "7": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 51200,
+          "kryptonite": 0,
+          "spice": 16000
+        },
+        "base_time_s": 64000.0
+      },
+      "8": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 102400,
+          "kryptonite": 0,
+          "spice": 32000
+        },
+        "base_time_s": 128000.0
+      },
+      "9": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 204800,
+          "kryptonite": 0,
+          "spice": 64000
+        },
+        "base_time_s": 256000.0
+      },
+      "10": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 409600,
+          "kryptonite": 0,
+          "spice": 128000
+        },
+        "base_time_s": 512000.0
+      },
+      "11": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 819200,
+          "kryptonite": 0,
+          "spice": 256000
+        },
+        "base_time_s": 1024000.0
+      },
+      "12": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 1638400,
+          "kryptonite": 0,
+          "spice": 512000
+        },
+        "base_time_s": 2048000.0
+      },
+      "13": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 3276800,
+          "kryptonite": 0,
+          "spice": 1024000
+        },
+        "base_time_s": 4096000.0
+      },
+      "14": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 6553600,
+          "kryptonite": 0,
+          "spice": 2048000
+        },
+        "base_time_s": 8192000.0
+      },
+      "15": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 13107200,
+          "kryptonite": 0,
+          "spice": 4096000
+        },
+        "base_time_s": 16384000.0
+      },
+      "16": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 26214400,
+          "kryptonite": 0,
+          "spice": 8192000
+        },
+        "base_time_s": 32768000.0
+      },
+      "17": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 52428800,
+          "kryptonite": 0,
+          "spice": 16384000
+        },
+        "base_time_s": 65536000.0
+      },
+      "18": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 104857600,
+          "kryptonite": 0,
+          "spice": 32768000
+        },
+        "base_time_s": 131072000.0
+      },
+      "19": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 209715200,
+          "kryptonite": 0,
+          "spice": 65536000
+        },
+        "base_time_s": 262144000.0
+      },
+      "20": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 419430400,
+          "kryptonite": 0,
+          "spice": 131072000
+        },
+        "base_time_s": 524288000.0
+      },
+      "21": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 838860800,
+          "kryptonite": 0,
+          "spice": 262144000
+        },
+        "base_time_s": 1048576000.0
+      },
+      "22": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 1680000000,
+          "kryptonite": 0,
+          "spice": 524288000
+        },
+        "base_time_s": 2097152000.0
+      },
+      "23": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 3360000000,
+          "kryptonite": 0,
+          "spice": 1050000000
+        },
+        "base_time_s": 4194304000.0
+      },
+      "24": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 6710000000,
+          "kryptonite": 0,
+          "spice": 2100000000
+        },
+        "base_time_s": 8388608000.0
+      },
+      "25": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 13420000000,
+          "kryptonite": 0,
+          "spice": 4190000000
+        },
+        "base_time_s": 16777216000.0
+      },
+      "26": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 26840000000,
+          "kryptonite": 0,
+          "spice": 8390000000
+        },
+        "base_time_s": 33554432000.0
+      },
+      "27": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 53690000000,
+          "kryptonite": 0,
+          "spice": 16780000000
+        },
+        "base_time_s": 67108864000.0
+      },
+      "28": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 107370000000,
+          "kryptonite": 0,
+          "spice": 33550000000
+        },
+        "base_time_s": 134217728000.0
+      },
+      "29": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 214750000000,
+          "kryptonite": 0,
+          "spice": 67110000000
+        },
+        "base_time_s": 268435456000.0
+      },
+      "30": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 429500000000,
+          "kryptonite": 0,
+          "spice": 134220000000
+        },
+        "base_time_s": 536870912000.0
+      },
+      "31": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 858990000000,
+          "kryptonite": 0,
+          "spice": 268440000000
+        },
+        "base_time_s": 1073741824000.0
+      },
+      "32": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 1720000000000,
+          "kryptonite": 0,
+          "spice": 536870000000
+        },
+        "base_time_s": 2147483648000.0
+      },
+      "33": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 3440000000000,
+          "kryptonite": 0,
+          "spice": 1070000000000
+        },
+        "base_time_s": 4294967296000.0
+      },
+      "34": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 6870000000000,
+          "kryptonite": 0,
+          "spice": 2150000000000
+        },
+        "base_time_s": 8589934592000.0
+      },
+      "35": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 13740000000000,
+          "kryptonite": 0,
+          "spice": 4290000000000
+        },
+        "base_time_s": 17179869184000.0
+      }
+    }
+  },
+  "graviton-technology": {
+    "slug": "graviton-technology",
+    "name": "Graviton technology",
+    "url": "https://spaceinvasion.bitmeup.com/wiki/en/research/graviton-technology",
+    "base_cost": {
+      "pig_iron": 0,
+      "metal": 300,
+      "kryptonite": 2000,
+      "spice": 300
+    },
+    "requirements": [
+      {
+        "category": "buildings",
+        "slug": "research-lab",
+        "name": "Research lab",
+        "level": 2
+      },
+      {
+        "category": "research",
+        "slug": "energy-technology",
+        "name": "Energy technology",
+        "level": 2
+      }
+    ],
+    "required_for": [
+      {
+        "category": "defense",
+        "slug": "light-graviton-cannon",
+        "name": "Light graviton cannon",
+        "level": 2
+      },
+      {
+        "category": "defense",
+        "slug": "heavy-graviton-cannon",
+        "name": "Heavy graviton cannon",
+        "level": 6
+      },
+      {
+        "category": "research",
+        "slug": "black-hole-research",
+        "name": "Black hole research",
+        "level": 10
+      }
+    ],
+    "id": "r13",
+    "max_table_level": 35,
+    "levels": {
+      "1": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 300,
+          "kryptonite": 2000,
+          "spice": 300
+        },
+        "base_time_s": 3708.0
+      },
+      "2": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 600,
+          "kryptonite": 4000,
+          "spice": 600
+        },
+        "base_time_s": 7417.0
+      },
+      "3": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 1200,
+          "kryptonite": 8000,
+          "spice": 1200
+        },
+        "base_time_s": 14833.0
+      },
+      "4": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 2400,
+          "kryptonite": 16000,
+          "spice": 2400
+        },
+        "base_time_s": 29667.0
+      },
+      "5": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 4800,
+          "kryptonite": 32000,
+          "spice": 4800
+        },
+        "base_time_s": 59333.0
+      },
+      "6": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 9600,
+          "kryptonite": 64000,
+          "spice": 9600
+        },
+        "base_time_s": 118667.0
+      },
+      "7": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 19200,
+          "kryptonite": 128000,
+          "spice": 19200
+        },
+        "base_time_s": 237333.0
+      },
+      "8": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 38400,
+          "kryptonite": 256000,
+          "spice": 38400
+        },
+        "base_time_s": 474667.0
+      },
+      "9": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 76800,
+          "kryptonite": 512000,
+          "spice": 76800
+        },
+        "base_time_s": 949333.0
+      },
+      "10": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 153600,
+          "kryptonite": 1024000,
+          "spice": 153600
+        },
+        "base_time_s": 1898667.0
+      },
+      "11": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 307200,
+          "kryptonite": 2048000,
+          "spice": 307200
+        },
+        "base_time_s": 3797333.0
+      },
+      "12": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 614400,
+          "kryptonite": 4096000,
+          "spice": 614400
+        },
+        "base_time_s": 7594667.0
+      },
+      "13": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 1228800,
+          "kryptonite": 8192000,
+          "spice": 1228800
+        },
+        "base_time_s": 15189333.0
+      },
+      "14": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 2457600,
+          "kryptonite": 16384000,
+          "spice": 2457600
+        },
+        "base_time_s": 30378667.0
+      },
+      "15": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 4915200,
+          "kryptonite": 32768000,
+          "spice": 4915200
+        },
+        "base_time_s": 60757333.0
+      },
+      "16": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 9830400,
+          "kryptonite": 65536000,
+          "spice": 9830400
+        },
+        "base_time_s": 121514667.0
+      },
+      "17": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 19660800,
+          "kryptonite": 131072000,
+          "spice": 19660800
+        },
+        "base_time_s": 243029333.0
+      },
+      "18": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 39321600,
+          "kryptonite": 262144000,
+          "spice": 39321600
+        },
+        "base_time_s": 486058667.0
+      },
+      "19": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 78643200,
+          "kryptonite": 524288000,
+          "spice": 78643200
+        },
+        "base_time_s": 972117333.0
+      },
+      "20": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 157286400,
+          "kryptonite": 1050000000,
+          "spice": 157286400
+        },
+        "base_time_s": 1944234667.0
+      },
+      "21": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 314572800,
+          "kryptonite": 2100000000,
+          "spice": 314572800
+        },
+        "base_time_s": 3888469333.0
+      },
+      "22": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 629145600,
+          "kryptonite": 4190000000,
+          "spice": 629145600
+        },
+        "base_time_s": 7776938667.0
+      },
+      "23": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 1260000000,
+          "kryptonite": 8390000000,
+          "spice": 1260000000
+        },
+        "base_time_s": 15553877333.0
+      },
+      "24": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 2520000000,
+          "kryptonite": 16780000000,
+          "spice": 2520000000
+        },
+        "base_time_s": 31107754667.0
+      },
+      "25": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 5030000000,
+          "kryptonite": 33550000000,
+          "spice": 5030000000
+        },
+        "base_time_s": 62215509333.0
+      },
+      "26": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 10070000000,
+          "kryptonite": 67110000000,
+          "spice": 10070000000
+        },
+        "base_time_s": 124431018667.0
+      },
+      "27": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 20130000000,
+          "kryptonite": 134220000000,
+          "spice": 20130000000
+        },
+        "base_time_s": 248862037333.0
+      },
+      "28": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 40270000000,
+          "kryptonite": 268440000000,
+          "spice": 40270000000
+        },
+        "base_time_s": 497724074667.0
+      },
+      "29": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 80530000000,
+          "kryptonite": 536870000000,
+          "spice": 80530000000
+        },
+        "base_time_s": 995448149333.0
+      },
+      "30": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 161060000000,
+          "kryptonite": 1070000000000,
+          "spice": 161060000000
+        },
+        "base_time_s": 1990896298667.0
+      },
+      "31": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 322120000000,
+          "kryptonite": 2150000000000,
+          "spice": 322120000000
+        },
+        "base_time_s": 3981792597333.0
+      },
+      "32": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 644250000000,
+          "kryptonite": 4290000000000,
+          "spice": 644250000000
+        },
+        "base_time_s": 7963585194667.0
+      },
+      "33": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 1290000000000,
+          "kryptonite": 8590000000000,
+          "spice": 1290000000000
+        },
+        "base_time_s": 15927170389333.0
+      },
+      "34": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 2580000000000,
+          "kryptonite": 17180000000000,
+          "spice": 2580000000000
+        },
+        "base_time_s": 31854340778667.0
+      },
+      "35": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 5150000000000,
+          "kryptonite": 34360000000000,
+          "spice": 5150000000000
+        },
+        "base_time_s": 63708681557333.0
+      }
+    }
+  },
+  "mining-technology": {
+    "slug": "mining-technology",
+    "name": "Mining technology",
+    "url": "https://spaceinvasion.bitmeup.com/wiki/en/research/mining-technology",
+    "base_cost": {
+      "pig_iron": 1000,
+      "metal": 0,
+      "kryptonite": 500,
+      "spice": 0
+    },
+    "requirements": [
+      {
+        "category": "research",
+        "slug": "energy-technology",
+        "name": "Energy technology",
+        "level": 4
+      },
+      {
+        "category": "buildings",
+        "slug": "research-lab",
+        "name": "Research lab",
+        "level": 2
+      }
+    ],
+    "required_for": [],
+    "id": "r1",
+    "max_table_level": 40,
+    "levels": {
+      "1": {
+        "cost": {
+          "pig_iron": 1000,
+          "metal": 0,
+          "kryptonite": 500,
+          "spice": 0
+        },
+        "base_time_s": 2083.0
+      },
+      "2": {
+        "cost": {
+          "pig_iron": 2000,
+          "metal": 0,
+          "kryptonite": 1000,
+          "spice": 0
+        },
+        "base_time_s": 4167.0
+      },
+      "3": {
+        "cost": {
+          "pig_iron": 4000,
+          "metal": 0,
+          "kryptonite": 2000,
+          "spice": 0
+        },
+        "base_time_s": 8333.0
+      },
+      "4": {
+        "cost": {
+          "pig_iron": 8000,
+          "metal": 0,
+          "kryptonite": 4000,
+          "spice": 0
+        },
+        "base_time_s": 16667.0
+      },
+      "5": {
+        "cost": {
+          "pig_iron": 16000,
+          "metal": 0,
+          "kryptonite": 8000,
+          "spice": 0
+        },
+        "base_time_s": 33333.0
+      },
+      "6": {
+        "cost": {
+          "pig_iron": 32000,
+          "metal": 0,
+          "kryptonite": 16000,
+          "spice": 0
+        },
+        "base_time_s": 66667.0
+      },
+      "7": {
+        "cost": {
+          "pig_iron": 64000,
+          "metal": 0,
+          "kryptonite": 32000,
+          "spice": 0
+        },
+        "base_time_s": 133333.0
+      },
+      "8": {
+        "cost": {
+          "pig_iron": 128000,
+          "metal": 0,
+          "kryptonite": 64000,
+          "spice": 0
+        },
+        "base_time_s": 266667.0
+      },
+      "9": {
+        "cost": {
+          "pig_iron": 256000,
+          "metal": 0,
+          "kryptonite": 128000,
+          "spice": 0
+        },
+        "base_time_s": 533333.0
+      },
+      "10": {
+        "cost": {
+          "pig_iron": 512000,
+          "metal": 0,
+          "kryptonite": 256000,
+          "spice": 0
+        },
+        "base_time_s": 1066667.0
+      },
+      "11": {
+        "cost": {
+          "pig_iron": 1024000,
+          "metal": 0,
+          "kryptonite": 512000,
+          "spice": 0
+        },
+        "base_time_s": 2133333.0
+      },
+      "12": {
+        "cost": {
+          "pig_iron": 2048000,
+          "metal": 0,
+          "kryptonite": 1024000,
+          "spice": 0
+        },
+        "base_time_s": 4266667.0
+      },
+      "13": {
+        "cost": {
+          "pig_iron": 4096000,
+          "metal": 0,
+          "kryptonite": 2048000,
+          "spice": 0
+        },
+        "base_time_s": 8533333.0
+      },
+      "14": {
+        "cost": {
+          "pig_iron": 8192000,
+          "metal": 0,
+          "kryptonite": 4096000,
+          "spice": 0
+        },
+        "base_time_s": 17066667.0
+      },
+      "15": {
+        "cost": {
+          "pig_iron": 16384000,
+          "metal": 0,
+          "kryptonite": 8192000,
+          "spice": 0
+        },
+        "base_time_s": 34133333.0
+      },
+      "16": {
+        "cost": {
+          "pig_iron": 32768000,
+          "metal": 0,
+          "kryptonite": 16384000,
+          "spice": 0
+        },
+        "base_time_s": 68266667.0
+      },
+      "17": {
+        "cost": {
+          "pig_iron": 65536000,
+          "metal": 0,
+          "kryptonite": 32768000,
+          "spice": 0
+        },
+        "base_time_s": 136533333.0
+      },
+      "18": {
+        "cost": {
+          "pig_iron": 131072000,
+          "metal": 0,
+          "kryptonite": 65536000,
+          "spice": 0
+        },
+        "base_time_s": 273066667.0
+      },
+      "19": {
+        "cost": {
+          "pig_iron": 262144000,
+          "metal": 0,
+          "kryptonite": 131072000,
+          "spice": 0
+        },
+        "base_time_s": 546133333.0
+      },
+      "20": {
+        "cost": {
+          "pig_iron": 524288000,
+          "metal": 0,
+          "kryptonite": 262144000,
+          "spice": 0
+        },
+        "base_time_s": 1092266667.0
+      },
+      "21": {
+        "cost": {
+          "pig_iron": 1050000000,
+          "metal": 0,
+          "kryptonite": 524288000,
+          "spice": 0
+        },
+        "base_time_s": 2184533333.0
+      },
+      "22": {
+        "cost": {
+          "pig_iron": 2100000000,
+          "metal": 0,
+          "kryptonite": 1050000000,
+          "spice": 0
+        },
+        "base_time_s": 4369066667.0
+      },
+      "23": {
+        "cost": {
+          "pig_iron": 4190000000,
+          "metal": 0,
+          "kryptonite": 2100000000,
+          "spice": 0
+        },
+        "base_time_s": 8738133333.0
+      },
+      "24": {
+        "cost": {
+          "pig_iron": 8390000000,
+          "metal": 0,
+          "kryptonite": 4190000000,
+          "spice": 0
+        },
+        "base_time_s": 17476266667.0
+      },
+      "25": {
+        "cost": {
+          "pig_iron": 16780000000,
+          "metal": 0,
+          "kryptonite": 8390000000,
+          "spice": 0
+        },
+        "base_time_s": 34952533333.0
+      },
+      "26": {
+        "cost": {
+          "pig_iron": 33550000000,
+          "metal": 0,
+          "kryptonite": 16780000000,
+          "spice": 0
+        },
+        "base_time_s": 69905066667.0
+      },
+      "27": {
+        "cost": {
+          "pig_iron": 67110000000,
+          "metal": 0,
+          "kryptonite": 33550000000,
+          "spice": 0
+        },
+        "base_time_s": 139810133333.0
+      },
+      "28": {
+        "cost": {
+          "pig_iron": 134220000000,
+          "metal": 0,
+          "kryptonite": 67110000000,
+          "spice": 0
+        },
+        "base_time_s": 279620266667.0
+      },
+      "29": {
+        "cost": {
+          "pig_iron": 268440000000,
+          "metal": 0,
+          "kryptonite": 134220000000,
+          "spice": 0
+        },
+        "base_time_s": 559240533333.0
+      },
+      "30": {
+        "cost": {
+          "pig_iron": 536870000000,
+          "metal": 0,
+          "kryptonite": 268440000000,
+          "spice": 0
+        },
+        "base_time_s": 1118481066667.0
+      },
+      "31": {
+        "cost": {
+          "pig_iron": 1070000000000,
+          "metal": 0,
+          "kryptonite": 536870000000,
+          "spice": 0
+        },
+        "base_time_s": 2236962133333.0
+      },
+      "32": {
+        "cost": {
+          "pig_iron": 2150000000000,
+          "metal": 0,
+          "kryptonite": 1070000000000,
+          "spice": 0
+        },
+        "base_time_s": 4473924266667.0
+      },
+      "33": {
+        "cost": {
+          "pig_iron": 4290000000000,
+          "metal": 0,
+          "kryptonite": 2150000000000,
+          "spice": 0
+        },
+        "base_time_s": 8947848533333.0
+      },
+      "34": {
+        "cost": {
+          "pig_iron": 8590000000000,
+          "metal": 0,
+          "kryptonite": 4290000000000,
+          "spice": 0
+        },
+        "base_time_s": 17895697066667.0
+      },
+      "35": {
+        "cost": {
+          "pig_iron": 17180000000000,
+          "metal": 0,
+          "kryptonite": 8590000000000,
+          "spice": 0
+        },
+        "base_time_s": 35791394133333.0
+      },
+      "36": {
+        "cost": {
+          "pig_iron": 34360000000000,
+          "metal": 0,
+          "kryptonite": 17180000000000,
+          "spice": 0
+        },
+        "base_time_s": 71582788266667.0
+      },
+      "37": {
+        "cost": {
+          "pig_iron": 68720000000000,
+          "metal": 0,
+          "kryptonite": 34360000000000,
+          "spice": 0
+        },
+        "base_time_s": 1.4317
+      },
+      "38": {
+        "cost": {
+          "pig_iron": 137440000000000,
+          "metal": 0,
+          "kryptonite": 68720000000000,
+          "spice": 0
+        },
+        "base_time_s": 2.8633
+      },
+      "39": {
+        "cost": {
+          "pig_iron": 274880000000000,
+          "metal": 0,
+          "kryptonite": 137440000000000,
+          "spice": 0
+        },
+        "base_time_s": 5.7266
+      },
+      "40": {
+        "cost": {
+          "pig_iron": 549760000000000,
+          "metal": 0,
+          "kryptonite": 274880000000000,
+          "spice": 0
+        },
+        "base_time_s": 1.1453
+      }
+    }
+  },
+  "particle-analyzer": {
+    "slug": "particle-analyzer",
+    "name": "Particle analyzer",
+    "url": "https://spaceinvasion.bitmeup.com/wiki/en/research/particle-analyzer",
+    "base_cost": {
+      "pig_iron": 0,
+      "metal": 5000,
+      "kryptonite": 8000,
+      "spice": 10000
+    },
+    "requirements": [
+      {
+        "category": "buildings",
+        "slug": "research-lab",
+        "name": "Research lab",
+        "level": 6
+      },
+      {
+        "category": "research",
+        "slug": "shield-technology",
+        "name": "Shield technology",
+        "level": 5
+      }
+    ],
+    "required_for": [
+      {
+        "category": "buildings",
+        "slug": "particle-shield",
+        "name": "Particle shield",
+        "level": 2
+      },
+      {
+        "category": "defense",
+        "slug": "interval-cannon",
+        "name": "Interval cannon",
+        "level": 4
+      },
+      {
+        "category": "buildings",
+        "slug": "particle-cannon",
+        "name": "Particle cannon",
+        "level": 5
+      }
+    ],
+    "id": "r12",
+    "max_table_level": 30,
+    "levels": {
+      "1": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 5000,
+          "kryptonite": 8000,
+          "spice": 10000
+        },
+        "base_time_s": 19583.0
+      },
+      "2": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 10000,
+          "kryptonite": 16000,
+          "spice": 20000
+        },
+        "base_time_s": 39167.0
+      },
+      "3": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 20000,
+          "kryptonite": 32000,
+          "spice": 40000
+        },
+        "base_time_s": 78333.0
+      },
+      "4": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 40000,
+          "kryptonite": 64000,
+          "spice": 80000
+        },
+        "base_time_s": 156667.0
+      },
+      "5": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 80000,
+          "kryptonite": 128000,
+          "spice": 160000
+        },
+        "base_time_s": 313333.0
+      },
+      "6": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 160000,
+          "kryptonite": 256000,
+          "spice": 320000
+        },
+        "base_time_s": 626667.0
+      },
+      "7": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 320000,
+          "kryptonite": 512000,
+          "spice": 640000
+        },
+        "base_time_s": 1253333.0
+      },
+      "8": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 640000,
+          "kryptonite": 1024000,
+          "spice": 1280000
+        },
+        "base_time_s": 2506667.0
+      },
+      "9": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 1280000,
+          "kryptonite": 2048000,
+          "spice": 2560000
+        },
+        "base_time_s": 5013333.0
+      },
+      "10": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 2560000,
+          "kryptonite": 4096000,
+          "spice": 5120000
+        },
+        "base_time_s": 10026667.0
+      },
+      "11": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 5120000,
+          "kryptonite": 8192000,
+          "spice": 10240000
+        },
+        "base_time_s": 20053333.0
+      },
+      "12": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 10240000,
+          "kryptonite": 16384000,
+          "spice": 20480000
+        },
+        "base_time_s": 40106667.0
+      },
+      "13": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 20480000,
+          "kryptonite": 32768000,
+          "spice": 40960000
+        },
+        "base_time_s": 80213333.0
+      },
+      "14": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 40960000,
+          "kryptonite": 65536000,
+          "spice": 81920000
+        },
+        "base_time_s": 160426667.0
+      },
+      "15": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 81920000,
+          "kryptonite": 131072000,
+          "spice": 163840000
+        },
+        "base_time_s": 320853333.0
+      },
+      "16": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 163840000,
+          "kryptonite": 262144000,
+          "spice": 327680000
+        },
+        "base_time_s": 641706667.0
+      },
+      "17": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 327680000,
+          "kryptonite": 524288000,
+          "spice": 655360000
+        },
+        "base_time_s": 1283413333.0
+      },
+      "18": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 655360000,
+          "kryptonite": 1050000000,
+          "spice": 1310000000
+        },
+        "base_time_s": 2566826667.0
+      },
+      "19": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 1310000000,
+          "kryptonite": 2100000000,
+          "spice": 2620000000
+        },
+        "base_time_s": 5133653333.0
+      },
+      "20": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 2620000000,
+          "kryptonite": 4190000000,
+          "spice": 5240000000
+        },
+        "base_time_s": 10267306667.0
+      },
+      "21": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 5240000000,
+          "kryptonite": 8390000000,
+          "spice": 10490000000
+        },
+        "base_time_s": 20534613333.0
+      },
+      "22": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 10490000000,
+          "kryptonite": 16780000000,
+          "spice": 20970000000
+        },
+        "base_time_s": 41069226667.0
+      },
+      "23": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 20970000000,
+          "kryptonite": 33550000000,
+          "spice": 41940000000
+        },
+        "base_time_s": 82138453333.0
+      },
+      "24": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 41940000000,
+          "kryptonite": 67110000000,
+          "spice": 83890000000
+        },
+        "base_time_s": 164276906667.0
+      },
+      "25": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 83890000000,
+          "kryptonite": 134220000000,
+          "spice": 167770000000
+        },
+        "base_time_s": 328553813333.0
+      },
+      "26": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 167770000000,
+          "kryptonite": 268440000000,
+          "spice": 335540000000
+        },
+        "base_time_s": 657107626667.0
+      },
+      "27": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 335540000000,
+          "kryptonite": 536870000000,
+          "spice": 671090000000
+        },
+        "base_time_s": 1314215253333.0
+      },
+      "28": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 671090000000,
+          "kryptonite": 1070000000000,
+          "spice": 1340000000000
+        },
+        "base_time_s": 2628430506667.0
+      },
+      "29": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 1340000000000,
+          "kryptonite": 2150000000000,
+          "spice": 2680000000000
+        },
+        "base_time_s": 5256861013333.0
+      },
+      "30": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 2680000000000,
+          "kryptonite": 4290000000000,
+          "spice": 5370000000000
+        },
+        "base_time_s": 10513722026667.0
+      }
+    }
+  },
+  "rocket-engine": {
+    "slug": "rocket-engine",
+    "name": "Rocket engine",
+    "url": "https://spaceinvasion.bitmeup.com/wiki/en/research/rocket-engine",
+    "base_cost": {
+      "pig_iron": 0,
+      "metal": 400,
+      "kryptonite": 350,
+      "spice": 100
+    },
+    "requirements": [
+      {
+        "category": "research",
+        "slug": "engine-research",
+        "name": "Engine research",
+        "level": 2
+      }
+    ],
+    "required_for": [
+      {
+        "category": "ships",
+        "slug": "small-fighter",
+        "name": "Small fighter",
+        "level": 1
+      },
+      {
+        "category": "ships",
+        "slug": "spy-probe",
+        "name": "Spy probe",
+        "level": 3
+      },
+      {
+        "category": "ships",
+        "slug": "small-transport",
+        "name": "Small transport",
+        "level": 4
+      },
+      {
+        "category": "ships",
+        "slug": "warship",
+        "name": "Warship",
+        "level": 4
+      },
+      {
+        "category": "ships",
+        "slug": "large-transport",
+        "name": "Large transport",
+        "level": 6
+      },
+      {
+        "category": "ships",
+        "slug": "colony-ship",
+        "name": "Colony ship",
+        "level": 8
+      }
+    ],
+    "id": "r4",
+    "max_table_level": 40,
+    "levels": {
+      "1": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 400,
+          "kryptonite": 350,
+          "spice": 100
+        },
+        "base_time_s": 1083.0
+      },
+      "2": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 800,
+          "kryptonite": 700,
+          "spice": 200
+        },
+        "base_time_s": 2167.0
+      },
+      "3": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 1600,
+          "kryptonite": 1400,
+          "spice": 400
+        },
+        "base_time_s": 4333.0
+      },
+      "4": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 3200,
+          "kryptonite": 2800,
+          "spice": 800
+        },
+        "base_time_s": 8667.0
+      },
+      "5": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 6400,
+          "kryptonite": 5600,
+          "spice": 1600
+        },
+        "base_time_s": 17333.0
+      },
+      "6": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 12800,
+          "kryptonite": 11200,
+          "spice": 3200
+        },
+        "base_time_s": 34667.0
+      },
+      "7": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 25600,
+          "kryptonite": 22400,
+          "spice": 6400
+        },
+        "base_time_s": 69333.0
+      },
+      "8": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 51200,
+          "kryptonite": 44800,
+          "spice": 12800
+        },
+        "base_time_s": 138667.0
+      },
+      "9": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 102400,
+          "kryptonite": 89600,
+          "spice": 25600
+        },
+        "base_time_s": 277333.0
+      },
+      "10": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 204800,
+          "kryptonite": 179200,
+          "spice": 51200
+        },
+        "base_time_s": 554667.0
+      },
+      "11": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 409600,
+          "kryptonite": 358400,
+          "spice": 102400
+        },
+        "base_time_s": 1109333.0
+      },
+      "12": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 819200,
+          "kryptonite": 716800,
+          "spice": 204800
+        },
+        "base_time_s": 2218667.0
+      },
+      "13": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 1638400,
+          "kryptonite": 1433600,
+          "spice": 409600
+        },
+        "base_time_s": 4437333.0
+      },
+      "14": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 3276800,
+          "kryptonite": 2867200,
+          "spice": 819200
+        },
+        "base_time_s": 8874667.0
+      },
+      "15": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 6553600,
+          "kryptonite": 5734400,
+          "spice": 1638400
+        },
+        "base_time_s": 17749333.0
+      },
+      "16": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 13107200,
+          "kryptonite": 11468800,
+          "spice": 3276800
+        },
+        "base_time_s": 35498667.0
+      },
+      "17": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 26214400,
+          "kryptonite": 22937600,
+          "spice": 6553600
+        },
+        "base_time_s": 70997333.0
+      },
+      "18": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 52428800,
+          "kryptonite": 45875200,
+          "spice": 13107200
+        },
+        "base_time_s": 141994667.0
+      },
+      "19": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 104857600,
+          "kryptonite": 91750400,
+          "spice": 26214400
+        },
+        "base_time_s": 283989333.0
+      },
+      "20": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 209715200,
+          "kryptonite": 183500800,
+          "spice": 52428800
+        },
+        "base_time_s": 567978667.0
+      },
+      "21": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 419430400,
+          "kryptonite": 367001600,
+          "spice": 104857600
+        },
+        "base_time_s": 1135957333.0
+      },
+      "22": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 838860800,
+          "kryptonite": 734003200,
+          "spice": 209715200
+        },
+        "base_time_s": 2271914667.0
+      },
+      "23": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 1680000000,
+          "kryptonite": 1470000000,
+          "spice": 419430400
+        },
+        "base_time_s": 4543829333.0
+      },
+      "24": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 3360000000,
+          "kryptonite": 2940000000,
+          "spice": 838860800
+        },
+        "base_time_s": 9087658667.0
+      },
+      "25": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 6710000000,
+          "kryptonite": 5870000000,
+          "spice": 1680000000
+        },
+        "base_time_s": 18175317333.0
+      },
+      "26": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 13420000000,
+          "kryptonite": 11740000000,
+          "spice": 3360000000
+        },
+        "base_time_s": 36350634667.0
+      },
+      "27": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 26840000000,
+          "kryptonite": 23490000000,
+          "spice": 6710000000
+        },
+        "base_time_s": 72701269333.0
+      },
+      "28": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 53690000000,
+          "kryptonite": 46980000000,
+          "spice": 13420000000
+        },
+        "base_time_s": 145402538667.0
+      },
+      "29": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 107370000000,
+          "kryptonite": 93950000000,
+          "spice": 26840000000
+        },
+        "base_time_s": 290805077333.0
+      },
+      "30": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 214750000000,
+          "kryptonite": 187900000000,
+          "spice": 53690000000
+        },
+        "base_time_s": 581610154667.0
+      },
+      "31": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 429500000000,
+          "kryptonite": 375810000000,
+          "spice": 107370000000
+        },
+        "base_time_s": 1163220309333.0
+      },
+      "32": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 858990000000,
+          "kryptonite": 751620000000,
+          "spice": 214750000000
+        },
+        "base_time_s": 2326440618667.0
+      },
+      "33": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 1720000000000,
+          "kryptonite": 1500000000000,
+          "spice": 429500000000
+        },
+        "base_time_s": 4652881237333.0
+      },
+      "34": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 3440000000000,
+          "kryptonite": 3010000000000,
+          "spice": 858990000000
+        },
+        "base_time_s": 9305762474667.0
+      },
+      "35": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 6870000000000,
+          "kryptonite": 6010000000000,
+          "spice": 1720000000000
+        },
+        "base_time_s": 18611524949333.0
+      },
+      "36": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 13740000000000,
+          "kryptonite": 12030000000000,
+          "spice": 3440000000000
+        },
+        "base_time_s": 37223049898667.0
+      },
+      "37": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 27490000000000,
+          "kryptonite": 24050000000000,
+          "spice": 6870000000000
+        },
+        "base_time_s": 74446099797333.0
+      },
+      "38": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 54980000000000,
+          "kryptonite": 48100000000000,
+          "spice": 13740000000000
+        },
+        "base_time_s": 1.4889
+      },
+      "39": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 109950000000000,
+          "kryptonite": 96210000000000,
+          "spice": 27490000000000
+        },
+        "base_time_s": 2.9778
+      },
+      "40": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 219900000000000,
+          "kryptonite": 192410000000000,
+          "spice": 54980000000000
+        },
+        "base_time_s": 5.9557
+      }
+    }
+  },
+  "shield-technology": {
+    "slug": "shield-technology",
+    "name": "Shield technology",
+    "url": "https://spaceinvasion.bitmeup.com/wiki/en/research/shield-technology",
+    "base_cost": {
+      "pig_iron": 0,
+      "metal": 250,
+      "kryptonite": 2000,
+      "spice": 0
+    },
+    "requirements": [
+      {
+        "category": "buildings",
+        "slug": "research-lab",
+        "name": "Research lab",
+        "level": 4
+      },
+      {
+        "category": "research",
+        "slug": "energy-technology",
+        "name": "Energy technology",
+        "level": 4
+      }
+    ],
+    "required_for": [
+      {
+        "category": "defense",
+        "slug": "small-shield-dome",
+        "name": "Small shield dome",
+        "level": 2
+      },
+      {
+        "category": "ships",
+        "slug": "starcruiser",
+        "name": "Starcruiser",
+        "level": 4
+      },
+      {
+        "category": "defense",
+        "slug": "large-shield-dome",
+        "name": "Large shield dome",
+        "level": 4
+      },
+      {
+        "category": "research",
+        "slug": "particle-analyzer",
+        "name": "Particle analyzer",
+        "level": 5
+      }
+    ],
+    "id": "r9",
+    "max_table_level": 40,
+    "levels": {
+      "1": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 250,
+          "kryptonite": 2000,
+          "spice": 0
+        },
+        "base_time_s": 3646.0
+      },
+      "2": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 500,
+          "kryptonite": 4000,
+          "spice": 0
+        },
+        "base_time_s": 7292.0
+      },
+      "3": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 1000,
+          "kryptonite": 8000,
+          "spice": 0
+        },
+        "base_time_s": 14583.0
+      },
+      "4": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 2000,
+          "kryptonite": 16000,
+          "spice": 0
+        },
+        "base_time_s": 29167.0
+      },
+      "5": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 4000,
+          "kryptonite": 32000,
+          "spice": 0
+        },
+        "base_time_s": 58333.0
+      },
+      "6": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 8000,
+          "kryptonite": 64000,
+          "spice": 0
+        },
+        "base_time_s": 116667.0
+      },
+      "7": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 16000,
+          "kryptonite": 128000,
+          "spice": 0
+        },
+        "base_time_s": 233333.0
+      },
+      "8": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 32000,
+          "kryptonite": 256000,
+          "spice": 0
+        },
+        "base_time_s": 466667.0
+      },
+      "9": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 64000,
+          "kryptonite": 512000,
+          "spice": 0
+        },
+        "base_time_s": 933333.0
+      },
+      "10": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 128000,
+          "kryptonite": 1024000,
+          "spice": 0
+        },
+        "base_time_s": 1866667.0
+      },
+      "11": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 256000,
+          "kryptonite": 2048000,
+          "spice": 0
+        },
+        "base_time_s": 3733333.0
+      },
+      "12": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 512000,
+          "kryptonite": 4096000,
+          "spice": 0
+        },
+        "base_time_s": 7466667.0
+      },
+      "13": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 1024000,
+          "kryptonite": 8192000,
+          "spice": 0
+        },
+        "base_time_s": 14933333.0
+      },
+      "14": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 2048000,
+          "kryptonite": 16384000,
+          "spice": 0
+        },
+        "base_time_s": 29866667.0
+      },
+      "15": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 4096000,
+          "kryptonite": 32768000,
+          "spice": 0
+        },
+        "base_time_s": 59733333.0
+      },
+      "16": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 8192000,
+          "kryptonite": 65536000,
+          "spice": 0
+        },
+        "base_time_s": 119466667.0
+      },
+      "17": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 16384000,
+          "kryptonite": 131072000,
+          "spice": 0
+        },
+        "base_time_s": 238933333.0
+      },
+      "18": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 32768000,
+          "kryptonite": 262144000,
+          "spice": 0
+        },
+        "base_time_s": 477866667.0
+      },
+      "19": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 65536000,
+          "kryptonite": 524288000,
+          "spice": 0
+        },
+        "base_time_s": 955733333.0
+      },
+      "20": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 131072000,
+          "kryptonite": 1050000000,
+          "spice": 0
+        },
+        "base_time_s": 1911466667.0
+      },
+      "21": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 262144000,
+          "kryptonite": 2100000000,
+          "spice": 0
+        },
+        "base_time_s": 3822933333.0
+      },
+      "22": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 524288000,
+          "kryptonite": 4190000000,
+          "spice": 0
+        },
+        "base_time_s": 7645866667.0
+      },
+      "23": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 1050000000,
+          "kryptonite": 8390000000,
+          "spice": 0
+        },
+        "base_time_s": 15291733333.0
+      },
+      "24": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 2100000000,
+          "kryptonite": 16780000000,
+          "spice": 0
+        },
+        "base_time_s": 30583466667.0
+      },
+      "25": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 4190000000,
+          "kryptonite": 33550000000,
+          "spice": 0
+        },
+        "base_time_s": 61166933333.0
+      },
+      "26": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 8390000000,
+          "kryptonite": 67110000000,
+          "spice": 0
+        },
+        "base_time_s": 122333866667.0
+      },
+      "27": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 16780000000,
+          "kryptonite": 134220000000,
+          "spice": 0
+        },
+        "base_time_s": 244667733333.0
+      },
+      "28": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 33550000000,
+          "kryptonite": 268440000000,
+          "spice": 0
+        },
+        "base_time_s": 489335466667.0
+      },
+      "29": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 67110000000,
+          "kryptonite": 536870000000,
+          "spice": 0
+        },
+        "base_time_s": 978670933333.0
+      },
+      "30": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 134220000000,
+          "kryptonite": 1070000000000,
+          "spice": 0
+        },
+        "base_time_s": 1957341866667.0
+      },
+      "31": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 268440000000,
+          "kryptonite": 2150000000000,
+          "spice": 0
+        },
+        "base_time_s": 3914683733333.0
+      },
+      "32": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 536870000000,
+          "kryptonite": 4290000000000,
+          "spice": 0
+        },
+        "base_time_s": 7829367466667.0
+      },
+      "33": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 1070000000000,
+          "kryptonite": 8590000000000,
+          "spice": 0
+        },
+        "base_time_s": 15658734933333.0
+      },
+      "34": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 2150000000000,
+          "kryptonite": 17180000000000,
+          "spice": 0
+        },
+        "base_time_s": 31317469866667.0
+      },
+      "35": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 4290000000000,
+          "kryptonite": 34360000000000,
+          "spice": 0
+        },
+        "base_time_s": 62634939733333.0
+      },
+      "36": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 8590000000000,
+          "kryptonite": 68720000000000,
+          "spice": 0
+        },
+        "base_time_s": 1.2527
+      },
+      "37": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 17180000000000,
+          "kryptonite": 137440000000000,
+          "spice": 0
+        },
+        "base_time_s": 2.5054
+      },
+      "38": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 34360000000000,
+          "kryptonite": 274880000000000,
+          "spice": 0
+        },
+        "base_time_s": 5.0108
+      },
+      "39": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 68720000000000,
+          "kryptonite": 549760000000000,
+          "spice": 0
+        },
+        "base_time_s": 1.0022
+      },
+      "40": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 137440000000000,
+          "kryptonite": 1100000000000000,
+          "spice": 0
+        },
+        "base_time_s": 2.0043
+      }
+    }
+  },
+  "spy-technology": {
+    "slug": "spy-technology",
+    "name": "Spy technology",
+    "url": "https://spaceinvasion.bitmeup.com/wiki/en/research/spy-technology",
+    "base_cost": {
+      "pig_iron": 0,
+      "metal": 500,
+      "kryptonite": 2000,
+      "spice": 300
+    },
+    "requirements": [
+      {
+        "category": "buildings",
+        "slug": "research-lab",
+        "name": "Research lab",
+        "level": 3
+      }
+    ],
+    "required_for": [
+      {
+        "category": "ships",
+        "slug": "spy-probe",
+        "name": "Spy probe",
+        "level": 2
+      },
+      {
+        "category": "ships",
+        "slug": "stealth-bomber",
+        "name": "Stealth bomber",
+        "level": 8
+      }
+    ],
+    "id": "r7",
+    "max_table_level": 35,
+    "levels": {
+      "1": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 500,
+          "kryptonite": 2000,
+          "spice": 300
+        },
+        "base_time_s": 3958.0
+      },
+      "2": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 1000,
+          "kryptonite": 4000,
+          "spice": 600
+        },
+        "base_time_s": 7917.0
+      },
+      "3": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 2000,
+          "kryptonite": 8000,
+          "spice": 1200
+        },
+        "base_time_s": 15833.0
+      },
+      "4": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 4000,
+          "kryptonite": 16000,
+          "spice": 2400
+        },
+        "base_time_s": 31667.0
+      },
+      "5": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 8000,
+          "kryptonite": 32000,
+          "spice": 4800
+        },
+        "base_time_s": 63333.0
+      },
+      "6": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 16000,
+          "kryptonite": 64000,
+          "spice": 9600
+        },
+        "base_time_s": 126667.0
+      },
+      "7": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 32000,
+          "kryptonite": 128000,
+          "spice": 19200
+        },
+        "base_time_s": 253333.0
+      },
+      "8": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 64000,
+          "kryptonite": 256000,
+          "spice": 38400
+        },
+        "base_time_s": 506667.0
+      },
+      "9": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 128000,
+          "kryptonite": 512000,
+          "spice": 76800
+        },
+        "base_time_s": 1013333.0
+      },
+      "10": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 256000,
+          "kryptonite": 1024000,
+          "spice": 153600
+        },
+        "base_time_s": 2026667.0
+      },
+      "11": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 512000,
+          "kryptonite": 2048000,
+          "spice": 307200
+        },
+        "base_time_s": 4053333.0
+      },
+      "12": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 1024000,
+          "kryptonite": 4096000,
+          "spice": 614400
+        },
+        "base_time_s": 8106667.0
+      },
+      "13": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 2048000,
+          "kryptonite": 8192000,
+          "spice": 1228800
+        },
+        "base_time_s": 16213333.0
+      },
+      "14": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 4096000,
+          "kryptonite": 16384000,
+          "spice": 2457600
+        },
+        "base_time_s": 32426667.0
+      },
+      "15": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 8192000,
+          "kryptonite": 32768000,
+          "spice": 4915200
+        },
+        "base_time_s": 64853333.0
+      },
+      "16": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 16384000,
+          "kryptonite": 65536000,
+          "spice": 9830400
+        },
+        "base_time_s": 129706667.0
+      },
+      "17": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 32768000,
+          "kryptonite": 131072000,
+          "spice": 19660800
+        },
+        "base_time_s": 259413333.0
+      },
+      "18": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 65536000,
+          "kryptonite": 262144000,
+          "spice": 39321600
+        },
+        "base_time_s": 518826667.0
+      },
+      "19": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 131072000,
+          "kryptonite": 524288000,
+          "spice": 78643200
+        },
+        "base_time_s": 1037653333.0
+      },
+      "20": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 262144000,
+          "kryptonite": 1050000000,
+          "spice": 157286400
+        },
+        "base_time_s": 2075306667.0
+      },
+      "21": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 524288000,
+          "kryptonite": 2100000000,
+          "spice": 314572800
+        },
+        "base_time_s": 4150613333.0
+      },
+      "22": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 1050000000,
+          "kryptonite": 4190000000,
+          "spice": 629145600
+        },
+        "base_time_s": 8301226667.0
+      },
+      "23": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 2100000000,
+          "kryptonite": 8390000000,
+          "spice": 1260000000
+        },
+        "base_time_s": 16602453333.0
+      },
+      "24": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 4190000000,
+          "kryptonite": 16780000000,
+          "spice": 2520000000
+        },
+        "base_time_s": 33204906667.0
+      },
+      "25": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 8390000000,
+          "kryptonite": 33550000000,
+          "spice": 5030000000
+        },
+        "base_time_s": 66409813333.0
+      },
+      "26": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 16780000000,
+          "kryptonite": 67110000000,
+          "spice": 10070000000
+        },
+        "base_time_s": 132819626667.0
+      },
+      "27": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 33550000000,
+          "kryptonite": 134220000000,
+          "spice": 20130000000
+        },
+        "base_time_s": 265639253333.0
+      },
+      "28": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 67110000000,
+          "kryptonite": 268440000000,
+          "spice": 40270000000
+        },
+        "base_time_s": 531278506667.0
+      },
+      "29": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 134220000000,
+          "kryptonite": 536870000000,
+          "spice": 80530000000
+        },
+        "base_time_s": 1062557013333.0
+      },
+      "30": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 268440000000,
+          "kryptonite": 1070000000000,
+          "spice": 161060000000
+        },
+        "base_time_s": 2125114026667.0
+      },
+      "31": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 536870000000,
+          "kryptonite": 2150000000000,
+          "spice": 322120000000
+        },
+        "base_time_s": 4250228053333.0
+      },
+      "32": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 1070000000000,
+          "kryptonite": 4290000000000,
+          "spice": 644250000000
+        },
+        "base_time_s": 8500456106667.0
+      },
+      "33": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 2150000000000,
+          "kryptonite": 8590000000000,
+          "spice": 1290000000000
+        },
+        "base_time_s": 17000912213333.0
+      },
+      "34": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 4290000000000,
+          "kryptonite": 17180000000000,
+          "spice": 2580000000000
+        },
+        "base_time_s": 34001824426667.0
+      },
+      "35": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 8590000000000,
+          "kryptonite": 34360000000000,
+          "spice": 5150000000000
+        },
+        "base_time_s": 68003648853333.0
+      }
+    }
+  },
+  "targeting-systems": {
+    "slug": "targeting-systems",
+    "name": "Targeting systems",
+    "url": "https://spaceinvasion.bitmeup.com/wiki/en/research/targeting-systems",
+    "base_cost": {
+      "pig_iron": 0,
+      "metal": 1000,
+      "kryptonite": 2000,
+      "spice": 500
+    },
+    "requirements": [
+      {
+        "category": "buildings",
+        "slug": "research-lab",
+        "name": "Research lab",
+        "level": 5
+      },
+      {
+        "category": "research",
+        "slug": "energy-technology",
+        "name": "Energy technology",
+        "level": 6
+      }
+    ],
+    "required_for": [
+      {
+        "category": "defense",
+        "slug": "ion-cannon",
+        "name": "Ion cannon",
+        "level": 4
+      },
+      {
+        "category": "defense",
+        "slug": "heavy-graviton-cannon",
+        "name": "Heavy graviton cannon",
+        "level": 5
+      },
+      {
+        "category": "defense",
+        "slug": "positron-lighter",
+        "name": "Positron lighter",
+        "level": 8
+      },
+      {
+        "category": "defense",
+        "slug": "interval-cannon",
+        "name": "Interval cannon",
+        "level": 10
+      },
+      {
+        "category": "defense",
+        "slug": "laser-cannon-battery",
+        "name": "Laser cannon battery",
+        "level": 10
+      },
+      {
+        "category": "defense",
+        "slug": "solar-cannon",
+        "name": "Solar cannon",
+        "level": 10
+      }
+    ],
+    "id": "r11",
+    "max_table_level": 35,
+    "levels": {
+      "1": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 1000,
+          "kryptonite": 2000,
+          "spice": 500
+        },
+        "base_time_s": 4583.0
+      },
+      "2": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 2000,
+          "kryptonite": 4000,
+          "spice": 1000
+        },
+        "base_time_s": 9167.0
+      },
+      "3": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 4000,
+          "kryptonite": 8000,
+          "spice": 2000
+        },
+        "base_time_s": 18333.0
+      },
+      "4": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 8000,
+          "kryptonite": 16000,
+          "spice": 4000
+        },
+        "base_time_s": 36667.0
+      },
+      "5": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 16000,
+          "kryptonite": 32000,
+          "spice": 8000
+        },
+        "base_time_s": 73333.0
+      },
+      "6": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 32000,
+          "kryptonite": 64000,
+          "spice": 16000
+        },
+        "base_time_s": 146667.0
+      },
+      "7": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 64000,
+          "kryptonite": 128000,
+          "spice": 32000
+        },
+        "base_time_s": 293333.0
+      },
+      "8": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 128000,
+          "kryptonite": 256000,
+          "spice": 64000
+        },
+        "base_time_s": 586667.0
+      },
+      "9": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 256000,
+          "kryptonite": 512000,
+          "spice": 128000
+        },
+        "base_time_s": 1173333.0
+      },
+      "10": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 512000,
+          "kryptonite": 1024000,
+          "spice": 256000
+        },
+        "base_time_s": 2346667.0
+      },
+      "11": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 1024000,
+          "kryptonite": 2048000,
+          "spice": 512000
+        },
+        "base_time_s": 4693333.0
+      },
+      "12": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 2048000,
+          "kryptonite": 4096000,
+          "spice": 1024000
+        },
+        "base_time_s": 9386667.0
+      },
+      "13": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 4096000,
+          "kryptonite": 8192000,
+          "spice": 2048000
+        },
+        "base_time_s": 18773333.0
+      },
+      "14": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 8192000,
+          "kryptonite": 16384000,
+          "spice": 4096000
+        },
+        "base_time_s": 37546667.0
+      },
+      "15": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 16384000,
+          "kryptonite": 32768000,
+          "spice": 8192000
+        },
+        "base_time_s": 75093333.0
+      },
+      "16": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 32768000,
+          "kryptonite": 65536000,
+          "spice": 16384000
+        },
+        "base_time_s": 150186667.0
+      },
+      "17": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 65536000,
+          "kryptonite": 131072000,
+          "spice": 32768000
+        },
+        "base_time_s": 300373333.0
+      },
+      "18": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 131072000,
+          "kryptonite": 262144000,
+          "spice": 65536000
+        },
+        "base_time_s": 600746667.0
+      },
+      "19": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 262144000,
+          "kryptonite": 524288000,
+          "spice": 131072000
+        },
+        "base_time_s": 1201493333.0
+      },
+      "20": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 524288000,
+          "kryptonite": 1050000000,
+          "spice": 262144000
+        },
+        "base_time_s": 2402986667.0
+      },
+      "21": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 1050000000,
+          "kryptonite": 2100000000,
+          "spice": 524288000
+        },
+        "base_time_s": 4805973333.0
+      },
+      "22": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 2100000000,
+          "kryptonite": 4190000000,
+          "spice": 1050000000
+        },
+        "base_time_s": 9611946667.0
+      },
+      "23": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 4190000000,
+          "kryptonite": 8390000000,
+          "spice": 2100000000
+        },
+        "base_time_s": 19223893333.0
+      },
+      "24": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 8390000000,
+          "kryptonite": 16780000000,
+          "spice": 4190000000
+        },
+        "base_time_s": 38447786667.0
+      },
+      "25": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 16780000000,
+          "kryptonite": 33550000000,
+          "spice": 8390000000
+        },
+        "base_time_s": 76895573333.0
+      },
+      "26": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 33550000000,
+          "kryptonite": 67110000000,
+          "spice": 16780000000
+        },
+        "base_time_s": 153791146667.0
+      },
+      "27": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 67110000000,
+          "kryptonite": 134220000000,
+          "spice": 33550000000
+        },
+        "base_time_s": 307582293333.0
+      },
+      "28": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 134220000000,
+          "kryptonite": 268440000000,
+          "spice": 67110000000
+        },
+        "base_time_s": 615164586667.0
+      },
+      "29": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 268440000000,
+          "kryptonite": 536870000000,
+          "spice": 134220000000
+        },
+        "base_time_s": 1230329173333.0
+      },
+      "30": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 536870000000,
+          "kryptonite": 1070000000000,
+          "spice": 268440000000
+        },
+        "base_time_s": 2460658346667.0
+      },
+      "31": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 1070000000000,
+          "kryptonite": 2150000000000,
+          "spice": 536870000000
+        },
+        "base_time_s": 4921316693333.0
+      },
+      "32": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 2150000000000,
+          "kryptonite": 4290000000000,
+          "spice": 1070000000000
+        },
+        "base_time_s": 9842633386667.0
+      },
+      "33": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 4290000000000,
+          "kryptonite": 8590000000000,
+          "spice": 2150000000000
+        },
+        "base_time_s": 19685266773333.0
+      },
+      "34": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 8590000000000,
+          "kryptonite": 17180000000000,
+          "spice": 4290000000000
+        },
+        "base_time_s": 39370533546667.0
+      },
+      "35": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 17180000000000,
+          "kryptonite": 34360000000000,
+          "spice": 8590000000000
+        },
+        "base_time_s": 78741067093333.0
+      }
+    }
+  },
+  "teleportation": {
+    "slug": "teleportation",
+    "name": "Teleportation",
+    "url": "https://spaceinvasion.bitmeup.com/wiki/en/research/teleportation",
+    "base_cost": {
+      "pig_iron": 0,
+      "metal": 100000,
+      "kryptonite": 80000,
+      "spice": 20000
+    },
+    "requirements": [
+      {
+        "category": "buildings",
+        "slug": "research-lab",
+        "name": "Research lab",
+        "level": 10
+      }
+    ],
+    "required_for": [
+      {
+        "category": "buildings",
+        "slug": "teleporter",
+        "name": "Teleporter",
+        "level": 6
+      }
+    ],
+    "id": "r14",
+    "max_table_level": 30,
+    "levels": {
+      "1": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 100000,
+          "kryptonite": 80000,
+          "spice": 20000
+        },
+        "base_time_s": 258333.0
+      },
+      "2": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 200000,
+          "kryptonite": 160000,
+          "spice": 40000
+        },
+        "base_time_s": 516667.0
+      },
+      "3": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 400000,
+          "kryptonite": 320000,
+          "spice": 80000
+        },
+        "base_time_s": 1033333.0
+      },
+      "4": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 800000,
+          "kryptonite": 640000,
+          "spice": 160000
+        },
+        "base_time_s": 2066667.0
+      },
+      "5": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 1600000,
+          "kryptonite": 1280000,
+          "spice": 320000
+        },
+        "base_time_s": 4133333.0
+      },
+      "6": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 3200000,
+          "kryptonite": 2560000,
+          "spice": 640000
+        },
+        "base_time_s": 8266667.0
+      },
+      "7": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 6400000,
+          "kryptonite": 5120000,
+          "spice": 1280000
+        },
+        "base_time_s": 16533333.0
+      },
+      "8": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 12800000,
+          "kryptonite": 10240000,
+          "spice": 2560000
+        },
+        "base_time_s": 33066667.0
+      },
+      "9": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 25600000,
+          "kryptonite": 20480000,
+          "spice": 5120000
+        },
+        "base_time_s": 66133333.0
+      },
+      "10": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 51200000,
+          "kryptonite": 40960000,
+          "spice": 10240000
+        },
+        "base_time_s": 132266667.0
+      },
+      "11": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 102400000,
+          "kryptonite": 81920000,
+          "spice": 20480000
+        },
+        "base_time_s": 264533333.0
+      },
+      "12": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 204800000,
+          "kryptonite": 163840000,
+          "spice": 40960000
+        },
+        "base_time_s": 529066667.0
+      },
+      "13": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 409600000,
+          "kryptonite": 327680000,
+          "spice": 81920000
+        },
+        "base_time_s": 1058133333.0
+      },
+      "14": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 819200000,
+          "kryptonite": 655360000,
+          "spice": 163840000
+        },
+        "base_time_s": 2116266667.0
+      },
+      "15": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 1640000000,
+          "kryptonite": 1310000000,
+          "spice": 327680000
+        },
+        "base_time_s": 4232533333.0
+      },
+      "16": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 3280000000,
+          "kryptonite": 2620000000,
+          "spice": 655360000
+        },
+        "base_time_s": 8465066667.0
+      },
+      "17": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 6550000000,
+          "kryptonite": 5240000000,
+          "spice": 1310000000
+        },
+        "base_time_s": 16930133333.0
+      },
+      "18": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 13110000000,
+          "kryptonite": 10490000000,
+          "spice": 2620000000
+        },
+        "base_time_s": 33860266667.0
+      },
+      "19": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 26210000000,
+          "kryptonite": 20970000000,
+          "spice": 5240000000
+        },
+        "base_time_s": 67720533333.0
+      },
+      "20": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 52430000000,
+          "kryptonite": 41940000000,
+          "spice": 10490000000
+        },
+        "base_time_s": 135441066667.0
+      },
+      "21": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 104860000000,
+          "kryptonite": 83890000000,
+          "spice": 20970000000
+        },
+        "base_time_s": 270882133333.0
+      },
+      "22": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 209720000000,
+          "kryptonite": 167770000000,
+          "spice": 41940000000
+        },
+        "base_time_s": 541764266667.0
+      },
+      "23": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 419430000000,
+          "kryptonite": 335540000000,
+          "spice": 83890000000
+        },
+        "base_time_s": 1083528533333.0
+      },
+      "24": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 838860000000,
+          "kryptonite": 671090000000,
+          "spice": 167770000000
+        },
+        "base_time_s": 2167057066667.0
+      },
+      "25": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 1680000000000,
+          "kryptonite": 1340000000000,
+          "spice": 335540000000
+        },
+        "base_time_s": 4334114133333.0
+      },
+      "26": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 3360000000000,
+          "kryptonite": 2680000000000,
+          "spice": 671090000000
+        },
+        "base_time_s": 8668228266667.0
+      },
+      "27": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 6710000000000,
+          "kryptonite": 5370000000000,
+          "spice": 1340000000000
+        },
+        "base_time_s": 17336456533333.0
+      },
+      "28": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 13420000000000,
+          "kryptonite": 10740000000000,
+          "spice": 2680000000000
+        },
+        "base_time_s": 34672913066667.0
+      },
+      "29": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 26840000000000,
+          "kryptonite": 21470000000000,
+          "spice": 5370000000000
+        },
+        "base_time_s": 69345826133333.0
+      },
+      "30": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 53690000000000,
+          "kryptonite": 42950000000000,
+          "spice": 10740000000000
+        },
+        "base_time_s": 1.3869
+      }
+    }
+  },
+  "urplasma-extraction": {
+    "slug": "urplasma-extraction",
+    "name": "Urplasma-extraction",
+    "url": "https://spaceinvasion.bitmeup.com/wiki/en/research/urplasma-extraction",
+    "base_cost": {
+      "pig_iron": 0,
+      "metal": 0,
+      "kryptonite": 0,
+      "spice": 0
+    },
+    "requirements": [
+      {
+        "category": "buildings",
+        "slug": "research-lab",
+        "name": "Research lab",
+        "level": 10
+      }
+    ],
+    "required_for": [],
+    "id": null,
+    "max_table_level": 0,
+    "levels": {}
+  },
+  "warp-engine": {
+    "slug": "warp-engine",
+    "name": "Warp engine",
+    "url": "https://spaceinvasion.bitmeup.com/wiki/en/research/warp-engine",
+    "base_cost": {
+      "pig_iron": 0,
+      "metal": 5000,
+      "kryptonite": 2000,
+      "spice": 1000
+    },
+    "requirements": [
+      {
+        "category": "research",
+        "slug": "engine-research",
+        "name": "Engine research",
+        "level": 8
+      },
+      {
+        "category": "buildings",
+        "slug": "research-lab",
+        "name": "Research lab",
+        "level": 8
+      }
+    ],
+    "required_for": [
+      {
+        "category": "ships",
+        "slug": "battleship",
+        "name": "Battleship",
+        "level": 4
+      },
+      {
+        "category": "ships",
+        "slug": "stealth-bomber",
+        "name": "Stealth bomber",
+        "level": 6
+      },
+      {
+        "category": "ships",
+        "slug": "destroyer",
+        "name": "Destroyer",
+        "level": 8
+      },
+      {
+        "category": "research",
+        "slug": "black-hole-research",
+        "name": "Black hole research",
+        "level": 10
+      }
+    ],
+    "id": "r6",
+    "max_table_level": 35,
+    "levels": {
+      "1": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 5000,
+          "kryptonite": 2000,
+          "spice": 1000
+        },
+        "base_time_s": 9583.0
+      },
+      "2": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 10000,
+          "kryptonite": 4000,
+          "spice": 2000
+        },
+        "base_time_s": 19167.0
+      },
+      "3": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 20000,
+          "kryptonite": 8000,
+          "spice": 4000
+        },
+        "base_time_s": 38333.0
+      },
+      "4": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 40000,
+          "kryptonite": 16000,
+          "spice": 8000
+        },
+        "base_time_s": 76667.0
+      },
+      "5": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 80000,
+          "kryptonite": 32000,
+          "spice": 16000
+        },
+        "base_time_s": 153333.0
+      },
+      "6": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 160000,
+          "kryptonite": 64000,
+          "spice": 32000
+        },
+        "base_time_s": 306667.0
+      },
+      "7": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 320000,
+          "kryptonite": 128000,
+          "spice": 64000
+        },
+        "base_time_s": 613333.0
+      },
+      "8": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 640000,
+          "kryptonite": 256000,
+          "spice": 128000
+        },
+        "base_time_s": 1226667.0
+      },
+      "9": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 1280000,
+          "kryptonite": 512000,
+          "spice": 256000
+        },
+        "base_time_s": 2453333.0
+      },
+      "10": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 2560000,
+          "kryptonite": 1024000,
+          "spice": 512000
+        },
+        "base_time_s": 4906667.0
+      },
+      "11": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 5120000,
+          "kryptonite": 2048000,
+          "spice": 1024000
+        },
+        "base_time_s": 9813333.0
+      },
+      "12": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 10240000,
+          "kryptonite": 4096000,
+          "spice": 2048000
+        },
+        "base_time_s": 19626667.0
+      },
+      "13": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 20480000,
+          "kryptonite": 8192000,
+          "spice": 4096000
+        },
+        "base_time_s": 39253333.0
+      },
+      "14": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 40960000,
+          "kryptonite": 16384000,
+          "spice": 8192000
+        },
+        "base_time_s": 78506667.0
+      },
+      "15": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 81920000,
+          "kryptonite": 32768000,
+          "spice": 16384000
+        },
+        "base_time_s": 157013333.0
+      },
+      "16": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 163840000,
+          "kryptonite": 65536000,
+          "spice": 32768000
+        },
+        "base_time_s": 314026667.0
+      },
+      "17": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 327680000,
+          "kryptonite": 131072000,
+          "spice": 65536000
+        },
+        "base_time_s": 628053333.0
+      },
+      "18": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 655360000,
+          "kryptonite": 262144000,
+          "spice": 131072000
+        },
+        "base_time_s": 1256106667.0
+      },
+      "19": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 1310000000,
+          "kryptonite": 524288000,
+          "spice": 262144000
+        },
+        "base_time_s": 2512213333.0
+      },
+      "20": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 2620000000,
+          "kryptonite": 1050000000,
+          "spice": 524288000
+        },
+        "base_time_s": 5024426667.0
+      },
+      "21": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 5240000000,
+          "kryptonite": 2100000000,
+          "spice": 1050000000
+        },
+        "base_time_s": 10048853333.0
+      },
+      "22": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 10490000000,
+          "kryptonite": 4190000000,
+          "spice": 2100000000
+        },
+        "base_time_s": 20097706667.0
+      },
+      "23": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 20970000000,
+          "kryptonite": 8390000000,
+          "spice": 4190000000
+        },
+        "base_time_s": 40195413333.0
+      },
+      "24": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 41940000000,
+          "kryptonite": 16780000000,
+          "spice": 8390000000
+        },
+        "base_time_s": 80390826667.0
+      },
+      "25": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 83890000000,
+          "kryptonite": 33550000000,
+          "spice": 16780000000
+        },
+        "base_time_s": 160781653333.0
+      },
+      "26": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 167770000000,
+          "kryptonite": 67110000000,
+          "spice": 33550000000
+        },
+        "base_time_s": 321563306667.0
+      },
+      "27": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 335540000000,
+          "kryptonite": 134220000000,
+          "spice": 67110000000
+        },
+        "base_time_s": 643126613333.0
+      },
+      "28": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 671090000000,
+          "kryptonite": 268440000000,
+          "spice": 134220000000
+        },
+        "base_time_s": 1286253226667.0
+      },
+      "29": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 1340000000000,
+          "kryptonite": 536870000000,
+          "spice": 268440000000
+        },
+        "base_time_s": 2572506453333.0
+      },
+      "30": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 2680000000000,
+          "kryptonite": 1070000000000,
+          "spice": 536870000000
+        },
+        "base_time_s": 5145012906667.0
+      },
+      "31": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 5370000000000,
+          "kryptonite": 2150000000000,
+          "spice": 1070000000000
+        },
+        "base_time_s": 10290025813333.0
+      },
+      "32": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 10740000000000,
+          "kryptonite": 4290000000000,
+          "spice": 2150000000000
+        },
+        "base_time_s": 20580051626667.0
+      },
+      "33": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 21470000000000,
+          "kryptonite": 8590000000000,
+          "spice": 4290000000000
+        },
+        "base_time_s": 41160103253333.0
+      },
+      "34": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 42950000000000,
+          "kryptonite": 17180000000000,
+          "spice": 8590000000000
+        },
+        "base_time_s": 82320206506667.0
+      },
+      "35": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 85900000000000,
+          "kryptonite": 34360000000000,
+          "spice": 17180000000000
+        },
+        "base_time_s": 1.6464
+      }
+    }
+  },
+  "weapons-technology": {
+    "slug": "weapons-technology",
+    "name": "Weapons technology",
+    "url": "https://spaceinvasion.bitmeup.com/wiki/en/research/weapons-technology",
+    "base_cost": {
+      "pig_iron": 0,
+      "metal": 2000,
+      "kryptonite": 100,
+      "spice": 0
+    },
+    "requirements": [
+      {
+        "category": "buildings",
+        "slug": "research-lab",
+        "name": "Research lab",
+        "level": 3
+      }
+    ],
+    "required_for": [
+      {
+        "category": "ships",
+        "slug": "warship",
+        "name": "Warship",
+        "level": 2
+      }
+    ],
+    "id": "r8",
+    "max_table_level": 40,
+    "levels": {
+      "1": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 2000,
+          "kryptonite": 100,
+          "spice": 0
+        },
+        "base_time_s": 2667.0
+      },
+      "2": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 4000,
+          "kryptonite": 200,
+          "spice": 0
+        },
+        "base_time_s": 5333.0
+      },
+      "3": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 8000,
+          "kryptonite": 400,
+          "spice": 0
+        },
+        "base_time_s": 10667.0
+      },
+      "4": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 16000,
+          "kryptonite": 800,
+          "spice": 0
+        },
+        "base_time_s": 21333.0
+      },
+      "5": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 32000,
+          "kryptonite": 1600,
+          "spice": 0
+        },
+        "base_time_s": 42667.0
+      },
+      "6": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 64000,
+          "kryptonite": 3200,
+          "spice": 0
+        },
+        "base_time_s": 85333.0
+      },
+      "7": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 128000,
+          "kryptonite": 6400,
+          "spice": 0
+        },
+        "base_time_s": 170667.0
+      },
+      "8": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 256000,
+          "kryptonite": 12800,
+          "spice": 0
+        },
+        "base_time_s": 341333.0
+      },
+      "9": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 512000,
+          "kryptonite": 25600,
+          "spice": 0
+        },
+        "base_time_s": 682667.0
+      },
+      "10": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 1024000,
+          "kryptonite": 51200,
+          "spice": 0
+        },
+        "base_time_s": 1365333.0
+      },
+      "11": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 2048000,
+          "kryptonite": 102400,
+          "spice": 0
+        },
+        "base_time_s": 2730667.0
+      },
+      "12": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 4096000,
+          "kryptonite": 204800,
+          "spice": 0
+        },
+        "base_time_s": 5461333.0
+      },
+      "13": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 8192000,
+          "kryptonite": 409600,
+          "spice": 0
+        },
+        "base_time_s": 10922667.0
+      },
+      "14": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 16384000,
+          "kryptonite": 819200,
+          "spice": 0
+        },
+        "base_time_s": 21845333.0
+      },
+      "15": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 32768000,
+          "kryptonite": 1638400,
+          "spice": 0
+        },
+        "base_time_s": 43690667.0
+      },
+      "16": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 65536000,
+          "kryptonite": 3276800,
+          "spice": 0
+        },
+        "base_time_s": 87381333.0
+      },
+      "17": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 131072000,
+          "kryptonite": 6553600,
+          "spice": 0
+        },
+        "base_time_s": 174762667.0
+      },
+      "18": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 262144000,
+          "kryptonite": 13107200,
+          "spice": 0
+        },
+        "base_time_s": 349525333.0
+      },
+      "19": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 524288000,
+          "kryptonite": 26214400,
+          "spice": 0
+        },
+        "base_time_s": 699050667.0
+      },
+      "20": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 1050000000,
+          "kryptonite": 52428800,
+          "spice": 0
+        },
+        "base_time_s": 1398101333.0
+      },
+      "21": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 2100000000,
+          "kryptonite": 104857600,
+          "spice": 0
+        },
+        "base_time_s": 2796202667.0
+      },
+      "22": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 4190000000,
+          "kryptonite": 209715200,
+          "spice": 0
+        },
+        "base_time_s": 5592405333.0
+      },
+      "23": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 8390000000,
+          "kryptonite": 419430400,
+          "spice": 0
+        },
+        "base_time_s": 11184810667.0
+      },
+      "24": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 16780000000,
+          "kryptonite": 838860800,
+          "spice": 0
+        },
+        "base_time_s": 22369621333.0
+      },
+      "25": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 33550000000,
+          "kryptonite": 1680000000,
+          "spice": 0
+        },
+        "base_time_s": 44739242667.0
+      },
+      "26": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 67110000000,
+          "kryptonite": 3360000000,
+          "spice": 0
+        },
+        "base_time_s": 89478485333.0
+      },
+      "27": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 134220000000,
+          "kryptonite": 6710000000,
+          "spice": 0
+        },
+        "base_time_s": 178956970667.0
+      },
+      "28": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 268440000000,
+          "kryptonite": 13420000000,
+          "spice": 0
+        },
+        "base_time_s": 357913941333.0
+      },
+      "29": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 536870000000,
+          "kryptonite": 26840000000,
+          "spice": 0
+        },
+        "base_time_s": 715827882667.0
+      },
+      "30": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 1070000000000,
+          "kryptonite": 53690000000,
+          "spice": 0
+        },
+        "base_time_s": 1431655765333.0
+      },
+      "31": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 2150000000000,
+          "kryptonite": 107370000000,
+          "spice": 0
+        },
+        "base_time_s": 2863311530667.0
+      },
+      "32": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 4290000000000,
+          "kryptonite": 214750000000,
+          "spice": 0
+        },
+        "base_time_s": 5726623061333.0
+      },
+      "33": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 8590000000000,
+          "kryptonite": 429500000000,
+          "spice": 0
+        },
+        "base_time_s": 11453246122667.0
+      },
+      "34": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 17180000000000,
+          "kryptonite": 858990000000,
+          "spice": 0
+        },
+        "base_time_s": 22906492245333.0
+      },
+      "35": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 34360000000000,
+          "kryptonite": 1720000000000,
+          "spice": 0
+        },
+        "base_time_s": 45812984490667.0
+      },
+      "36": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 68720000000000,
+          "kryptonite": 3440000000000,
+          "spice": 0
+        },
+        "base_time_s": 91625968981333.0
+      },
+      "37": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 137440000000000,
+          "kryptonite": 6870000000000,
+          "spice": 0
+        },
+        "base_time_s": 1.8325
+      },
+      "38": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 274880000000000,
+          "kryptonite": 13740000000000,
+          "spice": 0
+        },
+        "base_time_s": 3.665
+      },
+      "39": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 549760000000000,
+          "kryptonite": 27490000000000,
+          "spice": 0
+        },
+        "base_time_s": 7.3301
+      },
+      "40": {
+        "cost": {
+          "pig_iron": 0,
+          "metal": 1100000000000000,
+          "kryptonite": 54980000000000,
+          "spice": 0
+        },
+        "base_time_s": 1.466
+      }
+    }
+  }
+}
