@@ -103,7 +103,7 @@ def test_lock_free_health_bot_status_and_db_commands_under_held_browser_lock() -
             assert r_dash.status_code == 200
             assert r_dash.json()["ok"] is True
 
-            for cmd_payload in (
+            cmd_payloads: tuple[dict[str, str | int | bool | dict[str, int]], ...] = (
                 {"command": "config"},
                 {"command": "notifications_list"},
                 {"command": "espionage_intel"},
@@ -115,7 +115,8 @@ def test_lock_free_health_bot_status_and_db_commands_under_held_browser_lock() -
                 {"command": "queue_add", "kind": "BUILD", "planet_id": 20001, "target_id": 3},
                 {"command": "queue_clear"},
                 {"command": "update_config", "config": {"reserved_spy_slots": 2}},
-            ):
+            )
+            for cmd_payload in cmd_payloads:
                 t_cmd = time.perf_counter()
                 r_cmd = http.post(f"{h.base_url}/command", json=cmd_payload, timeout=2.0)
                 cmd_ms = (time.perf_counter() - t_cmd) * 1000.0

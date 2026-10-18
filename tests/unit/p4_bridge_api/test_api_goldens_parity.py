@@ -8,7 +8,7 @@ import fnmatch
 import importlib
 import pkgutil
 import sys
-from typing import Any
+from types import ModuleType
 from unittest import mock
 
 import pytest
@@ -36,9 +36,10 @@ from tests.goldens.api_scenario import (
 from tests.goldens.scenarios import GOLDEN_EPOCH
 
 
-def _iter_submodules(pkg: Any) -> list[Any]:
-    mods: list[Any] = [pkg]
-    for mod_info in pkgutil.walk_packages(pkg.__path__, prefix=f"{pkg.__name__}."):
+def _iter_submodules(pkg: ModuleType) -> list[ModuleType]:
+    mods: list[ModuleType] = [pkg]
+    pkg_path = pkg.__path__
+    for mod_info in pkgutil.walk_packages(pkg_path, prefix=f"{pkg.__name__}."):
         mod = sys.modules.get(mod_info.name)
         if mod is None:
             mod = importlib.import_module(mod_info.name)
@@ -46,7 +47,7 @@ def _iter_submodules(pkg: Any) -> list[Any]:
     return mods
 
 
-def _strip_backend_paths(case_name: str, data: Any) -> Any:
+def _strip_backend_paths(case_name: str, data: object) -> object:
     if not isinstance(data, dict):
         return data
     for pattern, dotted in BACKEND_SPECIFIC_PATHS:
@@ -55,14 +56,14 @@ def _strip_backend_paths(case_name: str, data: Any) -> Any:
     return data
 
 
-def _run_modular_api_session(*, timeout: float = 600.0) -> dict[str, Any]:
+def _run_modular_api_session(*, timeout: float = 600.0) -> dict[str, object]:
     for step in API_STEPS:
         if step.command is not None and step.command.get("command") in REMOVED_COMMANDS:
             raise AssertionError(f"{step.case} uses a command removed by Decision D5")
 
     clock = FrozenClock(GOLDEN_EPOCH)
     server = build_server(clock)
-    out: dict[str, Any] = {}
+    out: dict[str, object] = {}
     http = requests.Session()
     http.trust_env = False
     proxy = _ClockTimeProxy(clock)
@@ -83,7 +84,7 @@ def _run_modular_api_session(*, timeout: float = 600.0) -> dict[str, Any]:
 
         # Freeze `time` across every modular bridge & API submodule (matching `api_scenario.py`).
         for module in (state_mod, config_mod, *_iter_submodules(bridge_pkg), *_iter_submodules(api_pkg)):
-            if hasattr(module, "time"):
+            if "time" in module.__dict__:
                 stack.enter_context(mock.patch.object(module, "time", proxy))
 
         h = stack.enter_context(harness)
