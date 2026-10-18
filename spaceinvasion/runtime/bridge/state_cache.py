@@ -122,6 +122,10 @@ class StateCacheService:
         )
         if not isinstance(raw_snap, GameState):
             raise TypeError(f"Expected GameState from read_full_snapshot, got {type(raw_snap).__name__}")
+        if client.driver is not None:
+            cur_u = str(client.driver.current_url or "")
+            if cur_u:
+                self._ctx.last_url = cur_u
         bonus_seen = client.last_home_daily_bonus_present
         if isinstance(bonus_seen, bool) and self._on_note_daily_bonus is not None:
             self._on_note_daily_bonus(bonus_seen)

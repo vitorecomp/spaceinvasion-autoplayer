@@ -62,6 +62,10 @@ class BrowserCommandSession:
             raise GalaxyScanInProgressError(self._bridge.galaxy_scan_busy_error_message())
         if self._client is None:
             self._client = self._stack.enter_context(ctx.client_factory(ctx.debug_port))
+        if self._client.driver is not None:
+            cur_u = str(self._client.driver.current_url or "")
+            if cur_u:
+                ctx.last_url = cur_u
         if not self.dry_run and self.cmd not in _READONLY_LIVE_CMDS:
             ctx.last_live_command_mono = time.monotonic()
         return self._client
