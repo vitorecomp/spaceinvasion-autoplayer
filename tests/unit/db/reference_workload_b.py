@@ -9,10 +9,8 @@ import time
 
 from sqlalchemy.orm import Session
 
-from spaceinvasion.combat.points import (
-    estimate_account_points,
-    estimate_hourly_economy,
-)
+from spaceinvasion.combat._points_helpers import estimate_hourly_economy
+from spaceinvasion.combat.points import estimate_account_points
 from spaceinvasion.db.repos import (
     GalaxyRepository,
     IntelRepository,
@@ -26,7 +24,7 @@ from spaceinvasion.db.repos import (
 )
 from spaceinvasion.db.repos._hot_refresh import refresh_colony_candidates_hot, refresh_galaxy_sectors_hot
 from spaceinvasion.db.session import DatabaseEngine, db_uow
-from spaceinvasion.db.storage import GameDatabase
+from spaceinvasion.runtime.bridge._db_gateway import RuntimeDatabaseGateway
 from tests.unit.db._workload_b_fixtures import (
     T0,
     build_game_state,
@@ -60,43 +58,43 @@ def _frozen_time(ts: float) -> Iterator[None]:
         time.time = orig
 
 
-def run_legacy_workload_b(dsn: str) -> None:
-    """Execute the deterministic Wave B multi-galaxy workload via legacy `GameDatabase`."""
+def run_gateway_workload_b(dsn: str) -> None:
+    """Execute the deterministic Wave B multi-galaxy workload via `RuntimeDatabaseGateway`."""
     state = build_game_state()
     plan = [{"kind": "BUILD", "planet_id": 101, "target_id": 1}]
     g2, g3 = galaxy_slot_specs()
     rep_inact, rep_col = spy_inputs()
     batch_1, batch_2 = inbox_message_batches()
     msgs_1, msgs_2 = to_legacy_messages(batch_1), to_legacy_messages(batch_2)
-    gdb = GameDatabase(backend="postgres", postgres_url=dsn)
+    gw = RuntimeDatabaseGateway.from_dsn(dsn, pool_size=2, max_overflow=0, ensure_ready=False)
     try:
-        gdb.record_full_state_snapshot(state, plan=plan, source="commander")
-        gdb.record_state_snapshot(state)
-        gdb.record_galaxy_slots(to_combat_slots(g2), ts=T0)
-        gdb.record_galaxy_scan(2, 380, to_combat_slots(g2), ts=T0 + 2.0)
-        gdb.record_galaxy_slots(to_combat_slots(g3), ts=T0 + 5.0)
-        gdb.record_galaxy_scan(3, 120, to_combat_slots(g3), ts=T0 + 7.0)
-        gdb.record_spy_report(
+        gw.record_full_state_snapshot(state, plan=plan, source="commander")
+        gw.record_state_snapshot(state)
+        gw.record_galaxy_slots(to_combat_slots(g2), ts=T0)
+        gw.record_galaxy_scan(2, 380, to_combat_slots(g2), ts=T0 + 2.0)
+        gw.record_galaxy_slots(to_combat_slots(g3), ts=T0 + 5.0)
+        gw.record_galaxy_scan(3, 120, to_combat_slots(g3), ts=T0 + 7.0)
+        gw.record_spy_report(
             to_legacy_spy(rep_inact), points=42000, is_inactive=True, status_color="yellow", ts=T0 + 10.0
         )
-        gdb.record_spy_report(to_legacy_spy(rep_col), ts=T0 + 12.0)
+        gw.record_spy_report(to_legacy_spy(rep_col), ts=T0 + 12.0)
         with _frozen_time(T0 + 15.0):
-            gdb.set_target_debris("02:380:05", False)
-        gdb.record_game_messages(msgs_1, ts=T0 + 20.0)
-        gdb.record_game_messages(msgs_2, ts=T0 + 22.0)
-        gdb.mark_game_messages_deleted(["msg-gen-1"], ts=T0 + 25.0)
-        gdb.record_raid("02:380:04", attacked_ts=T0 + 30.0, outcome="win", loot={"pig_iron": 10000, "metal": 5000})
-        gdb.record_raid("02:380:04", attacked_ts=T0 + 40.0, outcome="win", loot={"pig_iron": 8000, "spice": 500})
-        gdb.record_raid("02:380:06", attacked_ts=T0 + 45.0, is_exempt=True, outcome="win", loot={"metal": 6000})
-        gdb.record_target_block(
+            gw.set_target_debris("02:380:05", False)
+        gw.record_game_messages(msgs_1, ts=T0 + 20.0)
+        gw.record_game_messages(msgs_2, ts=T0 + 22.0)
+        gw.mark_game_messages_deleted(["msg-gen-1"], ts=T0 + 25.0)
+        gw.record_raid("02:380:04", attacked_ts=T0 + 30.0, outcome="win", loot={"pig_iron": 10000, "metal": 5000})
+        gw.record_raid("02:380:04", attacked_ts=T0 + 40.0, outcome="win", loot={"pig_iron": 8000, "spice": 500})
+        gw.record_raid("02:380:06", attacked_ts=T0 + 45.0, is_exempt=True, outcome="win", loot={"metal": 6000})
+        gw.record_target_block(
             "02:380:04", blocked_until_ts=T0 + 86400.0, reason="Bash limit reached", is_bash=True, blocked_ts=T0 + 50.0
         )
-        gdb.record_target_block(
+        gw.record_target_block(
             "03:120:09", blocked_until_ts=T0 + 120.0, reason="Cooldown", is_bash=False, blocked_ts=T0 + 55.0
         )
-        gdb.record_raid("03:120:09", attacked_ts=T0 + 200.0, outcome="loss")
+        gw.record_raid("03:120:09", attacked_ts=T0 + 200.0, outcome="loss")
     finally:
-        gdb.close()
+        gw.close()
 
 
 def _run_orm_snapshots(session: Session) -> None:
@@ -207,4 +205,4 @@ def run_orm_workload_b(dsn: str) -> None:
             _run_orm_world_and_combat(session)
 
 
-__all__ = ["WAVE_B_TABLES", "run_legacy_workload_b", "run_orm_workload_b"]
+__all__ = ["WAVE_B_TABLES", "run_gateway_workload_b", "run_orm_workload_b"]

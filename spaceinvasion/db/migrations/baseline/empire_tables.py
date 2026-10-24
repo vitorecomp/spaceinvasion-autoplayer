@@ -5,7 +5,7 @@ from __future__ import annotations
 from alembic import op
 import sqlalchemy as sa
 
-from spaceinvasion.db.alembic_migrations.baseline._cols import bi, dbl, id_pk, txt
+from spaceinvasion.db.migrations.baseline._cols import bi, dbl, id_pk, txt
 
 EMPIRE_TABLE_NAMES: tuple[str, ...] = (
     "state_snapshots",

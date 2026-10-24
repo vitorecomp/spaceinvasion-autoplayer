@@ -8,7 +8,8 @@ from pathlib import Path
 import pytest
 from sqlalchemy.orm import DeclarativeBase
 
-from spaceinvasion.db.alembic_migrations import BASELINE_REVISION, NO_BACKUP
+from spaceinvasion.db.migrations import BASELINE_REVISION, NO_BACKUP
+from spaceinvasion.db.models import Base, SchemaMigration
 from spaceinvasion.db.queries import (
     GAME_REQUIRED_TABLES,
     HISTORY_TABLES,
@@ -18,9 +19,9 @@ from spaceinvasion.db.queries import (
     query_db_summary,
 )
 from spaceinvasion.db.repos import BattleReportInput, RecycleReportInput
-from spaceinvasion.db.session import count_statements
-from spaceinvasion.db.storage import GameDatabase
+from spaceinvasion.db.session import DatabaseEngine, count_statements, db_uow
 from spaceinvasion.db.store import DatabaseStore
+from spaceinvasion.runtime.bridge._db_gateway import RuntimeDatabaseGateway
 from tests.pg_harness import DisposablePostgresServer
 from tests.unit.db.reference_workload_b import run_orm_workload_b
 from tests.unit.db.test_repos_wave_a import _audit_module_standards
@@ -75,7 +76,22 @@ def test_database_store_ensure_ready_and_verify_fresh_and_existing_v14(
         assert len(backup_calls) == 1
 
     # Existing V14 database: `ensure_ready` stamps `0001` with zero table DDL and preserves all rows.
-    v14_dsn = pg_harness.create_database(prefix="store_v14", from_template=True)
+    v14_dsn = pg_harness.create_database(prefix="store_v14", from_template=False)
+    with DatabaseEngine.from_dsn(v14_dsn, pool_size=1, max_overflow=0) as raw_eng:
+        Base.metadata.create_all(raw_eng.engine)
+        with db_uow(raw_eng) as sess:
+            sess.add(
+                SchemaMigration(
+                    version=14,
+                    version_tag="V014",
+                    name="legacy_v14",
+                    description="Simulated pre-Alembic V14 schema",
+                    checksum="legacy",
+                    applied_ts=1700000100.0,
+                    duration_ms=1.0,
+                    app_schema_version="14",
+                )
+            )
     run_orm_workload_b(v14_dsn)
     with DatabaseStore.from_dsn(v14_dsn, pool_size=2, max_overflow=0) as v14_store:
         stamp_res = v14_store.ensure_ready(backup_fn=NO_BACKUP, allow_stamp_existing=True, verify_schema=True)
@@ -87,10 +103,10 @@ def test_database_store_ensure_ready_and_verify_fresh_and_existing_v14(
         assert v14_verify.table_tiers.history_total_rows > 0
 
 
-def test_query_db_summary_matches_game_database_summary_with_bounded_sql(
+def test_query_db_summary_matches_runtime_gateway_summary_with_bounded_sql(
     pg_harness: DisposablePostgresServer,
 ) -> None:
-    """`query_db_summary` matches `GameDatabase.summary()` counts/tiers in <=8 SQL statements."""
+    """`query_db_summary` matches `RuntimeDatabaseGateway.summary()` counts/tiers in <=8 SQL statements."""
     dsn = pg_harness.create_database(prefix="store_summary", from_template=True)
     run_orm_workload_b(dsn)
 
@@ -113,11 +129,11 @@ def test_query_db_summary_matches_game_database_summary_with_bounded_sql(
                 ts=1700010500.0,
             )
 
-    gdb = GameDatabase(backend="postgres", postgres_url=dsn)
+    gw = RuntimeDatabaseGateway.from_dsn(dsn, pool_size=2, max_overflow=0, ensure_ready=False)
     try:
-        legacy_sum = gdb.summary()
+        gw_sum = gw.summary()
     finally:
-        gdb.close()
+        gw.close()
 
     with DatabaseStore.from_dsn(dsn, pool_size=2, max_overflow=0) as store:
         with count_statements(store.db_engine, max_statements=8) as c_sum:
@@ -130,18 +146,26 @@ def test_query_db_summary_matches_game_database_summary_with_bounded_sql(
     assert orm_sum.backend == "postgres"
     assert orm_sum.size_bytes > 0
     assert orm_sum.alembic_revision == BASELINE_REVISION
-    assert orm_sum.legacy_schema_version == 14
-    for tbl, legacy_cnt in legacy_sum["counts"].items():
-        assert orm_sum.counts[tbl] == legacy_cnt, f"Count mismatch on `{tbl}`"
-    assert orm_sum.table_tiers.hot_counts == legacy_sum["table_tiers"]["hot_counts"]
-    assert orm_sum.table_tiers.history_counts == legacy_sum["table_tiers"]["history_counts"]
-    assert orm_sum.table_tiers.hot_total_rows == legacy_sum["table_tiers"]["hot_total_rows"]
-    assert orm_sum.table_tiers.history_total_rows == legacy_sum["table_tiers"]["history_total_rows"]
-    assert orm_sum.message_categories == legacy_sum["message_categories"]
-    assert list(orm_sum.persisted_meta_keys) == legacy_sum["persisted_meta_keys"]
-    assert len(orm_sum.tutorial_history) == len(legacy_sum["tutorial_history"])
-    assert len(orm_sum.recent_actions) == len(legacy_sum["recent_actions"]) == 1
-    assert len(orm_sum.spy_targets) == len(legacy_sum["spy_targets"])
+    gw_counts = gw_sum["counts"]
+    assert isinstance(gw_counts, dict)
+    assert "meta" not in gw_counts and len(gw_counts) == 39
+    for tbl, gw_cnt in gw_counts.items():
+        assert orm_sum.counts[tbl] == gw_cnt, f"Count mismatch on `{tbl}`"
+    gw_tiers = gw_sum["table_tiers"]
+    assert isinstance(gw_tiers, dict)
+    assert orm_sum.table_tiers.hot_counts == gw_tiers["hot_counts"]
+    assert orm_sum.table_tiers.history_counts == gw_tiers["history_counts"]
+    assert orm_sum.table_tiers.hot_total_rows == gw_tiers["hot_total_rows"]
+    assert orm_sum.table_tiers.history_total_rows == gw_tiers["history_total_rows"]
+    assert orm_sum.message_categories == gw_sum["message_categories"]
+    assert list(orm_sum.persisted_meta_keys) == gw_sum["persisted_meta_keys"]
+    gw_tut = gw_sum["tutorial_history"]
+    gw_act = gw_sum["recent_actions"]
+    gw_spy = gw_sum["spy_targets"]
+    assert isinstance(gw_tut, list) and isinstance(gw_act, list) and isinstance(gw_spy, list)
+    assert len(orm_sum.tutorial_history) == len(gw_tut)
+    assert len(orm_sum.recent_actions) == len(gw_act) == 1
+    assert len(orm_sum.spy_targets) == len(gw_spy)
     assert orm_sum.latest_snapshot_ts == 1700010000.0
     assert orm_sum.latest_scan_ts == 1700010007.0
     assert orm_sum.latest_raid_ts == 1700010200.0
@@ -218,15 +242,21 @@ def test_query_dashboard_time_series_full_and_incremental_deltas(
         ]
         assert delta.latest_minute_bucket == full.latest_minute_bucket
 
-    gdb = GameDatabase(backend="postgres", postgres_url=dsn)
+    gw = RuntimeDatabaseGateway.from_dsn(dsn, pool_size=2, max_overflow=0, ensure_ready=False)
     try:
-        legacy_prod = gdb.get_hourly_production_history(limit=120)
-        legacy_loot = gdb.get_loot_recycle_hourly(hours=6, now_ts=base_ts)
+        gw_prod = gw.get_hourly_production_history(limit=120)
+        gw_loot = gw.get_loot_recycle_hourly(hours=6, now_ts=base_ts)
     finally:
-        gdb.close()
-    assert [r.minute_bucket for r in full.hourly_production] == [int(r["minute_bucket"]) for r in legacy_prod]
-    assert [r.total_per_hour for r in full.hourly_production] == [float(r["total_per_hour"]) for r in legacy_prod]
-    assert full.loot_recycle_summary.grand_total == float(legacy_loot["summary"]["grand_total"])
+        gw.close()
+    assert [r.minute_bucket for r in full.hourly_production] == [
+        int(r["minute_bucket"]) for r in gw_prod if isinstance(r["minute_bucket"], int)
+    ]
+    assert [r.total_per_hour for r in full.hourly_production] == [
+        float(r["total_per_hour"]) for r in gw_prod if isinstance(r["total_per_hour"], (int, float))
+    ]
+    gw_loot_sum = gw_loot["summary"]
+    assert isinstance(gw_loot_sum, dict)
+    assert full.loot_recycle_summary.grand_total == float(gw_loot_sum["grand_total"])
 
 
 def test_query_config_optimizer_goals_and_store_uow_atomicity(

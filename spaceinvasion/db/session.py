@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+import time
 from types import TracebackType
 from typing import Unpack
 
@@ -12,6 +13,25 @@ import psycopg
 from sqlalchemy import Connection, Engine, create_engine, event
 from sqlalchemy.engine import CursorResult, make_url
 from sqlalchemy.orm import Session, sessionmaker
+
+from spaceinvasion.core.redaction import redact_sensitive
+from spaceinvasion.db.dsn import (
+    DEFAULT_DB_BACKEND,
+    DEFAULT_PG_DB,
+    DEFAULT_PG_HOST,
+    DEFAULT_PG_PASSWORD,
+    DEFAULT_PG_PORT,
+    DEFAULT_PG_USER,
+    VALID_DB_BACKENDS,
+    ResolvedDatabaseConfig,
+    build_default_postgres_url,
+    get_unix_socket_host,
+    is_postgres_dsn,
+    is_unix_socket_dsn,
+    normalize_backend_name,
+    redact_db_url,
+    resolve_database_config,
+)
 
 DEFAULT_POOL_SIZE: int = 5
 DEFAULT_MAX_OVERFLOW: int = 10
@@ -252,12 +272,7 @@ class DatabaseEngine:
             statement_timeout_ms=statement_timeout_ms,
             echo=echo,
         )
-        return cls(
-            engine=engine,
-            session_factory=create_session_factory(engine),
-            statement_timeout_ms=statement_timeout_ms,
-            pool_size=pool_size,
-        )
+        return cls(engine, create_session_factory(engine), statement_timeout_ms, pool_size)
 
     def unit_of_work(self) -> UnitOfWork:
         """Create a `UnitOfWork` bound to this engine's `SessionFactory`."""
@@ -333,22 +348,50 @@ def count_statements(
         )
 
 
+def ping_postgres(dsn: str, *, timeout: float = 2.0) -> tuple[bool, float, str]:
+    """Ping a PostgreSQL DSN (`server_version`) and return `(ok, latency_ms, message)`."""
+    t0 = time.perf_counter()
+    try:
+        with psycopg.connect(dsn, connect_timeout=max(1, int(round(timeout)))) as conn:
+            row = conn.execute("SELECT current_setting('server_version')").fetchone()
+            ver = str(row[0]) if row and row[0] else "PostgreSQL"
+        return (True, round((time.perf_counter() - t0) * 1000.0, 2), f"PostgreSQL {ver}")
+    except (psycopg.Error, OSError, ValueError) as exc:
+        return (False, round((time.perf_counter() - t0) * 1000.0, 2), str(redact_sensitive(str(exc))))
+
+
 __all__ = [
+    "DEFAULT_DB_BACKEND",
     "DEFAULT_MAX_OVERFLOW",
+    "DEFAULT_PG_DB",
+    "DEFAULT_PG_HOST",
+    "DEFAULT_PG_PASSWORD",
+    "DEFAULT_PG_PORT",
+    "DEFAULT_PG_USER",
     "DEFAULT_POOL_SIZE",
     "DEFAULT_POOL_TIMEOUT_S",
     "DEFAULT_STATEMENT_TIMEOUT_MS",
+    "VALID_DB_BACKENDS",
     "DatabaseEngine",
+    "ResolvedDatabaseConfig",
     "SessionFactory",
     "SqlParams",
     "StatementCountExceededError",
     "StatementCounter",
     "TransitionalSessionBridge",
     "UnitOfWork",
+    "build_default_postgres_url",
     "count_statements",
     "create_db_engine",
     "create_session_factory",
     "db_uow",
+    "get_unix_socket_host",
+    "is_postgres_dsn",
+    "is_unix_socket_dsn",
+    "normalize_backend_name",
     "normalize_sqlalchemy_dsn",
+    "ping_postgres",
+    "redact_db_url",
+    "resolve_database_config",
     "session_raw_cursor",
 ]

@@ -10,13 +10,13 @@ import subprocess
 import pytest
 from sqlalchemy import select
 
-from spaceinvasion.db.alembic_migrations import (
+from spaceinvasion.db.migrations import (
     BASELINE_REVISION,
     get_current_revision,
     stamp_baseline_database,
     verify_models_match_migrations,
 )
-from spaceinvasion.db.models import SchemaMigrationEvent
+from spaceinvasion.db.models import Base, SchemaMigration, SchemaMigrationEvent
 from spaceinvasion.db.session import DatabaseEngine, db_uow
 from tests.pg_harness import DisposablePostgresServer
 
@@ -124,10 +124,25 @@ def test_synthetic_backup_restore_matches_models_and_stamps_cleanly(
     tmp_path: Path,
 ) -> None:
     """Restoring a synthetic custom-format dump of a V14 DB verifies zero drift and stamps `14 -> 14`."""
-    src_dsn = pg_harness.create_database(prefix="synth_src", from_template=True)
-    src_db = src_dsn.split("///", 1)[1].split("?", 1)[0]
+    src_dsn = pg_harness.create_database(prefix="synth_src", from_template=False)
+    with DatabaseEngine.from_dsn(src_dsn, pool_size=1, max_overflow=0) as src_db:
+        Base.metadata.create_all(src_db.engine)
+        with db_uow(src_db) as session:
+            session.add(
+                SchemaMigration(
+                    version=14,
+                    version_tag="V014",
+                    name="legacy_v14",
+                    description="Simulated pre-Alembic V14 schema",
+                    checksum="legacy",
+                    applied_ts=1700000100.0,
+                    duration_ms=1.0,
+                    app_schema_version="14",
+                )
+            )
+    src_db_name = src_dsn.split("///", 1)[1].split("?", 1)[0]
     dump_path = tmp_path / "synthetic_v14.dump"
-    _dump_disposable_db(pg_harness, src_db, dump_path)
+    _dump_disposable_db(pg_harness, src_db_name, dump_path)
 
     restored_dsn = pg_harness.create_database(prefix="synth_restored", from_template=False)
     dst_db = restored_dsn.split("///", 1)[1].split("?", 1)[0]

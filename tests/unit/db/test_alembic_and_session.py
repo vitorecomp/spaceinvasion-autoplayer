@@ -11,7 +11,7 @@ import pytest
 from sqlalchemy import select, text
 from sqlalchemy.exc import OperationalError
 
-from spaceinvasion.db.alembic_migrations import (
+from spaceinvasion.db.migrations import (
     BASELINE_REVISION,
     NO_BACKUP,
     SchemaDriftError,
@@ -24,8 +24,10 @@ from spaceinvasion.db.alembic_migrations import (
     verify_schema_against_models,
 )
 from spaceinvasion.db.models import (
+    Base,
     ManualQueueItem,
     MetaEntry,
+    SchemaMigration,
     SchemaMigrationEvent,
     UiNotification,
 )
@@ -46,17 +48,14 @@ from tests.unit.db.test_orm_schema_equivalence import _introspect_pg_schema
 
 _REPO_ROOT: Path = Path(__file__).resolve().parents[3]
 _SESSION_MODULE: Path = _REPO_ROOT / "spaceinvasion" / "db" / "session.py"
-_ALEMBIC_DIR: Path = _REPO_ROOT / "spaceinvasion" / "db" / "alembic_migrations"
+_DSN_MODULE: Path = _REPO_ROOT / "spaceinvasion" / "db" / "dsn.py"
+_CONFIG_STORE_MODULE: Path = _REPO_ROOT / "spaceinvasion" / "db" / "config_store.py"
+_ALEMBIC_DIR: Path = _REPO_ROOT / "spaceinvasion" / "db" / "migrations"
 _EXCLUDED_CATALOG_TABLES: frozenset[str] = frozenset({"_pg_pragma_meta", "alembic_version"})
 _FORBIDDEN_DB_IMPORTS: frozenset[str] = frozenset(
-    {
-        "bin",
-        "spaceinvasion.combat",
-        "spaceinvasion.parsing",
-        "spaceinvasion.planner",
-        "spaceinvasion.runtime",
-        "spaceinvasion.session",
-    }
+    (
+        "bin spaceinvasion.combat spaceinvasion.parsing spaceinvasion.planner spaceinvasion.runtime spaceinvasion.session"
+    ).split()
 )
 
 
@@ -64,10 +63,7 @@ def test_fresh_upgrade_matches_si_template_and_records_audit_and_backup(
     pg_harness: DisposablePostgresServer,
 ) -> None:
     """Fresh DB `upgrade_database('head')` matches `si_template` 1:1 with zero drift and audit."""
-    migrated_schema = _introspect_pg_schema(
-        pg_harness.template_dsn,
-        exclude_tables=_EXCLUDED_CATALOG_TABLES,
-    )
+    migrated_schema = _introspect_pg_schema(pg_harness.template_dsn, exclude_tables=_EXCLUDED_CATALOG_TABLES)
     fresh_dsn = pg_harness.create_database(prefix="alembic_fresh", from_template=False)
 
     backup_calls: list[str] = []
@@ -79,84 +75,72 @@ def test_fresh_upgrade_matches_si_template_and_records_audit_and_backup(
 
     with DatabaseEngine.from_dsn(fresh_dsn, pool_size=2, max_overflow=0) as db:
         assert get_current_revision(db) is None
-        # Omitting backup_fn or passing None is rejected so live upgrades cannot skip backup.
         with pytest.raises(TypeError):
             upgrade_database(db, "head")  # type: ignore[call-arg]
         with pytest.raises(TypeError, match="NO_BACKUP"):
             upgrade_database(db, "head", backup_fn=None)  # type: ignore[arg-type]
 
         result = upgrade_database(db, "head", backup_fn=_fake_backup)
-
-        assert result.previous_revision is None
-        assert result.current_revision == BASELINE_REVISION
+        assert result.previous_revision is None and result.current_revision == BASELINE_REVISION
         assert result.backup_path == "/tmp/fake_pre_upgrade_0001.dump"
         assert backup_calls == ["/tmp/fake_pre_upgrade_0001.dump"]
         assert len(result.applied_revisions) == 1
         applied = result.applied_revisions[0]
-        assert applied.revision == BASELINE_REVISION
-        assert applied.event_type == "APPLY"
-        assert applied.checksum == compute_revision_checksum(BASELINE_REVISION)
-        assert applied.elapsed_ms >= 0.0
+        assert applied.revision == BASELINE_REVISION and applied.event_type == "APPLY"
+        assert applied.checksum == compute_revision_checksum(BASELINE_REVISION) and applied.elapsed_ms >= 0.0
 
-        # Exact 1:1 pg_catalog match against MigrationRunner-built si_template.
-        alembic_schema = _introspect_pg_schema(
-            fresh_dsn,
-            exclude_tables=_EXCLUDED_CATALOG_TABLES,
-        )
+        alembic_schema = _introspect_pg_schema(fresh_dsn, exclude_tables=_EXCLUDED_CATALOG_TABLES)
         assert set(alembic_schema.keys()) == set(migrated_schema.keys())
         for table_name in sorted(migrated_schema.keys()):
-            expected = migrated_schema[table_name]
-            actual = alembic_schema[table_name]
+            expected, actual = migrated_schema[table_name], alembic_schema[table_name]
             assert actual.columns == expected.columns, f"Column mismatch on {table_name}"
             assert actual.constraints == expected.constraints, f"Constraint mismatch on {table_name}"
             assert actual.indexes == expected.indexes, f"Index mismatch on {table_name}"
 
-        # Alembic autogenerate compare_metadata reports zero drift.
-        assert verify_models_match_migrations(db) == []
-        assert verify_schema_against_models(fresh_dsn) == []
+        assert verify_models_match_migrations(db) == [] and verify_schema_against_models(fresh_dsn) == []
 
-        # Audit row appended in schema_migration_events (legacy int columns stay 0/None on fresh DB).
         with db_uow(db) as session:
             events = list(session.execute(select(SchemaMigrationEvent)).scalars().all())
             assert len(events) == 1
             ev = events[0]
-            assert ev.event_type == "APPLY"
-            assert ev.from_version == 0
-            assert ev.to_version == 0
-            assert ev.version is None
-            assert ev.name == "0001_baseline_schema"
-            assert ev.checksum == applied.checksum
+            assert ev.event_type == "APPLY" and ev.from_version == 0 and ev.to_version == 0 and ev.version is None
+            assert ev.name == "0001_baseline_schema" and ev.checksum == applied.checksum
             assert ev.backup_path == "/tmp/fake_pre_upgrade_0001.dump"
             details = json.loads(ev.details_json)
-            assert details["revision"] == BASELINE_REVISION
-            assert details["legacy_schema_version"] == 0
-            assert details["engine"] == "alembic"
-            assert details["elapsed_ms"] >= 0.0
+            assert details["revision"] == BASELINE_REVISION and details["legacy_schema_version"] == 0
+            assert details["engine"] == "alembic" and details["elapsed_ms"] >= 0.0
 
-        # Second upgrade is a clean idempotent no-op (no duplicate backup or audit row).
         second = upgrade_database(db, "head", backup_fn=_fake_backup)
-        assert second.applied_revisions == ()
-        assert backup_calls == ["/tmp/fake_pre_upgrade_0001.dump"]
+        assert second.applied_revisions == () and backup_calls == ["/tmp/fake_pre_upgrade_0001.dump"]
 
-        # Verify downgrade('base') + explicit NO_BACKUP re-upgrade round-trip works cleanly.
         with db.engine.begin() as conn:
             command.downgrade(build_alembic_config(connection=conn), "base")
         assert get_current_revision(db) is None
         re_upgraded = upgrade_database(db, "head", backup_fn=NO_BACKUP)
-        assert re_upgraded.current_revision == BASELINE_REVISION
-        assert verify_models_match_migrations(db) == []
+        assert re_upgraded.current_revision == BASELINE_REVISION and verify_models_match_migrations(db) == []
 
 
 def test_stamp_baseline_on_migrated_db_zero_table_ddl_and_preserves_rows(
     pg_harness: DisposablePostgresServer,
 ) -> None:
-    """Stamping a `si_template` clone runs zero game-table DDL, keeps rows, and sets `0001`."""
-    cloned_dsn = pg_harness.create_database(prefix="alembic_stamp", from_template=True)
+    """Stamping a pre-Alembic V14 DB runs zero game-table DDL, keeps rows, and sets `0001`."""
+    cloned_dsn = pg_harness.create_database(prefix="alembic_stamp", from_template=False)
 
     with DatabaseEngine.from_dsn(cloned_dsn, pool_size=2, max_overflow=0) as db:
+        Base.metadata.create_all(db.engine)
         with db_uow(db) as session:
             session.add_all(
                 [
+                    SchemaMigration(
+                        version=14,
+                        version_tag="V014",
+                        name="legacy_v14",
+                        description="Simulated pre-Alembic V14 schema",
+                        checksum="legacy",
+                        applied_ts=1700000100.0,
+                        duration_ms=1.0,
+                        app_schema_version="14",
+                    ),
                     MetaEntry(key="stamp_sentinel", value="keep_me", updated_ts=1700000200.0),
                     UiNotification(
                         created_ts=1700000201.0,
@@ -390,8 +374,8 @@ def _check_module_standards(path: Path) -> None:
 
 
 def test_alembic_and_session_engineering_standards() -> None:
-    """All new `session.py` and `alembic_migrations/` modules satisfy Section 4 standards."""
-    modules = [_SESSION_MODULE, *sorted(_ALEMBIC_DIR.rglob("*.py"))]
-    assert len(modules) >= 9
+    """All `session.py`, `dsn.py`, `config_store.py`, and `migrations/` modules satisfy Section 4 standards."""
+    modules = [_SESSION_MODULE, _DSN_MODULE, _CONFIG_STORE_MODULE, *sorted(_ALEMBIC_DIR.rglob("*.py"))]
+    assert len(modules) >= 12
     for module_path in modules:
         _check_module_standards(module_path)

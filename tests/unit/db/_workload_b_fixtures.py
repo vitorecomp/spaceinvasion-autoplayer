@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 
 from spaceinvasion.parsing.models import GalaxySlot as CombatGalaxySlot
 from spaceinvasion.parsing.models import (
     InboxMessage,
+    JsonObject,
+    JsonValue,
     SpyReport,
 )
 from spaceinvasion.core.model import (
@@ -258,6 +260,20 @@ def inbox_message_batches() -> tuple[tuple[GameMessageInput, ...], tuple[GameMes
     return batch_1, batch_2
 
 
+def _to_json_value(value: object) -> JsonValue:
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if isinstance(value, Mapping):
+        return {str(k): _to_json_value(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_to_json_value(v) for v in value]
+    return str(value)
+
+
+def _to_json_object(mapping: Mapping[str, object]) -> JsonObject:
+    return {str(k): _to_json_value(v) for k, v in mapping.items()}
+
+
 def to_legacy_messages(specs: Sequence[GameMessageInput]) -> list[InboxMessage]:
     """Convert `GameMessageInput` specs into legacy `InboxMessage` objects."""
     return [
@@ -272,7 +288,7 @@ def to_legacy_messages(specs: Sequence[GameMessageInput]) -> list[InboxMessage]:
             coords=m.coords,
             body_text=m.body_text,
             raw_html=m.raw_html,
-            parsed_data=dict(m.parsed_data),
+            parsed_data=_to_json_object(m.parsed_data),
         )
         for m in specs
     ]

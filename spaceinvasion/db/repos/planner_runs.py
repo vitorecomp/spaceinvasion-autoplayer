@@ -32,7 +32,14 @@ from spaceinvasion.db.repos._helpers import (
     sanitize_text,
     to_float,
 )
-from spaceinvasion.db.repos._planner_helpers import extract_ai_kpis, merge_floors, normalize_specs
+from spaceinvasion.db.repos._planner_helpers import (
+    apply_floor_update,
+    apply_spec_updates,
+    extract_ai_kpis,
+    merge_floors,
+    normalize_floors,
+    normalize_specs,
+)
 
 
 class PlannerRunsRepository:
@@ -298,6 +305,84 @@ class PlannerRunsRepository:
     def list_field_conflict_prompts(self, *, status: str | None = "pending") -> tuple[FieldConflictPromptRecord, ...]:
         """List field-limit conflict prompts filtered by status."""
         return list_conflict_prompts(self._session, status=status)
+
+    def get_reserved_building_floors(self) -> dict[str, dict[str, int]]:
+        """Read normalized per-planet reserved building floors from `config_optimizer_active`."""
+        row = self._session.get(ConfigOptimizerActive, 1)
+        if row is None:
+            return {}
+        return normalize_floors(loads_json_dict(row.reserved_floors_json))
+
+    def update_reserved_building_floor(
+        self,
+        planet_key: str,
+        building_key: str,
+        min_level: int,
+        *,
+        ts: float | None = None,
+    ) -> dict[str, dict[str, int]]:
+        """Upsert one planet building floor into `config_optimizer_active.reserved_floors_json`."""
+        now_ts = round_ts(ts)
+        row = self._session.get(ConfigOptimizerActive, 1)
+        cur_floors = normalize_floors(loads_json_dict(row.reserved_floors_json)) if row is not None else {}
+        floors = apply_floor_update(cur_floors, planet_key, building_key, min_level)
+        floors_json = dumps_json(floors)
+        stmt = pg_insert(ConfigOptimizerActive).values(
+            singleton_id=1,
+            run_id=row.run_id if row is not None else None,
+            updated_ts=now_ts,
+            params_json=row.params_json if row is not None else "{}",
+            reserved_floors_json=floors_json,
+            result_json=row.result_json if row is not None else "{}",
+        )
+        self._session.execute(
+            stmt.on_conflict_do_update(
+                index_elements=[ConfigOptimizerActive.singleton_id],
+                set_={
+                    "updated_ts": stmt.excluded.updated_ts,
+                    "reserved_floors_json": stmt.excluded.reserved_floors_json,
+                },
+            )
+        )
+        return floors
+
+    def get_config_optimizer_specializations(self) -> dict[str, str]:
+        """Read per-planet specialization locks from `config_optimizer_active.params_json`."""
+        row = self._session.get(ConfigOptimizerActive, 1)
+        if row is None:
+            return {}
+        return normalize_specs(loads_json_dict(row.params_json).get("planet_specializations"))
+
+    def update_config_optimizer_specializations(
+        self,
+        specializations: Mapping[str, object],
+        *,
+        replace: bool = False,
+        ts: float | None = None,
+    ) -> dict[str, str]:
+        """Upsert or replace per-planet specialization locks in `config_optimizer_active.params_json`."""
+        now_ts = round_ts(ts)
+        row = self._session.get(ConfigOptimizerActive, 1)
+        params_dict = loads_json_dict(row.params_json) if row is not None else {}
+        cur_specs = normalize_specs(params_dict.get("planet_specializations"))
+        next_specs = apply_spec_updates(cur_specs, specializations, replace=replace)
+        params_dict["planet_specializations"] = next_specs
+        params_json = dumps_json(params_dict)
+        stmt = pg_insert(ConfigOptimizerActive).values(
+            singleton_id=1,
+            run_id=row.run_id if row is not None else None,
+            updated_ts=now_ts,
+            params_json=params_json,
+            reserved_floors_json=row.reserved_floors_json if row is not None else "{}",
+            result_json=row.result_json if row is not None else "{}",
+        )
+        self._session.execute(
+            stmt.on_conflict_do_update(
+                index_elements=[ConfigOptimizerActive.singleton_id],
+                set_={"updated_ts": stmt.excluded.updated_ts, "params_json": stmt.excluded.params_json},
+            )
+        )
+        return next_specs
 
     def list_field_conflict_events(
         self, *, conflict_key: str | None = None, limit: int = 100

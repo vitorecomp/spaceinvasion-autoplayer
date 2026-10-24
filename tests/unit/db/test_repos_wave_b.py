@@ -34,7 +34,7 @@ from spaceinvasion.db.repos import (
 from spaceinvasion.db.session import DatabaseEngine, count_statements, db_uow
 from tests.pg_harness import DisposablePostgresServer
 from tests.unit.db.reference_workload import WAVE_A_TABLES, snapshot_tables
-from tests.unit.db.reference_workload_b import WAVE_B_TABLES, run_legacy_workload_b, run_orm_workload_b
+from tests.unit.db.reference_workload_b import WAVE_B_TABLES, run_gateway_workload_b, run_orm_workload_b
 from tests.unit.db.test_repos_wave_a import _audit_module_standards
 
 _REPO_ROOT: Path = Path(__file__).resolve().parents[3]
@@ -50,17 +50,17 @@ def _assert_no_orm_leak(obj: object) -> None:
             _assert_no_orm_leak(val)
 
 
-def test_wave_b_orm_repositories_match_legacy_game_database_rows_exactly(
+def test_wave_b_orm_repositories_match_runtime_gateway_rows_exactly(
     pg_harness: DisposablePostgresServer,
 ) -> None:
-    """Wave B ORM repos reproduce 100% identical PostgreSQL rows across all 17 Wave B + 5 hot tables."""
-    legacy_dsn = pg_harness.create_database(prefix="wave_b_legacy", from_template=True)
+    """Wave B ORM repos reproduce 100% identical PostgreSQL rows to `RuntimeDatabaseGateway` across all 22 tables."""
+    gateway_dsn = pg_harness.create_database(prefix="wave_b_gateway", from_template=True)
     orm_dsn = pg_harness.create_database(prefix="wave_b_orm", from_template=True)
 
-    run_legacy_workload_b(legacy_dsn)
+    run_gateway_workload_b(gateway_dsn)
     run_orm_workload_b(orm_dsn)
 
-    expected = snapshot_tables(legacy_dsn, WAVE_B_TABLES)
+    expected = snapshot_tables(gateway_dsn, WAVE_B_TABLES)
     actual = snapshot_tables(orm_dsn, WAVE_B_TABLES)
     for table in WAVE_B_TABLES:
         assert actual[table] == expected[table], f"Row parity mismatch on table `{table}`"

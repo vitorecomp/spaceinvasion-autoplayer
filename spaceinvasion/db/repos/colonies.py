@@ -181,7 +181,7 @@ class ColoniesRepository:
         stmt = pg_insert(ColonyCandidateHot).values(payload)
         stmt = stmt.on_conflict_do_update(
             index_elements=[ColonyCandidateHot.coords],
-            set_={k: getattr(stmt.excluded, k) for k in payload[0] if k != "coords"},
+            set_={k: stmt.excluded[k] for k in payload[0] if k != "coords"},
         )
         self._session.execute(stmt)
         return len(payload)
@@ -230,6 +230,22 @@ class ColoniesRepository:
             self._session.execute(
                 update(ColonyCandidateHot)
                 .where(ColonyCandidateHot.coords.in_(sorted(data.keys())))
+                .values(is_discarded=1, updated_ts=now_ts)
+            )
+
+    def sync_discarded_coords(self, coords: Iterable[str], *, ts: float | None = None) -> None:
+        """Sync `colony_candidates_hot.is_discarded` to match an updated discarded coordinate set."""
+        now_ts = round_ts(ts)
+        norm = sorted({nc for raw in coords if (nc := normalize_coords(raw))})
+        self._session.execute(
+            update(ColonyCandidateHot)
+            .where(ColonyCandidateHot.is_discarded == 1)
+            .values(is_discarded=0, updated_ts=now_ts)
+        )
+        if norm:
+            self._session.execute(
+                update(ColonyCandidateHot)
+                .where(ColonyCandidateHot.coords.in_(norm))
                 .values(is_discarded=1, updated_ts=now_ts)
             )
 

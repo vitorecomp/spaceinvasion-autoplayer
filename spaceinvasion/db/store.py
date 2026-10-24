@@ -10,7 +10,9 @@ from types import TracebackType
 from sqlalchemy import Engine, inspect
 from sqlalchemy.orm import Session
 
-from spaceinvasion.db.alembic_migrations import (
+from spaceinvasion.db.dsn import redact_db_url
+from spaceinvasion.db.dto import DbSummaryRecord, DbVerifyRecord
+from spaceinvasion.db.migrations import (
     BackupOption,
     MigrationResult,
     SchemaDriftError,
@@ -19,7 +21,6 @@ from spaceinvasion.db.alembic_migrations import (
     upgrade_database,
     verify_models_match_migrations,
 )
-from spaceinvasion.db.dto import DbSummaryRecord, DbVerifyRecord
 from spaceinvasion.db.queries.dashboard import GAME_REQUIRED_TABLES, query_db_summary, query_db_verify
 from spaceinvasion.db.repos import (
     ColoniesRepository,
@@ -85,8 +86,9 @@ class StoreRepositories:
 class DatabaseStore:
     """Collaborator-friendly PostgreSQL composition root for SpaceInvasion services."""
 
-    def __init__(self, db_engine: DatabaseEngine) -> None:
+    def __init__(self, db_engine: DatabaseEngine, *, postgres_url: str = "") -> None:
         self._db_engine = db_engine
+        self._postgres_url = postgres_url.strip()
 
     @classmethod
     def from_dsn(
@@ -110,7 +112,17 @@ class DatabaseStore:
             statement_timeout_ms=statement_timeout_ms,
             echo=echo,
         )
-        return cls(db_engine)
+        return cls(db_engine, postgres_url=dsn)
+
+    @property
+    def postgres_url(self) -> str:
+        """Configured PostgreSQL DSN (empty string when built from a bare `DatabaseEngine`)."""
+        return self._postgres_url
+
+    @property
+    def display_target(self) -> str:
+        """Redacted PostgreSQL connection target for logs and diagnostics."""
+        return redact_db_url(self._postgres_url) if self._postgres_url else "postgres"
 
     @property
     def db_engine(self) -> DatabaseEngine:
