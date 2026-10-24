@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 import logging
 import time
 
@@ -186,6 +186,8 @@ def _detect_drift_reason(
     active_result: Mapping[str, object],
     active_plan_ts: float,
     eff_now: float,
+    *,
+    compute_telemetry_fn: Callable[[GameState | None], dict[str, object]] | None = None,
 ) -> str | None:
     active_co = get_active_config_optimizer(ctx)
     if isinstance(active_co, Mapping):
@@ -209,7 +211,11 @@ def _detect_drift_reason(
 
     plan_tel = active_result.get("attack_telemetry")
     plan_sp = extract_telemetry_median_spice_eq(plan_tel)
-    live_tel = compute_live_attack_telemetry(ctx, ledgers, state)
+    live_tel = (
+        compute_telemetry_fn(state)
+        if compute_telemetry_fn is not None
+        else compute_live_attack_telemetry(ctx, ledgers, state)
+    )
     live_sp = extract_telemetry_median_spice_eq(live_tel)
     plan_on_realized = ledgers.telemetry_income_basis(plan_tel) == BridgeConstants.REALIZED_INCOME_BASIS
     if not plan_on_realized and (
@@ -232,6 +238,27 @@ def _detect_drift_reason(
     return None
 
 
+def _drift_eval_payload(
+    *,
+    eligible: bool,
+    cooldown_ok: bool,
+    drift_ready: bool,
+    reason: str | None = None,
+    warm_genes: dict[str, object] | None = None,
+    active_plan_ts: float = 0.0,
+    now_ts: float = 0.0,
+) -> dict[str, object]:
+    return {
+        "eligible": eligible,
+        "cooldown_ok": cooldown_ok,
+        "drift_ready": drift_ready,
+        "reason": reason,
+        "warm_genes": warm_genes,
+        "active_plan_ts": active_plan_ts,
+        "now_ts": now_ts,
+    }
+
+
 def evaluate_ai_drift_replan(
     ctx: BridgeContext,
     ledgers: LedgerTelemetryService,
@@ -240,6 +267,7 @@ def evaluate_ai_drift_replan(
     cfg: StrategyConfig | None = None,
     now_ts: float | None = None,
     gate: Mapping[str, object] | None = None,
+    compute_telemetry_fn: Callable[[GameState | None], dict[str, object]] | None = None,
 ) -> dict[str, object]:
     """Evaluate whether adaptive AI-Planner drift triggers warrant a background replan."""
     eff_cfg = cfg or ctx.strategy_config
@@ -266,19 +294,15 @@ def evaluate_ai_drift_replan(
         or any_running
         or not last_auto_ok
     ):
-        return {
-            "eligible": False,
-            "cooldown_ok": bool(last_auto_ok),
-            "drift_ready": bool(last_auto_ok and not any_running),
-            "reason": None,
-            "warm_genes": None,
-            "active_plan_ts": 0.0,
-            "now_ts": eff_now,
-        }
+        return _drift_eval_payload(
+            eligible=False,
+            cooldown_ok=bool(last_auto_ok),
+            drift_ready=bool(last_auto_ok and not any_running),
+            now_ts=eff_now,
+        )
 
     eff_gate = gate if isinstance(gate, Mapping) else evaluate_ai_planner_gate(ctx, state, cfg=eff_cfg)
-    raw_rec = eff_gate.get("active_rec")
-    raw_res = eff_gate.get("active_result")
+    raw_rec, raw_res = eff_gate.get("active_rec"), eff_gate.get("active_result")
     active_rec = raw_rec if isinstance(raw_rec, Mapping) else None
     active_result = raw_res if isinstance(raw_res, Mapping) else None
     active_plan_ts = extract_record_timestamp(active_rec, active_result)
@@ -299,17 +323,24 @@ def evaluate_ai_drift_replan(
         and cooldown_ok
     )
     if not gates_ok or state is None or active_rec is None or active_result is None:
-        return {
-            "eligible": False,
-            "cooldown_ok": cooldown_ok,
-            "drift_ready": drift_ready,
-            "reason": None,
-            "warm_genes": None,
-            "active_plan_ts": active_plan_ts,
-            "now_ts": eff_now,
-        }
+        return _drift_eval_payload(
+            eligible=False,
+            cooldown_ok=cooldown_ok,
+            drift_ready=drift_ready,
+            active_plan_ts=active_plan_ts,
+            now_ts=eff_now,
+        )
 
-    reason = _detect_drift_reason(ctx, ledgers, state, active_rec, active_result, active_plan_ts, eff_now)
+    reason = _detect_drift_reason(
+        ctx,
+        ledgers,
+        state,
+        active_rec,
+        active_result,
+        active_plan_ts,
+        eff_now,
+        compute_telemetry_fn=compute_telemetry_fn,
+    )
     warm_genes: dict[str, object] | None = None
     if reason is not None:
         search_m = active_result.get("search")
@@ -317,12 +348,12 @@ def evaluate_ai_drift_replan(
             raw_warm = search_m.get("tuned_genes") or search_m.get("best_parameters")
             if isinstance(raw_warm, Mapping) and raw_warm:
                 warm_genes = dict(raw_warm)
-    return {
-        "eligible": True,
-        "cooldown_ok": cooldown_ok,
-        "drift_ready": drift_ready,
-        "reason": reason,
-        "warm_genes": warm_genes,
-        "active_plan_ts": active_plan_ts,
-        "now_ts": eff_now,
-    }
+    return _drift_eval_payload(
+        eligible=True,
+        cooldown_ok=cooldown_ok,
+        drift_ready=drift_ready,
+        reason=reason,
+        warm_genes=warm_genes,
+        active_plan_ts=active_plan_ts,
+        now_ts=eff_now,
+    )

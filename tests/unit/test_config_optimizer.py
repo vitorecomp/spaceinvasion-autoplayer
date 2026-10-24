@@ -1180,7 +1180,7 @@ class ConfigOptimizerUnitTests(unittest.TestCase):
             log_dir=None,
         )
         try:
-            bridge._last_state = state
+            bridge.ctx.last_state = state
             bridge._live_executor = executor
 
             ren_out = bridge.handle_command({"command": "rename_planet", "planet_id": 602, "name": "Starforge II"})

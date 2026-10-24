@@ -520,8 +520,8 @@ class TestSweepAndTransmitter(unittest.TestCase):
                 config_path=Path(tmp) / "cfg.json",
             )
             self.addCleanup(bridge.close)
-            bridge._last_state = gs
-            bridge._last_snapshot_at = 1_700_000_000.0
+            bridge.ctx.last_state = gs
+            bridge.ctx.last_snapshot_at = 1_700_000_000.0
             res = bridge.handle_command(
                 {"command": "activate_transmitter", "planet_id": 102, "dry_run": True},
             )
@@ -647,7 +647,7 @@ class TestSweepAndTransmitter(unittest.TestCase):
                 client_factory=lambda _port: _FakeSweepClient(),
             )
             self.addCleanup(bridge.close)
-            bridge._last_state = GameState(
+            bridge.ctx.last_state = GameState(
                 31,
                 7,
                 "cmdr",
@@ -690,7 +690,7 @@ class TestSweepAndTransmitter(unittest.TestCase):
             self.assertGreater(sw["next_sweep_due_ts"], sw["last_sweep_started_ts"])
 
             # Verify when all 11 planets are allocated, sweep skips free colonies while still recording players + debris
-            bridge._last_state = GameState(
+            bridge.ctx.last_state = GameState(
                 31,
                 7,
                 "cmdr",
@@ -850,7 +850,9 @@ class TestSweepAndTransmitter(unittest.TestCase):
                 self.assertAlmostEqual(dry_sw["click_jitter_seconds"], 0.4)
 
                 waits: list[float] = []
-                with patch.object(bridge._sweep_stop_event, "wait", side_effect=lambda s: (waits.append(s), False)[1]):
+                with patch.object(
+                    bridge.ctx.sweep_stop_event, "wait", side_effect=lambda s: (waits.append(s), False)[1]
+                ):
                     live_sw = bridge.run_galaxy_sweep(pages=3, galaxy=2, start_system=380)
                 self.assertEqual(live_sw["pages_scanned"], 3)
                 self.assertEqual(len(waits), 2)
@@ -1667,14 +1669,14 @@ class TestSweepAndTransmitter(unittest.TestCase):
             )
             try:
                 assert bridge._db is not None
-                bridge._last_state = GameState(
+                bridge.ctx.last_state = GameState(
                     31, 7, "cmdr", _time.time(), (_make_planet(101, "02:380:12"),), active_planet_id=101
                 )
                 now = _time.time()
                 # Pre-scan the home system 02:380 and 02:381 (stale) -> exploratory must skip them.
                 for s_pre in (380, 381):
                     bridge._db.record_galaxy_scan(2, s_pre, [], ts=now - 7200.0)
-                bridge._scanned_systems.update({"02:380": now - 7200.0, "02:381": now - 7200.0})
+                bridge.ctx.scanned_systems.update({"02:380": now - 7200.0, "02:381": now - 7200.0})
 
                 # 1. Dry-run: Phase 1 exploratory, smart selection, coverage telemetry + top-5 sample targets
                 dry = bridge.handle_command({"command": "galaxy_sweep", "pages": 10, "dry_run": True})
@@ -1703,7 +1705,7 @@ class TestSweepAndTransmitter(unittest.TestCase):
                     self.assertIn(k, dry["galaxy_sweep"])
 
                 # 2. Live smart sweep visits ONLY unscanned systems (no duplicates) and updates coverage
-                with patch.object(bridge._sweep_stop_event, "wait", return_value=False):
+                with patch.object(bridge.ctx.sweep_stop_event, "wait", return_value=False):
                     live = bridge.run_galaxy_sweep(pages=6, delay_range=(0.0, 0.0))
                 self.assertEqual(live["pages_scanned"], 6)
                 self.assertEqual(live["selection_mode"], "smart")
@@ -1715,7 +1717,7 @@ class TestSweepAndTransmitter(unittest.TestCase):
                 self.assertEqual(sw["explored_systems"], 8)
                 self.assertAlmostEqual(sw["coverage_pct"], 2.0)
                 self.assertEqual(sw["total_sweeps"], 1)
-                st_dash = bridge._get_galaxy_sweep_state_locked()
+                st_dash = bridge.galaxy_sweep.get_galaxy_sweep_state_locked()
                 self.assertEqual(st_dash["explored_systems"], 8)
 
                 # 3. Once the whole galaxy is explored -> Phase 2 targeted refresh favors frequently-raided sectors
@@ -1728,10 +1730,10 @@ class TestSweepAndTransmitter(unittest.TestCase):
                         else []
                     )
                     bridge._db.record_galaxy_scan(2, s_all, slots_all, ts=old_ts)
-                bridge._scanned_systems.update({f"02:{s:03d}": old_ts for s in range(1, 401)})
+                bridge.ctx.scanned_systems.update({f"02:{s:03d}": old_ts for s in range(1, 401)})
                 for i in range(6):
                     bridge._db.record_raid("02:200:05", attacked_ts=now - 3600.0 * (i + 1), outcome="win")
-                bridge._smart_sweep_summary_ts = 0.0
+                bridge.ctx.smart_sweep_summary_ts = 0.0
 
                 dry2 = bridge.handle_command({"command": "galaxy_sweep", "pages": 12, "dry_run": True})
                 self.assertEqual(dry2["scan_phase"], "targeted_refresh")
@@ -1750,7 +1752,7 @@ class TestSweepAndTransmitter(unittest.TestCase):
                 # Far background sectors (e.g. 02:100) are NOT refreshed ahead of near / frequent-attack sectors
                 self.assertNotIn("02:100", planned2)
                 self.assertTrue(all(s["phase"] == "targeted_refresh" for s in dry2["sample_targets"]))
-                self.assertEqual(bridge._get_galaxy_sweep_state_locked()["scan_phase"], "targeted_refresh")
+                self.assertEqual(bridge.galaxy_sweep.get_galaxy_sweep_state_locked()["scan_phase"], "targeted_refresh")
             finally:
                 bridge.close()
 
@@ -1843,7 +1845,7 @@ class TestSweepAndTransmitter(unittest.TestCase):
             try:
                 assert bridge._db is not None
                 origin = _make_planet(101, "02:380:12", ships={"s10": 8})
-                bridge._last_state = GameState(31, 7, "cmdr", 1_700_000_500.0, (origin,), active_planet_id=101)
+                bridge.ctx.last_state = GameState(31, 7, "cmdr", 1_700_000_500.0, (origin,), active_planet_id=101)
                 bridge._db.record_galaxy_slots(
                     [
                         GalaxySlot(
@@ -1942,10 +1944,10 @@ class TestSweepAndTransmitter(unittest.TestCase):
             )
             bridge_holder.append(bridge)
             try:
-                bridge._last_state = GameState(
+                bridge.ctx.last_state = GameState(
                     31, 7, "cmdr", _time.time(), (_make_planet(101, "02:380:12"),), active_planet_id=101
                 )
-                with patch.object(bridge._sweep_stop_event, "wait", return_value=False):
+                with patch.object(bridge.ctx.sweep_stop_event, "wait", return_value=False):
                     r1 = bridge.run_galaxy_sweep(pages=6, delay_range=(0.0, 0.0))
                 # Live summary incremented mid-sweep right after page 1 (before batch 1 finished!)
                 self.assertEqual(mid_sweep_snapshots, [(1, 0.25, 0.02)])
@@ -1954,9 +1956,9 @@ class TestSweepAndTransmitter(unittest.TestCase):
                 self.assertAlmostEqual(r1["coverage_pct"], 0.75)
 
                 # Unpause and run next batch -> resumes strictly from remaining unscanned systems (zero overlap!)
-                bridge._bot_control["paused"] = False
+                bridge.ctx.bot_control["paused"] = False
                 active_batch["num"] = 2
-                with patch.object(bridge._sweep_stop_event, "wait", return_value=False):
+                with patch.object(bridge.ctx.sweep_stop_event, "wait", return_value=False):
                     r2 = bridge.run_galaxy_sweep(pages=4, delay_range=(0.0, 0.0))
                 self.assertEqual(r2["pages_scanned"], 4)
                 self.assertEqual(r2["explored_systems"], 7)
@@ -2023,20 +2025,20 @@ class TestSweepAndTransmitter(unittest.TestCase):
             )
             bridge_holder.append(bridge)
             try:
-                bridge._last_state = GameState(
+                bridge.ctx.last_state = GameState(
                     31, 7, "cmdr", _time.time(), (_make_planet(101, "02:380:12"),), active_planet_id=101
                 )
-                with patch.object(bridge._sweep_stop_event, "wait", return_value=False):
+                with patch.object(bridge.ctx.sweep_stop_event, "wait", return_value=False):
                     res = bridge.run_galaxy_sweep(pages=6, galaxy=2, start_system=380, delay_range=(0.0, 0.0))
                 self.assertEqual(res["pages_scanned"], 2)
                 self.assertEqual(res["arrow_steps"], 2)
                 self.assertIn("suspended", str(res.get("aborted_reason") or "").lower())
                 # Both planned pages (380, 381) AND the intermediate arrow page (379) were persisted & XHR-counted!
-                scanned_keys = set((bridge._get_scanned_systems() or {}).keys())
+                scanned_keys = set((bridge.ledgers.get_scanned_systems() or {}).keys())
                 self.assertIn("02:379", scanned_keys)
                 self.assertIn("02:380", scanned_keys)
                 self.assertIn("02:381", scanned_keys)
-                self.assertGreaterEqual(bridge._sweep_views_last_60s(), 3)
+                self.assertGreaterEqual(bridge.galaxy_sweep.sweep_views_last_60s(), 3)
             finally:
                 bridge.close()
 

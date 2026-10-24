@@ -654,7 +654,7 @@ class TestSmartGalaxyScanTwoPhaseEngine(unittest.TestCase):
                     config_path=cfg_path,
                     db_path=tmp_path / "state.db",
                 )
-                bridge._last_state = GameState(
+                bridge.ctx.last_state = GameState(
                     universe_id=31,
                     user_id=1,
                     nickname="tester",
@@ -781,7 +781,7 @@ class TestSmartGalaxyScanTwoPhaseEngine(unittest.TestCase):
                     config_path=cfg_path,
                     db_path=tmp_path / "state.db",
                 )
-                bridge._last_state = GameState(
+                bridge.ctx.last_state = GameState(
                     universe_id=31,
                     user_id=1,
                     nickname="tester",
@@ -852,7 +852,7 @@ class TestSmartGalaxyScanTwoPhaseEngine(unittest.TestCase):
                     config_path=cfg_path,
                     db_path=tmp_path / "state.db",
                 )
-                bridge._last_state = GameState(
+                bridge.ctx.last_state = GameState(
                     universe_id=31,
                     user_id=1,
                     nickname="tester",

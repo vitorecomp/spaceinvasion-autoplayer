@@ -193,22 +193,22 @@ class GalaxyScanExclusivityTest(unittest.TestCase):
                 srv_thread = threading.Thread(target=server.serve_forever, daemon=True)
                 srv_thread.start()
                 try:
-                    bridge._last_state = _make_state()
-                    bridge._last_snapshot_at = time.monotonic() - 120.0  # older than 15s cache TTL
-                    bridge._last_buildings_fetched = True
+                    bridge.ctx.last_state = _make_state()
+                    bridge.ctx.last_snapshot_at = time.monotonic() - 120.0  # older than 15s cache TTL
+                    bridge.ctx.last_buildings_fetched = True
 
-                    orig_wait = bridge._sweep_stop_event.wait
+                    orig_wait = bridge.ctx.sweep_stop_event.wait
 
                     def _controlled_wait(timeout=None):
                         if step1_entered.is_set() and not release_step2.is_set():
                             release_step2.wait(timeout=5.0)
-                            return bridge._sweep_stop_event.is_set()
+                            return bridge.ctx.sweep_stop_event.is_set()
                         return orig_wait(0.0)
 
                     sweep_out: dict[str, object] = {}
 
                     def _run_sw() -> None:
-                        with patch.object(bridge._sweep_stop_event, "wait", side_effect=_controlled_wait):
+                        with patch.object(bridge.ctx.sweep_stop_event, "wait", side_effect=_controlled_wait):
                             sweep_out["res"] = bridge.run_galaxy_sweep(
                                 pages=2, galaxy=2, start_system=380, delay_range=(1.0, 1.0)
                             )
@@ -336,8 +336,8 @@ class GalaxyScanExclusivityTest(unittest.TestCase):
                     ensure_session_fn=lambda: None,
                 )
                 try:
-                    bridge._last_state = _make_state(hostile=False)
-                    bridge._last_snapshot_at = time.monotonic()
+                    bridge.ctx.last_state = _make_state(hostile=False)
+                    bridge.ctx.last_snapshot_at = time.monotonic()
 
                     def _fake_exec_summary(client, state, cmd, planned, dry_run, **_kw):
                         escape_executed.append(f"{cmd}:{planned.kind}:{client is not None}")
@@ -362,7 +362,7 @@ class GalaxyScanExclusivityTest(unittest.TestCase):
                     time.sleep(0.05)
 
                     t0 = time.monotonic()
-                    with patch.object(bridge, "_execute_and_summarize", side_effect=_fake_exec_summary):
+                    with patch.object(bridge.execution, "execute_and_summarize", side_effect=_fake_exec_summary):
                         esc_res = bridge.handle_command(
                             {"command": "escape_flight", "planet_id": 101, "dry_run": False}
                         )

@@ -270,14 +270,14 @@ class TestFleetSlotAndGalaxyDiag(unittest.TestCase):
         )
         self.addCleanup(bridge.close)
         bridge.strategy_config = StrategyConfig(allow_raids=True, reserved_spy_slots=0)
-        bridge._last_state = state
+        bridge.ctx.last_state = state
 
         # Simulate observing RETRO `Fleet bases (available: 5, filled: 5)` once on #TG (b10=5):
-        bridge._record_observed_fleet_slots_locked(p_tg, 5)
-        self.assertEqual(bridge._observed_fleet_slot_base_offset, 0)
+        bridge.ledgers.record_observed_fleet_slots_locked(p_tg, 5)
+        self.assertEqual(bridge.ctx.observed_fleet_slot_base_offset, 0)
         # Both #TG (b10=5 -> 5) and #PP (b10=7 -> 7) immediately recognize exact RETRO slot limits!
-        self.assertEqual(bridge._max_fleet_slots_for_planet_locked(p_tg), 5)
-        self.assertEqual(bridge._max_fleet_slots_for_planet_locked(p_pp), 7)
+        self.assertEqual(bridge.ledgers.max_fleet_slots_for_planet_locked(p_tg), 5)
+        self.assertEqual(bridge.ledgers.max_fleet_slots_for_planet_locked(p_pp), 7)
 
         rec_act = PlannedAction(
             priority="P2",
@@ -290,14 +290,14 @@ class TestFleetSlotAndGalaxyDiag(unittest.TestCase):
             reason="Harvest debris",
             executable_now=True,
         )
-        held = bridge._apply_fleet_slot_holds(state, [rec_act])
+        held = bridge.ledgers.apply_fleet_slot_holds(state, [rec_act])
         self.assertFalse(held[0].executable_now)
         self.assertIn("5/5 in flight", held[0].reason)
 
         # Even if `recycle` command is called directly, `_execute_and_summarize` aborts BEFORE `open_galaxy`!
         fake_client = MagicMock()
         fake_client.open_galaxy = MagicMock(side_effect=AssertionError("open_galaxy should not be called!"))
-        res = bridge._execute_and_summarize(fake_client, state, "recycle", rec_act, dry_run=False)
+        res = bridge.execution.execute_and_summarize(fake_client, state, "recycle", rec_act, dry_run=False)
         self.assertFalse(res["executed"])
         self.assertIn("5/5", res["message"])
         fake_client.open_galaxy.assert_not_called()

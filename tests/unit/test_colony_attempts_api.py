@@ -89,7 +89,7 @@ class TestColonyAttemptsApi(unittest.TestCase):
             )
 
         with patch.object(self.bridge._live_executor, "execute_action", side_effect=_fake_exec):
-            return self.bridge._execute_and_summarize(None, state, cmd, planned, False)
+            return self.bridge.execution.execute_and_summarize(None, state, cmd, planned, False)
 
     @staticmethod
     def _colonize_action(origin: PlanetState, target: str) -> PlannedAction:
@@ -109,7 +109,7 @@ class TestColonyAttemptsApi(unittest.TestCase):
     def test_colony_candidates_payload_includes_attempt_keys(self) -> None:
         db = self.bridge._db
         assert db is not None
-        self.bridge._last_state = _state(_planet(101, "02:380:12"))
+        self.bridge.ctx.last_state = _state(_planet(101, "02:380:12"))
         db.record_colony_attempt(target_coords="02:381:08", event_type="dispatched", origin_coords="02:380:12")
         db.record_colony_attempt(target_coords="02:381:08", event_type="deleted_undersized", fields_rolled=215)
 
@@ -127,7 +127,7 @@ class TestColonyAttemptsApi(unittest.TestCase):
     def test_colony_candidates_payload_survives_ledger_errors(self) -> None:
         db = self.bridge._db
         assert db is not None
-        self.bridge._last_state = _state(_planet(101, "02:380:12"))
+        self.bridge.ctx.last_state = _state(_planet(101, "02:380:12"))
         with (
             patch.object(db, "get_colony_attempts", side_effect=RuntimeError("no such table")),
             patch.object(db, "get_colony_attempts_summary", side_effect=RuntimeError("no such table")),
@@ -154,7 +154,7 @@ class TestColonyAttemptsApi(unittest.TestCase):
         )
         home = _planet(101, "02:380:12")
         st = _state(home)
-        self.bridge._last_state = st
+        self.bridge.ctx.last_state = st
         self._exec(st, self._colonize_action(home, "02:381:08"), executed=True, message="Colony ship dispatched")
 
         rows = db.get_colony_attempts(limit=10)
@@ -176,7 +176,7 @@ class TestColonyAttemptsApi(unittest.TestCase):
         assert db is not None
         home = _planet(101, "02:380:12")
         st = _state(home)
-        self.bridge._last_state = st
+        self.bridge.ctx.last_state = st
         act = self._colonize_action(home, "02:381:09")
         self._exec(st, act, executed=False, message="Aborted: no Colony ship available")
         self._exec(st, act, executed=False, message="Aborted: no Colony ship available")
@@ -202,7 +202,7 @@ class TestColonyAttemptsApi(unittest.TestCase):
         home = _planet(101, "02:380:12")
         col = _planet(202, "02:381:08", fields_max=180, fields_used=0, temperature=-12, buildings={}, ships={})
         st = _state(home, col)
-        self.bridge._last_state = st
+        self.bridge.ctx.last_state = st
         planned = PlannedAction(
             priority="P1",
             kind="ABANDON_COLONY",
@@ -228,18 +228,18 @@ class TestColonyAttemptsApi(unittest.TestCase):
         db = self.bridge._db
         assert db is not None
         home = _planet(101, "02:380:12")
-        self.bridge._record_state(_state(home))
+        self.bridge.state_cache.record_state(_state(home))
         self.assertEqual(db.get_colony_attempts(limit=10), [])  # first snapshot never records
 
         big = _planet(202, "02:381:08", fields_max=342, fields_used=0)
-        self.bridge._record_state(_state(home, big))
-        self.bridge._record_state(_state(home, big))
+        self.bridge.state_cache.record_state(_state(home, big))
+        self.bridge.state_cache.record_state(_state(home, big))
         small = _planet(303, "02:382:04", fields_max=0, fields_used=0)
-        self.bridge._record_state(_state(home, big, small))  # fields not parsed yet -> pending
+        self.bridge.state_cache.record_state(_state(home, big, small))  # fields not parsed yet -> pending
         self.assertEqual([r["event_type"] for r in db.get_colony_attempts(limit=10)], ["kept"])
         small_parsed = _planet(303, "02:382:04", fields_max=164, fields_used=0, temperature=70)
-        self.bridge._record_state(_state(home, big, small_parsed))
-        self.bridge._record_state(_state(home, big, small_parsed))
+        self.bridge.state_cache.record_state(_state(home, big, small_parsed))
+        self.bridge.state_cache.record_state(_state(home, big, small_parsed))
 
         rows = db.get_colony_attempts(limit=10)
         self.assertEqual([r["event_type"] for r in rows], ["settled", "kept"])
@@ -254,10 +254,10 @@ class TestColonyAttemptsApi(unittest.TestCase):
 
         # A restarted bridge hydrates the dedupe set and does not re-record on reappearance.
         bridge2 = self._make_bridge()
-        self.assertIn((202, "02:381:08"), bridge2._colony_attempt_seen)
-        self.assertIn((303, "02:382:04"), bridge2._colony_attempt_seen)
-        bridge2._record_state(_state(home))
-        bridge2._record_state(_state(home, big, small_parsed))
+        self.assertIn((202, "02:381:08"), bridge2.ctx.colony_attempt_seen)
+        self.assertIn((303, "02:382:04"), bridge2.ctx.colony_attempt_seen)
+        bridge2.state_cache.record_state(_state(home))
+        bridge2.state_cache.record_state(_state(home, big, small_parsed))
         self.assertEqual(len(bridge2._db.get_colony_attempts(limit=10)), 2)
 
     def test_abandon_colony_handle_command_invalidates_caches_without_attribute_error(self) -> None:
@@ -267,14 +267,14 @@ class TestColonyAttemptsApi(unittest.TestCase):
         home = _planet(101, "02:380:12")
         col = _planet(202, "02:381:08", fields_max=180, fields_used=0, temperature=-12, buildings={}, ships={})
         st = _state(home, col)
-        self.bridge._last_state = st
-        self.bridge._last_buildings_fetched = True
-        self.bridge._last_shipyard_sync_at = 12345.0
-        self.bridge._last_shipyard_sync_sig = (202, 1, ())
-        self.bridge._economy_rates[202] = {"resource1": 100, "resource2": 100}
-        self.bridge._economy_sync_timestamps[202] = 12345.0
-        self.bridge._throttle_timestamps[202] = 12345.0
-        self.bridge._fleet_slot_cooldown_until[202] = 99999.0
+        self.bridge.ctx.last_state = st
+        self.bridge.ctx.last_buildings_fetched = True
+        self.bridge.ctx.last_shipyard_sync_at = 12345.0
+        self.bridge.ctx.last_shipyard_sync_sig = (202, 1, ())
+        self.bridge.ctx.economy_rates[202] = {"resource1": 100, "resource2": 100}
+        self.bridge.ctx.economy_sync_timestamps[202] = 12345.0
+        self.bridge.ctx.throttle_timestamps[202] = 12345.0
+        self.bridge.ctx.fleet_slot_cooldown_until[202] = 99999.0
         self.bridge._live_executor.allow_colonize = True
 
         fake_client = MagicMock()
@@ -282,7 +282,7 @@ class TestColonyAttemptsApi(unittest.TestCase):
         fake_client.__exit__.return_value = False
         fake_client.read_full_snapshot.return_value = st
         fake_client.last_snapshot_observed_active_planet = True
-        self.bridge._client_factory = lambda _port: fake_client
+        self.bridge.ctx.client_factory = lambda _port: fake_client
 
         exec_res = ExecutionResult(
             action=PlannedAction(
@@ -303,13 +303,13 @@ class TestColonyAttemptsApi(unittest.TestCase):
             res = self.bridge.handle_command({"command": "abandon_colony", "planet_id": 202, "dry_run": False})
         self.assertTrue(res["ok"])
         self.assertTrue(res["executed"])
-        self.assertFalse(self.bridge._last_buildings_fetched)
-        self.assertEqual(self.bridge._last_shipyard_sync_at, 0.0)
-        self.assertIsNone(self.bridge._last_shipyard_sync_sig)
-        self.assertNotIn(202, self.bridge._economy_rates)
-        self.assertNotIn(202, self.bridge._economy_sync_timestamps)
-        self.assertNotIn(202, self.bridge._throttle_timestamps)
-        self.assertNotIn(202, self.bridge._fleet_slot_cooldown_until)
+        self.assertFalse(self.bridge.ctx.last_buildings_fetched)
+        self.assertEqual(self.bridge.ctx.last_shipyard_sync_at, 0.0)
+        self.assertIsNone(self.bridge.ctx.last_shipyard_sync_sig)
+        self.assertNotIn(202, self.bridge.ctx.economy_rates)
+        self.assertNotIn(202, self.bridge.ctx.economy_sync_timestamps)
+        self.assertNotIn(202, self.bridge.ctx.throttle_timestamps)
+        self.assertNotIn(202, self.bridge.ctx.fleet_slot_cooldown_until)
         assert self.bridge._db is not None
         rows = self.bridge._db.get_colony_attempts(limit=10)
         self.assertEqual(len(rows), 1)

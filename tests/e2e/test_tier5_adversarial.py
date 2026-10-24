@@ -378,8 +378,8 @@ class TestTier5Adversarial(unittest.TestCase):
                 log_dir=Path(tmp) / "logs",
             )
             try:
-                bridge._last_state = prev_st
-                merged = bridge._merge_cached_offers(cur_st)
+                bridge.ctx.last_state = prev_st
+                merged = bridge.state_cache.merge_cached_offers(cur_st)
                 self.assertFalse(merged.research_offers[0].active)
             finally:
                 if bridge._db is not None:
@@ -528,8 +528,8 @@ class TestTier5Adversarial(unittest.TestCase):
 
             # Live build execution preserves raid_stats on updated_state via ActionExecutor._build_updated_state
             h.bridge.get_state()
-            assert h.bridge._last_state is not None
-            h.bridge._last_state = replace(h.bridge._last_state, raid_stats=h.bridge._db.get_raid_stats())
+            assert h.bridge.ctx.last_state is not None
+            h.bridge.ctx.last_state = replace(h.bridge.ctx.last_state, raid_stats=h.bridge._db.get_raid_stats())
             bld_res = h.api.send_command({"command": "build", "building_id": 1, "dry_run": False})
             self.assertTrue(bld_res.get("executed", False))
             self.assertEqual(bld_res["state"]["raid_stats"]["overall"]["attempts"], 3)
@@ -623,7 +623,7 @@ class TestTier5Adversarial(unittest.TestCase):
         )
         with E2ETestHarness(server=srv, config=StrategyConfig()) as h:
             h.bridge.get_state(include_buildings=True)
-            st0 = h.bridge._last_state
+            st0 = h.bridge.ctx.last_state
             assert st0 is not None
             self.assertTrue(next(o for o in st0.research_offers if o.research_id == 8).can_research)
 
@@ -644,7 +644,7 @@ class TestTier5Adversarial(unittest.TestCase):
             self.assertFalse(s10_live["executed"])
 
             # External research cancel clears stale active=True so r8 can execute
-            h.bridge._last_state = replace(
+            h.bridge.ctx.last_state = replace(
                 st0,
                 research_offers=(
                     ResearchOffer(
@@ -662,9 +662,9 @@ class TestTier5Adversarial(unittest.TestCase):
                     next(o for o in st0.research_offers if o.research_id == 8),
                 ),
             )
-            merged = h.bridge._merge_cached_offers(replace(st0, research_offers=(), active_queues=()))
+            merged = h.bridge.state_cache.merge_cached_offers(replace(st0, research_offers=(), active_queues=()))
             self.assertFalse(any(o.active for o in merged.research_offers))
-            self.assertTrue(h.bridge._find_research_action(merged, 8, 12476).executable_now)
+            self.assertTrue(h.bridge.plan_assembly.find_research_action(merged, 8, 12476).executable_now)
 
     # ------------------------------------------------------------------
     # Section B4: Storage memory URI, inf loot, corrupt cells via /command db_summary & /dashboard
@@ -1234,19 +1234,21 @@ class TestTier5Adversarial(unittest.TestCase):
             many_y = [GalaxySlot(f"05:{idx:03d}:01", 1, f"F{idx}", f"O{idx}", "yellow") for idx in range(1, 106)]
             many_y.append(GalaxySlot("09:009:09", 9, "DeepBlue", "VacDeep", "blue"))
             h.bridge._db.record_galaxy_slots(many_y, ts=1100.0)
-            h.bridge._raid_targets = h.bridge._enrich_raid_targets(h.bridge._db.get_spy_targets(limit=100))
+            h.bridge.ctx.raid_targets = h.bridge.state_cache.enrich_raid_targets(
+                h.bridge._db.get_spy_targets(limit=100)
+            )
             atk_deep = h.api.send_command({"command": "attack", "target_coords": "9:9:9", "dry_run": False})
             self.assertFalse(atk_deep.get("executed"))
             self.assertIn("protected", str(atk_deep.get("message", "")).lower())
 
             # GAP-03: zero-cost active research restored with real catalog cost after external cancel
-            cur_st = h.bridge._last_state
+            cur_st = h.bridge.ctx.last_state
             assert cur_st is not None
             r2_zero = ResearchOffer(
                 2, "r2", "Energy technology", 4, 5, Resources(), False, "In research (Cancel)", None, active=True
             )
-            h.bridge._last_state = replace(cur_st, research_offers=(r2_zero,))
-            merged = h.bridge._merge_cached_offers(replace(cur_st, research_offers=(), active_queues=()))
+            h.bridge.ctx.last_state = replace(cur_st, research_offers=(r2_zero,))
+            merged = h.bridge.state_cache.merge_cached_offers(replace(cur_st, research_offers=(), active_queues=()))
             self.assertFalse(merged.research_offers[0].cost.is_zero())
             self.assertEqual(merged.research_offers[0].status_text, "Not enough resources")
 
@@ -1323,7 +1325,9 @@ class TestTier5Adversarial(unittest.TestCase):
                 [GalaxySlot("05:010:03", 3, "TitanPlanet", "Titan", "dark_red")],
                 ts=clock.time(),
             )
-            h.bridge._raid_targets = h.bridge._enrich_raid_targets(h.bridge._db.get_spy_targets(limit=100))
+            h.bridge.ctx.raid_targets = h.bridge.state_cache.enrich_raid_targets(
+                h.bridge._db.get_spy_targets(limit=100)
+            )
             atk_resp = requests.post(
                 f"{h.base_url}/command",
                 json={"command": "attack", "target_coords": "05:010:03", "dry_run": False},
@@ -1521,12 +1525,12 @@ class TestTier5Adversarial(unittest.TestCase):
                     json.loads(line, parse_constant=_reject_nonfinite)
 
             # Inject extreme state into bridge cache -> test HTTP /state, /dashboard, and POST NaN rejection
-            h.bridge._last_state = st_huge
-            h.bridge._last_recorded_state_obj = st_huge
-            h.bridge._last_snapshot_at = clock.monotonic()
-            h.bridge._last_buildings_fetched = True
-            h.bridge._last_home_fetched = True
-            h.bridge._last_home_at = clock.monotonic()
+            h.bridge.ctx.last_state = st_huge
+            h.bridge.ctx.last_recorded_state_obj = st_huge
+            h.bridge.ctx.last_snapshot_at = clock.monotonic()
+            h.bridge.ctx.last_buildings_fetched = True
+            h.bridge.ctx.last_home_fetched = True
+            h.bridge.ctx.last_home_at = clock.monotonic()
 
             st_resp = requests.get(f"{h.base_url}/state", timeout=5.0)
             self.assertEqual(st_resp.status_code, 200)
@@ -1611,7 +1615,7 @@ class TestTier5Adversarial(unittest.TestCase):
 
         clock = FakeClock()
         with E2ETestHarness(clock=clock, config=StrategyConfig(planner_mode="priority")) as h:
-            h.bridge._rank_samples = [
+            h.bridge.ctx.rank_samples = [
                 {"ts": -1e308, "server_points": -1e308, "estimated_points": -1e308, "server_rank": 1},
                 {"ts": 1e308, "server_points": 1e308, "estimated_points": 1e308, "server_rank": 1},
             ]
@@ -1642,12 +1646,12 @@ class TestTier5Adversarial(unittest.TestCase):
                     researches={"r1": 1},
                     speedup_factor=spd,
                 )
-                h.bridge._last_state = st_ext
-                h.bridge._last_recorded_state_obj = st_ext
-                h.bridge._last_snapshot_at = clock.monotonic()
-                h.bridge._last_buildings_fetched = True
-                h.bridge._last_home_fetched = True
-                h.bridge._last_home_at = clock.monotonic()
+                h.bridge.ctx.last_state = st_ext
+                h.bridge.ctx.last_recorded_state_obj = st_ext
+                h.bridge.ctx.last_snapshot_at = clock.monotonic()
+                h.bridge.ctx.last_buildings_fetched = True
+                h.bridge.ctx.last_home_fetched = True
+                h.bridge.ctx.last_home_at = clock.monotonic()
 
                 dash_resp = requests.get(f"{h.base_url}/dashboard?refresh=0", timeout=5.0)
                 self.assertEqual(dash_resp.status_code, 200)
@@ -1758,12 +1762,12 @@ class TestTier5Adversarial(unittest.TestCase):
                 researches={"r1": 1},
                 speedup_factor=1.0,
             )
-            h.bridge._last_state = st_over
-            h.bridge._last_recorded_state_obj = st_over
-            h.bridge._last_snapshot_at = clock.monotonic()
-            h.bridge._last_buildings_fetched = True
-            h.bridge._last_home_fetched = True
-            h.bridge._last_home_at = clock.monotonic()
+            h.bridge.ctx.last_state = st_over
+            h.bridge.ctx.last_recorded_state_obj = st_over
+            h.bridge.ctx.last_snapshot_at = clock.monotonic()
+            h.bridge.ctx.last_buildings_fetched = True
+            h.bridge.ctx.last_home_fetched = True
+            h.bridge.ctx.last_home_at = clock.monotonic()
 
             for mode in ("priority", "ga_nn"):
                 resp = requests.post(
@@ -2259,12 +2263,12 @@ async (url) => {
                     ],
                 }
             )
-            h.bridge._last_state = gs_b5k
-            h.bridge._last_recorded_state_obj = gs_b5k
-            h.bridge._last_snapshot_at = clock.monotonic()
-            h.bridge._last_buildings_fetched = True
-            h.bridge._last_home_fetched = True
-            h.bridge._last_home_at = clock.monotonic()
+            h.bridge.ctx.last_state = gs_b5k
+            h.bridge.ctx.last_recorded_state_obj = gs_b5k
+            h.bridge.ctx.last_snapshot_at = clock.monotonic()
+            h.bridge.ctx.last_buildings_fetched = True
+            h.bridge.ctx.last_home_fetched = True
+            h.bridge.ctx.last_home_at = clock.monotonic()
 
             resp = requests.post(
                 f"{h.base_url}/command",
@@ -2910,7 +2914,7 @@ async (url, opts, fullUrl, nativeFetch) => {
             r_h = requests.get(f"{h.base_url}/health", timeout=5)
             self.assertEqual(r_h.status_code, 200)
             self.assertEqual(r_h.json()["debug_port"], 0)
-            h.bridge._bot_control["password"] = b"E2E_PW_SEC"
+            h.bridge.ctx.bot_control["password"] = b"E2E_PW_SEC"
             r_ctrl = requests.post(f"{h.base_url}/command", json={"command": "bot_control"}, timeout=5)
             self.assertEqual(r_ctrl.status_code, 200)
             self.assertNotIn("E2E_PW_SEC", r_ctrl.text)
@@ -3117,10 +3121,10 @@ async (url, opts, fullUrl, nativeFetch) => {
         self.assertIn("sid=T5_BFINAL_SEC", b_res.final_url)
 
         with E2ETestHarness() as h:
-            h.bridge._last_url = Path("https://u/?sid=T5_HTTP_PATH_SEC")  # type: ignore[assignment]
-            h.bridge._bot_control["bp"] = _BytesPath()
-            h.bridge._bot_control["err"] = RuntimeError("?sid=T5_HTTP_ERR_SEC")
-            h.bridge._bot_control["cplx"] = complex(1, 2)
+            h.bridge.ctx.last_url = Path("https://u/?sid=T5_HTTP_PATH_SEC")  # type: ignore[assignment]
+            h.bridge.ctx.bot_control["bp"] = _BytesPath()
+            h.bridge.ctx.bot_control["err"] = RuntimeError("?sid=T5_HTTP_ERR_SEC")
+            h.bridge.ctx.bot_control["cplx"] = complex(1, 2)
             for ep in ("/health", "/bot_status", "/dashboard"):
                 r = requests.get(f"{h.base_url}{ep}", timeout=5)
                 self.assertEqual(r.status_code, 200)
@@ -3150,7 +3154,7 @@ async (url, opts, fullUrl, nativeFetch) => {
             )
             st_mix = GameState(31, 1, "u", 1000.0, (ast_p, raid_p, norm_p), active_planet_id=92)
             for bid_bad, pid_bad in ((5, 92), (1, 91), (19, 93)):
-                act = h.bridge._find_build_action(st_mix, bid_bad, pid_bad, allow_live_verify=True)
+                act = h.bridge.plan_assembly.find_build_action(st_mix, bid_bad, pid_bad, allow_live_verify=True)
                 self.assertFalse(act.executable_now)
                 self.assertIsNone(act.action_href)
             r_ct = requests.post(f"{h.base_url}/command", json={"command": "claim_tutorial"}, timeout=5)
@@ -3277,15 +3281,15 @@ async (url, opts, fullUrl, nativeFetch) => {
         for _ in range(5):
             deep_key = (deep_key,)
         with E2ETestHarness() as h:
-            h.bridge._bot_control["auth_header"] = "Authorization: Bearer T5_HTTP_BEARER"
-            h.bridge._bot_control["json_blob"] = '{"password": "T5_JSON_PW"}'
-            h.bridge._bot_control["authorization"] = "T5_DICT_AUTH"
-            h.bridge._bot_control["long_s"] = "\u017fid=T5_LONGS_SEC"
-            h.bridge._bot_control["bad_fs"] = _RaiseFspath()
-            h.bridge._bot_control["int_fs"] = _IntPath()
-            h.bridge._bot_control["bad_repr"] = _RaiseStrRepr()
-            h.bridge._bot_control["exc"] = RuntimeError(10**5000, "?password=T5_EXC_PW")
-            h.bridge._bot_control[deep_key] = "ok"
+            h.bridge.ctx.bot_control["auth_header"] = "Authorization: Bearer T5_HTTP_BEARER"
+            h.bridge.ctx.bot_control["json_blob"] = '{"password": "T5_JSON_PW"}'
+            h.bridge.ctx.bot_control["authorization"] = "T5_DICT_AUTH"
+            h.bridge.ctx.bot_control["long_s"] = "\u017fid=T5_LONGS_SEC"
+            h.bridge.ctx.bot_control["bad_fs"] = _RaiseFspath()
+            h.bridge.ctx.bot_control["int_fs"] = _IntPath()
+            h.bridge.ctx.bot_control["bad_repr"] = _RaiseStrRepr()
+            h.bridge.ctx.bot_control["exc"] = RuntimeError(10**5000, "?password=T5_EXC_PW")
+            h.bridge.ctx.bot_control[deep_key] = "ok"
 
             for ep in ("/dashboard", "/bot_status"):
                 r = requests.get(f"{h.base_url}{ep}", timeout=5)
@@ -3499,13 +3503,13 @@ async (url, opts, fullUrl, nativeFetch) => {
             self.assertNotIn("T5_DEC_CSEC", str(ctx_dec.exception))
 
         with E2ETestHarness() as h:
-            h.bridge._bot_control["client_secret"] = "T5_HTTP_CSEC"
-            h.bridge._bot_control["user_password"] = "T5_HTTP_UPW"
-            h.bridge._bot_control["quoted_bearer"] = 'Authorization: Bearer "T5_Q_BEAR"'
-            h.bridge._bot_control["brk_bearer"] = "Authorization: Bearer [T5_B_BEAR]"
-            h.bridge._bot_control["turk_sid"] = "?s\u0130d=T5_TURK_SID&?ap\u0131_key=T5_TURK_AK"
-            h.bridge._bot_control["has_sid"] = False
-            h.bridge._bot_control["cookie_path"] = "/tmp/cookies.json"
+            h.bridge.ctx.bot_control["client_secret"] = "T5_HTTP_CSEC"
+            h.bridge.ctx.bot_control["user_password"] = "T5_HTTP_UPW"
+            h.bridge.ctx.bot_control["quoted_bearer"] = 'Authorization: Bearer "T5_Q_BEAR"'
+            h.bridge.ctx.bot_control["brk_bearer"] = "Authorization: Bearer [T5_B_BEAR]"
+            h.bridge.ctx.bot_control["turk_sid"] = "?s\u0130d=T5_TURK_SID&?ap\u0131_key=T5_TURK_AK"
+            h.bridge.ctx.bot_control["has_sid"] = False
+            h.bridge.ctx.bot_control["cookie_path"] = "/tmp/cookies.json"
             r = requests.get(f"{h.base_url}/bot_status", timeout=5)
             self.assertEqual(r.status_code, 200)
             for sec in ("T5_HTTP_CSEC", "T5_HTTP_UPW", "T5_Q_BEAR", "T5_B_BEAR", "T5_TURK_SID", "T5_TURK_AK"):
@@ -3532,7 +3536,7 @@ async (url, opts, fullUrl, nativeFetch) => {
                 )
                 for i in range(1, 6)
             )
-            h.bridge._last_state = GameState(31, 1, "u", 1000.0, planets_5, active_planet_id=501)
+            h.bridge.ctx.last_state = GameState(31, 1, "u", 1000.0, planets_5, active_planet_id=501)
             _ = h.bridge.dashboard(refresh=False)
             t0 = time.perf_counter()
             dash_5 = h.bridge.dashboard(refresh=False)
@@ -3613,17 +3617,17 @@ async (url, opts, fullUrl, nativeFetch) => {
         )
 
         with E2ETestHarness() as h:
-            h.bridge._record_state(
+            h.bridge.state_cache.record_state(
                 st,
                 fetched_buildings=True,
                 fetched_research=True,
                 fetched_shipyard=True,
                 fetched_home=True,
             )
-            h.bridge._last_spio_sync_at = 0.0
+            h.bridge.ctx.last_spio_sync_at = 0.0
 
             # 1. Offline auth failure during cached plan unread spio sync degrades cleanly
-            with patch.object(h.bridge, "_client_factory", side_effect=SpaceInvasionAuthError("offline")):
+            with patch.object(h.bridge.ctx, "client_factory", side_effect=SpaceInvasionAuthError("offline")):
                 r_plan = requests.post(
                     f"{h.base_url}/command",
                     json={"command": "plan", "force_refresh": False},
@@ -3650,8 +3654,8 @@ async (url, opts, fullUrl, nativeFetch) => {
                 self.assertEqual(r_thr.status_code, 400)
 
             # 3. RateLimitError on unread spio sync still surfaces HTTP 429
-            h.bridge._last_spio_sync_at = 0.0
-            with patch.object(h.bridge, "_client_factory", side_effect=RateLimitError("slow", retry_after=15.0)):
+            h.bridge.ctx.last_spio_sync_at = 0.0
+            with patch.object(h.bridge.ctx, "client_factory", side_effect=RateLimitError("slow", retry_after=15.0)):
                 r_rl = requests.post(
                     f"{h.base_url}/command",
                     json={"command": "plan", "force_refresh": False},
@@ -3665,10 +3669,10 @@ async (url, opts, fullUrl, nativeFetch) => {
             dag_exc: BaseException = RuntimeError("Bearer T5_R14_DAG_SEC")
             for _ in range(20):
                 dag_exc = RuntimeError(dag_exc, dag_exc, dag_exc, dag_exc)
-            h.bridge._bot_control["ue_json"] = "%22password%22%3A%22T5_R14_UE_PW%22"
-            h.bridge._bot_control["esc_json"] = '\\"password\\":\\"T5_R14_ESC_PW\\"'
-            h.bridge._bot_control["cyc"] = cyc_d
-            h.bridge._bot_control["dag"] = dag_exc
+            h.bridge.ctx.bot_control["ue_json"] = "%22password%22%3A%22T5_R14_UE_PW%22"
+            h.bridge.ctx.bot_control["esc_json"] = '\\"password\\":\\"T5_R14_ESC_PW\\"'
+            h.bridge.ctx.bot_control["cyc"] = cyc_d
+            h.bridge.ctx.bot_control["dag"] = dag_exc
             t0 = time.perf_counter()
             r_bs = requests.get(f"{h.base_url}/bot_status", timeout=5)
             self.assertLess((time.perf_counter() - t0) * 1000.0, 250.0)

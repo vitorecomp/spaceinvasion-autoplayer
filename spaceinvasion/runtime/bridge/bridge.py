@@ -13,6 +13,7 @@ from spaceinvasion.runtime.api.registry import CommandRegistry
 from spaceinvasion.runtime.bridge._bridge_wiring import wire_bridge_collaborators
 from spaceinvasion.runtime.bridge._command_facade import BridgeCommandFacade
 from spaceinvasion.runtime.bridge._context import BridgeContext, ClientFactory
+from spaceinvasion.runtime.bridge._context_init import BridgeConstants
 from spaceinvasion.runtime.bridge._helpers import sanitize_json_dict
 from spaceinvasion.runtime.bridge.execution import ActionExecutionService
 from spaceinvasion.runtime.bridge.galaxy_sweep import GalaxySweepService
@@ -35,6 +36,9 @@ if TYPE_CHECKING:
 
 class ModularGameApiBridge:
     """Explicitly composed bridge delegating reads, planning, execution, sweeps, and commands."""
+
+    REALIZED_INCOME_BASIS: str = BridgeConstants.REALIZED_INCOME_BASIS
+    SPARE_SHIP_BUDGET_WINDOW_HOURS: float = BridgeConstants.SPARE_SHIP_BUDGET_WINDOW_HOURS
 
     def __init__(
         self,
@@ -128,9 +132,25 @@ class ModularGameApiBridge:
     def log_dir(self) -> Path | None:
         return self.ctx.log_dir
 
+    @log_dir.setter
+    def log_dir(self, value: Path | None) -> None:
+        self.ctx.log_dir = value
+
+    @property
+    def config_path(self) -> Path | None:
+        return self.ctx.config_path
+
+    @config_path.setter
+    def config_path(self, value: Path | None) -> None:
+        self.ctx.config_path = value
+
     @property
     def strategy_config(self) -> StrategyConfig:
         return self.ctx.strategy_config
+
+    @strategy_config.setter
+    def strategy_config(self, value: StrategyConfig) -> None:
+        self.ctx.strategy_config = value
 
     @property
     def _lock(self) -> threading.Lock:
@@ -144,13 +164,25 @@ class ModularGameApiBridge:
     def _live_executor(self) -> ActionExecutor:
         return self.ctx.live_executor
 
+    @_live_executor.setter
+    def _live_executor(self, value: ActionExecutor) -> None:
+        self.ctx.live_executor = value
+
     @property
     def _dry_executor(self) -> ActionExecutor:
         return self.ctx.dry_executor
 
+    @_dry_executor.setter
+    def _dry_executor(self, value: ActionExecutor) -> None:
+        self.ctx.dry_executor = value
+
     @property
     def _db(self) -> GameDatabase | None:
         return self.ctx.db
+
+    @_db.setter
+    def _db(self, value: GameDatabase | None) -> None:
+        self.ctx.db = value
 
     def close(self) -> None:
         self.lifecycle.close()

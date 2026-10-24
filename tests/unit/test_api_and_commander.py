@@ -406,7 +406,7 @@ class TestApiAndCommander(unittest.TestCase):
         scan_res = bridge.handle_command({"command": "scan_galaxy", "dry_run": False})
         self.assertTrue(scan_res["executed"])
         self.assertIn("02:380", scan_res["message"])
-        self.assertTrue(any(t["coords"] == "02:380:04" for t in bridge._raid_targets))
+        self.assertTrue(any(t["coords"] == "02:380:04" for t in bridge.ctx.raid_targets))
 
         atk_res = bridge.handle_command({"command": "attack", "target_coords": "02:380:04", "dry_run": False})
         self.assertFalse(atk_res["executed"])
@@ -467,8 +467,8 @@ class TestApiAndCommander(unittest.TestCase):
                 ensure_session_fn=lambda: None,
             )
             try:
-                self.assertEqual(bridge._max_limiter_wait, 8.0)
-                self.assertEqual(bridge._executor_max_limiter_wait, 8.0)
+                self.assertEqual(bridge.ctx.max_limiter_wait, 8.0)
+                self.assertEqual(bridge.ctx.executor_max_limiter_wait, 8.0)
 
                 st0 = bridge.get_state(include_buildings=True)
                 self.assertIn("raid_stats", st0)
@@ -499,7 +499,7 @@ class TestApiAndCommander(unittest.TestCase):
                 self.assertIn("02:380:04", st1["raid_stats"]["per_target"])
 
                 with patch("spaceinvasion.runtime.bridge.plan_assembly.plan_actions", return_value=[]) as mock_plan:
-                    bridge._plan_with_context(state)
+                    bridge.plan_assembly.plan_with_context(state)
                     passed_state = mock_plan.call_args.args[0]
                     self.assertEqual(passed_state.raid_stats["overall"]["attempts"], 2)
                     self.assertIn("02:380:05", passed_state.raid_stats["per_target"])
@@ -961,7 +961,7 @@ class TestApiAndCommander(unittest.TestCase):
 
                 self.assertEqual(errors, [])
 
-                bridge_a._last_state = None
+                bridge_a.ctx.last_state = None
                 bridge_a.handle_command({"command": "update_config", "config": {"ga_generations": 3}})
                 with patch("spaceinvasion.session.browser.is_debug_port_open", return_value=False):
                     dash_cleared = bridge_a.dashboard(refresh=False)
@@ -1325,8 +1325,8 @@ class TestApiAndCommander(unittest.TestCase):
                 log_dir=log_dir,
             )
             try:
-                bridge._last_state = prev_st
-                merged = bridge._merge_cached_offers(cur_st)
+                bridge.ctx.last_state = prev_st
+                merged = bridge.state_cache.merge_cached_offers(cur_st)
                 self.assertFalse(merged.research_offers[0].active)
 
                 # Missing prereqs rejected even when status_text mentions insufficient resources
@@ -1350,7 +1350,7 @@ class TestApiAndCommander(unittest.TestCase):
                         ),
                     ),
                 )
-                r_act = bridge._find_research_action(locked_r_st, 11, 1)
+                r_act = bridge.plan_assembly.find_research_action(locked_r_st, 11, 1)
                 self.assertFalse(r_act.executable_now)
 
                 locked_s_st = GameState(
@@ -1376,7 +1376,7 @@ class TestApiAndCommander(unittest.TestCase):
                     ),
                     active_planet_id=1,
                 )
-                s_act = bridge._find_ship_action(locked_s_st, 6, 1, 1)
+                s_act = bridge.plan_assembly.find_ship_action(locked_s_st, 6, 1, 1)
                 self.assertFalse(s_act.executable_now)
             finally:
                 if bridge._db is not None:
@@ -1478,9 +1478,9 @@ class TestApiAndCommander(unittest.TestCase):
                     ],
                     ts=1000.0,
                 )
-                bridge._raid_targets = bridge._enrich_raid_targets(bridge._db.get_spy_targets(limit=100))
-                bridge._last_state = st0
-                bridge._last_state_ts = 1e12
+                bridge.ctx.raid_targets = bridge.state_cache.enrich_raid_targets(bridge._db.get_spy_targets(limit=100))
+                bridge.ctx.last_state = st0
+                bridge.ctx.last_snapshot_at = 1e12
 
                 own_spy = bridge.handle_command({"command": "spy", "target_coords": "2:380:4", "dry_run": False})
                 self.assertFalse(own_spy["executed"])
@@ -1531,16 +1531,18 @@ class TestApiAndCommander(unittest.TestCase):
                     None,
                     active=False,
                 )
-                bridge._last_state = replace(st0, research_offers=(r2_active, r1_busy, r11_locked))
-                merged = bridge._merge_cached_offers(replace(st0, research_offers=(), active_queues=()))
+                bridge.ctx.last_state = replace(st0, research_offers=(r2_active, r1_busy, r11_locked))
+                merged = bridge.state_cache.merge_cached_offers(replace(st0, research_offers=(), active_queues=()))
                 by_rid = {o.research_id: o for o in merged.research_offers}
                 self.assertFalse(by_rid[2].active)
                 self.assertTrue(by_rid[2].can_research)
                 self.assertTrue(by_rid[1].can_research)
                 self.assertFalse(by_rid[11].can_research)
-                self.assertTrue(bridge._find_research_action(merged, 2, 101, allow_live_verify=True).executable_now)
+                self.assertTrue(
+                    bridge.plan_assembly.find_research_action(merged, 2, 101, allow_live_verify=True).executable_now
+                )
                 self.assertFalse(
-                    any(a.kind == "RESEARCH" and a.executable_now for a in plan_actions(bridge._last_state))
+                    any(a.kind == "RESEARCH" and a.executable_now for a in plan_actions(bridge.ctx.last_state))
                 )
                 acts_after_cancel = plan_actions(merged)
                 self.assertTrue(any(a.kind == "RESEARCH" and a.executable_now for a in acts_after_cancel))
@@ -1559,8 +1561,8 @@ class TestApiAndCommander(unittest.TestCase):
                     "WHERE coords='05:001:01'"
                 )
                 bridge._db._conn.commit()
-                bridge._raid_targets = bridge._enrich_raid_targets(bridge._db.get_spy_targets(limit=100))
-                self.assertFalse(any(r.get("coords") == "09:009:09" for r in bridge._raid_targets))
+                bridge.ctx.raid_targets = bridge.state_cache.enrich_raid_targets(bridge._db.get_spy_targets(limit=100))
+                self.assertFalse(any(r.get("coords") == "09:009:09" for r in bridge.ctx.raid_targets))
                 deep_blue_atk = bridge.handle_command({"command": "attack", "target_coords": "9:9:9", "dry_run": False})
                 self.assertFalse(deep_blue_atk["executed"])
                 self.assertIn("protected", deep_blue_atk["message"].lower())
@@ -1585,8 +1587,10 @@ class TestApiAndCommander(unittest.TestCase):
                 r2_zero_unaffordable = ResearchOffer(
                     2, "r2", "Energy technology", 4, 5, Resources(), False, "Research queue busy", None, active=False
                 )
-                bridge._last_state = replace(st_lab, research_offers=(r1_zero_active, r2_zero_unaffordable))
-                merged_cost = bridge._merge_cached_offers(replace(st_lab, research_offers=(), active_queues=()))
+                bridge.ctx.last_state = replace(st_lab, research_offers=(r1_zero_active, r2_zero_unaffordable))
+                merged_cost = bridge.state_cache.merge_cached_offers(
+                    replace(st_lab, research_offers=(), active_queues=())
+                )
                 by_id_cost = {o.research_id: o for o in merged_cost.research_offers}
                 self.assertFalse(by_id_cost[1].cost.is_zero())
                 self.assertTrue(by_id_cost[1].can_research)
@@ -2173,7 +2177,7 @@ class TestApiAndCommander(unittest.TestCase):
                 t_srv.join(timeout=5.0)
                 bridge.close()
                 bridge.close()  # idempotent
-            self.assertTrue(bridge._db_closed)
+            self.assertTrue(bridge.ctx.db_closed)
 
     def test_r8_client_keepalive_commander_action_redaction_and_api_float_huge_int_guards(self) -> None:
         from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -2352,8 +2356,8 @@ class TestApiAndCommander(unittest.TestCase):
                 max_limiter_wait=10**400,  # type: ignore[arg-type]
                 executor_max_limiter_wait=10**400,  # type: ignore[arg-type]
             )
-            self.assertEqual(bridge._max_limiter_wait, 3600.0)
-            self.assertEqual(bridge._executor_max_limiter_wait, 3600.0)
+            self.assertEqual(bridge.ctx.max_limiter_wait, 3600.0)
+            self.assertEqual(bridge.ctx.executor_max_limiter_wait, 3600.0)
             server = create_api_server(bridge, host="127.0.0.1", port=0)
             port = server.server_address[1]
             t_srv = threading.Thread(target=server.serve_forever, daemon=True)
@@ -2376,7 +2380,7 @@ class TestApiAndCommander(unittest.TestCase):
                 self.assertEqual(r_scan1.status_code, 200)
                 self.assertIn("01:001", r_scan1.json()["action"]["target_name"])
 
-                bridge._last_state = GameState(
+                bridge.ctx.last_state = GameState(
                     31, 1, "u", 1_700_000_000.0, (zero_padded_p,), active_planet_id=zero_padded_p.planet_id
                 )
                 r_scan2 = requests.post(f"{base}/command", json={"command": "scan_galaxy", "dry_run": True}, timeout=5)
@@ -2530,7 +2534,11 @@ class TestApiAndCommander(unittest.TestCase):
         from spaceinvasion.core.model import PlannedAction
         from spaceinvasion.runtime.api.validation import ApiRequestError
         from spaceinvasion.runtime.bridge._helpers import sanitize_finite_json as _sanitize_finite_json
-        from spaceinvasion.runtime.bridge._helpers_validation import parse_command_int as _parse_command_int, validate_strict_float as _validate_strict_float, validate_strict_int as _validate_strict_int
+        from spaceinvasion.runtime.bridge._helpers_validation import (
+            parse_command_int as _parse_command_int,
+            validate_strict_float as _validate_strict_float,
+            validate_strict_int as _validate_strict_int,
+        )
 
         class _BytesPath:
             def __fspath__(self) -> bytes:
@@ -2559,12 +2567,12 @@ class TestApiAndCommander(unittest.TestCase):
             )
             try:
                 # 1. PathLike, BytesPath, RuntimeError, complex, object() across health, bot_control, dashboard, handle_command, Handler._send_json
-                bridge._last_url = Path("https://u/?sid=API_PATH_SEC")  # type: ignore[assignment]
-                bridge._bot_control["secret_path"] = _BytesPath()
-                bridge._bot_control["err"] = RuntimeError("boom ?sid=API_EXC_SEC")
-                bridge._bot_control["cplx"] = complex(1, 2)
-                bridge._bot_control["obj"] = object()
-                bridge._last_state = _sample_state()
+                bridge.ctx.last_url = Path("https://u/?sid=API_PATH_SEC")  # type: ignore[assignment]
+                bridge.ctx.bot_control["secret_path"] = _BytesPath()
+                bridge.ctx.bot_control["err"] = RuntimeError("boom ?sid=API_EXC_SEC")
+                bridge.ctx.bot_control["cplx"] = complex(1, 2)
+                bridge.ctx.bot_control["obj"] = object()
+                bridge.ctx.last_state = _sample_state()
 
                 san = _sanitize_finite_json(
                     {
@@ -2699,25 +2707,27 @@ class TestApiAndCommander(unittest.TestCase):
 
                 # Forbidden: offer is None with can_fallback=True (b2 on ast, b8 on ast without offer, b2 on raid, b19 on norm cross-planet)
                 for bid_chk, pid_chk in ((2, 901), (8, 901), (2, 902), (19, 906)):
-                    act_f = bridge._find_build_action(st_bld, bid_chk, pid_chk, allow_live_verify=True)
+                    act_f = bridge.plan_assembly.find_build_action(st_bld, bid_chk, pid_chk, allow_live_verify=True)
                     self.assertFalse(act_f.executable_now, f"Expected forbidden b{bid_chk} on pid {pid_chk}")
                     self.assertIsNone(act_f.action_href)
                     self.assertIn("not allowed", act_f.reason)
                 # Forbidden: target_level != nxt_lvl mismatch + "not enough" override (b1 on ast)
-                act_mismatch = bridge._find_build_action(st_bld, 1, 901, allow_live_verify=True)
+                act_mismatch = bridge.plan_assembly.find_build_action(st_bld, 1, 901, allow_live_verify=True)
                 self.assertFalse(act_mismatch.executable_now)
                 self.assertIsNone(act_mismatch.action_href)
                 # Forbidden: live offer present (b5 on ast, b1 on raid, b19 on norm)
                 for bid_chk, pid_chk in ((5, 901), (1, 902), (19, 903)):
-                    act_f2 = bridge._find_build_action(st_bld, bid_chk, pid_chk, allow_live_verify=True)
+                    act_f2 = bridge.plan_assembly.find_build_action(st_bld, bid_chk, pid_chk, allow_live_verify=True)
                     self.assertFalse(
                         act_f2.executable_now, f"Expected forbidden live offer b{bid_chk} on pid {pid_chk}"
                     )
                     self.assertIsNone(act_f2.action_href)
                     self.assertIn("not allowed", act_f2.reason)
                 # Allowed: b7 (offer is None) & b19 (offer present) on ast, and b8 on ast when b8 offer present
-                self.assertTrue(bridge._find_build_action(st_bld, 7, 901, allow_live_verify=True).executable_now)
-                act_b19_ok = bridge._find_build_action(st_bld, 19, 901, allow_live_verify=True)
+                self.assertTrue(
+                    bridge.plan_assembly.find_build_action(st_bld, 7, 901, allow_live_verify=True).executable_now
+                )
+                act_b19_ok = bridge.plan_assembly.find_build_action(st_bld, 19, 901, allow_live_verify=True)
                 self.assertTrue(act_b19_ok.executable_now)
                 self.assertEqual(act_b19_ok.action_href, "?b=19")
                 ast_with_b8 = PlanetState(
@@ -2737,7 +2747,9 @@ class TestApiAndCommander(unittest.TestCase):
                     ),
                 )
                 st_b8 = GameState(31, 1, "u", 1000.0, (ast_with_b8,), active_planet_id=904)
-                self.assertTrue(bridge._find_build_action(st_b8, 8, 904, allow_live_verify=True).executable_now)
+                self.assertTrue(
+                    bridge.plan_assembly.find_build_action(st_b8, 8, 904, allow_live_verify=True).executable_now
+                )
 
                 # 3. Commander treats " Asteroid " as queue_cap == 1 (does not re-fetch buildings when 1/1 queued)
                 ast_cmd_p = PlanetState(
@@ -2792,7 +2804,10 @@ class TestApiAndCommander(unittest.TestCase):
     def test_r12_http_error_resilience_huge_exc_args_full_secret_redaction_and_dashboard_speed(self) -> None:
         import time
         import requests
-        from spaceinvasion.runtime.bridge._helpers import redact_api_payload as _redact_api_payload, sanitize_finite_json as _sanitize_finite_json
+        from spaceinvasion.runtime.bridge._helpers import (
+            redact_api_payload as _redact_api_payload,
+            sanitize_finite_json as _sanitize_finite_json,
+        )
         from spaceinvasion.session.client import RateLimitError
 
         class _RaiseFspath:
@@ -2873,7 +2888,7 @@ class TestApiAndCommander(unittest.TestCase):
                     )
                     for i in range(1, 6)
                 )
-                bridge._last_state = GameState(31, 1, "u", 1000.0, planets_5, active_planet_id=101)
+                bridge.ctx.last_state = GameState(31, 1, "u", 1000.0, planets_5, active_planet_id=101)
                 _ = bridge.dashboard(refresh=False)
                 t0 = time.perf_counter()
                 dash_5 = bridge.dashboard(refresh=False)
@@ -3150,7 +3165,7 @@ class TestApiAndCommander(unittest.TestCase):
                 ensure_session_fn=lambda: None,
             )
             try:
-                bridge._record_state(
+                bridge.state_cache.record_state(
                     st,
                     fetched_buildings=True,
                     fetched_research=True,
@@ -3158,18 +3173,18 @@ class TestApiAndCommander(unittest.TestCase):
                     fetched_home=True,
                 )
 
-                r_act = bridge._find_research_action(st, 2, 920)
+                r_act = bridge.plan_assembly.find_research_action(st, 2, 920)
                 self.assertFalse(r_act.executable_now)
-                s_raid = bridge._find_ship_action(st, 4, 1, 920)
+                s_raid = bridge.plan_assembly.find_ship_action(st, 4, 1, 920)
                 self.assertFalse(s_raid.executable_now)
-                s_unk = bridge._find_ship_action(st, 999, 1, 921)
+                s_unk = bridge.plan_assembly.find_ship_action(st, 999, 1, 921)
                 self.assertFalse(s_unk.executable_now)
 
-                stale_b = bridge._find_build_action(st, 1, 921, allow_live_verify=False)
+                stale_b = bridge.plan_assembly.find_build_action(st, 1, 921, allow_live_verify=False)
                 self.assertFalse(stale_b.executable_now)
                 self.assertIsNone(stale_b.action_href)
                 # Explicit b7=1 asteroid BuildingOffer(8) target_level==nxt_lvl remains allowed in live verify
-                ast_b8 = bridge._find_build_action(st, 8, 922, allow_live_verify=True)
+                ast_b8 = bridge.plan_assembly.find_build_action(st, 8, 922, allow_live_verify=True)
                 self.assertTrue(ast_b8.executable_now)
 
                 # 3. _sync_spio_if_unread skips get_client when unread==0, ignores SpaceInvasionAuthError, preserves RateLimitError
@@ -3181,7 +3196,7 @@ class TestApiAndCommander(unittest.TestCase):
                     raise SpaceInvasionAuthError("offline")
 
                 self.assertEqual(
-                    bridge._sync_spio_if_unread(None, st, get_client=_boom_auth, ignore_auth_error=True), 0
+                    bridge.intel_sync.sync_spio_if_unread(None, st, get_client=_boom_auth, ignore_auth_error=True), 0
                 )
                 self.assertEqual(calls, 0)
 
@@ -3194,18 +3209,19 @@ class TestApiAndCommander(unittest.TestCase):
                     active_planet_id=921,
                     unread_messages={"spio": 2},
                 )
-                bridge._last_spio_sync_at = 0.0
+                bridge.ctx.last_spio_sync_at = 0.0
                 self.assertEqual(
-                    bridge._sync_spio_if_unread(None, st_spio, get_client=_boom_auth, ignore_auth_error=True), 0
+                    bridge.intel_sync.sync_spio_if_unread(None, st_spio, get_client=_boom_auth, ignore_auth_error=True),
+                    0,
                 )
                 self.assertEqual(calls, 1)
 
                 def _boom_rate() -> object:
                     raise RateLimitError("slow down", retry_after=12.0)
 
-                bridge._last_spio_sync_at = 0.0
+                bridge.ctx.last_spio_sync_at = 0.0
                 with self.assertRaises(RateLimitError):
-                    bridge._sync_spio_if_unread(None, st_spio, get_client=_boom_rate, ignore_auth_error=True)
+                    bridge.intel_sync.sync_spio_if_unread(None, st_spio, get_client=_boom_rate, ignore_auth_error=True)
 
                 # 4. Cached plan + throttle rejection without constructing browser client
                 plan_res = bridge.handle_command({"command": "plan", "force_refresh": False})
@@ -3291,7 +3307,7 @@ class TestApiAndCommander(unittest.TestCase):
                 ensure_session_fn=lambda: None,
             )
             try:
-                bridge._record_state(st_init, fetched_buildings=True, fetched_home=True)
+                bridge.state_cache.record_state(st_init, fetched_buildings=True, fetched_home=True)
                 res_sync = bridge.handle_command({"command": "sync_economy", "planet_id": 12476})
                 self.assertTrue(res_sync["ok"])
                 self.assertFalse(res_sync["metal_production_enabled"])
@@ -3423,7 +3439,7 @@ class TestApiAndCommander(unittest.TestCase):
                 ensure_session_fn=lambda: None,
             )
             try:
-                bridge._record_state(st_esc, fetched_buildings=True, fetched_home=True)
+                bridge.state_cache.record_state(st_esc, fetched_buildings=True, fetched_home=True)
 
                 # `fleetsave_plan` remains intact
                 fs_plan = bridge.handle_command({"command": "fleetsave_plan", "planet_id": 12476})
@@ -3450,15 +3466,22 @@ class TestApiAndCommander(unittest.TestCase):
                 bridge.handle_command({"command": "update_config", "config": {"allow_fleetsave": True}})
                 mono_now = [5000.0]
                 with (
-                    patch("spaceinvasion.runtime.bridge._exec_postprocess.time.monotonic", side_effect=lambda: mono_now[0]),
+                    patch(
+                        "spaceinvasion.runtime.bridge._exec_postprocess.time.monotonic", side_effect=lambda: mono_now[0]
+                    ),
                     patch("spaceinvasion.runtime.bridge._views_health.time.monotonic", side_effect=lambda: mono_now[0]),
-                    patch("spaceinvasion.runtime.bridge._ledgers_fleet.time.monotonic", side_effect=lambda: mono_now[0]),
+                    patch(
+                        "spaceinvasion.runtime.bridge._ledgers_fleet.time.monotonic", side_effect=lambda: mono_now[0]
+                    ),
                     patch("spaceinvasion.runtime.bridge.state_cache.time.monotonic", side_effect=lambda: mono_now[0]),
-                    patch("spaceinvasion.runtime.api.handlers._browser_session.time.monotonic", side_effect=lambda: mono_now[0]),
+                    patch(
+                        "spaceinvasion.runtime.api.handlers._browser_session.time.monotonic",
+                        side_effect=lambda: mono_now[0],
+                    ),
                     patch("spaceinvasion.session.browser.is_debug_port_open", return_value=True),
                 ):
-                    bridge._last_snapshot_at = 5000.0
-                    bridge._last_home_at = 5000.0
+                    bridge.ctx.last_snapshot_at = 5000.0
+                    bridge.ctx.last_home_at = 5000.0
                     with patch.object(
                         bridge._live_executor,
                         "execute_action",
@@ -3641,7 +3664,7 @@ class TestApiAndCommander(unittest.TestCase):
             thread.start()
             base = f"http://127.0.0.1:{server.server_address[1]}"
             try:
-                bridge._last_state = st
+                bridge.ctx.last_state = st
                 bridge.record_rate_limit(20.0)
 
                 r_sim = requests.post(
@@ -3778,7 +3801,7 @@ class TestApiAndCommander(unittest.TestCase):
                 log_dir=log_dir,
                 ensure_session_fn=lambda: None,
             )
-            bridge._last_state = st
+            bridge.ctx.last_state = st
             server = create_api_server(bridge, host="127.0.0.1", port=0)
             thread = threading.Thread(target=server.serve_forever, daemon=True)
             thread.start()
@@ -3919,7 +3942,7 @@ class TestApiAndCommander(unittest.TestCase):
                         is_spacia=True,
                     )
                 )
-                bridge._raid_targets = bridge._enrich_raid_targets(bridge._db.get_spy_targets(limit=100))
+                bridge.ctx.raid_targets = bridge.state_cache.enrich_raid_targets(bridge._db.get_spy_targets(limit=100))
 
                 def _mock_bash_blocked_exec(_client, _st, act, **_kw):
                     return ExecutionResult(
@@ -3953,7 +3976,7 @@ class TestApiAndCommander(unittest.TestCase):
                 self.assertIn("BashTracker", atk_again["message"])
 
                 # Priority planner (including legacy ga_nn config fallback) excludes 02:383:02 during cooldown
-                enriched_state = bridge._attach_raid_stats(bridge._merge_economy_rates(state))
+                enriched_state = bridge.ledgers.attach_raid_stats(bridge.state_cache.merge_economy_rates(state))
                 prio_plan = plan_actions(
                     enriched_state,
                     config=dc_replace(bridge.strategy_config, planner_mode="priority"),
@@ -4065,7 +4088,7 @@ class TestApiAndCommander(unittest.TestCase):
                         )
                     ]
                 )
-                bridge._raid_targets = bridge._enrich_raid_targets(bridge._db.get_spy_targets(limit=100))
+                bridge.ctx.raid_targets = bridge.state_cache.enrich_raid_targets(bridge._db.get_spy_targets(limit=100))
                 plan_resp = bridge.handle_command({"command": "plan"})
                 rec_actions = [a for a in plan_resp["actions"] if a["kind"] == "RECYCLE"]
                 self.assertTrue(rec_actions)
@@ -4218,7 +4241,7 @@ class TestApiAndCommander(unittest.TestCase):
 
                 # Direct tick exception path also pauses & waits passively instead of exiting with code 2
                 fake_client.read_full_snapshot.side_effect = AntiBotChallengeError("Turnstile gate")
-                bridge._last_snapshot_at = -1.0
+                bridge.ctx.last_snapshot_at = -1.0
                 out_buf2 = io.StringIO()
                 with (
                     patch("commander.time.sleep", side_effect=lambda _s: None),
@@ -4315,7 +4338,7 @@ class TestApiAndCommander(unittest.TestCase):
                         )
                     ]
                 )
-                bridge._raid_targets = bridge._enrich_raid_targets(bridge._db.get_spy_targets(limit=100))
+                bridge.ctx.raid_targets = bridge.state_cache.enrich_raid_targets(bridge._db.get_spy_targets(limit=100))
 
                 # GET /state automatically reads unread spy reports from main inbox once and deduplicates
                 state_dict = bridge.get_state(include_buildings=True)
@@ -4381,7 +4404,7 @@ class TestApiAndCommander(unittest.TestCase):
                 self.assertEqual(bid_tight, 5)  # Fusion plant (b5), preserving scarce fields
 
                 # Force snapshot cache expiry with unchanged unread total=13 -> zero extra open_messages calls
-                bridge._last_snapshot_at = 0.0
+                bridge.ctx.last_snapshot_at = 0.0
                 bridge.get_state(include_buildings=False)
                 self.assertEqual(fake_client.open_messages.call_count, 2)
 
@@ -4580,7 +4603,7 @@ class TestApiAndCommander(unittest.TestCase):
                 ensure_session_fn=lambda: None,
             )
             try:
-                bridge._record_state(st)
+                bridge.state_cache.record_state(st)
                 warm = bridge.dashboard(refresh=False)
                 self.assertTrue(warm["ok"])
                 self.assertGreaterEqual(warm["action_graph"]["summary"]["total_nodes"], 15)
@@ -4725,7 +4748,7 @@ class TestApiAndCommander(unittest.TestCase):
                         },
                     }
                 )
-                bridge1._record_state(persisted_state)
+                bridge1.state_cache.record_state(persisted_state)
                 assert bridge1._db is not None
                 slots = [
                     GalaxySlot(
@@ -4806,14 +4829,14 @@ class TestApiAndCommander(unittest.TestCase):
                 )
 
                 now_mono = time.monotonic()
-                bridge1._fleet_slot_cooldown_until[777] = now_mono + 150.0
-                bridge1._economy_sync_timestamps[777] = now_wall - 20.0
-                bridge1._last_synced_unread_total = 3
-                bridge1._pending_spy_sync = True
-                bridge1._last_spio_sync_at = now_mono - 5.0
-                bridge1._last_url = "https://spaceinvasion.bitmeup.com/indexInternal.es?action=internalBuildings"
-                bridge1._bot_control["mode_override"] = "dry-run"
-                bridge1._record_antibot_pause(RuntimeError("Cloudflare Turnstile challenge"))
+                bridge1.ctx.fleet_slot_cooldown_until[777] = now_mono + 150.0
+                bridge1.ctx.economy_sync_timestamps[777] = now_wall - 20.0
+                bridge1.ctx.last_synced_unread_total = 3
+                bridge1.ctx.pending_spy_sync = True
+                bridge1.ctx.last_spio_sync_at = now_mono - 5.0
+                bridge1.ctx.last_url = "https://spaceinvasion.bitmeup.com/indexInternal.es?action=internalBuildings"
+                bridge1.ctx.bot_control["mode_override"] = "dry-run"
+                bridge1.lifecycle.record_antibot_pause(RuntimeError("Cloudflare Turnstile challenge"))
             finally:
                 bridge1.close()
 
@@ -4840,20 +4863,20 @@ class TestApiAndCommander(unittest.TestCase):
                 self.assertEqual(bridge2.strategy_config.action_batch_interval_seconds, 180)
                 self.assertEqual(bridge2.strategy_config.planner_mode, "ai_planner")
                 self.assertEqual(bridge2.strategy_config.playstyle, "fleeter")
-                self.assertTrue(bridge2._bot_control["paused"])
-                self.assertTrue(bridge2._bot_control["captcha_blocked"])
-                self.assertIn("Turnstile", bridge2._bot_control["captcha_message"] or "")
-                self.assertEqual(bridge2._bot_control["mode_override"], "dry-run")
-                self.assertEqual(bridge2._last_synced_unread_total, 3)
-                self.assertTrue(bridge2._pending_spy_sync)
-                self.assertGreater(bridge2._get_fleet_slot_cooldowns().get("777", 0.0), 60.0)
-                self.assertIsNotNone(bridge2._last_state)
-                assert bridge2._last_state is not None
-                self.assertEqual(len(bridge2._last_state.active_queues), 1)
-                self.assertEqual(bridge2._last_state.active_queues[0].name, "Pig iron mine")
-                self.assertEqual(len(bridge2._last_state.research_offers), 1)
-                self.assertEqual(len(bridge2._last_state.planets[0].building_offers), 1)
-                self.assertEqual(len(bridge2._last_state.planets[0].ship_offers), 1)
+                self.assertTrue(bridge2.ctx.bot_control["paused"])
+                self.assertTrue(bridge2.ctx.bot_control["captcha_blocked"])
+                self.assertIn("Turnstile", bridge2.ctx.bot_control["captcha_message"] or "")
+                self.assertEqual(bridge2.ctx.bot_control["mode_override"], "dry-run")
+                self.assertEqual(bridge2.ctx.last_synced_unread_total, 3)
+                self.assertTrue(bridge2.ctx.pending_spy_sync)
+                self.assertGreater(bridge2.ledgers.get_fleet_slot_cooldowns().get("777", 0.0), 60.0)
+                self.assertIsNotNone(bridge2.ctx.last_state)
+                assert bridge2.ctx.last_state is not None
+                self.assertEqual(len(bridge2.ctx.last_state.active_queues), 1)
+                self.assertEqual(bridge2.ctx.last_state.active_queues[0].name, "Pig iron mine")
+                self.assertEqual(len(bridge2.ctx.last_state.research_offers), 1)
+                self.assertEqual(len(bridge2.ctx.last_state.planets[0].building_offers), 1)
+                self.assertEqual(len(bridge2.ctx.last_state.planets[0].ship_offers), 1)
 
                 dash = bridge2.dashboard(refresh=False)
                 self.assertEqual(client_calls, 0)
@@ -5061,7 +5084,7 @@ class TestApiAndCommander(unittest.TestCase):
                 self.assertTrue(getattr(client, "assert_before_delete_ok", False))
                 self.assertEqual(deleted_batches, [["701", "702", "703"]])
                 # Because messages were deleted in-game, _last_synced_unread_total resets to 0 for future arrivals
-                self.assertEqual(bridge._last_synced_unread_total, 0)
+                self.assertEqual(bridge.ctx.last_synced_unread_total, 0)
 
                 archived = bridge._db.get_game_messages()
                 self.assertEqual(len(archived), 3)
@@ -5166,8 +5189,8 @@ class TestApiAndCommander(unittest.TestCase):
             thread.start()
             base_url = f"http://127.0.0.1:{server.server_address[1]}"
             try:
-                bridge._last_state = st
-                bridge._rank_samples = [
+                bridge.ctx.last_state = st
+                bridge.ctx.rank_samples = [
                     {"ts": 100.0, "server_points": 1000, "estimated_points": 1000.0},
                     {"ts": 4000.0, "server_points": 1200, "estimated_points": 1200.0},
                 ]
@@ -5196,11 +5219,11 @@ class TestApiAndCommander(unittest.TestCase):
                 self.assertEqual(len(http_dash.json()["action_graph"]["nodes"]), orig_n)
 
                 # Mutate nested raid_stats, raid_targets, and rank_samples[0] in place (R2-2)
-                bridge._invalidate_dashboard_cache()
+                bridge.ctx.invalidate_dashboard_cache()
                 _ = bridge.dashboard(refresh=False)
-                bridge._last_state.raid_stats["per_target"]["01:042:08"]["wins"] = 777
-                bridge._last_state.raid_targets[0]["resources"]["spice"] = 999_888
-                bridge._rank_samples[0]["server_points"] = 500
+                bridge.ctx.last_state.raid_stats["per_target"]["01:042:08"]["wins"] = 777
+                bridge.ctx.last_state.raid_targets[0]["resources"]["spice"] = 999_888
+                bridge.ctx.rank_samples[0]["server_points"] = 500
                 d3 = bridge.dashboard(refresh=False)
                 self.assertEqual(d3["state"]["raid_stats"]["per_target"]["01:042:08"]["wins"], 777)
                 self.assertEqual(d3["state"]["raid_targets"][0]["resources"]["spice"], 999_888)
@@ -5231,23 +5254,23 @@ class TestApiAndCommander(unittest.TestCase):
                 ensure_session_fn=lambda: None,
             )
             try:
-                bridge2._last_state = GameState(1, 1, "u", 1000.0, (p_none,), active_planet_id=101)
+                bridge2.ctx.last_state = GameState(1, 1, "u", 1000.0, (p_none,), active_planet_id=101)
                 d_none = bridge2.dashboard(refresh=False)
                 json.dumps(d_none, allow_nan=False)
                 ag_none = bridge2.handle_command({"command": "action_graph", "refresh": False})
                 self.assertTrue(ag_none["ok"])
                 json.dumps(ag_none, allow_nan=False)
 
-                bridge2._last_state = st
+                bridge2.ctx.last_state = st
                 bridge2.strategy_config = StrategyConfig(
                     planner_mode="ai_planner",
                     ga_population_size=6,
                     ga_generations=2,
                 )
-                bridge2._invalidate_dashboard_cache()
+                bridge2.ctx.invalidate_dashboard_cache()
                 with (
                     patch.object(
-                        bridge2, "_persist_runtime_state", wraps=bridge2._persist_runtime_state
+                        bridge2.lifecycle, "persist_runtime_state", wraps=bridge2.lifecycle.persist_runtime_state
                     ) as mock_persist,
                     patch.object(
                         views_cache_mod, "build_action_graph", wraps=views_cache_mod.build_action_graph
@@ -5368,9 +5391,11 @@ class TestApiAndCommander(unittest.TestCase):
             t.start()
             base_url = f"http://127.0.0.1:{server.server_address[1]}"
             try:
-                bridge._record_state(st_dem, fetched_buildings=True, fetched_home=True, observed_active_planet=True)
-                bridge._economy_rates[101] = {"resource1": 80, "resource2": 70}
-                bridge._last_snapshot_at = time.monotonic()
+                bridge.state_cache.record_state(
+                    st_dem, fetched_buildings=True, fetched_home=True, observed_active_planet=True
+                )
+                bridge.ctx.economy_rates[101] = {"resource1": 80, "resource2": 70}
+                bridge.ctx.last_snapshot_at = time.monotonic()
 
                 # 1. Valid b6 >= 1 dry_run=True with throttled economy_rates & r2 > 0
                 r_ok = requests.post(
@@ -5454,8 +5479,10 @@ class TestApiAndCommander(unittest.TestCase):
                         for idx in range(5)
                     ),
                 )
-                bridge._record_state(st_busy, fetched_buildings=True, fetched_home=True, observed_active_planet=True)
-                bridge._last_snapshot_at = time.monotonic()
+                bridge.state_cache.record_state(
+                    st_busy, fetched_buildings=True, fetched_home=True, observed_active_planet=True
+                )
+                bridge.ctx.last_snapshot_at = time.monotonic()
 
                 r_busy_101 = requests.post(
                     f"{base_url}/command",
@@ -5498,9 +5525,11 @@ class TestApiAndCommander(unittest.TestCase):
                     active_planet_id=101,
                     researches={"r2": 20},
                 )
-                bridge._economy_rates[101] = {"resource1": 50}
-                bridge._record_state(st_deficit, fetched_buildings=True, fetched_home=True, observed_active_planet=True)
-                bridge._last_snapshot_at = time.monotonic()
+                bridge.ctx.economy_rates[101] = {"resource1": 50}
+                bridge.state_cache.record_state(
+                    st_deficit, fetched_buildings=True, fetched_home=True, observed_active_planet=True
+                )
+                bridge.ctx.last_snapshot_at = time.monotonic()
 
                 r_def = requests.post(
                     f"{base_url}/command",
@@ -5514,9 +5543,11 @@ class TestApiAndCommander(unittest.TestCase):
                 self.assertIn("Insufficient spare energy", body_def["action"]["reason"])
 
                 # 7. Live dry_run=False state mutation invalidates dashboard cache and returns finite JSON
-                bridge._economy_rates[101] = {"resource1": 80, "resource2": 70}
-                bridge._record_state(st_dem, fetched_buildings=True, fetched_home=True, observed_active_planet=True)
-                bridge._last_snapshot_at = time.monotonic()
+                bridge.ctx.economy_rates[101] = {"resource1": 80, "resource2": 70}
+                bridge.state_cache.record_state(
+                    st_dem, fetched_buildings=True, fetched_home=True, observed_active_planet=True
+                )
+                bridge.ctx.last_snapshot_at = time.monotonic()
                 d_before = bridge.dashboard(refresh=False)
                 self.assertEqual(d_before["state"]["planets"][0]["buildings"]["b6"], 2)
 
@@ -5556,9 +5587,9 @@ class TestApiAndCommander(unittest.TestCase):
                         ),
                     ),
                     patch.object(
-                        bridge,
-                        "_invalidate_dashboard_cache",
-                        wraps=bridge._invalidate_dashboard_cache,
+                        bridge.ctx,
+                        "invalidate_dashboard_cache",
+                        wraps=bridge.ctx.invalidate_dashboard_cache,
                     ) as mock_inv,
                 ):
                     r_live = requests.post(
@@ -5736,8 +5767,8 @@ class TestApiAndCommander(unittest.TestCase):
                 ensure_session_fn=lambda: None,
             )
             assert bridge._db is not None
-            bridge._record_state(st, fetched_buildings=True, fetched_home=True, observed_active_planet=True)
-            bridge._last_snapshot_at = time.monotonic()
+            bridge.state_cache.record_state(st, fetched_buildings=True, fetched_home=True, observed_active_planet=True)
+            bridge.ctx.last_snapshot_at = time.monotonic()
 
             # Seed scanned free slots + spied 325-field slot + bash block
             slots = [
@@ -5894,8 +5925,8 @@ class TestApiAndCommander(unittest.TestCase):
                 ensure_session_fn=lambda: None,
             )
             assert bridge._db is not None
-            bridge._record_state(st, fetched_buildings=True, fetched_home=True, observed_active_planet=True)
-            bridge._last_snapshot_at = time.monotonic()
+            bridge.state_cache.record_state(st, fetched_buildings=True, fetched_home=True, observed_active_planet=True)
+            bridge.ctx.last_snapshot_at = time.monotonic()
 
             server = create_api_server(bridge, host="127.0.0.1", port=0)
             base_url = f"http://127.0.0.1:{server.server_address[1]}"
@@ -6047,8 +6078,8 @@ class TestApiAndCommander(unittest.TestCase):
 
                     # 2. attack rejects free/ownerless slots & 6h target protection cooldowns before touching Selenium
                     assert bridge._db is not None
-                    bridge._last_state = st
-                    bridge._last_snapshot_at = time.monotonic()
+                    bridge.ctx.last_state = st
+                    bridge.ctx.last_snapshot_at = time.monotonic()
                     bridge._db.record_galaxy_slots(
                         [
                             GalaxySlot("02:381:08", 8, status_color="free"),
@@ -6163,7 +6194,7 @@ class TestApiAndCommander(unittest.TestCase):
                       </tr>
                     </table></body></html>
                     """
-                    reps_ing, _cnt_ing, _del_ing, _post_ing = bridge._ingest_and_delete_page_messages(
+                    reps_ing, _cnt_ing, _del_ing, _post_ing = bridge.intel_sync.ingest_and_delete_page_messages(
                         MagicMock(),
                         fleet_ret_html,
                         folder_type="inbox",
@@ -6265,7 +6296,7 @@ class TestApiAndCommander(unittest.TestCase):
                 ensure_session_fn=lambda: None,
             )
             try:
-                bridge._record_state(st)
+                bridge.state_cache.record_state(st)
                 self.assertFalse(bridge.strategy_config.allow_transport)
                 self.assertFalse(bridge._live_executor.allow_transport)
 
@@ -6408,7 +6439,7 @@ class TestApiAndCommander(unittest.TestCase):
                         reason="Attack",
                     ),
                 ]
-                held = bridge._apply_fleet_slot_holds(st, sample_actions)
+                held = bridge.ledgers.apply_fleet_slot_holds(st, sample_actions)
                 by_kind = {a.kind: a for a in held}
                 self.assertTrue(by_kind["SPY"].executable_now)
                 self.assertTrue(by_kind["TRANSPORT"].executable_now)
@@ -6550,10 +6581,10 @@ class TestApiAndCommander(unittest.TestCase):
             )
             try:
                 with patch("spaceinvasion.session.browser.is_debug_port_open", return_value=True):
-                    bridge._last_state = _sample_state()
-                    bridge._last_snapshot_at = time.monotonic()
-                    bridge._last_bot_control_payload = bridge.get_bot_control()
-                    bridge._last_dashboard_payload = bridge.dashboard(refresh=False)
+                    bridge.ctx.last_state = _sample_state()
+                    bridge.ctx.last_snapshot_at = time.monotonic()
+                    bridge.ctx.last_bot_control_payload = bridge.get_bot_control()
+                    bridge.ctx.last_dashboard_payload = bridge.dashboard(refresh=False)
 
                     locked = threading.Event()
                     release = threading.Event()
@@ -6698,7 +6729,7 @@ class TestApiAndCommander(unittest.TestCase):
                 ensure_session_fn=lambda: None,
             )
             try:
-                bridge._last_state = st_two
+                bridge.ctx.last_state = st_two
 
                 # Reject foreign target coords (not an owned planet) with clean aborted payload
                 res_foreign = bridge.handle_command(
@@ -6843,7 +6874,7 @@ class TestApiAndCommander(unittest.TestCase):
                         reason="ColonyA raid",
                     ),
                 ]
-                held_iso = bridge._apply_fleet_slot_holds(st_two, sample_iso)
+                held_iso = bridge.ledgers.apply_fleet_slot_holds(st_two, sample_iso)
                 self.assertFalse(held_iso[0].executable_now)  # Planet 101 full (2/2)
                 self.assertTrue(held_iso[1].executable_now)  # Planet 102 free (0/3)
                 self.assertTrue(held_iso[2].executable_now)  # Planet 102 free (0/3)
@@ -6868,7 +6899,7 @@ class TestApiAndCommander(unittest.TestCase):
                         ),
                     ),
                 )
-                held_tier = bridge._apply_fleet_slot_holds(
+                held_tier = bridge.ledgers.apply_fleet_slot_holds(
                     st_one_free,
                     [
                         st_action,
@@ -7092,7 +7123,7 @@ class TestApiAndCommander(unittest.TestCase):
                 ensure_session_fn=lambda: None,
             )
             try:
-                bridge._last_state = st
+                bridge.ctx.last_state = st
 
                 # 1. Initial status (2/11 colonies -> locked)
                 st_resp = bridge.handle_command({"command": "planner_jobs_status"})
@@ -7355,7 +7386,7 @@ class TestApiAndCommander(unittest.TestCase):
             try:
 
                 def _seed_state(st_obj: GameState) -> None:
-                    bridge._record_state(
+                    bridge.state_cache.record_state(
                         st_obj,
                         fetched_buildings=True,
                         fetched_research=True,
@@ -7363,7 +7394,7 @@ class TestApiAndCommander(unittest.TestCase):
                         fetched_home=True,
                         observed_active_planet=True,
                     )
-                    bridge._last_spio_sync_at = time.monotonic()
+                    bridge.ctx.last_spio_sync_at = time.monotonic()
 
                 # Phase A: 1/2 colonies -> live AI-Planner locked -> clean fallback to Heuristics!
                 _seed_state(st_1col)
@@ -7432,7 +7463,7 @@ class TestApiAndCommander(unittest.TestCase):
                     trigger_source="test",
                     set_active=True,
                 )
-                bridge._invalidate_dashboard_cache()
+                bridge.ctx.invalidate_dashboard_cache()
 
                 plan_live = bridge.handle_command({"command": "plan", "refresh": False})
                 self.assertEqual(plan_live["effective_planner_mode"], "ai_planner")
@@ -7617,7 +7648,7 @@ class TestApiAndCommander(unittest.TestCase):
                 client_factory=lambda _: MagicMock(),
                 ensure_session_fn=lambda: None,
             )
-            bridge._last_state = st
+            bridge.ctx.last_state = st
             server = create_api_server(bridge, host="127.0.0.1", port=0)
             thread = threading.Thread(target=server.serve_forever, daemon=True)
             thread.start()
@@ -7756,7 +7787,7 @@ class TestApiAndCommander(unittest.TestCase):
             )
             try:
                 assert bridge._db is not None
-                bridge._last_state = st
+                bridge.ctx.last_state = st
                 bridge._live_executor = _FakeExec()  # type: ignore[assignment]
                 # Seed stale has_debris=True for both targets (scanned long ago)
                 bridge._db.record_galaxy_slots(
@@ -7777,9 +7808,9 @@ class TestApiAndCommander(unittest.TestCase):
                     ts=100.0,
                 )
                 # Even if scanned 1s ago, RECYCLE MUST still open live internalGalaxy right before dispatch!
-                bridge._scanned_systems["02:380"] = time.time()
-                bridge._scanned_systems["02:379"] = time.time()
-                bridge._scanned_systems["02:378"] = time.time()
+                bridge.ctx.scanned_systems["02:380"] = time.time()
+                bridge.ctx.scanned_systems["02:379"] = time.time()
+                bridge.ctx.scanned_systems["02:378"] = time.time()
 
                 # 1. Clean planet 02:380:14 -> MUST open galaxy view, abort before executor, and clear has_debris in DB!
                 act_clean = PlannedAction(
@@ -7793,7 +7824,7 @@ class TestApiAndCommander(unittest.TestCase):
                     reason="test clean",
                     executable_now=True,
                 )
-                res_clean = bridge._execute_and_summarize(fake_client, st, "step", act_clean, dry_run=False)
+                res_clean = bridge.execution.execute_and_summarize(fake_client, st, "step", act_clean, dry_run=False)
                 self.assertTrue(res_clean["ok"])
                 self.assertFalse(res_clean["executed"])
                 self.assertIn("clean", res_clean["message"].lower())
@@ -7814,7 +7845,9 @@ class TestApiAndCommander(unittest.TestCase):
                     reason="test unverified",
                     executable_now=True,
                 )
-                res_unver = bridge._execute_and_summarize(fake_client, st, "step", act_unverified, dry_run=False)
+                res_unver = bridge.execution.execute_and_summarize(
+                    fake_client, st, "step", act_unverified, dry_run=False
+                )
                 self.assertTrue(res_unver["ok"])
                 self.assertFalse(res_unver["executed"])
                 self.assertIn("could not confirm debris", res_unver["message"].lower())
@@ -7832,7 +7865,7 @@ class TestApiAndCommander(unittest.TestCase):
                     reason="test live",
                     executable_now=True,
                 )
-                res_live = bridge._execute_and_summarize(fake_client, st, "step", act_live, dry_run=False)
+                res_live = bridge.execution.execute_and_summarize(fake_client, st, "step", act_live, dry_run=False)
                 self.assertTrue(res_live["ok"])
                 self.assertTrue(res_live["executed"])
                 self.assertIn((2, 379), fake_client.open_galaxy_calls)
@@ -7931,7 +7964,7 @@ class TestApiAndCommander(unittest.TestCase):
             )
             try:
                 assert bridge._db is not None
-                bridge._last_state = st
+                bridge.ctx.last_state = st
                 bridge._live_executor = _FakeExec()  # type: ignore[assignment]
                 bridge._db.record_galaxy_slots(
                     [
@@ -7983,7 +8016,7 @@ class TestApiAndCommander(unittest.TestCase):
                     reason="Refresh Spacia spy intel",
                     executable_now=True,
                 )
-                res1 = bridge._execute_and_summarize(fake_client, st, "step", act_despawn, dry_run=False)
+                res1 = bridge.execution.execute_and_summarize(fake_client, st, "step", act_despawn, dry_run=False)
                 self.assertTrue(res1["ok"])
                 self.assertFalse(res1["executed"])
                 self.assertIn("spacia despawned", res1["message"].lower())
@@ -8007,7 +8040,7 @@ class TestApiAndCommander(unittest.TestCase):
                     reason="Farm Spacia",
                     executable_now=True,
                 )
-                res2 = bridge._execute_and_summarize(fake_client, st, "step", act_settled, dry_run=False)
+                res2 = bridge.execution.execute_and_summarize(fake_client, st, "step", act_settled, dry_run=False)
                 self.assertTrue(res2["ok"])
                 self.assertFalse(res2["executed"])
                 self.assertIn("no longer spacia", res2["message"].lower())
@@ -8030,7 +8063,7 @@ class TestApiAndCommander(unittest.TestCase):
                     reason="Probe Spacia",
                     executable_now=True,
                 )
-                res3 = bridge._execute_and_summarize(fake_client, st, "step", act_empty, dry_run=False)
+                res3 = bridge.execution.execute_and_summarize(fake_client, st, "step", act_empty, dry_run=False)
                 self.assertTrue(res3["ok"])
                 self.assertFalse(res3["executed"])
                 self.assertIn("could not confirm spacia", res3["message"].lower())
@@ -8048,7 +8081,7 @@ class TestApiAndCommander(unittest.TestCase):
                     reason="Farm Spacia",
                     executable_now=True,
                 )
-                res4 = bridge._execute_and_summarize(fake_client, st, "step", act_ok, dry_run=False)
+                res4 = bridge.execution.execute_and_summarize(fake_client, st, "step", act_ok, dry_run=False)
                 self.assertTrue(res4["ok"])
                 self.assertTrue(res4["executed"])
                 self.assertIn((2, 258), fake_client.open_galaxy_calls)
@@ -8180,7 +8213,7 @@ class TestApiAndCommander(unittest.TestCase):
             try:
 
                 def _seed(st_obj: GameState) -> None:
-                    bridge._record_state(
+                    bridge.state_cache.record_state(
                         st_obj,
                         fetched_buildings=True,
                         fetched_research=True,
@@ -8188,7 +8221,7 @@ class TestApiAndCommander(unittest.TestCase):
                         fetched_home=True,
                         observed_active_planet=True,
                     )
-                    bridge._last_spio_sync_at = time.monotonic()
+                    bridge.ctx.last_spio_sync_at = time.monotonic()
 
                 bridge._db.record_ai_planner_run(
                     synthetic_plan,
@@ -8367,7 +8400,7 @@ class TestApiAndCommander(unittest.TestCase):
                 mock_client1.read_full_snapshot.return_value = post_pause_state
                 mock_client1.last_snapshot_observed_active_planet = True
                 mock_client1.current_url = "https://spaceinvasion.bitmeup.com/indexInternal.es"
-                bridge._client_factory = lambda _: mock_client1
+                bridge.ctx.client_factory = lambda _: mock_client1
                 mock_exec_ok = MagicMock(
                     side_effect=lambda _client, _state, action, **_kw: ExecutionResult(
                         executed=True,
@@ -8389,7 +8422,7 @@ class TestApiAndCommander(unittest.TestCase):
                         }
                     )
                 self.assertTrue(exec_pause["executed"])
-                self.assertIn(852, bridge._metal_overflow_paused_planets)
+                self.assertIn(852, bridge.ctx.metal_overflow_paused_planets)
                 bot_st = bridge.get_bot_control()
                 self.assertEqual(bot_st["metal_overflow_paused_planets"], [852])
             finally:
@@ -8409,10 +8442,10 @@ class TestApiAndCommander(unittest.TestCase):
                 ensure_session_fn=lambda: None,
             )
             try:
-                self.assertIn(852, bridge2._metal_overflow_paused_planets)
+                self.assertIn(852, bridge2.ctx.metal_overflow_paused_planets)
 
                 def _seed2(st_obj: GameState) -> None:
-                    bridge2._record_state(
+                    bridge2.state_cache.record_state(
                         st_obj,
                         fetched_buildings=True,
                         fetched_research=True,
@@ -8420,7 +8453,7 @@ class TestApiAndCommander(unittest.TestCase):
                         fetched_home=True,
                         observed_active_planet=True,
                     )
-                    bridge2._last_spio_sync_at = time.monotonic()
+                    bridge2.ctx.last_spio_sync_at = time.monotonic()
 
                 # 96% Metal -> still in hysteresis band (stays 0%, no auto-resume yet)
                 p_metal_96 = dc_replace(
@@ -8435,7 +8468,7 @@ class TestApiAndCommander(unittest.TestCase):
                     [a for a in resp_96["actions"] if a["kind"] == "THROTTLE_BUILDING"],
                     [],
                 )
-                self.assertIn(852, bridge2._metal_overflow_paused_planets)
+                self.assertIn(852, bridge2.ctx.metal_overflow_paused_planets)
 
                 # 94% Metal (<95%) while AI wants ON (and still inside 60s cooldown!) -> immediate auto-resume 100%!
                 p_metal_94 = dc_replace(
@@ -8450,7 +8483,7 @@ class TestApiAndCommander(unittest.TestCase):
                 self.assertEqual(th_94_on[0]["priority"], "P1")
                 self.assertIn("Metal overflow cleared", th_94_on[0]["reason"])
                 # Still tracked until executed!
-                self.assertIn(852, bridge2._metal_overflow_paused_planets)
+                self.assertIn(852, bridge2.ctx.metal_overflow_paused_planets)
 
                 # Execute auto-resume 100% -> clears tracked overflow flag!
                 from spaceinvasion.session.executor import ExecutionResult
@@ -8484,10 +8517,10 @@ class TestApiAndCommander(unittest.TestCase):
                         }
                     )
                 self.assertTrue(exec_res["executed"])
-                self.assertNotIn(852, bridge2._metal_overflow_paused_planets)
+                self.assertNotIn(852, bridge2.ctx.metal_overflow_paused_planets)
 
                 # If overflow-paused and Metal drops <95% while AI wants OFF (60k <= 99k) -> clear flag & stay 0%!
-                bridge2._metal_overflow_paused_planets[852] = time.time()
+                bridge2.ctx.metal_overflow_paused_planets[852] = time.time()
                 bridge2._db.record_ai_planner_run(
                     synthetic_plan,
                     params=synthetic_plan["meta_parameters"],
@@ -8500,7 +8533,7 @@ class TestApiAndCommander(unittest.TestCase):
                     [a for a in resp_94_off["actions"] if a["kind"] == "THROTTLE_BUILDING"],
                     [],
                 )
-                self.assertNotIn(852, bridge2._metal_overflow_paused_planets)
+                self.assertNotIn(852, bridge2.ctx.metal_overflow_paused_planets)
             finally:
                 bridge2.close()
 
@@ -8633,7 +8666,7 @@ class TestApiAndCommander(unittest.TestCase):
                 ensure_session_fn=lambda: None,
             )
             try:
-                bridge._record_state(
+                bridge.state_cache.record_state(
                     st,
                     fetched_buildings=True,
                     fetched_research=True,
@@ -8641,7 +8674,7 @@ class TestApiAndCommander(unittest.TestCase):
                     fetched_home=True,
                     observed_active_planet=True,
                 )
-                bridge._last_spio_sync_at = time.monotonic()
+                bridge.ctx.last_spio_sync_at = time.monotonic()
                 bridge._db.record_ai_planner_run(
                     synthetic_plan,
                     params=synthetic_plan["meta_parameters"],
@@ -8714,10 +8747,10 @@ class TestApiAndCommander(unittest.TestCase):
                 self.assertIn("spare % fleet research budget", r9_zero["reason"])
 
                 # 5. Stale research_offers cache bug fix: _last_research_sync_sig resets when switching planets
-                bridge._last_research_sync_sig = (8, (("r1", 8),), False)
+                bridge.ctx.last_research_sync_sig = (8, (("r1", 8),), False)
                 st_switched = dc_replace(st, active_planet_id=911, research_offers=())
-                bridge._record_state(st_switched, observed_active_planet=True)
-                self.assertIsNone(bridge._last_research_sync_sig)
+                bridge.state_cache.record_state(st_switched, observed_active_planet=True)
+                self.assertIsNone(bridge.ctx.last_research_sync_sig)
             finally:
                 bridge.close()
 
@@ -8831,7 +8864,7 @@ class TestApiAndCommander(unittest.TestCase):
             try:
 
                 def _seed(st_obj: GameState) -> None:
-                    bridge._record_state(
+                    bridge.state_cache.record_state(
                         st_obj,
                         fetched_buildings=True,
                         fetched_research=True,
@@ -8839,7 +8872,7 @@ class TestApiAndCommander(unittest.TestCase):
                         fetched_home=True,
                         observed_active_planet=True,
                     )
-                    bridge._last_spio_sync_at = time.monotonic()
+                    bridge.ctx.last_spio_sync_at = time.monotonic()
 
                 _seed(st_soon)
 
@@ -8991,7 +9024,7 @@ class TestApiAndCommander(unittest.TestCase):
                     ),
                     ts=now_ts - 120.0,
                 )
-                bridge._persist_galaxy_slots(
+                bridge.intel_sync.persist_galaxy_slots(
                     [
                         GalaxySlot(
                             coords="02:381:06",
@@ -9044,7 +9077,7 @@ class TestApiAndCommander(unittest.TestCase):
                     ts=now_ts - 60.0,
                 )
                 # Record a live transport dispatch so returning TRANSPORT matches delivered_cargo
-                bridge._record_transport_dispatch_locked(
+                bridge.ledgers.record_transport_dispatch_locked(
                     origin_coords="02:380:12",
                     dest_coords="02:380:08",
                     cargo=Resources(18_000, 12_000, 4_000, 1_000),
@@ -9140,7 +9173,9 @@ class TestApiAndCommander(unittest.TestCase):
                     active_queues=queues,
                     researches={"r1": 4, "r2": 4},
                 )
-                bridge._record_state(st, fetched_buildings=True, fetched_home=True, observed_active_planet=True)
+                bridge.state_cache.record_state(
+                    st, fetched_buildings=True, fetched_home=True, observed_active_planet=True
+                )
 
                 # Seed a Config Optimizer result and AI-Planner result to test custom name overlay
                 bridge._db.record_config_optimizer_run(
@@ -9191,8 +9226,8 @@ class TestApiAndCommander(unittest.TestCase):
                 self.assertEqual(ren_b["custom_planet_names"], {"501": "Capital Prime", "502": "Metal Forge"})
 
                 # Raw _last_state planet names stay completely untouched (Selenium safety!)
-                self.assertEqual(bridge._last_state.planets[0].name, "Homeworld")
-                self.assertEqual(bridge._last_state.planets[1].name, "Colony Beta")
+                self.assertEqual(bridge.ctx.last_state.planets[0].name, "Homeworld")
+                self.assertEqual(bridge.ctx.last_state.planets[1].name, "Colony Beta")
 
                 # 2. Verify /dashboard payload: custom names, expected/delivered flights, building_resource_requests, V014 telemetry
                 dash = bridge.dashboard(refresh=False)
@@ -9337,7 +9372,7 @@ class TestApiAndCommander(unittest.TestCase):
                         ),
                     ),
                 )
-                rec_a = bridge._record_state(
+                rec_a = bridge.state_cache.record_state(
                     st_a, fetched_buildings=True, fetched_home=True, observed_active_planet=True
                 )
                 self.assertEqual(rec_a.active_queues[0].origin_coords, "02:380:01")
@@ -9362,18 +9397,18 @@ class TestApiAndCommander(unittest.TestCase):
                         ),
                     ),
                 )
-                rec_b = bridge._record_state(
+                rec_b = bridge.state_cache.record_state(
                     st_b, fetched_buildings=True, fetched_home=True, observed_active_planet=True
                 )
                 b_origins = {q.origin_coords for q in rec_b.active_queues if q.category == "building"}
                 self.assertEqual(b_origins, {"02:380:01", "02:380:02"})
                 self.assertEqual(len([q for q in rec_b.active_queues if q.category == "building"]), 2)
-                self.assertEqual(bridge._count_active_builders(rec_b, now_ts=now_ts + 5.0), 2)
+                self.assertEqual(bridge.ledgers.count_active_builders(rec_b, now_ts=now_ts + 5.0), 2)
 
                 # Non-home updates (e.g. galaxy scan) drop expired retained builds and never duplicate (origin, slot)
                 from dataclasses import replace as _dc_replace
 
-                bridge._last_state = _dc_replace(
+                bridge.ctx.last_state = _dc_replace(
                     rec_b,
                     active_queues=tuple(
                         list(rec_b.active_queues)
@@ -9400,7 +9435,7 @@ class TestApiAndCommander(unittest.TestCase):
                     active_planet_id=602,
                     active_queues=(),
                 )
-                rec_scan = bridge._record_state(
+                rec_scan = bridge.state_cache.record_state(
                     st_scan, fetched_home=False, fetched_buildings=False, observed_active_planet=True
                 )
                 scan_b_jobs = [q for q in rec_scan.active_queues if q.category == "building"]
@@ -9410,7 +9445,7 @@ class TestApiAndCommander(unittest.TestCase):
                 )
 
                 # Custom planet names from Config Optimizer propagate to fleet_planner_get, action_graph, buildings_eta, plan, and active_queues
-                bridge._last_state = _dc_replace(
+                bridge.ctx.last_state = _dc_replace(
                     rec_b,
                     active_queues=tuple(
                         list(rec_b.active_queues)
@@ -9484,7 +9519,7 @@ class TestApiAndCommander(unittest.TestCase):
                 )
                 fake_ai_mod.compute_early_transport_needs.return_value = {}
                 with (
-                    patch.object(bridge, "_load_ai_planner_mod", return_value=fake_ai_mod),
+                    patch("spaceinvasion.runtime.bridge._plan_hybrid.ai_mod", fake_ai_mod),
                     patch(
                         "spaceinvasion.runtime.bridge._plan_hybrid.plan_fleet_and_attack_actions",
                         return_value=[
@@ -9532,7 +9567,7 @@ class TestApiAndCommander(unittest.TestCase):
                         ],
                     ),
                 ):
-                    ranked = bridge._plan_hybrid_ai_actions_locked(
+                    ranked = bridge.plan_assembly.plan_hybrid_ai_actions_locked(
                         rec_b,
                         {"summary": {}, "steps": []},
                         bridge.strategy_config,
@@ -9552,7 +9587,7 @@ class TestApiAndCommander(unittest.TestCase):
                 )
 
                 # 3. Dynamic universe_max_galaxies observation, persistence, early sweep abort & scanned_sectors (#103)
-                self.assertEqual(bridge._max_galaxies_locked(), 14)
+                self.assertEqual(bridge.intel_sync.max_galaxies_locked(), 14)
                 retro_html = '<script>SI_TPL.galaxy = {"maxGalaxies": 8, "maxSystem": 400};</script>'
 
                 class _FakeRetroGalaxyClient:
@@ -9580,7 +9615,7 @@ class TestApiAndCommander(unittest.TestCase):
                         # Server wraps non-existent galaxy 9 -> galaxy 1
                         return (retro_html, 1 if galaxy > 8 else galaxy, system)
 
-                bridge._client_factory = lambda _port: _FakeRetroGalaxyClient()
+                bridge.ctx.client_factory = lambda _port: _FakeRetroGalaxyClient()
                 sw_res = bridge.run_galaxy_sweep(
                     pages=5,
                     galaxy=9,
@@ -9590,7 +9625,7 @@ class TestApiAndCommander(unittest.TestCase):
                     priority="interactive",
                 )
                 self.assertTrue(sw_res["ok"])
-                self.assertEqual(bridge._max_galaxies_locked(), 8)
+                self.assertEqual(bridge.intel_sync.max_galaxies_locked(), 8)
                 self.assertEqual(bridge._db.load_meta_json("universe_max_galaxies"), 8)
                 # Broke cleanly on first out-of-range page rather than hammering all 5 pages of galaxy 9!
                 self.assertEqual(sw_res["pages_scanned"], 1)
@@ -9631,7 +9666,7 @@ class TestApiAndCommander(unittest.TestCase):
             )
             try:
                 st = _sample_state()
-                bridge._record_state(
+                bridge.state_cache.record_state(
                     st,
                     fetched_buildings=False,
                     fetched_research=False,
@@ -9640,7 +9675,7 @@ class TestApiAndCommander(unittest.TestCase):
                     observed_active_planet=True,
                 )
                 # Force snapshot to look stale (>15s) to prove plan(refresh=False) never scrapes Chrome!
-                bridge._last_snapshot_at = time.monotonic() - 120.0
+                bridge.ctx.last_snapshot_at = time.monotonic() - 120.0
 
                 # 1. plan(refresh=False) reuses _last_state with 0 Selenium client calls
                 p_res = bridge.handle_command({"command": "plan", "refresh": False})
@@ -9650,9 +9685,9 @@ class TestApiAndCommander(unittest.TestCase):
 
                 # 2. dashboard(refresh=False) caches _plan_with_summary on repeated calls
                 with patch.object(
-                    bridge,
-                    "_plan_with_summary",
-                    wraps=bridge._plan_with_summary,
+                    bridge.plan_assembly,
+                    "plan_with_summary",
+                    wraps=bridge.plan_assembly.plan_with_summary,
                 ) as spy_plan:
                     d1 = bridge.dashboard(refresh=False)
                     d2 = bridge.dashboard(refresh=False)
@@ -9666,9 +9701,9 @@ class TestApiAndCommander(unittest.TestCase):
                     {"command": "rename_planet", "planet_id": st.planets[0].planet_id, "name": "Home Prime"}
                 )
                 self.assertTrue(ren["ok"])
-                self.assertIsInstance(bridge._last_dashboard_payload, dict)
+                self.assertIsInstance(bridge.ctx.last_dashboard_payload, dict)
                 self.assertEqual(
-                    bridge._last_dashboard_payload["custom_planet_names"].get(str(st.planets[0].planet_id)),
+                    bridge.ctx.last_dashboard_payload["custom_planet_names"].get(str(st.planets[0].planet_id)),
                     "Home Prime",
                 )
 
@@ -9694,14 +9729,14 @@ class TestApiAndCommander(unittest.TestCase):
                     self.assertLess(elapsed_ms, 500.0)
 
                     # Simulate concurrent mutation of _last_dashboard_payload -> None after read starts
-                    orig_payload = bridge._last_dashboard_payload
+                    orig_payload = bridge.ctx.last_dashboard_payload
                     try:
                         # While lock is held (>2s), dashboard(refresh=False) must return busy=True dict cleanly
                         dash_busy = bridge.dashboard(refresh=False)
                         self.assertTrue(dash_busy.get("busy"))
                         self.assertIn("bot_control", dash_busy)
                     finally:
-                        bridge._last_dashboard_payload = orig_payload
+                        bridge.ctx.last_dashboard_payload = orig_payload
                 finally:
                     release_lock.set()
                     holder.join(timeout=2.0)
@@ -9789,8 +9824,8 @@ class TestApiAndCommander(unittest.TestCase):
                 db_path=tp / "state.db",
             )
             try:
-                bridge._last_state = st
-                bridge._last_snapshot_at = time.monotonic()
+                bridge.ctx.last_state = st
+                bridge.ctx.last_snapshot_at = time.monotonic()
 
                 # 1. action_graph strictly rejects non-bool spy_reserved_slots_only; update_config persists bool
                 with self.assertRaises(ApiRequestError):
@@ -9851,14 +9886,14 @@ class TestApiAndCommander(unittest.TestCase):
                         ),
                     ),
                 )
-                held = bridge._apply_fleet_slot_holds(st_3used, [spy_a, atk_a])
+                held = bridge.ledgers.apply_fleet_slot_holds(st_3used, [spy_a, atk_a])
                 self.assertFalse(held[0].executable_now)
                 self.assertIn("restricted to reserved", held[0].reason.lower())
                 # ATTACK remains executable because the 1 reserved spy slot is already occupied by in-flight SPY!
                 self.assertTrue(held[1].executable_now)
 
                 # 3. Live _execute_and_summarize aborts SPY when spy_used >= spy_cap (0 executor calls)
-                exec_res = bridge._execute_and_summarize(fake_client, st_3used, "execute_action", spy_a, False)
+                exec_res = bridge.execution.execute_and_summarize(fake_client, st_3used, "execute_action", spy_a, False)
                 self.assertTrue(exec_res["ok"])
                 self.assertFalse(exec_res["executed"])
                 self.assertIn("restricted to reserved", exec_res["message"].lower())
@@ -10063,7 +10098,9 @@ class TestApiAndCommander(unittest.TestCase):
                         ts=float(base_min + idx * 60),
                     )
                 bridge._db.record_ai_planner_run(fake_plan, config_run_id=1, set_active=True)
-                bridge._record_state(st, fetched_buildings=True, fetched_home=True, observed_active_planet=True)
+                bridge.state_cache.record_state(
+                    st, fetched_buildings=True, fetched_home=True, observed_active_planet=True
+                )
                 bridge.handle_command({"command": "rename_planet", "planet_id": 702, "name": "Smelter Prime"})
 
                 dash = bridge.dashboard(refresh=False)
@@ -10072,7 +10109,7 @@ class TestApiAndCommander(unittest.TestCase):
 
                 # 3. F2: Outbound-only transport does NOT skew realized_utilization away from 0.5 baseline;
                 #    only persisted returning-leg deliveries update throughput utilization once >=4 deliveries span >=1h!
-                self.assertAlmostEqual(bridge._transport_realized_utilization, 0.5, places=4)
+                self.assertAlmostEqual(bridge.ctx.transport_realized_utilization, 0.5, places=4)
                 from dataclasses import replace as _dc_replace
 
                 # Simulate 4 returning transport deliveries over 2 hours (20k each -> 80k / 2h = 40k/h on 174k*2.5 = 435k/h -> clamped 0.2;
@@ -10090,10 +10127,12 @@ class TestApiAndCommander(unittest.TestCase):
                         delivered_cargo=Resources(0, 80_000, 0, 0),
                     )
                     st_ret = _dc_replace(st, active_queues=(st.active_queues[0], q_ret))
-                    self.assertTrue(bridge._observe_transport_utilization_locked(st_ret, now_ts=now_ts - age_s))
+                    self.assertTrue(bridge.ledgers.observe_transport_utilization_locked(st_ret, now_ts=now_ts - age_s))
                     # Repeating the exact same returning flight does NOT double-count
-                    self.assertFalse(bridge._observe_transport_utilization_locked(st_ret, now_ts=now_ts - age_s + 15.0))
-                u_first = bridge._recompute_transport_utilization_locked(rt_per_hour=2.5, now_ts=now_ts)
+                    self.assertFalse(
+                        bridge.ledgers.observe_transport_utilization_locked(st_ret, now_ts=now_ts - age_s + 15.0)
+                    )
+                u_first = bridge.ledgers.recompute_transport_utilization_locked(rt_per_hour=2.5, now_ts=now_ts)
                 # 320,000 / 2.0h = 160,000/h; theoretical = 174,000 * 2.5 = 435,000/h -> 0.3678
                 self.assertAlmostEqual(u_first, round(160_000.0 / 435_000.0, 4), places=3)
                 self.assertGreaterEqual(u_first, 0.2)
@@ -10101,11 +10140,11 @@ class TestApiAndCommander(unittest.TestCase):
 
                 # 4. 10-minute 24h idle bucket deduplication, pruning >24h, and persistence across restart
                 #    One bucket was already recorded by _record_state; re-recording in same 10m slot is a no-op
-                self.assertFalse(bridge._record_adaptive_idle_bucket_locked(st, fake_plan, now_ts=now_ts))
+                self.assertFalse(bridge.ledgers.record_adaptive_idle_bucket_locked(st, fake_plan, now_ts=now_ts))
                 #    Record a previous 10m bucket + inject an expired (>24h) bucket
-                self.assertTrue(bridge._record_adaptive_idle_bucket_locked(st, fake_plan, now_ts=now_ts - 600.0))
+                self.assertTrue(bridge.ledgers.record_adaptive_idle_bucket_locked(st, fake_plan, now_ts=now_ts - 600.0))
                 old_bk = int((now_ts - 200 * 600.0) // 600.0)
-                bridge._adaptive_idle_buckets[old_bk] = {
+                bridge.ctx.adaptive_idle_buckets[old_bk] = {
                     "bucket": old_bk,
                     "ts": now_ts - 200 * 600.0,
                     "total_colonies": 2,
@@ -10114,9 +10153,9 @@ class TestApiAndCommander(unittest.TestCase):
                     "ready_not_started": 0,
                     "counts": {"waiting_metal": 2},
                 }
-                bridge._persist_runtime_state()
-                self.assertNotIn(old_bk, bridge._adaptive_idle_buckets)
-                self.assertEqual(len(bridge._adaptive_idle_buckets), 2)
+                bridge.lifecycle.persist_runtime_state()
+                self.assertNotIn(old_bk, bridge.ctx.adaptive_idle_buckets)
+                self.assertEqual(len(bridge.ctx.adaptive_idle_buckets), 2)
 
                 # 5. ai_planner_get exposes search, transport_demand, and adaptive_status with custom names & delivered/h
                 ai_get = bridge.handle_command({"command": "ai_planner_get"})
@@ -10161,10 +10200,12 @@ class TestApiAndCommander(unittest.TestCase):
                         _dc_replace(p2, ships={"s1": 20}),
                     ),
                 )
-                tf_big = bridge._build_transport_fleet_summary_locked(st_big_fleet, fake_plan["transport_demand"])
-                u_planner_big = bridge._recompute_transport_utilization_locked(rt_per_hour=2.5, now_ts=now_ts)
+                tf_big = bridge.ledgers.build_transport_fleet_summary_locked(
+                    st_big_fleet, fake_plan["transport_demand"]
+                )
+                u_planner_big = bridge.ledgers.recompute_transport_utilization_locked(rt_per_hour=2.5, now_ts=now_ts)
                 self.assertEqual(tf_big["realized_utilization"], u_planner_big)
-                self.assertEqual(tf_big["realized_utilization"], bridge._transport_realized_utilization)
+                self.assertEqual(tf_big["realized_utilization"], bridge.ctx.transport_realized_utilization)
 
                 # F6: ai_planner_get gracefully degrades if diagnose_ai_colony_idle_states raises
                 import spaceinvasion.planner.ai as _ai_mod_err
@@ -10185,9 +10226,9 @@ class TestApiAndCommander(unittest.TestCase):
                 log_dir=None,
             )
             try:
-                self.assertEqual(len(bridge2._adaptive_idle_buckets), 2)
-                self.assertEqual(len(bridge2._delivered_transport_events), 4)
-                self.assertAlmostEqual(bridge2._transport_realized_utilization, u_first, places=3)
+                self.assertEqual(len(bridge2.ctx.adaptive_idle_buckets), 2)
+                self.assertEqual(len(bridge2.ctx.delivered_transport_events), 4)
+                self.assertAlmostEqual(bridge2.ctx.transport_realized_utilization, u_first, places=3)
             finally:
                 bridge2.close()
 
@@ -10291,8 +10332,8 @@ class TestApiAndCommander(unittest.TestCase):
                 log_dir=None,
             )
             try:
-                bridge._last_state = st
-                bridge._last_snapshot_at = time.monotonic()
+                bridge.ctx.last_state = st
+                bridge.ctx.last_snapshot_at = time.monotonic()
 
                 # 1. Verify _plan_hybrid_ai_actions_locked wires new kwargs for both switch OFF and switch ON
                 for adaptive_flag in (False, True):
@@ -10319,7 +10360,9 @@ class TestApiAndCommander(unittest.TestCase):
                             return_value=[],
                         ) as m_bf,
                     ):
-                        bridge._plan_hybrid_ai_actions_locked(st, plan_res, cfg_cur, record_conflicts=False)
+                        bridge.plan_assembly.plan_hybrid_ai_actions_locked(
+                            st, plan_res, cfg_cur, record_conflicts=False
+                        )
                     self.assertEqual(m_budget.call_args.kwargs["adaptive_execution"], adaptive_flag)
                     self.assertIs(m_budget.call_args.kwargs["config"], cfg_cur)
                     td_arg = m_fleet.call_args.kwargs["transport_demand"]
@@ -10340,7 +10383,7 @@ class TestApiAndCommander(unittest.TestCase):
                         self.assertIsNone(m_budget.call_args.kwargs["infra_spend_last_hour"])
 
                 # F3: infra transport spend ledger records live builds and debits 1h spend
-                bridge._record_infra_transport_spend_locked(
+                bridge.ledgers.record_infra_transport_spend_locked(
                     PlannedAction(
                         priority="P2",
                         kind="BUILD_SHIP",
@@ -10355,23 +10398,25 @@ class TestApiAndCommander(unittest.TestCase):
                     ),
                     now_ts=now_ts,
                 )
-                sp_1h, carry_1h = bridge._get_infra_transport_spend_last_hour_locked(now_ts=now_ts + 60.0)
+                sp_1h, carry_1h = bridge.ledgers.get_infra_transport_spend_last_hour_locked(now_ts=now_ts + 60.0)
                 self.assertEqual(sp_1h, {"metal": 16_000.0, "kryptonite": 12_000.0})
                 self.assertEqual(carry_1h, 1.0)
                 # After 1h expires + 2h idle, ledger drains to 0 and carryover reaches 2h
-                sp_after, carry_after = bridge._get_infra_transport_spend_last_hour_locked(now_ts=now_ts + 7200.0)
+                sp_after, carry_after = bridge.ledgers.get_infra_transport_spend_last_hour_locked(
+                    now_ts=now_ts + 7200.0
+                )
                 self.assertEqual(sp_after, {"metal": 0.0, "kryptonite": 0.0})
                 self.assertAlmostEqual(carry_after, 2.0, places=2)
 
                 # 2. Step 6 drift auto-replan: seed active config optimizer + active AI plan aged 5 hours
-                bridge._active_config_opt_mem = {
+                bridge.ctx.active_config_opt_mem = {
                     "run_id": 10,
                     "updated_ts": now_ts - 18_000.0,
                     "result": {"generated_at": "2026-11-19T00:00:00+00:00"},
                 }
                 bridge._db.close()
                 bridge._db = None
-                bridge._active_ai_plan_mem = {
+                bridge.ctx.active_ai_plan_mem = {
                     "run_id": 20,
                     "config_run_id": 10,
                     "updated_ts": now_ts - 18_000.0,  # 5 hours old
@@ -10390,43 +10435,43 @@ class TestApiAndCommander(unittest.TestCase):
                     return {"ok": True, "job": {"status": "running"}}
 
                 with (
-                    patch.object(bridge, "_start_ai_planner_job", side_effect=_fake_start_ai),
+                    patch.object(bridge.planner_jobs, "start_ai_planner_job", side_effect=_fake_start_ai),
                     patch.object(
-                        bridge,
-                        "_compute_live_attack_telemetry_locked",
+                        bridge.planner_jobs,
+                        "compute_live_attack_telemetry_locked",
                         return_value={"median_loot": {"spice_eq": 10_000.0}},
                     ),
                 ):
                     # Switch OFF -> never triggers even when 5h old
-                    self.assertIsNone(bridge._maybe_trigger_ai_drift_replan(now_ts=now_ts))
+                    self.assertIsNone(bridge.planner_jobs.maybe_trigger_ai_drift_replan(now_ts=now_ts))
                     self.assertEqual(len(calls), 0)
 
                     # Switch ON, paused -> never triggers
                     bridge.strategy_config = StrategyConfig(
                         planner_mode="ai_planner", max_planets=2, ai_adaptive_execution=True
                     )
-                    bridge._bot_control["paused"] = True
-                    self.assertIsNone(bridge._maybe_trigger_ai_drift_replan(now_ts=now_ts))
+                    bridge.ctx.bot_control["paused"] = True
+                    self.assertIsNone(bridge.planner_jobs.maybe_trigger_ai_drift_replan(now_ts=now_ts))
                     self.assertEqual(len(calls), 0)
-                    bridge._bot_control["paused"] = False
+                    bridge.ctx.bot_control["paused"] = False
 
                     # Switch ON, CAPTCHA blocked -> never triggers
-                    bridge._bot_control["captcha_blocked"] = True
-                    self.assertIsNone(bridge._maybe_trigger_ai_drift_replan(now_ts=now_ts))
+                    bridge.ctx.bot_control["captcha_blocked"] = True
+                    self.assertIsNone(bridge.planner_jobs.maybe_trigger_ai_drift_replan(now_ts=now_ts))
                     self.assertEqual(len(calls), 0)
-                    bridge._bot_control["captcha_blocked"] = False
+                    bridge.ctx.bot_control["captcha_blocked"] = False
 
                     # Switch ON, job running -> never triggers
-                    bridge._ai_planner_job["status"] = "running"
-                    self.assertIsNone(bridge._maybe_trigger_ai_drift_replan(now_ts=now_ts))
+                    bridge.ctx.ai_planner_job["status"] = "running"
+                    self.assertIsNone(bridge.planner_jobs.maybe_trigger_ai_drift_replan(now_ts=now_ts))
                     self.assertEqual(len(calls), 0)
-                    bridge._ai_planner_job["status"] = "idle"
+                    bridge.ctx.ai_planner_job["status"] = "idle"
 
                     # F8: planner_mode != ai_planner -> never triggers even with switch ON and 5h old plan
                     bridge.strategy_config = StrategyConfig(
                         planner_mode="priority", max_planets=2, ai_adaptive_execution=True
                     )
-                    self.assertIsNone(bridge._maybe_trigger_ai_drift_replan(now_ts=now_ts))
+                    self.assertIsNone(bridge.planner_jobs.maybe_trigger_ai_drift_replan(now_ts=now_ts))
                     self.assertEqual(len(calls), 0)
                     bridge.strategy_config = StrategyConfig(
                         planner_mode="ai_planner", max_planets=2, ai_adaptive_execution=True
@@ -10434,7 +10479,7 @@ class TestApiAndCommander(unittest.TestCase):
 
                     # F5: when bridge._lock is held, _maybe_trigger_ai_drift_replan returns None non-blockingly
                     with bridge._lock:
-                        self.assertIsNone(bridge._maybe_trigger_ai_drift_replan(now_ts=now_ts))
+                        self.assertIsNone(bridge.planner_jobs.maybe_trigger_ai_drift_replan(now_ts=now_ts))
                     self.assertEqual(len(calls), 0)
 
                     # Trigger (d): plan_age_4h via handle_command("plan", refresh=False)
@@ -10446,53 +10491,53 @@ class TestApiAndCommander(unittest.TestCase):
                     self.assertEqual(calls[-1]["params"], {"warm_start_genes": {"patience": 0.42, "speed_weight": 1.8}})
 
                     # Immediate retry within 30-min cooldown -> suppressed
-                    self.assertIsNone(bridge._maybe_trigger_ai_drift_replan(now_ts=now_ts + 600.0))
+                    self.assertIsNone(bridge.planner_jobs.maybe_trigger_ai_drift_replan(now_ts=now_ts + 600.0))
                     self.assertEqual(len(calls), 1)
 
                     # Trigger (a): config_optimizer_changed (after 30m cooldown, plan itself only 1h old)
-                    bridge._last_auto_ai_replan_ts = now_ts - 2000.0
-                    bridge._active_ai_plan_mem["updated_ts"] = now_ts - 3600.0
-                    bridge._active_config_opt_mem["run_id"] = 11
-                    bridge._maybe_trigger_ai_drift_replan(now_ts=now_ts)
+                    bridge.ctx.last_auto_ai_replan_ts = now_ts - 2000.0
+                    bridge.ctx.active_ai_plan_mem["updated_ts"] = now_ts - 3600.0
+                    bridge.ctx.active_config_opt_mem["run_id"] = 11
+                    bridge.planner_jobs.maybe_trigger_ai_drift_replan(now_ts=now_ts)
                     self.assertEqual(len(calls), 2)
                     self.assertEqual(calls[-1]["trigger_source"], "auto_drift:config_optimizer_changed")
 
                     # Trigger (b): colony_count_changed (reset co_run_id match, add 3rd normal planet)
-                    bridge._active_config_opt_mem["run_id"] = 10
-                    bridge._last_auto_ai_replan_ts = now_ts - 2000.0
+                    bridge.ctx.active_config_opt_mem["run_id"] = 10
+                    bridge.ctx.last_auto_ai_replan_ts = now_ts - 2000.0
                     p3 = replace(p2, planet_id=803, name="Tertius", coords="02:380:03")
-                    bridge._last_state = replace(st, planets=(p1, p2, p3))
-                    bridge._maybe_trigger_ai_drift_replan(now_ts=now_ts)
+                    bridge.ctx.last_state = replace(st, planets=(p1, p2, p3))
+                    bridge.planner_jobs.maybe_trigger_ai_drift_replan(now_ts=now_ts)
                     self.assertEqual(len(calls), 3)
                     self.assertEqual(calls[-1]["trigger_source"], "auto_drift:colony_count_changed")
 
                 # Trigger (c): loot_shift_25pct (back to 2 colonies, live median spice_eq shifted 10k -> 13k = +30%)
-                bridge._last_state = st
-                bridge._last_auto_ai_replan_ts = now_ts - 2000.0
+                bridge.ctx.last_state = st
+                bridge.ctx.last_auto_ai_replan_ts = now_ts - 2000.0
                 with (
-                    patch.object(bridge, "_start_ai_planner_job", side_effect=_fake_start_ai),
+                    patch.object(bridge.planner_jobs, "start_ai_planner_job", side_effect=_fake_start_ai),
                     patch.object(
-                        bridge,
-                        "_compute_live_attack_telemetry_locked",
+                        bridge.planner_jobs,
+                        "compute_live_attack_telemetry_locked",
                         return_value={"median_loot": {"spice_eq": 13_000.0}},
                     ),
                 ):
-                    bridge._maybe_trigger_ai_drift_replan(now_ts=now_ts)
+                    bridge.planner_jobs.maybe_trigger_ai_drift_replan(now_ts=now_ts)
                 self.assertEqual(len(calls), 4)
                 self.assertEqual(calls[-1]["trigger_source"], "auto_drift:loot_shift_25pct")
 
                 # Plan younger than 30 min -> cooldown suppresses even when drift exists
-                bridge._last_auto_ai_replan_ts = 0.0
-                bridge._active_ai_plan_mem["updated_ts"] = now_ts - 600.0
+                bridge.ctx.last_auto_ai_replan_ts = 0.0
+                bridge.ctx.active_ai_plan_mem["updated_ts"] = now_ts - 600.0
                 with (
-                    patch.object(bridge, "_start_ai_planner_job", side_effect=_fake_start_ai),
+                    patch.object(bridge.planner_jobs, "start_ai_planner_job", side_effect=_fake_start_ai),
                     patch.object(
-                        bridge,
-                        "_compute_live_attack_telemetry_locked",
+                        bridge.planner_jobs,
+                        "compute_live_attack_telemetry_locked",
                         return_value={"median_loot": {"spice_eq": 20_000.0}},
                     ),
                 ):
-                    self.assertIsNone(bridge._maybe_trigger_ai_drift_replan(now_ts=now_ts))
+                    self.assertIsNone(bridge.planner_jobs.maybe_trigger_ai_drift_replan(now_ts=now_ts))
                 self.assertEqual(len(calls), 4)
 
                 # F1: warm_start_genes passed to one auto_drift run NEVER persists or leaks into later manual runs
@@ -10513,7 +10558,7 @@ class TestApiAndCommander(unittest.TestCase):
                     patch.object(_ai_mod_warm, "run_ai_planner", side_effect=_fake_run_ai),
                     patch.object(_ai_mod_warm, "compute_attack_telemetry", return_value={}),
                 ):
-                    bridge._start_ai_planner_job(
+                    bridge.planner_jobs.start_ai_planner_job(
                         params={"warm_start_genes": {"patience": 0.42, "speed_weight": 1.8}},
                         sync=True,
                         refresh=False,
@@ -10522,7 +10567,7 @@ class TestApiAndCommander(unittest.TestCase):
                     self.assertIn("warm_start_genes", captured_params[-1])
                     self.assertNotIn(
                         "warm_start_genes",
-                        (bridge._active_ai_plan_mem or {}).get("params", {}),
+                        (bridge.ctx.active_ai_plan_mem or {}).get("params", {}),
                     )
                     # Turn switch OFF and trigger manual run with draft params + empty params -> NO leak!
                     bridge.strategy_config = StrategyConfig(

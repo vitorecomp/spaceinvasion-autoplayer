@@ -302,8 +302,8 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
         self.assertIn("state", scan_res)
 
         # (a2) scan_galaxy when uncached passes include_buildings=False, include_research=False, include_shipyard=False, return_home=False
-        bridge._last_state = None
-        bridge._last_snapshot_at = 0.0
+        bridge.ctx.last_state = None
+        bridge.ctx.last_snapshot_at = 0.0
         fake_client.read_full_snapshot.reset_mock()
         bridge.handle_command({"command": "scan_galaxy", "dry_run": False})
         self.assertEqual(fake_client.read_full_snapshot.call_count, 1)
@@ -364,7 +364,7 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
         self.assertGreaterEqual(res["scanned_targets"], 1)
         fake_client.open_galaxy.assert_called_once_with(galaxy=2, system=385, priority="interactive")
         fake_client.navigate_menu.assert_not_called()
-        self.assertTrue(any(t["coords"] == "02:385:04" for t in bridge._raid_targets))
+        self.assertTrue(any(t["coords"] == "02:385:04" for t in bridge.ctx.raid_targets))
 
     def test_update_config_syncs_max_actions_per_hour_and_dry_executor(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -440,7 +440,7 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
                     is_inactive=True,
                     ts=now,
                 )
-                bridge._raid_targets = tuple(bridge._db.get_spy_targets(limit=100))
+                bridge.ctx.raid_targets = tuple(bridge._db.get_spy_targets(limit=100))
                 safety_blocked = bridge.handle_command(
                     {"command": "attack", "target_coords": "02:380:08", "dry_run": False}
                 )
@@ -691,7 +691,7 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
             page_limiter=limiter,
             max_limiter_wait=0.5,
         )
-        bridge._last_state = state
+        bridge.ctx.last_state = state
 
         server = create_api_server(bridge, host="127.0.0.1", port=0)
         port = server.server_address[1]
@@ -891,11 +891,11 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
             ensure_session_fn=lambda: None,
         )
         bridge.get_state(include_buildings=True)
-        self.assertTrue(bridge._last_buildings_fetched)
+        self.assertTrue(bridge.ctx.last_buildings_fetched)
 
         # Non-building refresh where b1 changed clears _last_buildings_fetched because building_offers == ()
         bridge.handle_command({"command": "attack", "target_coords": "02:380:04", "dry_run": True, "refresh": True})
-        self.assertFalse(bridge._last_buildings_fetched)
+        self.assertFalse(bridge.ctx.last_buildings_fetched)
         bridge.get_state(include_buildings=True)
         self.assertEqual(fake_client.read_full_snapshot.call_count, 3)
 
@@ -974,13 +974,13 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
         self.assertTrue(fake_client2.read_full_snapshot.call_args_list[-1].kwargs["include_research"])
         self.assertTrue(fake_client2.read_full_snapshot.call_args_list[-1].kwargs["include_shipyard"])
 
-        bridge2._last_snapshot_at = 0.0
+        bridge2.ctx.last_snapshot_at = 0.0
         bridge2.get_state(include_buildings=True)
         self.assertFalse(fake_client2.read_full_snapshot.call_args_list[-1].kwargs["include_research"])
         self.assertFalse(fake_client2.read_full_snapshot.call_args_list[-1].kwargs["include_shipyard"])
 
         # Bumping research level invalidates sync sig and re-syncs
-        bridge2._last_state = GameState(
+        bridge2.ctx.last_state = GameState(
             31,
             103603,
             "ventkx86",
@@ -989,7 +989,7 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
             active_planet_id=12476,
             researches={"r1": 2},
         )
-        bridge2._last_snapshot_at = 0.0
+        bridge2.ctx.last_snapshot_at = 0.0
         bridge2.get_state(include_buildings=True)
         self.assertTrue(fake_client2.read_full_snapshot.call_args_list[-1].kwargs["include_research"])
 
@@ -1167,7 +1167,7 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
             assert bridge._db is not None
             try:
                 # 1. Closed port -> health and dashboard both report in_game=False even with cached state + cooldown
-                bridge._last_state = state
+                bridge.ctx.last_state = state
                 bridge.record_rate_limit(30.0)
                 with patch("spaceinvasion.session.browser.is_debug_port_open", return_value=False):
                     h = bridge.health()
@@ -1178,7 +1178,7 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
                 # 2. tick_once sets _last_research_sync_at > 0.0
                 bridge._page_limiter.reset()
                 bridge.handle_command({"command": "tick_once", "dry_run": True})
-                self.assertGreater(bridge._last_research_sync_at, 0.0)
+                self.assertGreater(bridge.ctx.last_research_sync_at, 0.0)
 
                 # 3. Record yellow target 02:380:05 and execute attack -> raid_history.is_exempt == 1
                 bridge._db.record_galaxy_slots(
@@ -1188,7 +1188,7 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
                     ],
                     ts=1000.0,
                 )
-                bridge._raid_targets = bridge._enrich_raid_targets(bridge._db.get_spy_targets(limit=100))
+                bridge.ctx.raid_targets = bridge.state_cache.enrich_raid_targets(bridge._db.get_spy_targets(limit=100))
                 atk_res = bridge.handle_command({"command": "attack", "target_coords": "02:380:05", "dry_run": False})
                 self.assertTrue(atk_res["executed"])
                 hist_rows = bridge._db.get_raid_stats()["history"]
@@ -1204,7 +1204,7 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
                     loot={"pig_iron": 6000, "metal": 0, "kryptonite": 0, "spice": 0},
                 )
                 bridge._db.record_raid("02:380:04", attacked_ts=1200.0, is_exempt=True, outcome="Defeat", loot={})
-                bridge._last_snapshot_at = time.monotonic()
+                bridge.ctx.last_snapshot_at = time.monotonic()
                 st_dict = bridge.get_state(include_buildings=True)
                 rt_map = {t["coords"]: t for t in st_dict["raid_targets"]}
                 t4 = rt_map["02:380:04"]
@@ -1849,8 +1849,8 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
                         now[0] += 100.0
                         limiter.reset()
                         limiter.record_view(18)
-                        bridge._last_snapshot_at = time.monotonic()
-                        bridge._last_buildings_fetched = True
+                        bridge.ctx.last_snapshot_at = time.monotonic()
+                        bridge.ctx.last_buildings_fetched = True
                         drv.frames["F_Hauptframe"]["href"] = (
                             "https://spaceinvasion.bitmeup.com/indexInternal.es?action=internalHome"
                         )
@@ -1875,8 +1875,8 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
                     limiter.reset()
                     limiter.record_view(17)
                     drv.build_clicks = 0
-                    bridge._last_snapshot_at = time.monotonic()
-                    bridge._last_buildings_fetched = True
+                    bridge.ctx.last_snapshot_at = time.monotonic()
+                    bridge.ctx.last_buildings_fetched = True
                     drv.frames["F_Hauptframe"]["href"] = (
                         "https://spaceinvasion.bitmeup.com/indexInternal.es?action=internalHome"
                     )
@@ -1901,7 +1901,7 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
                     limiter.record_view(18)
                     drv.has_json = False
                     drv.frames["F_planets"]["html"] = "<div>You've made more than 30 page views at last minute!</div>"
-                    bridge._last_snapshot_at = 0.0
+                    bridge.ctx.last_snapshot_at = 0.0
                     now[0] = 202.0
                     resp_429 = requests.get(f"http://127.0.0.1:{port}/state", timeout=5)
                     self.assertEqual(resp_429.status_code, 429)
@@ -1916,7 +1916,7 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
                     self.assertEqual(h_body["rate_limit_hits"], 1)
                     self.assertTrue(limiter._throttle_recovery_pending)
 
-                    bridge._last_snapshot_at = time.monotonic()
+                    bridge.ctx.last_snapshot_at = time.monotonic()
                     scan_resp = requests.post(
                         f"http://127.0.0.1:{port}/command",
                         json={"command": "scan_galaxy", "galaxy": 2, "system": 380, "dry_run": False},
@@ -1975,11 +1975,11 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
         )
         bridge_res.get_state(include_buildings=True)
         self.assertTrue(fake_res_client.read_full_snapshot.call_args_list[-1].kwargs["include_research"])
-        bridge_res._last_snapshot_at = 0.0
+        bridge_res.ctx.last_snapshot_at = 0.0
         bridge_res.get_state(include_buildings=True)
         self.assertFalse(fake_res_client.read_full_snapshot.call_args_list[-1].kwargs["include_research"])
-        bridge_res._last_state = st_b8_1
-        bridge_res._last_snapshot_at = 0.0
+        bridge_res.ctx.last_state = st_b8_1
+        bridge_res.ctx.last_snapshot_at = 0.0
         bridge_res.get_state(include_buildings=True)
         self.assertTrue(fake_res_client.read_full_snapshot.call_args_list[-1].kwargs["include_research"])
 
@@ -2614,12 +2614,12 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
                     )
                     drv.frames["F_Hauptframe"]["html"] = "<div>System [02:380]</div>"
                     if drop_cache:
-                        bridge._last_state = None
-                        bridge._last_snapshot_at = 0.0
+                        bridge.ctx.last_state = None
+                        bridge.ctx.last_snapshot_at = 0.0
                     elif stale:
-                        bridge._last_snapshot_at = time.monotonic() - 25.0
+                        bridge.ctx.last_snapshot_at = time.monotonic() - 25.0
                     else:
-                        bridge._last_snapshot_at = time.monotonic()
+                        bridge.ctx.last_snapshot_at = time.monotonic()
 
                 # Prime full cache and record yellow inactive target so BashTracker exempts multi-attack matrix
                 bridge._db.record_galaxy_slots([GalaxySlot("02:380:04", 4, "Farm", "Idle", "yellow")], ts=100.0)
@@ -2723,8 +2723,8 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
                 ]
                 for label, payload, stale, drop_cache in cases:
                     drv.active_planet_id = 12476
-                    if bridge._last_state is not None:
-                        bridge._last_state = replace(bridge._last_state, active_planet_id=12476)
+                    if bridge.ctx.last_state is not None:
+                        bridge.ctx.last_state = replace(bridge.ctx.last_state, active_planet_id=12476)
                     _reset_budget_off_home(stale=stale, drop_cache=drop_cache)
                     res = bridge.handle_command(payload)
                     used = limiter.views_last_60s() - 18
@@ -2739,17 +2739,17 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
                         self.assertEqual(st_p["ships"]["s10"], drv.planets[drv.active_planet_id]["ships"]["s10"])
 
                 # Stale "Not enough resources" / "Locked / insufficient" cached offers still live-verify cleanly
-                assert bridge._last_state is not None
-                p0 = bridge._last_state.planets[0]
+                assert bridge.ctx.last_state is not None
+                p0 = bridge.ctx.last_state.planets[0]
                 stale_res_offer = ResearchOffer(
                     1, "r1", "Mining technology", 1, 2, Resources(1000, 0, 500, 0), False, "Not enough resources"
                 )
                 stale_ship_offer = UnitOffer(
                     "ship", 1, "Small transport", 2, Resources(0, 3000, 3000, 0), False, None, "Locked / insufficient"
                 )
-                bridge._last_state = replace(
-                    bridge._last_state,
-                    planets=(replace(p0, ship_offers=(stale_ship_offer,)), bridge._last_state.planets[1]),
+                bridge.ctx.last_state = replace(
+                    bridge.ctx.last_state,
+                    planets=(replace(p0, ship_offers=(stale_ship_offer,)), bridge.ctx.last_state.planets[1]),
                     research_offers=(stale_res_offer,),
                 )
                 for label, payload in (
@@ -2776,8 +2776,8 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
                     drv.tutorial_can_complete = True
                     _reset_budget_off_home(stale=False, drop_cache=drop_c)
                     if not drop_c:
-                        bridge._last_state = replace(
-                            bridge._last_state,
+                        bridge.ctx.last_state = replace(
+                            bridge.ctx.last_state,
                             tutorial=TutorialStatus(step=1, total_steps=11, can_complete=True),
                         )
                     t_res = bridge.handle_command({"command": "claim_tutorial", "dry_run": False})
@@ -2789,7 +2789,7 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
                 # Reverse cross-planet switch sequence: 12477 -> uncached scan_galaxy -> stale -> 12476
                 drv.active_planet_id = 12476
                 _reset_budget_off_home(stale=False, drop_cache=False)
-                bridge._last_state = replace(bridge._last_state, active_planet_id=12476)
+                bridge.ctx.last_state = replace(bridge.ctx.last_state, active_planet_id=12476)
                 r1 = bridge.handle_command(
                     {"command": "attack", "target_coords": "02:380:04", "planet_id": 12477, "dry_run": False}
                 )
@@ -2816,9 +2816,9 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
                 _reset_budget_off_home(stale=False, drop_cache=False)
                 drv.unread_spio = 3
                 drv._render_menu()
-                bridge._last_spio_sync_at = 0.0
-                bridge._last_buildings_fetched = True
-                bridge._last_state = replace(bridge._last_state, unread_messages={"spio": 3})
+                bridge.ctx.last_spio_sync_at = 0.0
+                bridge.ctx.last_buildings_fetched = True
+                bridge.ctx.last_state = replace(bridge.ctx.last_state, unread_messages={"spio": 3})
                 with self.assertRaises(RateLimitError) as ctx_plan:
                     bridge.handle_command({"command": "plan"})
                 self.assertFalse(ctx_plan.exception.server_throttle)
@@ -2940,7 +2940,7 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
                 )
                 self.assertFalse(r_noop["executed"])
                 self.assertEqual(srv.active_planet_id, 12477)
-                self.assertEqual(bridge._last_state.active_planet_id, 12477)
+                self.assertEqual(bridge.ctx.last_state.active_planet_id, 12477)
                 self.assertLessEqual(lim.views_last_60s() - 18, 6)
 
                 _at_18(lim, clock, drv)
@@ -2963,7 +2963,7 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
                 )
                 srv._render_buildings_html = orig_render_b
                 self.assertFalse(r_b_abort["executed"])
-                self.assertEqual(bridge._last_state.active_planet_id, 12477)
+                self.assertEqual(bridge.ctx.last_state.active_planet_id, 12477)
                 _at_18(lim, clock, drv)
                 r_spy = bridge.handle_command(
                     {"command": "spy", "target_coords": "02:380:04", "planet_id": 12476, "dry_run": False}
@@ -2988,7 +2988,7 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
                     {"command": "attack", "target_coords": "02:380:04", "planet_id": 12477, "dry_run": False}
                 )
                 self.assertFalse(r_abort["executed"])
-                self.assertEqual(bridge2._last_state.active_planet_id, 12477)
+                self.assertEqual(bridge2.ctx.last_state.active_planet_id, 12477)
                 srv2._handle_fleet_launch = orig_launch
                 _at_18(lim2, clock2, drv2)
                 r_atk2 = bridge2.handle_command(
@@ -3012,7 +3012,7 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
                     bridge2.handle_command(
                         {"command": "attack", "target_coords": "02:380:04", "planet_id": 12477, "dry_run": False}
                     )
-                self.assertFalse(bridge2._active_planet_confirmed)
+                self.assertFalse(bridge2.ctx.active_planet_confirmed)
                 srv2._render_frame_inner = orig_render
                 _at_18(lim2, clock2, drv2)
                 r_atk3 = bridge2.handle_command(
@@ -3029,9 +3029,9 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
             try:
                 drv3._navigate_frame("F_Hauptframe", "indexInternal.es?action=internalGalaxy")
                 bridge3.handle_command({"command": "scan_galaxy", "galaxy": 2, "system": 380, "dry_run": False})
-                self.assertFalse(bridge3._active_planet_confirmed)
+                self.assertFalse(bridge3.ctx.active_planet_confirmed)
                 clock3.advance(25.0)
-                bridge3._last_snapshot_at -= 25.0
+                bridge3.ctx.last_snapshot_at -= 25.0
                 _at_18(lim3, clock3, drv3, action="internalGalaxy")
                 r_cold = bridge3.handle_command(
                     {"command": "attack", "target_coords": "02:380:04", "planet_id": 12476, "dry_run": False}
@@ -3039,16 +3039,16 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
                 self.assertTrue(r_cold["executed"], r_cold)
                 self.assertLessEqual(lim3.views_last_60s() - 18, 6)
                 self.assertEqual(srv3.launched_fleets[-1]["origin_planet_id"], 12476)
-                self.assertTrue(bridge3._active_planet_confirmed)
+                self.assertTrue(bridge3.ctx.active_planet_confirmed)
 
                 # navigate(internalEconomy) syncs active planet & economy rates cleanly
                 srv3.active_planet_id = 12477
                 srv3.planets[12477]["economy_rates"]["resource2"] = 60
                 _at_18(lim3, clock3, drv3, action="internalGalaxy")
                 bridge3.handle_command({"command": "navigate", "action": "internalEconomy"})
-                self.assertEqual(bridge3._last_state.active_planet_id, 12477)
-                self.assertEqual(bridge3._economy_rates[12477]["resource2"], 60)
-                self.assertTrue(bridge3._active_planet_confirmed)
+                self.assertEqual(bridge3.ctx.last_state.active_planet_id, 12477)
+                self.assertEqual(bridge3.ctx.economy_rates[12477]["resource2"], 60)
+                self.assertTrue(bridge3.ctx.active_planet_confirmed)
             finally:
                 bridge3._db.close()
 
@@ -3140,7 +3140,7 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
                         {"command": "scan_galaxy", "galaxy": 2, "system": 380, "dry_run": False}
                     )
                     self.assertTrue(r_scan["executed"])
-                    self.assertFalse(bridge._last_home_fetched)
+                    self.assertFalse(bridge.ctx.last_home_fetched)
                     self.assertLessEqual(lim.views_last_60s(), 24)
                     clock.advance(1.0)
                     lim.reset()
@@ -3171,7 +3171,7 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
                 ):
                     drv_b._navigate_frame("F_Hauptframe", "indexInternal.es?action=internalGalaxy")
                     bridge_b.handle_command({"command": "build", "building_id": 1, "dry_run": True})
-                    self.assertFalse(bridge_b._last_home_fetched)
+                    self.assertFalse(bridge_b.ctx.last_home_fetched)
                     r_plan = bridge_b.handle_command({"command": "plan"})
                     kinds = [a["kind"] for a in r_plan["actions"]]
                     self.assertIn("ALERT_HOSTILE", kinds)
@@ -3194,10 +3194,10 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
                     clock_b.advance(20.0)
                     srv_b.hostile_alerts.clear()
                     drv_b._navigate_frame("F_Hauptframe", "indexInternal.es?action=internalGalaxy")
-                    bridge_b._last_state = None
+                    bridge_b.ctx.last_state = None
                     bridge_b.handle_command({"command": "scan_galaxy", "galaxy": 2, "system": 380, "dry_run": False})
                     bridge_b.handle_command({"command": "navigate", "action": "internalEconomy"})
-                    self.assertFalse(bridge_b._last_home_fetched)
+                    self.assertFalse(bridge_b.ctx.last_home_fetched)
                     srv_b.hostile_alerts.append("Economy check alert")
                     r_plan_econ = bridge_b.handle_command({"command": "plan"})
                     self.assertIn("ALERT_HOSTILE", [a["kind"] for a in r_plan_econ["actions"]])
@@ -3215,11 +3215,11 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
             # 2A / 2B: active_queues clears stale completed building/research jobs while retaining fleet
             clock_q, srv_q, drv_q, lim_q, bridge_q = _make_env(Path(tmp) / "queues")
             try:
-                assert bridge_q._last_state is None
+                assert bridge_q.ctx.last_state is None
                 st_q = bridge_q.get_state(include_buildings=True)
                 self.assertTrue(st_q)
-                bridge_q._last_state = replace(
-                    bridge_q._last_state,
+                bridge_q.ctx.last_state = replace(
+                    bridge_q.ctx.last_state,
                     active_queues=(
                         QueueJob("building", "Pig iron mine", building_id=1, target_level=6),
                         QueueJob("research", "Mining technology", target_level=2),
@@ -3233,8 +3233,8 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
                 self.assertNotIn("building", cats_b)
                 self.assertIn("fleet", cats_b)
                 # _record_state with fetched_research=True & empty active_queues drops "research" while keeping "fleet"
-                rec_r = bridge_q._record_state(
-                    replace(bridge_q._last_state, active_queues=()),
+                rec_r = bridge_q.state_cache.record_state(
+                    replace(bridge_q.ctx.last_state, active_queues=()),
                     fetched_research=True,
                     fetched_home=False,
                 )
@@ -3300,7 +3300,7 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
                 srv_t.researches["r2"] = 4
                 bridge_t.get_state(include_buildings=True)
                 self.assertFalse(
-                    next(o for o in bridge_t._last_state.research_offers if o.research_id == 1).can_research
+                    next(o for o in bridge_t.ctx.last_state.research_offers if o.research_id == 1).can_research
                 )
                 r_3d_fail = bridge_t.handle_command(
                     {"command": "research", "research_id": 1, "planet_id": 12476, "dry_run": False}
@@ -3321,7 +3321,7 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
                 srv_t.active_planet_id = 12476
                 srv_t.planets[12476]["buildings"]["b8"] = 0
                 srv_t.researches["r1"] = 1
-                bridge_t._last_state = None
+                bridge_t.ctx.last_state = None
                 bridge_t.get_state(include_buildings=True)
                 bridge_t.handle_command({"command": "build", "building_id": 8, "planet_id": 12476, "dry_run": False})
                 v_before = lim_t.views_last_60s()
@@ -3332,7 +3332,7 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
                 self.assertEqual(lim_t.views_last_60s(), v_before)
 
                 bridge_t.handle_command({"command": "build", "building_id": 8, "planet_id": 12476, "dry_run": False})
-                self.assertEqual(bridge_t._last_state.research_offers, ())
+                self.assertEqual(bridge_t.ctx.last_state.research_offers, ())
                 r_e3_dry = bridge_t.handle_command(
                     {"command": "research", "research_id": 1, "planet_id": 12476, "dry_run": True}
                 )
@@ -3350,19 +3350,19 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
                 clock_t.advance(100.0)
                 lim_t.reset()
                 srv_t.researches["r2"] = 0
-                bridge_t._last_state = None
+                bridge_t.ctx.last_state = None
                 bridge_t.get_state(include_buildings=True)
                 self.assertFalse(
                     next(
-                        o for o in bridge_t._last_state.active_planet().building_offers if o.building_id == 9
+                        o for o in bridge_t.ctx.last_state.active_planet().building_offers if o.building_id == 9
                     ).can_build
                 )
                 r_res_r2 = bridge_t.handle_command(
                     {"command": "research", "research_id": 2, "planet_id": 12476, "dry_run": False}
                 )
                 self.assertTrue(r_res_r2["executed"], r_res_r2)
-                self.assertEqual(bridge_t._last_state.active_planet().building_offers, ())
-                self.assertFalse(bridge_t._last_buildings_fetched)
+                self.assertEqual(bridge_t.ctx.last_state.active_planet().building_offers, ())
+                self.assertFalse(bridge_t.ctx.last_buildings_fetched)
                 r_b9 = bridge_t.handle_command(
                     {"command": "build", "building_id": 9, "planet_id": 12476, "dry_run": False}
                 )
@@ -3372,16 +3372,16 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
                 one_ship_res = Resources(0, 3000, 3000, 0)
                 ship_offer = UnitOffer("ship", 1, "Small transport", 0, one_ship_res, True, "buildShip=1", "Build")
                 p_low = replace(
-                    bridge_t._last_state.active_planet(),
+                    bridge_t.ctx.last_state.active_planet(),
                     resources=one_ship_res,
-                    buildings={**bridge_t._last_state.active_planet().buildings, "b9": 1},
+                    buildings={**bridge_t.ctx.last_state.active_planet().buildings, "b9": 1},
                     ship_offers=(ship_offer,),
                 )
                 st_ship = replace(
-                    bridge_t._last_state,
-                    planets=(p_low, bridge_t._last_state.planets[1]),
+                    bridge_t.ctx.last_state,
+                    planets=(p_low, bridge_t.ctx.last_state.planets[1]),
                 )
-                ship_act = bridge_t._find_ship_action(st_ship, 1, 10, 12476, allow_live_verify=True)
+                ship_act = bridge_t.plan_assembly.find_ship_action(st_ship, 1, 10, 12476, allow_live_verify=True)
                 self.assertFalse(ship_act.executable_now)
                 self.assertEqual(ship_act.missing, Resources(0, 27000, 27000, 0))
             finally:
@@ -3495,13 +3495,13 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
                     clock.advance(100.0)
                     lim.reset()
                     lim.record_view(18)
-                    bridge._last_state = replace(bridge._last_state, active_planet_id=12477)
+                    bridge.ctx.last_state = replace(bridge.ctx.last_state, active_planet_id=12477)
                     res = bridge.handle_command(payload)
                     self.assertTrue(res["ok"], payload)
                     self.assertFalse(res["executed"], f"{payload} unexpectedly executed: {res}")
                     self.assertIn("active planet is 12476", res["message"])
-                    self.assertEqual(bridge._last_state.active_planet_id, 12476)
-                    self.assertTrue(bridge._active_planet_confirmed)
+                    self.assertEqual(bridge.ctx.last_state.active_planet_id, 12476)
+                    self.assertTrue(bridge.ctx.active_planet_confirmed)
                     self.assertLessEqual(lim.views_last_60s() - 18, 6)
 
                 self.assertEqual(srv.planets[12476]["buildings"]["b1"], 5)
@@ -3511,7 +3511,7 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
                 self.assertEqual(srv.planets[12477]["ships"]["s1"], 1)
                 self.assertEqual(srv.planets[12476]["economy_rates"]["resource2"], 100)
                 self.assertNotIn(12477, bridge._live_executor.last_economy_rates)
-                self.assertNotIn(12477, bridge._economy_rates)
+                self.assertNotIn(12477, bridge.ctx.economy_rates)
                 self.assertNotIn(12477, bridge._db.get_all_economy_rates())
             finally:
                 bridge._db.close()
@@ -3679,13 +3679,13 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
             )
             try:
                 bridge_0.get_state(include_buildings=True)
-                self.assertTrue(any(q.category == "research" for q in bridge_0._last_state.active_queues))
+                self.assertTrue(any(q.category == "research" for q in bridge_0.ctx.last_state.active_queues))
                 r_bld0 = bridge_0.handle_command(
                     {"command": "build", "building_id": 1, "planet_id": 12477, "dry_run": False}
                 )
                 self.assertTrue(r_bld0["executed"])
-                self.assertEqual(bridge_0._last_state.active_planet_id, 12477)
-                self.assertEqual(bridge_0._last_state.research_offers, ())
+                self.assertEqual(bridge_0.ctx.last_state.active_planet_id, 12477)
+                self.assertEqual(bridge_0.ctx.last_state.research_offers, ())
 
                 clock_0.advance(100.0)
                 lim_0.reset()
@@ -3694,12 +3694,12 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
                 self.assertTrue(r_dry0["ok"])
                 self.assertLessEqual(lim_0.views_last_60s(), 24)
                 self.assertFalse(r_dry0["action"]["executable_now"])
-                cats0 = [q.category for q in bridge_0._last_state.active_queues]
+                cats0 = [q.category for q in bridge_0.ctx.last_state.active_queues]
                 self.assertIn("research", cats0)
                 self.assertIn("fleet", cats0)
                 self.assertFalse(
-                    bridge_0._find_research_action(
-                        bridge_0._last_state, 1, 12476, allow_live_verify=True
+                    bridge_0.plan_assembly.find_research_action(
+                        bridge_0.ctx.last_state, 1, 12476, allow_live_verify=True
                     ).executable_now
                 )
                 dash0 = bridge_0.dashboard(refresh=False)
@@ -3711,9 +3711,9 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
                     {"command": "research", "research_id": 1, "dry_run": True, "refresh": True}
                 )
                 self.assertTrue(r_dry0_gal["ok"])
-                self.assertEqual(bridge_0._last_state.active_planet_id, 12477)
-                self.assertIn("research", [q.category for q in bridge_0._last_state.active_queues])
-                self.assertIn("fleet", [q.category for q in bridge_0._last_state.active_queues])
+                self.assertEqual(bridge_0.ctx.last_state.active_planet_id, 12477)
+                self.assertIn("research", [q.category for q in bridge_0.ctx.last_state.active_queues])
+                self.assertIn("fleet", [q.category for q in bridge_0.ctx.last_state.active_queues])
             finally:
                 bridge_0._db.close()
 
@@ -3738,8 +3738,8 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
                     {"command": "build", "building_id": 1, "planet_id": 12477, "dry_run": False}
                 )
                 self.assertTrue(r_bld2["executed"])
-                self.assertEqual(bridge_2._last_state.active_planet_id, 12477)
-                self.assertEqual(bridge_2._last_state.research_offers, ())
+                self.assertEqual(bridge_2.ctx.last_state.active_planet_id, 12477)
+                self.assertEqual(bridge_2.ctx.last_state.research_offers, ())
 
                 clock_2.advance(100.0)
                 lim_2.reset()
@@ -3748,14 +3748,14 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
                 self.assertTrue(r_dry2["ok"])
                 self.assertLessEqual(lim_2.views_last_60s(), 24)
                 self.assertFalse(r_dry2["action"]["executable_now"])
-                res_q2 = [q for q in bridge_2._last_state.active_queues if q.category == "research"]
+                res_q2 = [q for q in bridge_2.ctx.last_state.active_queues if q.category == "research"]
                 self.assertEqual(len(res_q2), 1)
                 self.assertEqual(res_q2[0].name, "Energy technology")
                 self.assertEqual(res_q2[0].target_level, 4)
-                self.assertIn("fleet", [q.category for q in bridge_2._last_state.active_queues])
+                self.assertIn("fleet", [q.category for q in bridge_2.ctx.last_state.active_queues])
                 self.assertFalse(
-                    bridge_2._find_research_action(
-                        bridge_2._last_state, 1, 12477, allow_live_verify=True
+                    bridge_2.plan_assembly.find_research_action(
+                        bridge_2.ctx.last_state, 1, 12477, allow_live_verify=True
                     ).executable_now
                 )
 
@@ -3787,8 +3787,8 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
                     ),
                 )
                 self.assertFalse(
-                    bridge_2._find_research_action(
-                        replace(bridge_2._last_state, active_queues=(), research_offers=stale_can),
+                    bridge_2.plan_assembly.find_research_action(
+                        replace(bridge_2.ctx.last_state, active_queues=(), research_offers=stale_can),
                         1,
                         12477,
                         allow_live_verify=True,
@@ -3804,7 +3804,7 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
                 )
                 self.assertTrue(r_fin["ok"])
                 self.assertTrue(r_fin["action"]["executable_now"])
-                cats_fin = [q.category for q in bridge_2._last_state.active_queues]
+                cats_fin = [q.category for q in bridge_2.ctx.last_state.active_queues]
                 self.assertEqual(cats_fin, ["fleet"])
             finally:
                 bridge_2._db.close()
@@ -3819,7 +3819,7 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
             try:
                 bridge_c.get_state(include_buildings=True)
                 self.assertTrue(
-                    next(o for o in bridge_c._last_state.research_offers if o.research_id == 1).can_research
+                    next(o for o in bridge_c.ctx.last_state.research_offers if o.research_id == 1).can_research
                 )
                 r_cross_dry = bridge_c.handle_command(
                     {"command": "research", "research_id": 1, "planet_id": 12477, "dry_run": True}
@@ -3881,12 +3881,12 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
             )
             try:
                 bridge_h.get_state(include_buildings=True)
-                self.assertIsNotNone(bridge_h._last_state)
-                assert bridge_h._last_state is not None
-                self.assertIsNotNone(bridge_h._last_state.tutorial)
-                bridge_h._last_home_fetched = False
-                bridge_h._last_home_at = None
-                self.assertFalse(bridge_h._is_home_fresh(time.monotonic()))
+                self.assertIsNotNone(bridge_h.ctx.last_state)
+                assert bridge_h.ctx.last_state is not None
+                self.assertIsNotNone(bridge_h.ctx.last_state.tutorial)
+                bridge_h.ctx.last_home_fetched = False
+                bridge_h.ctx.last_home_at = None
+                self.assertFalse(bridge_h.state_cache.is_home_fresh(time.monotonic()))
                 srv_h.hostile_alerts.append("Hostile raid incoming at 02:380:12")
                 plan_res = bridge_h.handle_command({"command": "plan"})
                 self.assertTrue(any(a["kind"] == "ALERT_HOSTILE" for a in plan_res["actions"]))
@@ -3965,7 +3965,7 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
             )
             try:
                 bridge_x.get_state(include_buildings=True)
-                st_x = bridge_x._last_state
+                st_x = bridge_x.ctx.last_state
                 assert st_x is not None
                 self.assertTrue(next(o for o in st_x.research_offers if o.research_id == 8).can_research)
 
@@ -3990,15 +3990,19 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
                     st_x, planets=(replace(p_home, ship_offers=(s10_locked_offer,)), st_x.planets[1])
                 )
                 self.assertFalse(
-                    bridge_x._find_ship_action(st_s10_offer, 10, 1, 12476, allow_live_verify=True).executable_now
+                    bridge_x.plan_assembly.find_ship_action(
+                        st_s10_offer, 10, 1, 12476, allow_live_verify=True
+                    ).executable_now
                 )
                 st_s10_empty = replace(st_x, planets=(replace(p_home, ship_offers=()), st_x.planets[1]))
                 self.assertFalse(
-                    bridge_x._find_ship_action(st_s10_empty, 10, 1, 12476, allow_live_verify=True).executable_now
+                    bridge_x.plan_assembly.find_ship_action(
+                        st_s10_empty, 10, 1, 12476, allow_live_verify=True
+                    ).executable_now
                 )
 
                 # External cancel clears carried o.active=True
-                bridge_x._last_state = replace(
+                bridge_x.ctx.last_state = replace(
                     st_x,
                     research_offers=(
                         ResearchOffer(
@@ -4016,9 +4020,11 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
                         next(o for o in st_x.research_offers if o.research_id == 8),
                     ),
                 )
-                merged_cancel = bridge_x._merge_cached_offers(replace(st_x, research_offers=(), active_queues=()))
+                merged_cancel = bridge_x.state_cache.merge_cached_offers(
+                    replace(st_x, research_offers=(), active_queues=())
+                )
                 self.assertFalse(any(o.active for o in merged_cancel.research_offers))
-                self.assertTrue(bridge_x._find_research_action(merged_cancel, 8, 12476).executable_now)
+                self.assertTrue(bridge_x.plan_assembly.find_research_action(merged_cancel, 8, 12476).executable_now)
             finally:
                 bridge_x._db.close()
 

@@ -490,46 +490,48 @@ class TestBridgeLedgersAndRealizedLoot(unittest.TestCase):
             bridge = self._bridge(tmp, adaptive=True)
             try:
                 # Infra ledger: 3 Large transports at 8,000 / 6,000 each, 90,000 cargo on order.
-                bridge._record_infra_transport_spend_locked(
+                bridge.ledgers.record_infra_transport_spend_locked(
                     self._unit_action(2, "Large transport", S2_COST, 3), now_ts=now_ts, quantity=3
                 )
-                spent, _carry = bridge._get_infra_transport_spend_last_hour_locked(now_ts=now_ts + 60.0)
+                spent, _carry = bridge.ledgers.get_infra_transport_spend_last_hour_locked(now_ts=now_ts + 60.0)
                 self.assertEqual(spent, {"metal": 24_000.0, "kryptonite": 18_000.0})
-                self.assertEqual(bridge._get_infra_cargo_ordered_last_hour_locked(now_ts=now_ts + 60.0), 90_000)
+                self.assertEqual(bridge.ledgers.get_infra_cargo_ordered_last_hour_locked(now_ts=now_ts + 60.0), 90_000)
 
                 # Spare ledger: 2 Small fighters, then a hull priced from the catalog (zero cost given).
-                bridge._record_spare_ship_spend_locked(
+                bridge.ledgers.record_spare_ship_spend_locked(
                     self._unit_action(4, "Small fighter", S4_COST, 2), now_ts=now_ts, quantity=2
                 )
-                bridge._record_spare_ship_spend_locked(
+                bridge.ledgers.record_spare_ship_spend_locked(
                     self._unit_action(6, "Starcruiser", Resources(), 1), now_ts=now_ts
                 )
-                spare = bridge._get_spare_ship_spend_in_window_locked(now_ts=now_ts + 60.0)
+                spare = bridge.ledgers.get_spare_ship_spend_in_window_locked(now_ts=now_ts + 60.0)
                 self.assertEqual(spare["metal"], 2 * 4_000 + 25_000)
                 self.assertEqual(spare["kryptonite"], 2 * 2_000 + 10_000)
                 self.assertEqual(spare["spice"], 2 * 100 + 1_500)
                 self.assertEqual(spare["pig_iron"], 0.0)
 
-                bridge._persist_runtime_state()
+                bridge.lifecycle.persist_runtime_state()
             finally:
                 bridge.close()
 
             bridge2 = self._bridge(tmp, adaptive=True)
             try:
                 self.assertEqual(
-                    bridge2._get_spare_ship_spend_in_window_locked(now_ts=now_ts + 120.0)["metal"], 33_000.0
+                    bridge2.ledgers.get_spare_ship_spend_in_window_locked(now_ts=now_ts + 120.0)["metal"], 33_000.0
                 )
-                self.assertEqual(bridge2._get_infra_cargo_ordered_last_hour_locked(now_ts=now_ts + 120.0), 90_000)
+                self.assertEqual(
+                    bridge2.ledgers.get_infra_cargo_ordered_last_hour_locked(now_ts=now_ts + 120.0), 90_000
+                )
                 # After an hour the infra ledger forgets the order; the spare ledger keeps it for
                 # the whole saving-up window.
-                self.assertEqual(bridge2._get_infra_cargo_ordered_last_hour_locked(now_ts=now_ts + 3_700.0), 0)
+                self.assertEqual(bridge2.ledgers.get_infra_cargo_ordered_last_hour_locked(now_ts=now_ts + 3_700.0), 0)
                 self.assertEqual(
-                    bridge2._get_spare_ship_spend_in_window_locked(now_ts=now_ts + 3_700.0)["metal"], 33_000.0
+                    bridge2.ledgers.get_spare_ship_spend_in_window_locked(now_ts=now_ts + 3_700.0)["metal"], 33_000.0
                 )
                 window_s = GameApiBridge.SPARE_SHIP_BUDGET_WINDOW_HOURS * 3600.0
                 self.assertEqual(GameApiBridge.SPARE_SHIP_BUDGET_WINDOW_HOURS, 4.0)
                 self.assertEqual(
-                    bridge2._get_spare_ship_spend_in_window_locked(now_ts=now_ts + window_s + 100.0),
+                    bridge2.ledgers.get_spare_ship_spend_in_window_locked(now_ts=now_ts + window_s + 100.0),
                     {"pig_iron": 0.0, "metal": 0.0, "kryptonite": 0.0, "spice": 0.0},
                 )
             finally:
@@ -559,14 +561,14 @@ class TestBridgeLedgersAndRealizedLoot(unittest.TestCase):
                 with patch.object(
                     bridge, "_get_loot_recycle_telemetry_locked", return_value={"history": [], "summary": summary}
                 ):
-                    realized = bridge._get_realized_loot_hourly_locked()
+                    realized = bridge.ledgers.get_realized_loot_hourly_locked()
                     self.assertEqual(
                         realized["hourly_loot"],
                         {"pig_iron": 31_000.0, "metal": 50_000.0, "kryptonite": 80_000.0, "spice": 30_000.0},
                     )
                     self.assertAlmostEqual(realized["missions_per_hour"], 3.5, places=4)
 
-                    over = bridge._overlay_realized_loot_locked(modelled_tel)
+                    over = bridge.ledgers.overlay_realized_loot_locked(modelled_tel)
                     self.assertEqual(over["income_basis"], GameApiBridge.REALIZED_INCOME_BASIS)
                     self.assertEqual(over["hourly_loot"]["metal"], 50_000.0)
                     self.assertGreater(over["hourly_loot"]["spice_eq"], 0.0)
@@ -574,17 +576,17 @@ class TestBridgeLedgersAndRealizedLoot(unittest.TestCase):
                     self.assertEqual(over["median_loot"], modelled_tel["median_loot"])
                     self.assertNotIn("income_basis", modelled_tel)  # the input is not mutated
                     # Overlaying twice keeps the first modelled figure.
-                    again = bridge._overlay_realized_loot_locked(over)
+                    again = bridge.ledgers.overlay_realized_loot_locked(over)
                     self.assertEqual(again["modelled_hourly_loot"], modelled_tel["hourly_loot"])
 
                     # Live telemetry carries the realized basis only with the switch on.
-                    live_on = bridge._compute_live_attack_telemetry_locked(None)
+                    live_on = bridge.planner_jobs.compute_live_attack_telemetry_locked(None)
                     self.assertEqual(live_on["income_basis"], GameApiBridge.REALIZED_INCOME_BASIS)
                     self.assertEqual(live_on["hourly_loot"]["metal"], 50_000.0)
                     bridge.strategy_config = StrategyConfig(
                         planner_mode="ai_planner", max_planets=2, ai_adaptive_execution=False
                     )
-                    live_off = bridge._compute_live_attack_telemetry_locked(None)
+                    live_off = bridge.planner_jobs.compute_live_attack_telemetry_locked(None)
                     self.assertNotIn("income_basis", live_off)
 
                 # A loot summary without per-resource totals (query failed) keeps the model in use.
@@ -593,13 +595,13 @@ class TestBridgeLedgersAndRealizedLoot(unittest.TestCase):
                     "_get_loot_recycle_telemetry_locked",
                     return_value={"history": [], "summary": {"total_stolen": 0.0, "window_hours": 24}},
                 ):
-                    self.assertIsNone(bridge._get_realized_loot_hourly_locked())
-                    self.assertIs(bridge._overlay_realized_loot_locked(modelled_tel), modelled_tel)
+                    self.assertIsNone(bridge.ledgers.get_realized_loot_hourly_locked())
+                    self.assertIs(bridge.ledgers.overlay_realized_loot_locked(modelled_tel), modelled_tel)
 
                 # No database: no realized figure.
                 bridge._db.close()
                 bridge._db = None
-                self.assertIsNone(bridge._get_realized_loot_hourly_locked())
+                self.assertIsNone(bridge.ledgers.get_realized_loot_hourly_locked())
             finally:
                 bridge.close()
 
@@ -645,73 +647,75 @@ class TestBridgeLedgersAndRealizedLoot(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             bridge = self._bridge(tmp, adaptive=True)
             try:
-                bridge._last_state = st
-                bridge._last_snapshot_at = time.monotonic()
-                bridge._active_config_opt_mem = {
+                bridge.ctx.last_state = st
+                bridge.ctx.last_snapshot_at = time.monotonic()
+                bridge.ctx.active_config_opt_mem = {
                     "run_id": 10,
                     "updated_ts": now_ts - 18_000.0,
                     "result": {"generated_at": "2026-11-19T00:00:00+00:00"},
                 }
                 bridge._db.close()
                 bridge._db = None
-                bridge._active_ai_plan_mem = {
+                bridge.ctx.active_ai_plan_mem = {
                     "run_id": 20,
                     "config_run_id": 10,
                     "updated_ts": now_ts - 3_600.0,  # 1 h old: past the cooldown, younger than the 4 h rule
                     "result": dict(plan_res),
                 }
                 with (
-                    patch.object(bridge, "_start_ai_planner_job", side_effect=_fake_start),
-                    patch.object(bridge, "_compute_live_attack_telemetry_locked", return_value=live_realized),
+                    patch.object(bridge.planner_jobs, "start_ai_planner_job", side_effect=_fake_start),
+                    patch.object(
+                        bridge.planner_jobs, "compute_live_attack_telemetry_locked", return_value=live_realized
+                    ),
                 ):
-                    bridge._maybe_trigger_ai_drift_replan(now_ts=now_ts)
+                    bridge.planner_jobs.maybe_trigger_ai_drift_replan(now_ts=now_ts)
                     self.assertEqual(len(calls), 1)
                     self.assertEqual(calls[-1]["trigger_source"], "auto_drift:income_basis_changed")
                     self.assertEqual(calls[-1]["params"], {"warm_start_genes": {"patience": 0.42}})
 
                     # Once the active plan was computed on the realized basis, nothing fires.
-                    bridge._last_auto_ai_replan_ts = now_ts - 2_000.0
-                    bridge._active_ai_plan_mem["result"] = {**plan_res, "attack_telemetry": dict(live_realized)}
-                    self.assertIsNone(bridge._maybe_trigger_ai_drift_replan(now_ts=now_ts))
+                    bridge.ctx.last_auto_ai_replan_ts = now_ts - 2_000.0
+                    bridge.ctx.active_ai_plan_mem["result"] = {**plan_res, "attack_telemetry": dict(live_realized)}
+                    self.assertIsNone(bridge.planner_jobs.maybe_trigger_ai_drift_replan(now_ts=now_ts))
                     self.assertEqual(len(calls), 1)
 
                     # A plan pinned to `attacks_per_day` is the operator's choice: never re-tuned for it.
-                    bridge._active_ai_plan_mem["result"] = {
+                    bridge.ctx.active_ai_plan_mem["result"] = {
                         **plan_res,
                         "attack_telemetry": {"median_loot": {"spice_eq": 10_000.0}, "income_basis": "attacks_per_day"},
                     }
-                    self.assertIsNone(bridge._maybe_trigger_ai_drift_replan(now_ts=now_ts))
+                    self.assertIsNone(bridge.planner_jobs.maybe_trigger_ai_drift_replan(now_ts=now_ts))
                     self.assertEqual(len(calls), 1)
 
                 # A realized-basis plan does not depend on the median loot per raid, so a 30% shift
                 # in that median no longer re-tunes it...
                 shifted = {"median_loot": {"spice_eq": 13_000.0}, "income_basis": GameApiBridge.REALIZED_INCOME_BASIS}
-                bridge._active_ai_plan_mem["result"] = {**plan_res, "attack_telemetry": dict(live_realized)}
+                bridge.ctx.active_ai_plan_mem["result"] = {**plan_res, "attack_telemetry": dict(live_realized)}
                 with (
-                    patch.object(bridge, "_start_ai_planner_job", side_effect=_fake_start),
-                    patch.object(bridge, "_compute_live_attack_telemetry_locked", return_value=shifted),
+                    patch.object(bridge.planner_jobs, "start_ai_planner_job", side_effect=_fake_start),
+                    patch.object(bridge.planner_jobs, "compute_live_attack_telemetry_locked", return_value=shifted),
                 ):
-                    self.assertIsNone(bridge._maybe_trigger_ai_drift_replan(now_ts=now_ts))
+                    self.assertIsNone(bridge.planner_jobs.maybe_trigger_ai_drift_replan(now_ts=now_ts))
                     self.assertEqual(len(calls), 1)
                     # ...while the 4-hour age rule still does.
-                    bridge._active_ai_plan_mem["updated_ts"] = now_ts - 18_000.0
-                    bridge._maybe_trigger_ai_drift_replan(now_ts=now_ts)
+                    bridge.ctx.active_ai_plan_mem["updated_ts"] = now_ts - 18_000.0
+                    bridge.planner_jobs.maybe_trigger_ai_drift_replan(now_ts=now_ts)
                     self.assertEqual(len(calls), 2)
                     self.assertEqual(calls[-1]["trigger_source"], "auto_drift:plan_age_4h")
-                bridge._active_ai_plan_mem["updated_ts"] = now_ts - 3_600.0
-                bridge._last_auto_ai_replan_ts = now_ts - 2_000.0
+                bridge.ctx.active_ai_plan_mem["updated_ts"] = now_ts - 3_600.0
+                bridge.ctx.last_auto_ai_replan_ts = now_ts - 2_000.0
 
                 # Live telemetry still on the modelled basis (no loot ledger): nothing fires either.
-                bridge._active_ai_plan_mem["result"] = dict(plan_res)
+                bridge.ctx.active_ai_plan_mem["result"] = dict(plan_res)
                 with (
-                    patch.object(bridge, "_start_ai_planner_job", side_effect=_fake_start),
+                    patch.object(bridge.planner_jobs, "start_ai_planner_job", side_effect=_fake_start),
                     patch.object(
-                        bridge,
-                        "_compute_live_attack_telemetry_locked",
+                        bridge.planner_jobs,
+                        "compute_live_attack_telemetry_locked",
                         return_value={"median_loot": {"spice_eq": 10_000.0}},
                     ),
                 ):
-                    self.assertIsNone(bridge._maybe_trigger_ai_drift_replan(now_ts=now_ts))
+                    self.assertIsNone(bridge.planner_jobs.maybe_trigger_ai_drift_replan(now_ts=now_ts))
                 self.assertEqual(len(calls), 2)
             finally:
                 bridge.close()

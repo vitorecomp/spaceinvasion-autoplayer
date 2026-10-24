@@ -101,6 +101,27 @@ class PlanAssemblyService:
         """Serialize a `PlannedAction` with ETAs, display planet name, and finite JSON sanitization."""
         return serialize_planned_action(self._ctx, action, state=state)
 
+    def plan_hybrid_ai_actions_locked(
+        self,
+        enriched_state: GameState,
+        active_result: Mapping[str, object],
+        cfg: StrategyConfig,
+        *,
+        record_conflicts: bool = False,
+    ) -> list[PlannedAction]:
+        """Synthesize prioritized hybrid AI-Planner actions for `enriched_state`."""
+        return plan_hybrid_ai_actions(
+            self._ctx,
+            self._ledgers,
+            enriched_state,
+            active_result,
+            cfg,
+            record_conflicts=record_conflicts,
+            on_upsert_field_conflict=self._upsert_conflict,
+            on_compute_live_attack_telemetry=self._compute_live_telemetry,
+            on_persist_runtime_state=self._on_persist_runtime_state,
+        )
+
     def plan_with_summary(
         self,
         state: GameState,
@@ -121,16 +142,11 @@ class PlanAssemblyService:
         persist_auto = bool(record_summary and config is None)
 
         if eff_mode == "ai_planner" and isinstance(active_result, Mapping):
-            actions = plan_hybrid_ai_actions(
-                self._ctx,
-                self._ledgers,
+            actions = self.plan_hybrid_ai_actions_locked(
                 enriched_state,
                 active_result,
                 cfg,
                 record_conflicts=persist_auto,
-                on_upsert_field_conflict=self._upsert_conflict,
-                on_compute_live_attack_telemetry=self._compute_live_telemetry,
-                on_persist_runtime_state=self._on_persist_runtime_state,
             )
             actions = self._ledgers.apply_fleet_slot_cooldowns(actions, re_sort_priority=False)
             actions = self._ledgers.apply_fleet_slot_holds(enriched_state, actions, cfg=cfg, re_sort_priority=False)

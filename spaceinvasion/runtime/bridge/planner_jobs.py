@@ -142,7 +142,7 @@ class PlannerJobService:
             snap = get_planner_jobs_snapshot(self._ctx)
         return sanitize_json_dict({"ok": True, "command": "planner_jobs_status", **snap})
 
-    def _start_ai_job(
+    def start_ai_planner_job(
         self,
         *,
         params: Mapping[str, object] | None = None,
@@ -185,7 +185,7 @@ class PlannerJobService:
             auto_replan_ai=auto_replan_ai,
             sync=sync,
             trigger_source=trigger_source,
-            start_ai_fn=self._start_ai_job,
+            start_ai_fn=self.start_ai_planner_job,
             on_publish_snapshot=self._on_publish_snapshot,
         )
 
@@ -214,7 +214,7 @@ class PlannerJobService:
             self._names,
             self._state_cache,
             payload,
-            start_ai_fn=self._start_ai_job,
+            start_ai_fn=self.start_ai_planner_job,
             on_publish_snapshot=self._on_publish_snapshot,
         )
 
@@ -235,7 +235,7 @@ class PlannerJobService:
         return handle_ai_planner_run(
             self._ctx,
             payload,
-            start_ai_fn=self._start_ai_job,
+            start_ai_fn=self.start_ai_planner_job,
             on_is_galaxy_scan_blocking=self._on_is_galaxy_scan_blocking,
             on_galaxy_scan_busy_msg=self._on_galaxy_scan_busy_msg,
         )
@@ -253,7 +253,7 @@ class PlannerJobService:
         """Return the `fleet_planner_get` tactical fleet DAG and spare-ship allowance."""
         return handle_fleet_planner_get(self._ctx, self._names, self._ledgers, payload)
 
-    def maybe_trigger_ai_drift_replan(self, *, now_ts: float | None = None) -> bool:
+    def maybe_trigger_ai_drift_replan(self, *, now_ts: float | None = None) -> str | None:
         """Check adaptive AI-Planner drift triggers non-blockingly and launch a background replan when due."""
         ctx = self._ctx
         cfg_ref = ctx.strategy_config
@@ -264,7 +264,7 @@ class PlannerJobService:
             or ctx.bot_control.get("paused")
             or ctx.bot_control.get("captcha_blocked")
         ):
-            return False
+            return None
         eff_now = safe_api_float(now_ts, time.time()) if now_ts is not None else time.time()
         if eff_now <= 0.0:
             eff_now = time.time()
@@ -272,20 +272,20 @@ class PlannerJobService:
             ctx.last_auto_ai_replan_ts > 0.0
             and (eff_now - ctx.last_auto_ai_replan_ts) < BridgeConstants.AI_DRIFT_REPLAN_COOLDOWN_SECONDS
         ):
-            return False
+            return None
         now_mono = time.monotonic()
         if (
             now_ts is None
             and ctx.last_drift_check_mono > 0.0
             and (now_mono - ctx.last_drift_check_mono) < BridgeConstants.AI_DRIFT_CHECK_MIN_INTERVAL_SECONDS
         ):
-            return False
+            return None
         with ctx.planner_jobs_lock:
             if ctx.config_opt_job.get("status") == "running" or ctx.ai_planner_job.get("status") == "running":
-                return False
+                return None
 
-        if not ctx.state_lock.acquire(blocking=False):
-            return False
+        if ctx.lock.locked() or not ctx.state_lock.acquire(blocking=False):
+            return None
         reason: str | None = None
         warm_genes: dict[str, object] | None = None
         try:
@@ -295,11 +295,18 @@ class PlannerJobService:
                     ctx.last_drift_check_mono > 0.0
                     and (now_mono_in - ctx.last_drift_check_mono) < BridgeConstants.AI_DRIFT_CHECK_MIN_INTERVAL_SECONDS
                 ):
-                    return False
+                    return None
                 ctx.last_drift_check_mono = now_mono_in
-            ev = evaluate_ai_drift_replan(ctx, self._ledgers, ctx.last_state, cfg=ctx.strategy_config, now_ts=now_ts)
+            ev = evaluate_ai_drift_replan(
+                ctx,
+                self._ledgers,
+                ctx.last_state,
+                cfg=ctx.strategy_config,
+                now_ts=now_ts,
+                compute_telemetry_fn=self.compute_live_attack_telemetry_locked,
+            )
             if not ev.get("eligible") or not ev.get("reason"):
-                return False
+                return None
             reason = str(ev["reason"])
             raw_warm = ev.get("warm_genes")
             warm_genes = dict(raw_warm) if isinstance(raw_warm, Mapping) else None
@@ -310,16 +317,16 @@ class PlannerJobService:
         finally:
             ctx.state_lock.release()
         try:
-            self._start_ai_job(
+            self.start_ai_planner_job(
                 params={"warm_start_genes": warm_genes} if warm_genes else None,
                 sync=False,
                 refresh=False,
                 trigger_source=f"auto_drift:{reason}",
             )
-            return True
+            return reason
         except _DRIFT_REPLAN_ERRORS:
             _LOGGER.warning("Background adaptive AI drift replan failed to start", exc_info=True)
-            return False
+            return None
 
     def record_adaptive_idle_if_due(self, state: GameState, now_ts: float | None = None) -> None:
         """Record one 10-minute adaptive colony-idle diagnostic bucket when the current bucket is unseen."""

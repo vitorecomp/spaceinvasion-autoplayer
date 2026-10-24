@@ -2412,7 +2412,7 @@ return {
                 client_factory=lambda _port: fake_client,
                 ensure_session_fn=lambda: None,
             )
-            bridge._economy_rates[12476] = {"resource1": 80}
+            bridge.ctx.economy_rates[12476] = {"resource1": 80}
             server = create_api_server(bridge, host="127.0.0.1", port=0)
             base_url = f"http://127.0.0.1:{server.server_address[1]}"
             threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -2522,8 +2522,8 @@ return {
                 ensure_session_fn=lambda: None,
             )
             assert bridge._db is not None
-            bridge._record_state(st, fetched_buildings=True, fetched_home=True, observed_active_planet=True)
-            bridge._last_snapshot_at = time.monotonic()
+            bridge.state_cache.record_state(st, fetched_buildings=True, fetched_home=True, observed_active_planet=True)
+            bridge.ctx.last_snapshot_at = time.monotonic()
 
             slots = [
                 GalaxySlot("02:380:05", 5, name="DebrisTarget", owner="Pirate", status_color="yellow", has_debris=True),
@@ -2708,8 +2708,8 @@ return {
                 client_factory=lambda _port: fake_client,
                 ensure_session_fn=lambda: None,
             )
-            bridge._record_state(st, fetched_buildings=True, fetched_home=True, observed_active_planet=True)
-            bridge._last_snapshot_at = time.monotonic()
+            bridge.state_cache.record_state(st, fetched_buildings=True, fetched_home=True, observed_active_planet=True)
+            bridge.ctx.last_snapshot_at = time.monotonic()
 
             server = create_api_server(bridge, host="127.0.0.1", port=0)
             base_url = f"http://127.0.0.1:{server.server_address[1]}"
@@ -2835,8 +2835,8 @@ return {
                 client_factory=lambda _port: fake_client,
                 ensure_session_fn=lambda: None,
             )
-            bridge._record_state(st, fetched_buildings=True, fetched_home=True, observed_active_planet=True)
-            bridge._last_snapshot_at = time.monotonic()
+            bridge.state_cache.record_state(st, fetched_buildings=True, fetched_home=True, observed_active_planet=True)
+            bridge.ctx.last_snapshot_at = time.monotonic()
 
             # Enqueue 1 Building, 1 Fleet (Ship), and 1 Research command so all 3 Dashboard queues populate
             bridge._db.enqueue_manual_command(
@@ -3000,8 +3000,8 @@ return {
                 client_factory=lambda _port: fake_client,
                 ensure_session_fn=lambda: None,
             )
-            bridge._record_state(st, fetched_buildings=True, fetched_home=True, observed_active_planet=True)
-            bridge._last_snapshot_at = 1e9
+            bridge.state_cache.record_state(st, fetched_buildings=True, fetched_home=True, observed_active_planet=True)
+            bridge.ctx.last_snapshot_at = 1e9
             server = create_api_server(bridge, host="127.0.0.1", port=0)
             base_url = f"http://127.0.0.1:{server.server_address[1]}"
             threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -3097,7 +3097,7 @@ return { badgeBefore, helpAutoOpened, helpTitle, helpPrompt, centerText, badgeHi
                 energy=EnergyBalance(1000, 500),
                 buildings={"b1": 10, "b2": 8, "b5": 12, "b8": 3, "b9": 4},
             )
-            bridge._last_state = GameState(
+            bridge.ctx.last_state = GameState(
                 universe_id=31,
                 user_id=103603,
                 nickname="ventkx86",
@@ -3148,7 +3148,7 @@ return { badgeBefore, helpAutoOpened, helpTitle, helpPrompt, centerText, badgeHi
                     ),
                 ),
             )
-            bridge._last_snapshot_at = _time.monotonic()
+            bridge.ctx.last_snapshot_at = _time.monotonic()
 
             server = create_api_server(bridge, host="127.0.0.1", port=0)
             base_url = f"http://127.0.0.1:{server.server_address[1]}"
@@ -3320,8 +3320,8 @@ return {
                 ensure_session_fn=lambda: None,
             )
             assert bridge._db is not None
-            bridge._record_state(st, fetched_buildings=True, fetched_home=True, observed_active_planet=True)
-            bridge._last_snapshot_at = _time.monotonic()
+            bridge.state_cache.record_state(st, fetched_buildings=True, fetched_home=True, observed_active_planet=True)
+            bridge.ctx.last_snapshot_at = _time.monotonic()
             bridge._db.record_galaxy_slots(
                 [
                     GalaxySlot("02:380:09", 9, status_color="free"),
