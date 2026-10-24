@@ -26,6 +26,7 @@ from spaceinvasion.parsing.fleet_page import (
 from spaceinvasion.parsing.models import GameState
 from spaceinvasion.session.browser_client._protocols import SELENIUM_NAV_ERRORS, WebElementLike
 from spaceinvasion.session.exec_ops._dom import mark_frame_nav, safe_click, set_text_input_value
+from spaceinvasion.session.exec_ops._planet_state import record_observed_planet
 from spaceinvasion.session.exec_ops._protocols import BrowserClientLike, ExecutorContext
 from spaceinvasion.session.exec_ops._types import ExecutionResult, call_with_interactive_priority
 
@@ -197,7 +198,7 @@ def _record_observed_from_fleet_html(ctx: ExecutorContext, state: GameState, fle
     obs_planet = next((p for p in state.planets if normalize_coords(p.coords) == obs_coords), None)
     if obs_planet is None:
         return None
-    ctx.record_observed_planet(obs_planet.planet_id, confirmed=True)
+    record_observed_planet(ctx, obs_planet.planet_id, confirmed=True)
     return obs_planet.planet_id
 
 

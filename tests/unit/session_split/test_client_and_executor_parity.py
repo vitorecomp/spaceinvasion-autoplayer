@@ -115,6 +115,7 @@ def test_browser_client_exports_and_snapshot_navigation_parity() -> None:
                 {"position": 5, "name": "Farm", "owner": "Inactive", "status_color": "yellow", "has_debris": True}
             ],
             (2, 381): [{"position": 3, "name": "Empty", "owner": "", "status_color": "free"}],
+            (2, 385): [{"position": 4, "name": "Far", "owner": "", "status_color": "free"}],
         }
     )
 
@@ -148,6 +149,16 @@ def test_browser_client_exports_and_snapshot_navigation_parity() -> None:
     step2 = c2.step_galaxy_system(galaxy=2, system=381)
     assert step2 == step1
     assert c2.last_galaxy_coords == c1.last_galaxy_coords
+
+    # Distance == 5 (ARROW_NAV_MAX_DISTANCE == 5 -> NOT < 5) must jump directly without arrow stepping.
+    c1.open_galaxy_with_coords(galaxy=2, system=380)
+    c2.open_galaxy_with_coords(galaxy=2, system=380)
+    jump1 = c1.step_galaxy_system(galaxy=2, system=385, pace=False)
+    jump2 = c2.step_galaxy_system(galaxy=2, system=385, pace=False)
+    assert jump2 == jump1
+    assert c2.last_galaxy_coords == c1.last_galaxy_coords == (2, 385)
+    assert c2.last_galaxy_nav_method == c1.last_galaxy_nav_method
+    assert c2.last_galaxy_nav_method != "arrow"
 
     spy1 = c1.dispatch_galaxy_spy(galaxy=2, system=380, position=5)
     spy2 = c2.dispatch_galaxy_spy(galaxy=2, system=380, position=5)
@@ -658,6 +669,9 @@ def test_section4_ast_loc_and_strict_session_layering() -> None:
                 assert cls_len <= 400, f"{path.name}:{node.name} has {cls_len} lines (>400)"
             elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
                 assert node.func.id != "print", f"Forbidden print() in {path.name}"
+                assert node.func.id not in ("getattr", "hasattr", "setattr"), (
+                    f"Forbidden {node.func.id}() in {path.name}"
+                )
             elif isinstance(node, ast.ExceptHandler):
                 if node.type is None:
                     pytest.fail(f"Bare except in {path.name}")

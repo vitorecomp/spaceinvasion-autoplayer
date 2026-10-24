@@ -20,7 +20,7 @@ from selenium.common.exceptions import (
     WebDriverException,
 )
 
-ARROW_NAV_MAX_DISTANCE: int = 15
+ARROW_NAV_MAX_DISTANCE: int = 5
 _SID_TOKEN_RE: re.Pattern[str] = re.compile(r"^[A-Za-z0-9._-]{1,256}$")
 _EMPTY_PAGEVIEW_MODAL_RE: re.Pattern[str] = re.compile(
     r"made\s+more\s+than\s*<span\b[^>]*\bid=[\"']?pageview-amount[\"']?[^>]*>"

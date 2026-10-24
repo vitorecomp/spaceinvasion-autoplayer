@@ -156,13 +156,6 @@ class ExecutorContext:
         self.observed_active_planet_id = None
         self.observed_active_planet_confirmed = None
 
-    def record_observed_planet(self, planet_id: int | None, *, confirmed: bool | None) -> None:
-        if isinstance(planet_id, int) and not isinstance(planet_id, bool) and planet_id >= 0:
-            self.observed_active_planet_id = planet_id
-        else:
-            self.observed_active_planet_id = None
-        self.observed_active_planet_confirmed = confirmed
-
     def attach_observed_planet(self, result: ExecutionResult) -> ExecutionResult:
         obs_pid = result.observed_active_planet_id
         obs_conf = result.observed_active_planet_confirmed

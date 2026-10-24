@@ -73,13 +73,19 @@ def _safe_exception_str(
     seen: set[int] | None,
     budget: list[int] | None,
 ) -> str:
-    str_fn = getattr(type(val), "__str__", BaseException.__str__)
+    try:
+        str_fn: object = type(val).__str__
+    except (AttributeError, TypeError):
+        str_fn = BaseException.__str__
     if str_fn not in (BaseException.__str__, KeyError.__str__):
         try:
             return str(val)[:4096]
         except (TypeError, ValueError, RecursionError):
             pass
-    args = getattr(val, "args", ())
+    try:
+        args: object = val.args
+    except (AttributeError, TypeError):
+        args = ()
     if not isinstance(args, (tuple, list)) or not args:
         return "" if str_fn is BaseException.__str__ else type(val).__name__
     eff_seen = seen if seen is not None else set()
