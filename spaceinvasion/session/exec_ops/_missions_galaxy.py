@@ -99,7 +99,7 @@ def scan_galaxy_system(
             priority="interactive",
         )
     else:
-        open_client: _LegacyOpenGalaxyClient = client  # type: ignore[assignment]
+        open_client: _LegacyOpenGalaxyClient = client
         html = open_client.open_galaxy(galaxy=gal, system=sys_num)
         actual_coords = client.last_galaxy_coords
         if isinstance(actual_coords, tuple) and len(actual_coords) == 2:

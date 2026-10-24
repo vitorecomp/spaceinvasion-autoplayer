@@ -37,9 +37,9 @@ class PlannedActionLike(Protocol):
     @property
     def target_level(self) -> int | None: ...
     @property
-    def cost(self) -> Resources: ...
+    def cost(self) -> Resources | ModelResources: ...
     @property
-    def missing(self) -> Resources: ...
+    def missing(self) -> Resources | ModelResources: ...
     @property
     def executable_now(self) -> bool: ...
     @property
@@ -57,30 +57,47 @@ class BrowserClientLike(Protocol):
     last_home_daily_bonus_present: bool | None
 
     def ensure_in_game(self, *, priority: str = "normal") -> None: ...
-    def navigate_menu(self, action_key: str, *, priority: str = "normal") -> str: ...
+    def navigate_menu(self, action: str, *, priority: str = "normal") -> str: ...
     def open_galaxy_with_coords(
-        self, galaxy: int, system: int, *, priority: str = "normal", force_submit: bool = False
+        self,
+        *,
+        galaxy: int | None = None,
+        system: int | None = None,
+        priority: str = "interactive",
+    ) -> tuple[str, int, int]: ...
+    def open_galaxy(
+        self,
+        *,
+        galaxy: int | None = None,
+        system: int | None = None,
+        priority: str = "interactive",
     ) -> str: ...
-    def open_galaxy(self, *, priority: str = "normal") -> str: ...
     def dispatch_galaxy_spy(
-        self, galaxy: int, system: int, position: int, *, priority: str = "interactive"
-    ) -> tuple[bool, str, str]: ...
-    def open_building_detail(self, building_id: int, *, priority: str = "normal") -> str: ...
-    def read_planets_overview(self, *, priority: str = "normal") -> GameState: ...
-    def read_full_snapshot(self, *, include_pages: tuple[str, ...] = ..., priority: str = "normal") -> GameState: ...
+        self,
+        *,
+        galaxy: int,
+        system: int,
+        position: int,
+        quantity: int = 1,
+        is_asteroid: bool = False,
+        priority: str = "interactive",
+    ) -> dict[str, object]: ...
+    def open_building_detail(self, building_id: int, *, priority: str = "interactive") -> str: ...
+    def read_planets_overview(self, *, refresh: bool = False, priority: str = "normal") -> GameState: ...
+    def read_menu_status(self) -> tuple[dict[str, int], int | None, int | None]: ...
     def _switch_frame(self, frame_id: str) -> None: ...
-    def _mark_frame_navigation(self, frame_id: str = "F_Hauptframe") -> str | None: ...
+    def _mark_frame_navigation(self, frame_id: str) -> str: ...
     def _wait_frame_ready(
         self,
-        frame_id: str = "F_Hauptframe",
-        *,
-        timeout: float | None = None,
+        frame_id: str,
         expected_action: str | None = None,
+        *,
         nav_token: str | None = None,
     ) -> str: ...
     def _check_page_guards(self, html: str) -> None: ...
     def _pace(self, *, priority: str = "normal", cost: int = 1) -> float: ...
-    def _extract_selected_planet_id(self) -> int | None: ...
+    @staticmethod
+    def _extract_selected_planet_id(html: str, url: str = "") -> int | None: ...
 
 
 def _to_model_resources(res: Resources | ModelResources) -> ModelResources:
@@ -139,23 +156,21 @@ class ExecutorContext:
         self.observed_active_planet_id = None
         self.observed_active_planet_confirmed = None
 
-    def record_observed_planet(self, planet_id: int | None, *, confirmed: bool) -> None:
-        if isinstance(planet_id, int) and not isinstance(planet_id, bool) and planet_id > 0:
+    def record_observed_planet(self, planet_id: int | None, *, confirmed: bool | None) -> None:
+        if isinstance(planet_id, int) and not isinstance(planet_id, bool) and planet_id >= 0:
             self.observed_active_planet_id = planet_id
-            self.observed_active_planet_confirmed = bool(confirmed)
+        else:
+            self.observed_active_planet_id = None
+        self.observed_active_planet_confirmed = confirmed
 
     def attach_observed_planet(self, result: ExecutionResult) -> ExecutionResult:
         obs_pid = result.observed_active_planet_id
         obs_conf = result.observed_active_planet_confirmed
-        if obs_pid is None and self.observed_active_planet_id is not None:
+        if obs_pid is None:
             obs_pid = self.observed_active_planet_id
+        if obs_conf is None:
             obs_conf = self.observed_active_planet_confirmed
-        elif obs_pid is None and result.updated_state is not None:
-            active_p = result.updated_state.active_planet()
-            if active_p is not None:
-                obs_pid = active_p.planet_id
-                obs_conf = True
-        if obs_pid == result.observed_active_planet_id and obs_conf == result.observed_active_planet_confirmed:
+        if obs_pid is result.observed_active_planet_id and obs_conf is result.observed_active_planet_confirmed:
             return result
         from dataclasses import replace
 

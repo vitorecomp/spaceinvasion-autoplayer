@@ -239,8 +239,14 @@ class GameBrowserClient:
     def _switch_frame(self, frame_id: str) -> None:
         self._frames.switch_frame(frame_id)
 
-    def _mark_frame_navigation(self, frame_id: str) -> str:
+    def _mark_frame_navigation(self, frame_id: str = "F_Hauptframe") -> str:
         return self._frames.mark_frame_navigation(frame_id)
+
+    def _resolve_sid_query(self) -> str:
+        return self._frames.resolve_sid_query()
+
+    def _build_internal_url(self, query: str) -> str:
+        return self._frames.build_internal_url(query)
 
     def _wait_frame_ready(
         self,

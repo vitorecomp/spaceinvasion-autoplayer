@@ -10,6 +10,7 @@ import typing
 import pytest
 
 from spaceinvasion.core.model import PlannedAction, Resources as ModelResources
+from spaceinvasion.core.state import Resources as LegacyResources
 from spaceinvasion.session import client as legacy_client_mod
 from spaceinvasion.session import executor as legacy_executor_mod
 from spaceinvasion.session.auth import AntiBotChallengeError
@@ -58,7 +59,7 @@ def _make_pair(
         page_limiter=lim1,
     )
     c2 = GameBrowserClient(
-        FakeDriver(srv2),
+        typing.cast(object, FakeDriver(srv2)),  # type: ignore[arg-type]
         detach_on_close=True,
         min_nav_delay=(0.0, 0.0),
         timeout=5.0,
@@ -67,8 +68,27 @@ def _make_pair(
     return (srv1, c1), (srv2, c2)
 
 
+def _norm_state(obj: object) -> object:
+    if obj is None:
+        return None
+    raw = obj if isinstance(obj, dict) else asdict(obj)  # type: ignore[call-overload]
+    if isinstance(raw, dict):
+        cleaned: dict[str, object] = {k: v for k, v in raw.items() if k != "timestamp"}
+        queues = cleaned.get("active_queues")
+        if isinstance(queues, (list, tuple)):
+            cleaned["active_queues"] = tuple(
+                {qk: qv for qk, qv in q.items() if qk != "finish_ts"} if isinstance(q, dict) else q for q in queues
+            )
+        return cleaned
+    return raw
+
+
+def _norm_fleets(fleets: list[dict[str, object]]) -> list[dict[str, object]]:
+    return [{k: v for k, v in item.items() if k != "ts"} for item in fleets]
+
+
 def _norm_result(res: object) -> dict[str, object]:
-    d = asdict(res)  # type: ignore[call-overload]
+    d: dict[str, object] = dict(asdict(res))  # type: ignore[call-overload]
     act = d.get("action")
     if isinstance(act, dict):
         d["action"] = {
@@ -81,6 +101,8 @@ def _norm_result(res: object) -> dict[str, object]:
             "target_level": act.get("target_level"),
             "executable_now": act.get("executable_now"),
         }
+    if "updated_state" in d and d["updated_state"] is not None:
+        d["updated_state"] = _norm_state(d["updated_state"])
     return d
 
 
@@ -101,33 +123,40 @@ def test_browser_client_exports_and_snapshot_navigation_parity() -> None:
 
     ov1 = c1.read_planets_overview()
     ov2 = c2.read_planets_overview()
-    assert asdict(ov2) == asdict(ov1)
+    assert _norm_state(ov2) == _norm_state(ov1)
 
     snap1 = c1.read_full_snapshot()
     snap2 = c2.read_full_snapshot()
-    assert asdict(snap2) == asdict(snap1)
+    assert _norm_state(snap2) == _norm_state(snap1)
 
-    for menu_key in ("internalHome", "internalBuildings", "internalResearch", "internalFleet", "internalSettings"):
+    for menu_key in (
+        "internalHome",
+        "internalBuildings",
+        "internalResearch",
+        "internalFleet",
+        "internalEconomy",
+        "internalWeaponFactory",
+    ):
         assert c2.navigate_menu(menu_key) == c1.navigate_menu(menu_key)
 
-    g_html1 = c1.open_galaxy_with_coords(2, 380)
-    g_html2 = c2.open_galaxy_with_coords(2, 380)
+    g_html1 = c1.open_galaxy_with_coords(galaxy=2, system=380)
+    g_html2 = c2.open_galaxy_with_coords(galaxy=2, system=380)
     assert g_html2 == g_html1
     assert c2.last_galaxy_coords == c1.last_galaxy_coords
 
-    step1 = c1.step_galaxy_system(2, 381)
-    step2 = c2.step_galaxy_system(2, 381)
+    step1 = c1.step_galaxy_system(galaxy=2, system=381)
+    step2 = c2.step_galaxy_system(galaxy=2, system=381)
     assert step2 == step1
     assert c2.last_galaxy_coords == c1.last_galaxy_coords
 
-    spy1 = c1.dispatch_galaxy_spy(2, 380, 5)
-    spy2 = c2.dispatch_galaxy_spy(2, 380, 5)
+    spy1 = c1.dispatch_galaxy_spy(galaxy=2, system=380, position=5)
+    spy2 = c2.dispatch_galaxy_spy(galaxy=2, system=380, position=5)
     assert spy2 == spy1
 
     assert c2.open_building_detail(2) == c1.open_building_detail(2)
     assert c2.open_messages() == c1.open_messages()
     assert c2.read_menu_status() == c1.read_menu_status()
-    assert srv2.launched_fleets == srv1.launched_fleets
+    assert _norm_fleets(srv2.launched_fleets) == _norm_fleets(srv1.launched_fleets)
 
 
 def test_browser_client_antibot_and_rate_limit_guards() -> None:
@@ -202,16 +231,80 @@ def test_executor_dry_run_and_permission_guards_parity() -> None:
             cost=ModelResources(1000, 2000, 0, 0),
             executable_now=True,
         ),
+        PlannedAction(
+            "P2",
+            "STATION",
+            p0.planet_id,
+            p0.coords,
+            "Station 3x Small transport -> 02:380:14",
+            "Transfer",
+            executable_now=True,
+        ),
+        PlannedAction(
+            "P2",
+            "COLONIZE",
+            p0.planet_id,
+            p0.coords,
+            "Colonize 02:380:09",
+            "Expand",
+            executable_now=True,
+        ),
+        PlannedAction(
+            "P2",
+            "RECYCLE",
+            p0.planet_id,
+            p0.coords,
+            "Recycle 02:380:05",
+            "Harvest",
+            target_level=2,
+            executable_now=True,
+        ),
+        PlannedAction(
+            "P2",
+            "DEMOLISH_BUILDING",
+            p0.planet_id,
+            p0.coords,
+            "Solar plant",
+            "Free fields",
+            target_id=7,
+            target_level=1,
+            executable_now=True,
+        ),
+        PlannedAction(
+            "P2",
+            "ABANDON_COLONY",
+            p0.planet_id,
+            p0.coords,
+            "Small colony",
+            "Too few fields",
+            target_level=300,
+            executable_now=True,
+        ),
         PlannedAction("P2", "ATTACK", p0.planet_id, p0.coords, "Attack 02:380:05", "Raid", executable_now=True),
         PlannedAction(
             "P2", "BUILD", p0.planet_id, p0.coords, "Blocked", "Not ready", target_id=1, executable_now=False
         ),
     ]
     for act in cases:
-        r1 = dry_ex1.execute_action(c1, st1, act)  # type: ignore[arg-type]
+        legacy_act = act
+        if act.kind == "TRANSPORT":
+            legacy_act = PlannedAction(
+                act.priority,
+                act.kind,
+                act.planet_id,
+                act.planet_coords,
+                act.target_name,
+                act.reason,
+                cost=LegacyResources(1000, 2000, 0, 0),  # type: ignore[arg-type]
+                executable_now=act.executable_now,
+            )
+        r1 = dry_ex1.execute_action(c1, st1, legacy_act)  # type: ignore[arg-type]
         r2 = dry_ex2.execute_action(c2, st2, act)
         assert isinstance(r2, ExecutionResult)
         assert _norm_result(r2) == _norm_result(r1)
+        if act.kind == "TRANSPORT":
+            r2_legacy = dry_ex2.execute_action(c2, st2, legacy_act)
+            assert _norm_result(r2_legacy) == _norm_result(r1)
 
     guarded_ex1 = legacy_executor_mod.ActionExecutor(
         dry_run=False,
@@ -337,14 +430,197 @@ def test_executor_live_build_throttle_spy_attack_and_rename_safety_parity() -> N
             st2 = r2.updated_state
 
     assert srv2.action_log == srv1.action_log
-    assert srv2.launched_fleets == srv1.launched_fleets
+    assert _norm_fleets(srv2.launched_fleets) == _norm_fleets(srv1.launched_fleets)
 
     # Verify planet rename safety & parity (never touches confirmPlanetDeletion / deletePlanet).
-    ren1 = ex1.sync_planet_names_in_game(c1, st1, {p0.planet_id: "HomeAlpha"}, dry_run=False)
-    ren2 = ex2.sync_planet_names_in_game(c2, st2, {p0.planet_id: "HomeAlpha"}, dry_run=False)
-    assert ren2 == ren1
+    ren1 = ex1.sync_planet_names_in_game(c1, st1, {p0.planet_id: "HomeAlpha"})
+    ren2 = ex2.sync_planet_names_in_game(c2, st2, {p0.planet_id: "HomeAlpha"})
+    assert {k: v for k, v in ren2.items() if k != "updated_state"} == {
+        k: v for k, v in ren1.items() if k != "updated_state"
+    }
+    assert _norm_state(ren2["updated_state"]) == _norm_state(ren1["updated_state"])
     assert p0.planet_id in srv2.planets
     assert srv2.planets[p0.planet_id]["name"] == srv1.planets[p0.planet_id]["name"]
+
+
+def test_executor_extended_missions_and_multiplanet_parity() -> None:
+    (srv1, c1), (srv2, c2) = _make_pair(
+        galaxy_systems={
+            (2, 380): [
+                {"position": 5, "name": "Farm", "owner": "Inactive", "status_color": "yellow", "has_debris": True},
+                {"position": 9, "name": "Empty", "owner": "", "status_color": "free"},
+            ]
+        }
+    )
+    for srv in (srv1, srv2):
+        pid0 = next(iter(srv.planets))
+        srv.planets[pid0]["ships"].update({"s1": 20, "s2": 10, "s4": 15, "s8": 2, "s10": 5, "s11": 4})
+        srv.planets[pid0]["resources"] = [50000, 50000, 50000, 50000]
+
+    st1 = c1.read_full_snapshot()
+    st2 = c2.read_full_snapshot()
+    p0 = st1.planets[0]
+
+    ex1 = legacy_executor_mod.ActionExecutor(
+        dry_run=False,
+        action_delay_range=(0.0, 0.0),
+        allow_fleetsave=True,
+        allow_raids=True,
+        allow_colonize=True,
+        allow_transport=True,
+        allow_transmitter=True,
+    )
+    ex2 = ActionExecutor(
+        dry_run=False,
+        action_delay_range=(0.0, 0.0),
+        allow_fleetsave=True,
+        allow_raids=True,
+        allow_colonize=True,
+        allow_transport=True,
+        allow_transmitter=True,
+    )
+
+    actions: list[tuple[PlannedAction, PlannedAction]] = [
+        (
+            PlannedAction(
+                "P2",
+                "RESEARCH",
+                p0.planet_id,
+                p0.coords,
+                "Energy technology",
+                "Tech",
+                target_id=2,
+                target_level=3,
+                executable_now=True,
+            ),
+            PlannedAction(
+                "P2",
+                "RESEARCH",
+                p0.planet_id,
+                p0.coords,
+                "Energy technology",
+                "Tech",
+                target_id=2,
+                target_level=3,
+                executable_now=True,
+            ),
+        ),
+        (
+            PlannedAction(
+                "P2",
+                "RECYCLE",
+                p0.planet_id,
+                p0.coords,
+                "Recycle 02:380:05",
+                "Harvest",
+                target_level=2,
+                executable_now=True,
+            ),
+            PlannedAction(
+                "P2",
+                "RECYCLE",
+                p0.planet_id,
+                p0.coords,
+                "Recycle 02:380:05",
+                "Harvest",
+                target_level=2,
+                executable_now=True,
+            ),
+        ),
+        (
+            PlannedAction(
+                "P2",
+                "COLONIZE",
+                p0.planet_id,
+                p0.coords,
+                "Colonize 02:380:09",
+                "Expand",
+                executable_now=True,
+            ),
+            PlannedAction(
+                "P2",
+                "COLONIZE",
+                p0.planet_id,
+                p0.coords,
+                "Colonize 02:380:09",
+                "Expand",
+                executable_now=True,
+            ),
+        ),
+        (
+            PlannedAction(
+                "P2",
+                "TRANSPORT",
+                p0.planet_id,
+                p0.coords,
+                "Transport -> 02:380:05",
+                "Haul",
+                cost=LegacyResources(1000, 2000, 500, 0),  # type: ignore[arg-type]
+                executable_now=True,
+            ),
+            PlannedAction(
+                "P2",
+                "TRANSPORT",
+                p0.planet_id,
+                p0.coords,
+                "Transport -> 02:380:05",
+                "Haul",
+                cost=ModelResources(1000, 2000, 500, 0),
+                executable_now=True,
+            ),
+        ),
+        (
+            PlannedAction(
+                "P2",
+                "STATION",
+                p0.planet_id,
+                p0.coords,
+                "Station 2x Small transport -> 02:380:05",
+                "Transfer",
+                executable_now=True,
+            ),
+            PlannedAction(
+                "P2",
+                "STATION",
+                p0.planet_id,
+                p0.coords,
+                "Station 2x Small transport -> 02:380:05",
+                "Transfer",
+                executable_now=True,
+            ),
+        ),
+        (
+            PlannedAction(
+                "P0",
+                "ESCAPE_FLIGHT",
+                p0.planet_id,
+                p0.coords,
+                "Escape -> 02:380:05",
+                "Save",
+                executable_now=True,
+            ),
+            PlannedAction(
+                "P0",
+                "ESCAPE_FLIGHT",
+                p0.planet_id,
+                p0.coords,
+                "Escape -> 02:380:05",
+                "Save",
+                executable_now=True,
+            ),
+        ),
+    ]
+    for act1, act2 in actions:
+        r1 = ex1.execute_action(c1, st1, act1)  # type: ignore[arg-type]
+        r2 = ex2.execute_action(c2, st2, act2)
+        assert _norm_result(r2) == _norm_result(r1)
+        if r1.updated_state is not None:
+            st1 = r1.updated_state
+        if r2.updated_state is not None:
+            st2 = r2.updated_state
+
+    assert srv2.action_log == srv1.action_log
+    assert _norm_fleets(srv2.launched_fleets) == _norm_fleets(srv1.launched_fleets)
 
 
 def test_section4_ast_loc_and_strict_session_layering() -> None:
