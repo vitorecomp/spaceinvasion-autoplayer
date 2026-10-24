@@ -15,7 +15,7 @@ from alembic.runtime.migration import MigrationContext
 from alembic.script import ScriptDirectory
 from sqlalchemy import Connection, Engine, insert, inspect, text
 
-from spaceinvasion.db.alembic_migrations.backup import (
+from spaceinvasion.db.migrations.backup import (
     NO_BACKUP,
     BackupCallback,
     BackupOption,
@@ -125,32 +125,32 @@ def compute_revision_checksum(revision_id: str) -> str:
     return hasher.hexdigest()
 
 
-def get_current_revision(engine: Engine | DatabaseEngine) -> str | None:
+def get_current_revision(engine: Engine | DatabaseEngine | Connection) -> str | None:
     """Return the active revision stored in `alembic_version`, or `None` if unversioned."""
+    if isinstance(engine, Connection):
+        return MigrationContext.configure(engine).get_current_revision()
     sa_engine = _unwrap_engine(engine)
     with sa_engine.connect() as conn:
         ctx = MigrationContext.configure(conn)
         return ctx.get_current_revision()
 
 
-def verify_models_match_migrations(engine: Engine | DatabaseEngine) -> list[object]:
+def _compare_metadata_on_conn(conn: Connection) -> list[object]:
+    ctx = MigrationContext.configure(
+        conn,
+        opts={"compare_type": True, "compare_server_default": True, "include_object": _include_object},
+    )
+    raw_diffs: object = compare_metadata(ctx, Base.metadata)
+    return list(raw_diffs) if isinstance(raw_diffs, (list, tuple)) else []
+
+
+def verify_models_match_migrations(engine: Engine | DatabaseEngine | Connection) -> list[object]:
     """Compare live PostgreSQL schema against `Base.metadata` via `compare_metadata`."""
+    if isinstance(engine, Connection):
+        return _compare_metadata_on_conn(engine)
     sa_engine = _unwrap_engine(engine)
     with sa_engine.connect() as conn:
-        ctx = MigrationContext.configure(
-            conn,
-            opts={
-                "compare_type": True,
-                "compare_server_default": True,
-                "include_object": _include_object,
-            },
-        )
-        raw_diffs: object = compare_metadata(ctx, Base.metadata)
-    diffs: list[object] = []
-    if isinstance(raw_diffs, (list, tuple)):
-        for item in raw_diffs:
-            diffs.append(item)
-    return diffs
+        return _compare_metadata_on_conn(conn)
 
 
 def verify_schema_against_models(dsn: str) -> list[object]:

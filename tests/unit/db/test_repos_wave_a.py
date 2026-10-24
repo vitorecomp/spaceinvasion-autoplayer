@@ -24,7 +24,7 @@ from spaceinvasion.db.session import DatabaseEngine, count_statements, db_uow
 from tests.pg_harness import DisposablePostgresServer
 from tests.unit.db.reference_workload import (
     WAVE_A_TABLES,
-    run_legacy_workload,
+    run_gateway_workload,
     run_orm_workload,
     snapshot_tables,
 )
@@ -39,7 +39,8 @@ _FORBIDDEN_IMPORTS: frozenset[str] = frozenset(
     {
         "bin",
         "spaceinvasion.combat",
-        "spaceinvasion.db.migrations",
+        "spaceinvasion.db.backend",
+        "spaceinvasion.db.postgres",
         "spaceinvasion.db.storage",
         "spaceinvasion.parsing",
         "spaceinvasion.planner",
@@ -59,17 +60,17 @@ def _assert_no_orm_leak(obj: object) -> None:
             _assert_no_orm_leak(val)
 
 
-def test_wave_a_orm_repositories_match_legacy_game_database_rows_exactly(
+def test_wave_a_orm_repositories_match_runtime_gateway_rows_exactly(
     pg_harness: DisposablePostgresServer,
 ) -> None:
-    """Wave A ORM repos reproduce 100% identical PostgreSQL table rows to `GameDatabase`."""
-    legacy_dsn = pg_harness.create_database(prefix="wave_a_legacy", from_template=True)
+    """Wave A ORM repos reproduce 100% identical PostgreSQL table rows to `RuntimeDatabaseGateway`."""
+    gateway_dsn = pg_harness.create_database(prefix="wave_a_gateway", from_template=True)
     orm_dsn = pg_harness.create_database(prefix="wave_a_orm", from_template=True)
 
-    run_legacy_workload(legacy_dsn)
+    run_gateway_workload(gateway_dsn)
     run_orm_workload(orm_dsn)
 
-    expected = snapshot_tables(legacy_dsn, WAVE_A_TABLES)
+    expected = snapshot_tables(gateway_dsn, WAVE_A_TABLES)
     actual = snapshot_tables(orm_dsn, WAVE_A_TABLES)
     for table in WAVE_A_TABLES:
         assert actual[table] == expected[table], f"Row parity mismatch on table `{table}`"

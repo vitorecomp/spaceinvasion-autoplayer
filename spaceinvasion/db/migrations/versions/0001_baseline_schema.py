@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from spaceinvasion.db.alembic_migrations.baseline import (
+from spaceinvasion.db.migrations.baseline import (
     create_baseline_schema,
     drop_baseline_schema,
 )

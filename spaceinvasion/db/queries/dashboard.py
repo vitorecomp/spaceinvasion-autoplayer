@@ -8,11 +8,6 @@ from sqlalchemy import Engine, case, func, inspect, select, text
 from sqlalchemy.orm import Session
 from sqlalchemy.sql.elements import ColumnElement
 
-from spaceinvasion.db.alembic_migrations import (
-    BASELINE_REVISION,
-    get_current_revision,
-    verify_models_match_migrations,
-)
 from spaceinvasion.db.dto import (
     ConfigOptimizerGoalsRecord,
     DashboardTimeSeriesRecord,
@@ -21,6 +16,11 @@ from spaceinvasion.db.dto import (
     HourlyProductionRecord,
     PlanetBuildingGoalsRecord,
     TableTiersSummary,
+)
+from spaceinvasion.db.migrations import (
+    BASELINE_REVISION,
+    get_current_revision,
+    verify_models_match_migrations,
 )
 from spaceinvasion.db.models import (
     Base,
@@ -207,14 +207,15 @@ def query_db_verify(
     engine: Engine | DatabaseEngine,
 ) -> DbVerifyRecord:
     """Verify PostgreSQL catalog tables, ORM zero-drift equivalence, Alembic revision, and ledger integrity."""
-    sa_engine = engine.engine if isinstance(engine, DatabaseEngine) else engine
-    existing = set(inspect(sa_engine).get_table_names(schema="public"))
+    del engine
+    conn = session.connection()
+    existing = set(inspect(conn).get_table_names(schema="public"))
     missing = tuple(tbl for tbl in GAME_REQUIRED_TABLES if tbl not in existing)
     counts = _batched_table_counts(session, existing)
     tiers = _build_tiers_summary(counts)
 
-    alembic_rev = get_current_revision(sa_engine)
-    schema_diffs = tuple(str(d) for d in verify_models_match_migrations(sa_engine)) if not missing else ()
+    alembic_rev = get_current_revision(conn)
+    schema_diffs = tuple(str(d) for d in verify_models_match_migrations(conn)) if not missing else ()
 
     ledger_ok = False
     events_count = 0

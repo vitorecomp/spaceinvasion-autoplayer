@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from spaceinvasion.db.alembic_migrations.runner import (
+from spaceinvasion.db.migrations.runner import (
     ALEMBIC_SCRIPT_LOCATION,
     BASELINE_REVISION,
     IGNORED_METADATA_TABLES,

@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from spaceinvasion.db.repos._hot_refresh import refresh_colony_candidates_hot, refresh_galaxy_sectors_hot
+from spaceinvasion.db.repos._planner_helpers import normalize_floors
+from spaceinvasion.db.repos._queue_matching import complete_matching_queue_item
 from spaceinvasion.db.repos.colonies import ColoniesRepository, ColonyCandidateHotInput
 from spaceinvasion.db.repos.galaxy import GalaxyRepository, GalaxySlotInput
 from spaceinvasion.db.repos.intel import IntelRepository, SpyReportInput, SpyTargetUpsertInput
@@ -46,6 +49,10 @@ __all__ = [
     "StateSnapshotInput",
     "TelemetryRepository",
     "UniverseResearchMaxInput",
+    "complete_matching_queue_item",
     "format_notification_code",
+    "normalize_floors",
     "parse_notification_id",
+    "refresh_colony_candidates_hot",
+    "refresh_galaxy_sectors_hot",
 ]

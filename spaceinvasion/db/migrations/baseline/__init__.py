@@ -4,15 +4,15 @@ from __future__ import annotations
 
 from alembic import op
 
-from spaceinvasion.db.alembic_migrations.baseline.empire_tables import (
+from spaceinvasion.db.migrations.baseline.empire_tables import (
     EMPIRE_TABLE_NAMES,
     create_empire_tables,
 )
-from spaceinvasion.db.alembic_migrations.baseline.planner_and_settings_tables import (
+from spaceinvasion.db.migrations.baseline.planner_and_settings_tables import (
     PLANNER_AND_SETTINGS_TABLE_NAMES,
     create_planner_and_settings_tables,
 )
-from spaceinvasion.db.alembic_migrations.baseline.world_tables import (
+from spaceinvasion.db.migrations.baseline.world_tables import (
     WORLD_TABLE_NAMES,
     create_world_tables,
 )

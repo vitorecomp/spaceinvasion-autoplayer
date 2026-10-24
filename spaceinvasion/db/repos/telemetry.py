@@ -23,7 +23,14 @@ from spaceinvasion.db.models import (
     HourlyProductionHistory,
     TutorialProgress,
 )
-from spaceinvasion.db.repos._helpers import clamp_int64, dumps_json, loads_json_dict, round_ts, sanitize_text
+from spaceinvasion.db.repos._helpers import (
+    affected_rows,
+    clamp_int64,
+    dumps_json,
+    loads_json_dict,
+    round_ts,
+    sanitize_text,
+)
 from spaceinvasion.db.repos._telemetry_rollups import (
     UniverseResearchMaxInput,
     bulk_upsert_research_max,
@@ -305,6 +312,16 @@ class TelemetryRepository:
             last_seen_ts=float(row.last_seen_ts),
             completed_ts=float(row.completed_ts) if row.completed_ts is not None else None,
         )
+
+    def complete_open_tutorial_steps(self, *, ts: float | None = None) -> int:
+        """Mark all currently incomplete tutorial steps completed when tutorial disappears."""
+        now_ts = round_ts(ts)
+        res = self._session.execute(
+            update(TutorialProgress)
+            .where(TutorialProgress.completed_ts.is_(None))
+            .values(completed_ts=func.coalesce(TutorialProgress.completed_ts, now_ts))
+        )
+        return affected_rows(res)
 
     def list_tutorial_progress(self) -> tuple[TutorialProgressRecord, ...]:
         """List observed tutorial progress steps ordered ascending by step."""

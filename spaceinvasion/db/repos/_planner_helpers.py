@@ -121,4 +121,56 @@ def extract_ai_kpis(
     return max(1, to_int(rw_raw, 26)), to_float(wd_raw, 0.9), to_float(disc_raw, 0.0), to_float(tnet_raw, 0.0), cnt
 
 
-__all__ = ["extract_ai_kpis", "merge_floors", "normalize_floors", "normalize_specs"]
+def apply_floor_update(
+    existing: dict[str, dict[str, int]],
+    planet_key: str,
+    building_key: str,
+    min_level: int,
+) -> dict[str, dict[str, int]]:
+    """Mutate a copy of `existing` floors with a single planet/building floor update."""
+    floors = {pk: dict(bmap) for pk, bmap in existing.items()}
+    pk = sanitize_text(planet_key, 64).strip()
+    bk = normalize_building_key(building_key)
+    lvl = max(0, to_int(min_level, 0))
+    if pk and bk:
+        if lvl > 0:
+            floors.setdefault(pk, {})[bk] = clamp_int64(lvl)
+        elif pk in floors:
+            floors[pk].pop(bk, None)
+            if not floors[pk]:
+                floors.pop(pk, None)
+    return floors
+
+
+def apply_spec_updates(
+    existing: dict[str, str],
+    updates: Mapping[str, object],
+    *,
+    replace: bool,
+) -> dict[str, str]:
+    """Merge or replace per-planet specialization locks, treating `auto`/empty as unlock."""
+    if replace:
+        return normalize_specs(updates)
+    next_specs = dict(existing)
+    for pk_raw, spec_raw in updates.items():
+        pk = sanitize_text(pk_raw, 64).strip()
+        if not pk:
+            continue
+        norm = sanitize_text(spec_raw).strip().lower().replace(" ", "_") if spec_raw is not None else ""
+        if not norm or norm == "auto":
+            next_specs.pop(pk, None)
+        else:
+            spec = _SPEC_ALIASES.get(norm, norm)
+            if spec in _VALID_SPECS:
+                next_specs[pk] = spec
+    return next_specs
+
+
+__all__ = [
+    "apply_floor_update",
+    "apply_spec_updates",
+    "extract_ai_kpis",
+    "merge_floors",
+    "normalize_floors",
+    "normalize_specs",
+]

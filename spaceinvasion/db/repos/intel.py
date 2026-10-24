@@ -13,6 +13,7 @@ from spaceinvasion.db.models import GalaxySlot, SpyReportRecord, SpyTarget
 from spaceinvasion.db.repos._helpers import (
     affected_rows,
     clamp_int64,
+    coord_query_variants,
     dumps_json,
     normalize_coords,
     parse_coords_gsp,
@@ -231,6 +232,19 @@ class IntelRepository:
         if not norm_c:
             return None
         row = self._session.execute(select(SpyTarget).where(SpyTarget.coords == norm_c).limit(1)).scalar_one_or_none()
+        return spy_target_to_dto(row) if row is not None else None
+
+    def get_target_by_coords_non_own(self, coords: str) -> SpyTargetRecord | None:
+        """Fetch an active, non-own, unmerged `spy_targets` row matching `coords`."""
+        variants = coord_query_variants(coords)
+        if not variants:
+            return None
+        row = self._session.execute(
+            select(SpyTarget)
+            .where(SpyTarget.coords.in_(variants), SpyTarget.merged_into == "", SpyTarget.is_own_planet == 0)
+            .order_by(case((SpyTarget.last_spied_ts > 0.0, 1), else_=0).desc(), SpyTarget.last_scanned_ts.desc())
+            .limit(1)
+        ).scalar_one_or_none()
         return spy_target_to_dto(row) if row is not None else None
 
     def list_spy_reports(

@@ -12,11 +12,6 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.exc import InvalidRequestError
 from sqlalchemy.orm import RelationshipProperty, Session, selectinload
 
-from spaceinvasion.db.migrations import (
-    GAME_REQUIRED_TABLES,
-    HISTORY_TABLES,
-    HOT_TABLES,
-)
 from spaceinvasion.db.models import (
     Base,
     ColonyCandidateHot,
@@ -29,11 +24,15 @@ from spaceinvasion.db.models import (
     StrategyConfigStore,
     UiNotification,
 )
+from spaceinvasion.db.queries import (
+    GAME_REQUIRED_TABLES,
+    HISTORY_TABLES,
+    HOT_TABLES,
+)
 from tests.pg_harness import DisposablePostgresServer
 
-# Internal SQLite-emulation PRAGMA storage table created only by `PostgresPoolBackend`
-# (excluded from `_list_tables()` and retired in Phase 3b step 6).
-_INTERNAL_EMULATION_TABLES: frozenset[str] = frozenset({"_pg_pragma_meta"})
+# Internal catalog/versioning tables excluded from 40-table ORM metadata comparison.
+_INTERNAL_EMULATION_TABLES: frozenset[str] = frozenset({"_pg_pragma_meta", "alembic_version"})
 _REPO_ROOT: Path = Path(__file__).resolve().parents[3]
 _MODELS_DIR: Path = _REPO_ROOT / "spaceinvasion" / "db" / "models"
 _FORBIDDEN_MODEL_IMPORTS: frozenset[str] = frozenset(
