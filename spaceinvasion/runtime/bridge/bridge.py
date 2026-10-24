@@ -218,5 +218,11 @@ class ModularGameApiBridge:
         self.lifecycle.record_antibot_pause(exc)
         self.views.publish_snapshot()
 
+    def start_galaxy_sweep_worker(self) -> None:
+        self.galaxy_sweep.start_galaxy_sweep_worker()
+
+    def stop_galaxy_sweep_worker(self) -> None:
+        self.galaxy_sweep.stop_galaxy_sweep_worker()
+
 
 GameApiBridge = ModularGameApiBridge

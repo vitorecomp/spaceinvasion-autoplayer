@@ -5,9 +5,8 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 
-from spaceinvasion.core.state import GameState, PlanetState, homeworld_planet_id
+from spaceinvasion.core.model import GameState, PlanetState, PlannedAction, homeworld_planet_id
 from spaceinvasion.db.storage import GameDatabase
-from spaceinvasion.planner.strategy import PlannedAction
 from spaceinvasion.runtime.api.handlers._browser_proto import BrowserBridgeFacade
 from spaceinvasion.runtime.api.handlers._browser_session import BrowserCommandSession, run_browser_command
 from spaceinvasion.runtime.api.handlers._exec_nav_pages import (

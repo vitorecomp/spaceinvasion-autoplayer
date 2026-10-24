@@ -6,8 +6,8 @@ from collections.abc import Callable
 from dataclasses import asdict, replace
 import time
 
-from spaceinvasion.core.state import GameState, parse_home_metadata, parse_tutorial_from_home
-from spaceinvasion.planner.strategy import PlannedAction
+from spaceinvasion.core.model import GameState, PlannedAction
+from spaceinvasion.parsing import parse_home_metadata, parse_tutorial_from_home
 from spaceinvasion.runtime.bridge._context import BridgeContext
 from spaceinvasion.runtime.bridge._exec_postprocess import ExecutionHooks
 from spaceinvasion.runtime.bridge._helpers import redact_api_payload, sanitize_finite_json, sanitize_json_dict

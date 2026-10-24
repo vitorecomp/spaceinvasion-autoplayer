@@ -10,11 +10,10 @@ import threading
 import time
 import weakref
 
-from spaceinvasion.core import game_data
+from spaceinvasion.core import catalog as game_data
 from spaceinvasion.core.config import StrategyConfig
-from spaceinvasion.core.state import GameState, PlanetState
+from spaceinvasion.core.model import GameState, PlanetState, PlannedAction
 from spaceinvasion.db.backend import is_container_runtime
-from spaceinvasion.planner.strategy import PlannedAction
 from spaceinvasion.runtime.api.validation import ApiRequestError
 from spaceinvasion.runtime.bridge._context_init import (
     BridgeConstants,

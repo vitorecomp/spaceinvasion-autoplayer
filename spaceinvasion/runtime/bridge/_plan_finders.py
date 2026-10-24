@@ -4,20 +4,17 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from spaceinvasion.combat.fleet import normalize_coords
-from spaceinvasion.core import game_data
-from spaceinvasion.core.state import (
+from spaceinvasion.core import catalog as game_data
+from spaceinvasion.core.coords import normalize_coords
+from spaceinvasion.core.model import (
     BuildingOffer,
     GameState,
     PlanetState,
+    PlannedAction,
     is_building_allowed_on_planet_type,
     normalize_planet_type,
 )
-from spaceinvasion.planner.strategy import (
-    PlannedAction,
-    _is_stale_remote_resource_wait,
-    _resources_from_dict,
-)
+from spaceinvasion.planner.heuristics import _is_stale_remote_resource_wait, _resources_from_dict
 from spaceinvasion.runtime.bridge._context import BridgeContext
 from spaceinvasion.runtime.bridge._helpers import safe_api_int
 from spaceinvasion.runtime.bridge._plan_helpers import check_demolish_energy_safety

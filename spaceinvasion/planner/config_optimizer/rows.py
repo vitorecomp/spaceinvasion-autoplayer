@@ -6,8 +6,8 @@ from collections.abc import Mapping
 
 from spaceinvasion.core import game_data
 from spaceinvasion.core.coercion import coerce_int
-from spaceinvasion.planner.config_opt._protocols import as_float_dict, as_int_dict, as_str_dict
-from spaceinvasion.planner.config_opt.catalog_math import (
+from spaceinvasion.planner.config_optimizer._protocols import as_float_dict, as_int_dict, as_str_dict
+from spaceinvasion.planner.config_optimizer.catalog_math import (
     building_info,
     fmt_duration,
     last_level_build_time,
@@ -15,14 +15,14 @@ from spaceinvasion.planner.config_opt.catalog_math import (
     warehouse_capacity,
     warehouse_level_for,
 )
-from spaceinvasion.planner.config_opt.constants import (
+from spaceinvasion.planner.config_optimizer.constants import (
     RESOURCE_KEYS,
     SPECIALIZATION_ALLOWED_BUILDINGS,
     WAREHOUSE_KEYS,
     FloatArray,
 )
-from spaceinvasion.planner.config_opt.params import normalize_planet_specialization
-from spaceinvasion.planner.config_opt.tech_graph import (
+from spaceinvasion.planner.config_optimizer.params import normalize_planet_specialization
+from spaceinvasion.planner.config_optimizer.tech_graph import (
     building_upgrade_cost_spice_eq,
     building_upgrade_costs,
     largest_costs,

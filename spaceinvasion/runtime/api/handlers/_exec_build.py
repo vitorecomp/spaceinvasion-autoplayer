@@ -6,9 +6,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 import math
 
-from spaceinvasion.core import game_data
-from spaceinvasion.core.state import GameState, normalize_planet_type
-from spaceinvasion.planner.strategy import PlannedAction
+from spaceinvasion.core import catalog as game_data
+from spaceinvasion.core.model import GameState, PlannedAction, normalize_planet_type
 from spaceinvasion.runtime.api.handlers._browser_proto import BrowserBridgeFacade
 from spaceinvasion.runtime.api.handlers._browser_session import BrowserCommandSession, run_browser_command
 from spaceinvasion.runtime.api.registry import CommandRegistry

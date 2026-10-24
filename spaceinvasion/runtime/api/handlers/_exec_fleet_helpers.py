@@ -6,9 +6,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass, replace
 import re
 
-from spaceinvasion.combat.fleet import normalize_coords
-from spaceinvasion.core.state import GameState, is_undersized_fresh_colony
-from spaceinvasion.planner.strategy import PlannedAction
+from spaceinvasion.core.coords import normalize_coords
+from spaceinvasion.core.model import GameState, PlannedAction, is_undersized_fresh_colony
 from spaceinvasion.runtime.api.handlers._browser_proto import BrowserBridgeFacade
 from spaceinvasion.runtime.api.handlers._browser_session import BrowserCommandSession, run_browser_command
 from spaceinvasion.runtime.api.validation import ApiRequestError

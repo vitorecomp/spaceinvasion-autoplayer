@@ -5,8 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 import time
 
-from spaceinvasion.core.logging_utils import append_crash_debug_log
-from spaceinvasion.core.state import GameState
+from spaceinvasion.core.model import GameState
 from spaceinvasion.runtime.api.validation import ApiRequestError
 from spaceinvasion.runtime.bridge._context import BridgeContext
 from spaceinvasion.runtime.bridge._context_init import BridgeConstants
@@ -31,6 +30,7 @@ from spaceinvasion.runtime.bridge._state_offers import (
 )
 from spaceinvasion.runtime.bridge.lifecycle import BridgeLifecycleService
 from spaceinvasion.runtime.bridge.planet_names import PlanetNameService
+from spaceinvasion.runtime.logs import append_crash_debug_log
 from spaceinvasion.session.auth import AntiBotChallengeError, SpaceInvasionAuthError
 from spaceinvasion.session.client import GameBrowserClient, RateLimitError
 

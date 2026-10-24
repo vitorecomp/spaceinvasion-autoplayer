@@ -16,7 +16,7 @@ from spaceinvasion.core.model import (
     Resources,
 )
 from spaceinvasion.core.model import PlannedAction
-from spaceinvasion.runtime.api_server import GameApiBridge
+from spaceinvasion.runtime.bridge import GameApiBridge
 from spaceinvasion.session.executor import ExecutionResult
 
 

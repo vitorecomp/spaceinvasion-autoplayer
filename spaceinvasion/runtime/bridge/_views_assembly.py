@@ -7,7 +7,7 @@ from dataclasses import asdict
 import time
 
 from spaceinvasion.core.config import normalize_planner_mode
-from spaceinvasion.core.state import GameState
+from spaceinvasion.core.model import GameState
 from spaceinvasion.runtime.bridge._context import BridgeContext
 from spaceinvasion.runtime.bridge._helpers import (
     SERVER_BOOT_ID,

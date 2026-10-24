@@ -12,24 +12,24 @@ from typing import NamedTuple
 import numpy as np
 
 from spaceinvasion.core import game_data
-from spaceinvasion.planner.config_opt._protocols import PlanetLike, as_int_dict, map_float, map_int, map_str
-from spaceinvasion.planner.config_opt._search_reserve import GAHistoryRow, RoundRow
-from spaceinvasion.planner.config_opt.catalog_math import full_cost, ship_info, spice_eq
-from spaceinvasion.planner.config_opt.constants import (
+from spaceinvasion.planner.config_optimizer._protocols import PlanetLike, as_int_dict, map_float, map_int, map_str
+from spaceinvasion.planner.config_optimizer._search_reserve import GAHistoryRow, RoundRow
+from spaceinvasion.planner.config_optimizer.catalog_math import full_cost, ship_info, spice_eq
+from spaceinvasion.planner.config_optimizer.constants import (
     RESOURCE_KEYS,
     SPECIALIZATION_ALLOWED_BUILDINGS,
     WAREHOUSE_KEYS,
     FloatArray,
     IntArray,
 )
-from spaceinvasion.planner.config_opt.model import EmpireProductionModel
-from spaceinvasion.planner.config_opt.params import _json_ready, normalize_planet_specialization
-from spaceinvasion.planner.config_opt.rows import (
+from spaceinvasion.planner.config_optimizer.model import EmpireProductionModel
+from spaceinvasion.planner.config_optimizer.params import _json_ready, normalize_planet_specialization
+from spaceinvasion.planner.config_optimizer.rows import (
     _planet_building_rows,
     _warehouse_requirement_rows,
     detect_planet_specialization,
 )
-from spaceinvasion.planner.config_opt.tech_graph import (
+from spaceinvasion.planner.config_optimizer.tech_graph import (
     building_upgrade_cost_spice_eq,
     research_upgrade_cost_spice_eq,
 )

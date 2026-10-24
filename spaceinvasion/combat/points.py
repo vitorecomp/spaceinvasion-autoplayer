@@ -14,7 +14,6 @@ from spaceinvasion.combat._combat_overview import build_combat_overview_payload
 from spaceinvasion.combat._points_helpers import (
     MAX_ETA_FLOAT,
     MAX_JSON_SAFE,
-    POINTS_PER_RESOURCE_DIVISOR,
     cap_eta_float,
     estimate_hourly_economy,
     safe_big_float,
@@ -22,6 +21,9 @@ from spaceinvasion.combat._points_helpers import (
     safe_eta_str,
     safe_nonneg_int,
     safe_optional_finite_int,
+)
+from spaceinvasion.combat._points_helpers import (
+    POINTS_PER_RESOURCE_DIVISOR as POINTS_PER_RESOURCE_DIVISOR,
 )
 from spaceinvasion.combat._points_helpers import (
     estimate_planet_hourly_economy as estimate_planet_hourly_economy,

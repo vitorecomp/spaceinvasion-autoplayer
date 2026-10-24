@@ -6,7 +6,7 @@ from collections.abc import Sequence
 
 import numpy as np
 
-from spaceinvasion.planner.config_opt._search_catalogue import (
+from spaceinvasion.planner.config_optimizer._search_catalogue import (
     ProgressCallback,
     ScoreFn,
     balanced_score,
@@ -16,7 +16,7 @@ from spaceinvasion.planner.config_opt._search_catalogue import (
     planet_moves,
     smallest_limit,
 )
-from spaceinvasion.planner.config_opt._search_reserve import (
+from spaceinvasion.planner.config_optimizer._search_reserve import (
     GAHistoryRow,
     RoundRow,
     SearchRoundResult,
@@ -27,8 +27,8 @@ from spaceinvasion.planner.config_opt._search_reserve import (
     _refine_overshot_central_reserve,
     central_reserve_needed,
 )
-from spaceinvasion.planner.config_opt.constants import RESOURCE_KEYS, FloatArray, IntArray
-from spaceinvasion.planner.config_opt.model import EmpireProductionModel
+from spaceinvasion.planner.config_optimizer.constants import RESOURCE_KEYS, FloatArray, IntArray
+from spaceinvasion.planner.config_optimizer.model import EmpireProductionModel
 
 SearchInRoundsResult = tuple[
     EmpireProductionModel,

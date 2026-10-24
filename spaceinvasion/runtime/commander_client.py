@@ -5,16 +5,21 @@ from __future__ import annotations
 from collections.abc import Mapping
 import math
 from typing import Any, Optional
+
 import requests
 
+from spaceinvasion.core.model import GameState, game_state_from_dict
+from spaceinvasion.core.redaction import redact_sensitive
 from spaceinvasion.runtime.cli_support import safe_cli_str
 from spaceinvasion.session.http_pools import (
     close_http_response as _close_http_response,
+)
+from spaceinvasion.session.http_pools import (
     close_http_session as _close_http_session,
+)
+from spaceinvasion.session.http_pools import (
     configure_http_session_pools as _configure_http_session_pools,
 )
-from spaceinvasion.core.model import GameState, game_state_from_dict
-from spaceinvasion.core.redaction import redact_sensitive
 
 
 def _safe_api_timeout(raw: Any, default: float = 30.0) -> float:

@@ -88,7 +88,7 @@ class GoldenSuiteContract(unittest.TestCase):
                 self.assertEqual(capture.capture_group(group), capture.capture_group(group))
 
     def test_api_session_skips_removed_and_ga_nn_commands(self) -> None:
-        from spaceinvasion.runtime.api_server import GameApiBridge
+        from spaceinvasion.runtime.api.handlers import build_command_registry
         from tests.goldens.api_scenario import API_STEPS, REMOVED_COMMANDS
 
         sent = [step.command for step in API_STEPS if step.command is not None]
@@ -98,7 +98,7 @@ class GoldenSuiteContract(unittest.TestCase):
             self.assertNotEqual(cmd.get("planner_mode"), "ga_nn")
             self.assertNotEqual((cmd.get("config") or {}).get("planner_mode"), "ga_nn")
         # Every command that survives Decision D5 has a golden; the one unknown name is the error case.
-        kept = set(GameApiBridge._KNOWN_COMMANDS) - REMOVED_COMMANDS
+        kept = {spec.name for spec in build_command_registry().specs()} - REMOVED_COMMANDS
         self.assertEqual(names - kept, {"no_such_command"})
         self.assertEqual(kept - names, set())
 

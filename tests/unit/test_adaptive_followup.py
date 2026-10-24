@@ -36,7 +36,7 @@ from spaceinvasion.planner.heuristics import (
 )
 from spaceinvasion.planner.heuristics._common import _ship_offer_map
 from spaceinvasion.planner.heuristics._shipyard_targets import _plan_planet_shipyard_targets
-from spaceinvasion.runtime.api_server import GameApiBridge
+from spaceinvasion.runtime.bridge import GameApiBridge
 from tests.unit.test_ai_planner import _make_planet, _sample_target_config, _target_planet_entry
 from tests.unit.test_strategy import _adaptive_cfg, _colony, _state
 

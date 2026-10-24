@@ -6,10 +6,9 @@ from collections.abc import Callable, Mapping, Sequence
 import math
 
 from spaceinvasion.core.config import StrategyConfig
-from spaceinvasion.core.state import GameState, Resources
-from spaceinvasion.planner import ai_planner as ai_mod
-from spaceinvasion.planner.strategy import (
-    PlannedAction,
+from spaceinvasion.core.model import GameState, PlannedAction, Resources
+from spaceinvasion.planner import ai as ai_mod
+from spaceinvasion.planner.heuristics import (
     merge_manual_queue_actions,
     plan_ai_blast_furnace_throttles,
     plan_fleet_and_attack_actions,

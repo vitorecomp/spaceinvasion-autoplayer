@@ -15,7 +15,6 @@ import signal
 import sys
 import threading
 
-
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
@@ -24,27 +23,31 @@ from spaceinvasion.runtime.cli_support import maybe_reexec_venv, safe_cli_str  #
 
 maybe_reexec_venv(_REPO_ROOT, skip=os.environ.get("SPACEINVASION_NO_REEXEC") == "1")
 
+from spaceinvasion.core.redaction import redact_sensitive  # noqa: E402
 from spaceinvasion.db.backend import is_container_runtime  # noqa: E402
-from spaceinvasion.session.auth import AntiBotChallengeError, SpaceInvasionAuthError  # noqa: E402
-from spaceinvasion.session.browser import (  # noqa: E402
-    DEFAULT_DEBUG_HOST,
-    DEFAULT_DEBUG_PORT,
-    is_debug_port_open,
-)
-from spaceinvasion.runtime.api_server import (  # noqa: E402
-    GameApiBridge,
-    create_api_server,
-    ensure_debug_browser_ready,
-)
-from spaceinvasion.core.logging_utils import redact_sensitive  # noqa: E402
+from spaceinvasion.runtime.api.http_server import create_api_server  # noqa: E402
+from spaceinvasion.runtime.bridge import GameApiBridge, ensure_debug_browser_ready  # noqa: E402
 from spaceinvasion.runtime.reloader import (  # noqa: E402
     current_python_cmd,
     discover_watch_paths,
     should_spawn_reloader,
     watch_and_run,
 )
+from spaceinvasion.session.auth import AntiBotChallengeError, SpaceInvasionAuthError  # noqa: E402
+from spaceinvasion.session.browser import (  # noqa: E402
+    DEFAULT_DEBUG_HOST,
+    DEFAULT_DEBUG_PORT,
+    is_debug_port_open,
+)
 
 WATCH_PATHS = discover_watch_paths(_REPO_ROOT, entrypoints=(Path(__file__).resolve(),))
+_STARTUP_ERRORS = (SpaceInvasionAuthError, OSError, RuntimeError, ValueError)
+
+
+def _emit(line: str, *, err: bool = False) -> None:
+    stream = sys.stderr if err else sys.stdout
+    stream.write(f"{line}\n")
+    stream.flush()
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -96,6 +99,12 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Directory for API command logs (default: logs).",
     )
     parser.add_argument(
+        "--ui-dir",
+        type=Path,
+        default=Path(os.environ["SPACEINVASION_UI_DIR"]) if os.environ.get("SPACEINVASION_UI_DIR") else None,
+        help="Optional directory serving the compiled Web Operator Console bundle (defaults to SPACEINVASION_UI_DIR or spaceinvasion/ui).",
+    )
+    parser.add_argument(
         "--reload",
         action="store_true",
         help="Hot-reload the API server whenever backend Python files change (Chrome stays open).",
@@ -107,10 +116,34 @@ def _safe_err_text(exc: BaseException) -> str:
     return safe_cli_str(exc, redact_fn=redact_sensitive)
 
 
-def main(argv: list[str] | None = None) -> int:
-    parser = _build_parser()
-    args = parser.parse_args(argv)
+def _prepare_browser_or_defer(args: argparse.Namespace) -> tuple[bool, BaseException | None]:
+    try:
+        if args.debug_host == "127.0.0.1":
+            ensure_debug_browser_ready(debug_port=args.debug_port, env_file=args.env_file, account=args.account)
+        else:
+            ensure_debug_browser_ready(
+                debug_port=args.debug_port,
+                debug_host=args.debug_host,
+                env_file=args.env_file,
+                account=args.account,
+            )
+        return True, None
+    except _STARTUP_ERRORS as exc:
+        if not isinstance(exc, SpaceInvasionAuthError) and not is_container_runtime():
+            raise
+        if is_container_runtime() and is_debug_port_open(args.debug_port, args.debug_host):
+            _emit(
+                f"[API] Browser requires operator login/CAPTCHA in noVNC (:7900) "
+                f"({redact_sensitive(_safe_err_text(exc))}); starting API in paused state...",
+                err=True,
+            )
+            return True, exc
+        _emit(f"[API] Browser startup error: {redact_sensitive(_safe_err_text(exc))}", err=True)
+        return False, exc
 
+
+def main(argv: list[str] | None = None) -> int:
+    args = _build_parser().parse_args(argv)
     if should_spawn_reloader(args.reload):
         raw_argv = sys.argv[1:] if argv is None else argv
         return watch_and_run(
@@ -119,39 +152,9 @@ def main(argv: list[str] | None = None) -> int:
             watch_paths=(*WATCH_PATHS, _REPO_ROOT / "spaceinvasion"),
         )
 
-    startup_auth_exc: BaseException | None = None
-    try:
-        if args.debug_host == "127.0.0.1":
-            ensure_debug_browser_ready(
-                debug_port=args.debug_port,
-                env_file=args.env_file,
-                account=args.account,
-            )
-        else:
-            ensure_debug_browser_ready(
-                debug_port=args.debug_port,
-                debug_host=args.debug_host,
-                env_file=args.env_file,
-                account=args.account,
-            )
-    except Exception as exc:
-        if not isinstance(exc, SpaceInvasionAuthError) and not is_container_runtime():
-            raise
-        if is_container_runtime() and is_debug_port_open(args.debug_port, args.debug_host):
-            startup_auth_exc = exc
-            print(
-                f"[API] Browser requires operator login/CAPTCHA in noVNC (:7900) "
-                f"({redact_sensitive(_safe_err_text(exc))}); starting API in paused state...",
-                file=sys.stderr,
-                flush=True,
-            )
-        else:
-            print(
-                f"[API] Browser startup error: {redact_sensitive(_safe_err_text(exc))}",
-                file=sys.stderr,
-                flush=True,
-            )
-            return 1
+    ok_ready, startup_auth_exc = _prepare_browser_or_defer(args)
+    if not ok_ready:
+        return 1
 
     bridge = GameApiBridge(
         debug_port=args.debug_port,
@@ -166,31 +169,29 @@ def main(argv: list[str] | None = None) -> int:
     )
     if startup_auth_exc is not None:
         if isinstance(startup_auth_exc, AntiBotChallengeError):
-            rec_fn = getattr(bridge, "_record_antibot_pause", None)
-            if callable(rec_fn):
-                rec_fn(startup_auth_exc)
+            bridge.record_antibot_pause(startup_auth_exc)
         else:
             bridge.handle_command({"command": "bot_control", "paused": True})
+
     server = None
     is_main = threading.current_thread() is threading.main_thread()
     prev_sigterm = signal.getsignal(signal.SIGTERM) if is_main else None
 
-    def _shutdown_handler(_signum, _frame) -> None:
+    def _shutdown_handler(_signum: int, _frame: object) -> None:
         raise KeyboardInterrupt
 
     try:
-        server = create_api_server(bridge, host=args.host, port=args.port)
+        server = create_api_server(bridge, host=args.host, port=args.port, ui_dir=args.ui_dir)
         bridge.start_galaxy_sweep_worker()
         if is_main:
             signal.signal(signal.SIGTERM, _shutdown_handler)
-        print(
+        _emit(
             f"[API] Listening on http://{args.host}:{args.port} "
-            f"(Control UI: http://{args.host}:{args.port}/ | Chrome debug: {args.debug_host}:{args.debug_port})",
-            flush=True,
+            f"(Control UI: http://{args.host}:{args.port}/ | Chrome debug: {args.debug_host}:{args.debug_port})"
         )
         server.serve_forever()
     except KeyboardInterrupt:
-        print("\n[API] Shutting down (Chrome remains open on debug port).", flush=True)
+        _emit("\n[API] Shutting down (Chrome remains open on debug port).")
     finally:
         bridge.stop_galaxy_sweep_worker()
         if server is not None:

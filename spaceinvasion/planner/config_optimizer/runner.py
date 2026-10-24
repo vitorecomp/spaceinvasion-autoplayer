@@ -9,7 +9,7 @@ from typing import Protocol, runtime_checkable
 
 from spaceinvasion.core.coercion import coerce_finite_float, coerce_int, coerce_optional_int
 from spaceinvasion.core.model import normalize_planet_type
-from spaceinvasion.planner.config_opt._protocols import (
+from spaceinvasion.planner.config_optimizer._protocols import (
     PlanetLike,
     as_int_dict,
     as_mapping,
@@ -18,30 +18,30 @@ from spaceinvasion.planner.config_opt._protocols import (
     map_int,
     map_str,
 )
-from spaceinvasion.planner.config_opt._runner_report import (
+from spaceinvasion.planner.config_optimizer._runner_report import (
     PreparedInputs,
     ReportInputs,
     StabilitySelection,
     assemble_optimizer_result,
 )
-from spaceinvasion.planner.config_opt.catalog_math import research_catalog
-from spaceinvasion.planner.config_opt.constants import SPECIALIZATION_ALLOWED_BUILDINGS, IntArray
-from spaceinvasion.planner.config_opt.model import EmpireProductionModel, build_planet_plans, plan_research_levels
-from spaceinvasion.planner.config_opt.params import (
+from spaceinvasion.planner.config_optimizer.catalog_math import research_catalog
+from spaceinvasion.planner.config_optimizer.constants import SPECIALIZATION_ALLOWED_BUILDINGS, IntArray
+from spaceinvasion.planner.config_optimizer.model import EmpireProductionModel, build_planet_plans, plan_research_levels
+from spaceinvasion.planner.config_optimizer.params import (
     _apply_manual_planet_pins,
     _empty_colony_slot,
     _normalize_params,
     check_optimizer_settings,
     normalize_planet_names_map,
 )
-from spaceinvasion.planner.config_opt.search import search_in_rounds
-from spaceinvasion.planner.config_opt.stability import (
+from spaceinvasion.planner.config_optimizer.search import search_in_rounds
+from spaceinvasion.planner.config_optimizer.stability import (
     _align_unlocked_planet_roles_for_sunk_cost,
     _build_sticky_candidate,
     _evaluate_stability_metrics,
     _extract_previous_planet_state,
 )
-from spaceinvasion.planner.config_opt.tech_graph import research_requirements, research_upgrade_costs
+from spaceinvasion.planner.config_optimizer.tech_graph import research_requirements, research_upgrade_costs
 
 
 @runtime_checkable

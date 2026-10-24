@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from spaceinvasion.planner.config_opt._search_catalogue import (
+from spaceinvasion.planner.config_optimizer._search_catalogue import (
     balanced_score,
     build_design_catalogues,
     catalogue_limits,
@@ -13,7 +13,7 @@ from spaceinvasion.planner.config_opt._search_catalogue import (
     resource_peaks,
     smallest_limit,
 )
-from spaceinvasion.planner.config_opt.catalog_math import (
+from spaceinvasion.planner.config_optimizer.catalog_math import (
     build_monotonic_base_times,
     building_level_economy,
     building_level_flows,
@@ -32,7 +32,7 @@ from spaceinvasion.planner.config_opt.catalog_math import (
     warehouse_capacity,
     warehouse_level_for,
 )
-from spaceinvasion.planner.config_opt.constants import (
+from spaceinvasion.planner.config_optimizer.constants import (
     _MINE_BUILDING_TO_RESOURCE,
     _SPECIALIZATION_ALIASES,
     _TECH_BONUS_PCT_BY_KEY,
@@ -45,7 +45,7 @@ from spaceinvasion.planner.config_opt.constants import (
     VALID_PLANET_SPECIALIZATIONS,
     WAREHOUSE_KEYS,
 )
-from spaceinvasion.planner.config_opt.model import (
+from spaceinvasion.planner.config_optimizer.model import (
     EmpireProductionModel,
     build_planet_plan,
     build_planet_plans,
@@ -53,12 +53,12 @@ from spaceinvasion.planner.config_opt.model import (
     upgrade_cost_table,
     upgrade_cost_tables,
 )
-from spaceinvasion.planner.config_opt.overrides import (
+from spaceinvasion.planner.config_optimizer.overrides import (
     _evaluate_planet_map,
     _extract_planned_building_map_from_entry,
     apply_manual_planet_override,
 )
-from spaceinvasion.planner.config_opt.params import (
+from spaceinvasion.planner.config_optimizer.params import (
     _apply_manual_planet_pins,
     _empty_colony_slot,
     _json_ready,
@@ -76,14 +76,14 @@ from spaceinvasion.planner.config_opt.params import (
     normalize_planet_specializations_map,
     normalize_planet_target_buildings,
 )
-from spaceinvasion.planner.config_opt.projection import compute_yearly_ships_per_week_projection
-from spaceinvasion.planner.config_opt.rows import (
+from spaceinvasion.planner.config_optimizer.projection import compute_yearly_ships_per_week_projection
+from spaceinvasion.planner.config_optimizer.rows import (
     _planet_building_rows,
     _warehouse_requirement_rows,
     detect_planet_specialization,
 )
-from spaceinvasion.planner.config_opt.runner import run_config_optimizer
-from spaceinvasion.planner.config_opt.search import (
+from spaceinvasion.planner.config_optimizer.runner import run_config_optimizer
+from spaceinvasion.planner.config_optimizer.search import (
     _finalize_self_consistent_round,
     _polish_holding_central_reserve,
     central_reserve_needed,
@@ -93,7 +93,7 @@ from spaceinvasion.planner.config_opt.search import (
     search_best_configuration,
     search_in_rounds,
 )
-from spaceinvasion.planner.config_opt.stability import (
+from spaceinvasion.planner.config_optimizer.stability import (
     _align_unlocked_planet_roles_for_sunk_cost,
     _build_sticky_candidate,
     _central_reserve_holds,
@@ -103,7 +103,7 @@ from spaceinvasion.planner.config_opt.stability import (
     _transfer_design_for_swap,
     _trim_design_to_fit,
 )
-from spaceinvasion.planner.config_opt.tech_graph import (
+from spaceinvasion.planner.config_optimizer.tech_graph import (
     TECH_GRAPH,
     TechnologyRequirementGraph,
     building_upgrade_cost_spice_eq,

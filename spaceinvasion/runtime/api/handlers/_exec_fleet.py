@@ -6,15 +6,15 @@ from dataclasses import dataclass, replace
 import re
 import time
 
-from spaceinvasion.combat.fleet import normalize_coords
-from spaceinvasion.core import game_data
-from spaceinvasion.core.state import (
+from spaceinvasion.core import catalog as game_data
+from spaceinvasion.core.coords import normalize_coords
+from spaceinvasion.core.model import (
     GameState,
     PlanetState,
+    PlannedAction,
     count_in_flight_spy_fleets_for_planet,
     normalize_planet_type,
 )
-from spaceinvasion.planner.strategy import PlannedAction
 from spaceinvasion.runtime.api.handlers._browser_proto import BrowserBridgeFacade
 from spaceinvasion.runtime.api.handlers._browser_session import BrowserCommandSession, run_browser_command
 from spaceinvasion.runtime.api.handlers._exec_fleet_helpers import (

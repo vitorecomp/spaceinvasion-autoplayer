@@ -6,12 +6,12 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict
 import re
 
-from spaceinvasion.core import game_data
+from spaceinvasion.core import catalog as game_data
 from spaceinvasion.core.config import StrategyConfig
-from spaceinvasion.core.state import GameState, PlanetState, Resources
-from spaceinvasion.planner import ai_planner as ai_mod
-from spaceinvasion.planner.action_graph import build_fleet_planner_graph, merge_strategy_config_overrides
-from spaceinvasion.planner.strategy import PlannedAction, plan_fleet_and_attack_actions
+from spaceinvasion.core.model import GameState, PlanetState, PlannedAction, Resources
+from spaceinvasion.planner import ai as ai_mod
+from spaceinvasion.planner.graph import build_fleet_planner_graph, merge_strategy_config_overrides
+from spaceinvasion.planner.heuristics import plan_fleet_and_attack_actions
 from spaceinvasion.runtime.api.validation import ApiRequestError
 from spaceinvasion.runtime.bridge._context import BridgeContext
 from spaceinvasion.runtime.bridge._helpers import safe_api_float, safe_api_int, sanitize_json_dict

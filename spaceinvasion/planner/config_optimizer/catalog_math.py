@@ -8,7 +8,7 @@ import math
 from spaceinvasion.combat.fleet import SHIP_SLUG_BY_KEY
 from spaceinvasion.core import game_data
 from spaceinvasion.core.coercion import coerce_finite_float, coerce_int
-from spaceinvasion.planner.config_opt.constants import (
+from spaceinvasion.planner.config_optimizer.constants import (
     _MINE_BUILDING_TO_RESOURCE,
     _TECH_BONUS_PCT_BY_KEY,
     RESOURCE_KEYS,

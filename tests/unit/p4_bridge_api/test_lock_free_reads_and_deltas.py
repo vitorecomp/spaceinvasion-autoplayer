@@ -9,23 +9,21 @@ import json
 from pathlib import Path
 import threading
 import time
-from unittest import mock
 
 import pytest
 import requests
 
 from spaceinvasion.core.config import StrategyConfig
-from spaceinvasion.planner.strategy import PlannedAction
-from spaceinvasion.runtime import api_server as legacy_api_server
+from spaceinvasion.core.model import PlannedAction
 from spaceinvasion.runtime.api.handlers import build_command_registry
 from spaceinvasion.runtime.api.http_server import create_modular_api_server
 from spaceinvasion.runtime.api.registry import CommandRegistry, generate_command_reference_markdown
 from spaceinvasion.runtime.bridge.bridge import ModularGameApiBridge
-from spaceinvasion.session import browser as browser_mod
 from spaceinvasion.session.auth import AntiBotChallengeError
 from spaceinvasion.session.executor import ExecutionResult
 from tests.e2e.harness import E2ETestHarness
 from tests.goldens.api_scenario import (
+    API_STEPS,
     REMOVED_COMMANDS,
     FrozenClock,
     build_config,
@@ -46,19 +44,12 @@ PREEXISTING_PHASE4_FILES = frozenset(
 def _boot_modular_harness(
     stack: ExitStack, *, config: StrategyConfig | None = None
 ) -> tuple[E2ETestHarness, requests.Session]:
-    import tests.e2e.harness as harness_mod
-
     clock = FrozenClock(GOLDEN_EPOCH)
     server = build_server(clock)
     http = requests.Session()
     http.trust_env = False
     stack.callback(http.close)
-    stack.enter_context(mock.patch.object(harness_mod, "GameApiBridge", ModularGameApiBridge))
-    stack.enter_context(mock.patch.object(harness_mod, "create_api_server", create_modular_api_server))
     harness = E2ETestHarness(server=server, clock=clock, config=config or build_config())
-    stack.enter_context(
-        mock.patch.object(browser_mod, "is_debug_port_open", side_effect=lambda *_a, **_kw: harness.debug_port_open)
-    )
     h = stack.enter_context(harness)
     return h, http
 
@@ -320,7 +311,11 @@ def test_command_registry_60_commands_docs_dispatcher_loc_and_section4_ast() -> 
     """Verify 60/60 kept commands, generated Markdown docs, dispatcher < 100 LOC, and Section 4 AST rules."""
     registry = build_command_registry()
     registered_names = {spec.name for spec in registry.specs()}
-    expected_names = set(legacy_api_server.GameApiBridge._KNOWN_COMMANDS)
+    expected_names = {
+        str(step.command["command"])
+        for step in API_STEPS
+        if step.command is not None and step.command.get("command") != "no_such_command"
+    }
     assert len(registered_names) == 60
     assert registered_names == expected_names
     assert registered_names.isdisjoint(REMOVED_COMMANDS)

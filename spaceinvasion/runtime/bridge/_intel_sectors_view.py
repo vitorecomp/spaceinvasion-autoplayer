@@ -5,9 +5,9 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 import time
 
-from spaceinvasion.combat.fleet import score_galaxy_scan_sectors, select_smart_galaxy_scan_batch
+from spaceinvasion.combat.scanner import score_galaxy_scan_sectors, select_smart_galaxy_scan_batch
 from spaceinvasion.core.config import StrategyConfig
-from spaceinvasion.core.state import GameState, count_allocated_normal_planets
+from spaceinvasion.core.model import GameState, count_allocated_normal_planets
 from spaceinvasion.runtime.bridge._context import BridgeContext
 from spaceinvasion.runtime.bridge._helpers import safe_api_float, safe_api_int, sanitize_json_dict
 from spaceinvasion.runtime.bridge._intel_sectors import (

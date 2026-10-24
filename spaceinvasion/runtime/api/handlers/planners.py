@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from typing import Final
 
 from spaceinvasion.combat.simulator import simulate_combat_matchup
-from spaceinvasion.core.state import GameState
+from spaceinvasion.core.model import GameState
 from spaceinvasion.runtime.api.handlers._bridge_proto import BridgeApiFacade
 from spaceinvasion.runtime.api.handlers._planners_helpers import (
     parse_horizon_years,

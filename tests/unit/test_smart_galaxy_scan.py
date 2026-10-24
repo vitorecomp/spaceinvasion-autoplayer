@@ -579,7 +579,7 @@ class TestSmartGalaxyScanTwoPhaseEngine(unittest.TestCase):
         self.assertEqual(len(spilled["selected_sectors"]), 10)
 
     def test_scanned_sectors_command_and_refresh_pct_config_roundtrip(self) -> None:
-        from spaceinvasion.runtime.api_server import GameApiBridge
+        from spaceinvasion.runtime.bridge import GameApiBridge
         from spaceinvasion.core.config import StrategyConfig
         from spaceinvasion.db.config_store import (
             load_strategy_config,
@@ -749,7 +749,7 @@ class TestSmartGalaxyScanTwoPhaseEngine(unittest.TestCase):
                 db.close()
 
     def test_mixed_split_spills_discovery_to_all_14_galaxies_when_owned_galaxy_is_full(self) -> None:
-        from spaceinvasion.runtime.api_server import GameApiBridge
+        from spaceinvasion.runtime.bridge import GameApiBridge
         from spaceinvasion.core.config import StrategyConfig
         from spaceinvasion.db.config_store import save_strategy_config
         from spaceinvasion.core.model import (
@@ -821,7 +821,7 @@ class TestSmartGalaxyScanTwoPhaseEngine(unittest.TestCase):
                 db.close()
 
     def test_scanned_sectors_live_preview_rebuilds_queue_without_mutating_saved_config(self) -> None:
-        from spaceinvasion.runtime.api_server import GameApiBridge
+        from spaceinvasion.runtime.bridge import GameApiBridge
         from spaceinvasion.core.config import StrategyConfig
         from spaceinvasion.db.config_store import save_strategy_config
         from spaceinvasion.core.model import (

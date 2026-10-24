@@ -6,8 +6,7 @@ from collections.abc import Callable, Mapping
 import random
 import time
 
-from spaceinvasion.core.state import count_allocated_normal_planets
-from spaceinvasion.planner.strategy import PlannedAction
+from spaceinvasion.core.model import PlannedAction, count_allocated_normal_planets
 from spaceinvasion.runtime.bridge._context import BridgeContext
 from spaceinvasion.runtime.bridge._helpers import safe_api_int, sanitize_json_dict
 from spaceinvasion.runtime.bridge._sweep_plan import (

@@ -8,8 +8,7 @@ import inspect
 import math
 from pathlib import Path
 
-from spaceinvasion.core.state import GameState
-from spaceinvasion.planner.strategy import PlannedAction
+from spaceinvasion.core.model import GameState, PlannedAction
 from spaceinvasion.runtime.bridge._helpers import (
     BRIDGE_RUNTIME_ERRORS,
     UI_DIR,

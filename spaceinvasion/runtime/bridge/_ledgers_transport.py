@@ -5,8 +5,8 @@ from __future__ import annotations
 from collections.abc import Mapping
 import time
 
-from spaceinvasion.combat.fleet import normalize_coords
-from spaceinvasion.core.state import GameState, Resources, is_in_flight_fleet_job
+from spaceinvasion.core.coords import normalize_coords
+from spaceinvasion.core.model import GameState, Resources, is_in_flight_fleet_job
 from spaceinvasion.db.storage import GameDatabase
 from spaceinvasion.runtime.bridge._context import BridgeContext
 from spaceinvasion.runtime.bridge._helpers import bounded_api_str, safe_api_float, safe_api_int

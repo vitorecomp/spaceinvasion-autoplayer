@@ -267,11 +267,17 @@ def _run_tick_cycle(
         return rc, sleep_s, eff_min_interval_s
 
 
+def _default_load_strategy_config(path: Path | None) -> StrategyConfig:
+    if path is None:
+        return StrategyConfig()
+    return load_strategy_config(path)
+
+
 def run_commander_loop(
     opts: CommanderOptions,
     *,
     api: CommanderApiLike | None = None,
-    config_loader: Callable[[Path | None], StrategyConfig] = load_strategy_config,
+    config_loader: Callable[[Path | None], StrategyConfig] = _default_load_strategy_config,
     logger: logging.Logger = LOGGER,
     jitter_fn: Callable[[float, float], float] = random.uniform,
     sleep_fn: Callable[[float], None] = time.sleep,
@@ -336,7 +342,7 @@ def run_commander_main(
     entrypoint: Path | None = None,
     repo_root: Path | None = None,
     api: CommanderApiLike | None = None,
-    config_loader: Callable[[Path | None], StrategyConfig] = load_strategy_config,
+    config_loader: Callable[[Path | None], StrategyConfig] = _default_load_strategy_config,
 ) -> int:
     """Top-level CLI entrypoint supporting ``--reload`` and delegating to ``run_commander_loop``."""
     opts = parse_commander_options(argv)

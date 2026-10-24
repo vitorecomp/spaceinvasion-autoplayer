@@ -8,8 +8,7 @@ import math
 import time
 
 from spaceinvasion.core.config import StrategyConfig
-from spaceinvasion.core.state import GameState
-from spaceinvasion.planner.strategy import PlannedAction
+from spaceinvasion.core.model import GameState, PlannedAction
 from spaceinvasion.runtime.bridge._context import BridgeContext
 from spaceinvasion.runtime.bridge._helpers import safe_api_int, sanitize_json_dict
 from spaceinvasion.runtime.bridge._intel_sectors import get_scanned_systems_for_ctx
@@ -247,7 +246,7 @@ def build_bot_control_busy_fallback(ctx: BridgeContext) -> dict[str, object]:
 def default_evaluate_ai_gate(ctx: BridgeContext, state: GameState | None, cfg: StrategyConfig) -> dict[str, object]:
     """Fallback AI planner gate evaluation when `on_evaluate_ai_gate` hook is unbound."""
     from spaceinvasion.core.config import normalize_planner_mode
-    from spaceinvasion.core.state import count_allocated_normal_planets
+    from spaceinvasion.core.model import count_allocated_normal_planets
 
     colonies_owned = count_allocated_normal_planets(state)
     max_planets = max(1, safe_api_int(cfg.max_planets, 11))

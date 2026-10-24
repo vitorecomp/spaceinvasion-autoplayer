@@ -6,8 +6,8 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Final
 
-from spaceinvasion.combat.fleet import SHIP_SLUG_BY_KEY
-from spaceinvasion.core import game_data
+from spaceinvasion.core import catalog as game_data
+from spaceinvasion.core.catalog import SHIP_SLUG_BY_KEY
 from spaceinvasion.planner.heuristics.manual_queue import merge_manual_queue_actions
 from spaceinvasion.runtime.api.handlers._bridge_proto import BridgeApiFacade
 from spaceinvasion.runtime.api.registry import CommandRegistry

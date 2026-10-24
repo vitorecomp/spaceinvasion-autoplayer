@@ -5,9 +5,16 @@ from __future__ import annotations
 from collections.abc import Mapping
 import re
 
-from spaceinvasion.core import game_data
-from spaceinvasion.core.state import GameState, PlanetState, ResearchOffer, Resources, normalize_planet_type
-from spaceinvasion.planner.strategy import PlannedAction, _resources_from_dict
+from spaceinvasion.core import catalog as game_data
+from spaceinvasion.core.model import (
+    GameState,
+    PlanetState,
+    PlannedAction,
+    ResearchOffer,
+    Resources,
+    normalize_planet_type,
+)
+from spaceinvasion.planner.heuristics import _resources_from_dict
 from spaceinvasion.runtime.api.validation import ApiRequestError
 from spaceinvasion.runtime.bridge._context import BridgeContext
 from spaceinvasion.runtime.bridge._helpers import safe_api_int

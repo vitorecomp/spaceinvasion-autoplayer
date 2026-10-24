@@ -8,7 +8,7 @@ from collections.abc import Iterable, Mapping
 from spaceinvasion.combat.fleet import DEFENSE_SLUG_BY_KEY, SHIP_SLUG_BY_KEY
 from spaceinvasion.core import game_data
 from spaceinvasion.core.coercion import coerce_finite_float, coerce_int
-from spaceinvasion.planner.config_opt.catalog_math import (
+from spaceinvasion.planner.config_optimizer.catalog_math import (
     build_monotonic_base_times,
     building_cost_map,
     building_info,
@@ -19,7 +19,7 @@ from spaceinvasion.planner.config_opt.catalog_math import (
     spice_eq,
     unit_keys,
 )
-from spaceinvasion.planner.config_opt.constants import RESOURCE_KEYS
+from spaceinvasion.planner.config_optimizer.constants import RESOURCE_KEYS
 
 
 def _defense_info(key: str) -> dict[str, object]:

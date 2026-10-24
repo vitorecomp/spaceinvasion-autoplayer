@@ -195,7 +195,8 @@ def watch_and_run(
         mtimes = snapshot_mtimes(watch_paths)
         digests = _snapshot_digests(mtimes)
         proc = subprocess.Popen(list(cmd), env=env)
-        print(f"[{label}] hot-reloader started (pid={proc.pid}, watching {len(mtimes)} files)", flush=True)
+        sys.stdout.write(f"[{label}] hot-reloader started (pid={proc.pid}, watching {len(mtimes)} files)\n")
+        sys.stdout.flush()
         while True:
             time.sleep(poll_interval)
             rc = proc.poll()
@@ -212,23 +213,25 @@ def watch_and_run(
                     names = ", ".join(Path(p).name for p in changed[:4])
                     if len(changed) > 4:
                         names += f", +{len(changed) - 4} more"
-                    print(f"[{label}] code change detected ({names}) -> hot-reloading...", flush=True)
+                    sys.stdout.write(f"[{label}] code change detected ({names}) -> hot-reloading...\n")
+                    sys.stdout.flush()
                     _terminate_child(proc)
                     proc = subprocess.Popen(list(cmd), env=env)
-                    print(f"[{label}] restarted (pid={proc.pid})", flush=True)
+                    sys.stdout.write(f"[{label}] restarted (pid={proc.pid})\n")
+                    sys.stdout.flush()
                     continue
 
             if rc is not None:
                 if rc != 0:
                     try:
-                        from spaceinvasion.core.logging_utils import append_crash_debug_log
+                        from spaceinvasion.runtime.logs import append_crash_debug_log
 
                         append_crash_debug_log(
                             component=f"reloader.{label}",
                             event="child_exited_nonzero",
                             details={"returncode": rc, "cmd": list(cmd)},
                         )
-                    except Exception:
+                    except (OSError, ValueError, RuntimeError):
                         pass
                 return rc
     except KeyboardInterrupt:

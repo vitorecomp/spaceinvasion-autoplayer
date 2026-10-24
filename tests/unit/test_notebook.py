@@ -36,10 +36,9 @@ from spaceinvasion.core.model import (
     EnergyBalance,
     GameState,
     PlanetState,
+    PlannedAction,
     Resources,
 )
-from spaceinvasion.db.storage import GameDatabase
-from spaceinvasion.core.model import PlannedAction
 from spaceinvasion.planner.heuristics import plan_actions
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -400,9 +399,130 @@ def _three_planet_state() -> GameState:
     return dataclasses.replace(state, planets=(home, cold_colony, asteroid))
 
 
-def _add_universe_research(db: GameDatabase) -> None:
+_NOTEBOOK_SQLITE_DDL = """
+CREATE TABLE IF NOT EXISTS meta (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_ts REAL NOT NULL DEFAULT 0.0
+);
+CREATE TABLE IF NOT EXISTS planet_snapshots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts REAL NOT NULL DEFAULT 0.0,
+    planet_id INTEGER NOT NULL,
+    coords TEXT NOT NULL DEFAULT '',
+    name TEXT NOT NULL DEFAULT '',
+    planet_type TEXT NOT NULL DEFAULT 'normal',
+    temperature INTEGER NOT NULL DEFAULT 0,
+    fields_used INTEGER NOT NULL DEFAULT 0,
+    fields_max INTEGER NOT NULL DEFAULT 0,
+    pig_iron INTEGER NOT NULL DEFAULT 0,
+    metal INTEGER NOT NULL DEFAULT 0,
+    kryptonite INTEGER NOT NULL DEFAULT 0,
+    spice INTEGER NOT NULL DEFAULT 0,
+    energy_produced INTEGER NOT NULL DEFAULT 0,
+    energy_used INTEGER NOT NULL DEFAULT 0,
+    buildings_json TEXT NOT NULL DEFAULT '{}',
+    ships_json TEXT NOT NULL DEFAULT '{}',
+    defense_json TEXT NOT NULL DEFAULT '{}',
+    researches_json TEXT NOT NULL DEFAULT '{}',
+    economy_rates_json TEXT NOT NULL DEFAULT '{}'
+);
+CREATE TABLE IF NOT EXISTS raid_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    target_coords TEXT NOT NULL,
+    attacked_ts REAL NOT NULL,
+    is_exempt INTEGER NOT NULL DEFAULT 0,
+    outcome TEXT NOT NULL DEFAULT '',
+    loot_json TEXT NOT NULL DEFAULT '{}'
+);
+CREATE TABLE IF NOT EXISTS action_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts REAL NOT NULL DEFAULT 0.0,
+    kind TEXT NOT NULL DEFAULT '',
+    executed INTEGER NOT NULL DEFAULT 0,
+    dry_run INTEGER NOT NULL DEFAULT 0,
+    planet_coords TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_action_history_ts ON action_history(ts);
+CREATE TABLE IF NOT EXISTS battle_reports (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts REAL NOT NULL DEFAULT 0.0,
+    msg_uid TEXT NOT NULL DEFAULT '',
+    server_msg_id TEXT NOT NULL DEFAULT '',
+    battle_id TEXT NOT NULL DEFAULT '',
+    msg_date_text TEXT NOT NULL DEFAULT '',
+    target_coords TEXT NOT NULL DEFAULT '',
+    attacker TEXT NOT NULL DEFAULT '',
+    defender TEXT NOT NULL DEFAULT '',
+    outcome TEXT NOT NULL DEFAULT '',
+    rounds INTEGER NOT NULL DEFAULT 0,
+    pig_iron INTEGER NOT NULL DEFAULT 0,
+    metal INTEGER NOT NULL DEFAULT 0,
+    kryptonite INTEGER NOT NULL DEFAULT 0,
+    spice INTEGER NOT NULL DEFAULT 0,
+    loot_spice_eq REAL NOT NULL DEFAULT 0.0,
+    attacker_lost_spice REAL NOT NULL DEFAULT 0.0,
+    defender_lost_spice REAL NOT NULL DEFAULT 0.0,
+    debris_spice_eq REAL NOT NULL DEFAULT 0.0
+);
+CREATE TABLE IF NOT EXISTS game_messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    msg_uid TEXT NOT NULL DEFAULT '',
+    ingested_ts REAL NOT NULL DEFAULT 0.0,
+    deleted_in_game INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS spy_targets (
+    coords TEXT PRIMARY KEY,
+    status_color TEXT NOT NULL DEFAULT 'unknown',
+    is_inactive INTEGER NOT NULL DEFAULT 0,
+    is_spacia INTEGER NOT NULL DEFAULT 0,
+    bash_hits INTEGER NOT NULL DEFAULT 0,
+    is_own_planet INTEGER NOT NULL DEFAULT 0,
+    merged_into TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS recycle_reports (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts REAL NOT NULL DEFAULT 0.0,
+    coords TEXT NOT NULL DEFAULT '',
+    recycler_count INTEGER NOT NULL DEFAULT 0,
+    harvested_pig_iron INTEGER NOT NULL DEFAULT 0,
+    harvested_metal INTEGER NOT NULL DEFAULT 0,
+    harvested_kryptonite INTEGER NOT NULL DEFAULT 0,
+    harvested_spice INTEGER NOT NULL DEFAULT 0,
+    harvested_spice_eq REAL NOT NULL DEFAULT 0.0
+);
+CREATE TABLE IF NOT EXISTS bash_blocks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    target_coords TEXT NOT NULL DEFAULT '',
+    blocked_until_ts REAL NOT NULL DEFAULT 0.0
+);
+CREATE TABLE IF NOT EXISTS universe_research_max (
+    research_key TEXT PRIMARY KEY,
+    research_id INTEGER NOT NULL DEFAULT 0,
+    slug TEXT NOT NULL DEFAULT '',
+    name TEXT NOT NULL DEFAULT '',
+    own_level INTEGER NOT NULL DEFAULT 0,
+    spied_max_level INTEGER NOT NULL DEFAULT 0,
+    server_record_level INTEGER,
+    universe_max_level INTEGER NOT NULL DEFAULT 0,
+    catalog_max_level INTEGER,
+    holder TEXT NOT NULL DEFAULT '',
+    holder_coords TEXT NOT NULL DEFAULT '',
+    updated_ts REAL NOT NULL DEFAULT 0.0
+);
+CREATE TABLE IF NOT EXISTS spy_reports (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts REAL NOT NULL DEFAULT 0.0,
+    target_coords TEXT NOT NULL DEFAULT '',
+    owner TEXT NOT NULL DEFAULT '',
+    researches_json TEXT NOT NULL DEFAULT '{}'
+);
+"""
+
+
+def _add_universe_research(conn: sqlite3.Connection) -> None:
     """Fill the bot's `universe_research_max` ledger and archive six spy reports, four of them with researches."""
-    db._conn.executemany(
+    conn.executemany(
         "INSERT INTO universe_research_max(research_key, research_id, slug, name, own_level, spied_max_level, "
         "server_record_level, universe_max_level, catalog_max_level, holder, holder_coords, updated_ts) "
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -428,7 +548,7 @@ def _add_universe_research(db: GameDatabase) -> None:
             ),
         ],
     )
-    db._conn.executemany(
+    conn.executemany(
         "INSERT INTO spy_reports(ts, target_coords, owner, researches_json) VALUES (?, ?, ?, ?)",
         [
             (1_700_100_000.0, "02:383:02", "Raider", '{"r8": 7, "r13": 11, "r9": 3}'),
@@ -439,7 +559,45 @@ def _add_universe_research(db: GameDatabase) -> None:
             (1_700_150_000.0, "02:394:01", "", '{"r4": 12, "r13": 4}'),
         ],
     )
-    db._conn.commit()
+    conn.commit()
+
+
+def _seed_sqlite_state_snapshot(conn: sqlite3.Connection, state: GameState) -> None:
+    payload = json.dumps(dataclasses.asdict(state), sort_keys=True)
+    conn.execute(
+        "INSERT OR REPLACE INTO meta(key, value, updated_ts) VALUES ('latest_game_state', ?, ?)",
+        (payload, float(state.timestamp)),
+    )
+    res_json = json.dumps(dict(state.researches or {}), sort_keys=True)
+    for p in state.planets:
+        conn.execute(
+            "INSERT INTO planet_snapshots("
+            "ts, planet_id, coords, name, planet_type, temperature, fields_used, fields_max, "
+            "pig_iron, metal, kryptonite, spice, energy_produced, energy_used, "
+            "buildings_json, ships_json, defense_json, researches_json, economy_rates_json"
+            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                float(state.timestamp),
+                int(p.planet_id),
+                str(p.coords),
+                str(p.name),
+                str(p.planet_type),
+                int(p.temperature),
+                int(p.fields_used),
+                int(p.fields_max),
+                int(p.resources.pig_iron),
+                int(p.resources.metal),
+                int(p.resources.kryptonite),
+                int(p.resources.spice),
+                int(p.energy.produced),
+                int(p.energy.used),
+                json.dumps(dict(p.buildings or {}), sort_keys=True),
+                json.dumps(dict(p.ships or {}), sort_keys=True),
+                json.dumps(dict(p.defense or {}), sort_keys=True),
+                res_json,
+                json.dumps(dict(p.economy_rates or {}), sort_keys=True),
+            ),
+        )
 
 
 def _build_full_planner_workspace(
@@ -455,17 +613,21 @@ def _build_full_planner_workspace(
     `universe_research` adds what `_add_universe_research` records about other players' research.
     """
     (root / "state").mkdir(parents=True)
-    db = GameDatabase(root / "state" / "spaceinvasion.db")
-    try:
+    db_file = root / "state" / "spaceinvasion.db"
+    with contextlib.closing(sqlite3.connect(db_file)) as conn:
+        conn.executescript(_NOTEBOOK_SQLITE_DDL)
         if with_attacks:
-            db.record_state_snapshot(state if state is not None else _sample_snapshot_state())
-            for target, attacked_ts in (
-                ("02:383:02", 1_700_000_000.0),
-                ("02:383:02", 1_700_001_000.0),
-                ("02:378:15", 1_700_003_000.0),
-            ):
-                db.record_raid(target, attacked_ts=attacked_ts, is_exempt=True, outcome="Dispatched attack", loot={})
-            db._conn.executemany(
+            _seed_sqlite_state_snapshot(conn, state if state is not None else _sample_snapshot_state())
+            conn.executemany(
+                "INSERT INTO raid_history(target_coords, attacked_ts, is_exempt, outcome, loot_json) "
+                "VALUES (?, ?, 1, 'Dispatched attack', '{}')",
+                [
+                    ("02:383:02", 1_700_000_000.0),
+                    ("02:383:02", 1_700_001_000.0),
+                    ("02:378:15", 1_700_003_000.0),
+                ],
+            )
+            conn.executemany(
                 "INSERT INTO battle_reports("
                 "ts, msg_uid, server_msg_id, battle_id, msg_date_text, target_coords, "
                 "attacker, defender, outcome, rounds, pig_iron, metal, kryptonite, spice, loot_spice_eq"
@@ -502,11 +664,9 @@ def _build_full_planner_workspace(
                     (1_700_003_200.0, "m3", "3", "b3", "2023-11-14 23:06:40", "02:378:15", "loss", 0, 0, 0, 0, 0.0),
                 ],
             )
-            db._conn.commit()
+            conn.commit()
         if universe_research:
-            _add_universe_research(db)
-    finally:
-        db.close()
+            _add_universe_research(conn)
     return root
 
 

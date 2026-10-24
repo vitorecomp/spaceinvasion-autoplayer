@@ -6,7 +6,7 @@ from collections.abc import Callable, Mapping, Sequence
 import threading
 import time
 
-from spaceinvasion.core.state import GameState
+from spaceinvasion.core.model import GameState
 from spaceinvasion.runtime.bridge._context import BridgeContext
 from spaceinvasion.runtime.bridge._helpers import safe_api_float, safe_api_int, sanitize_json_dict
 from spaceinvasion.runtime.bridge._intel_sectors import max_galaxies_for_ctx

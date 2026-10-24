@@ -5,8 +5,8 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 import re
 
-from spaceinvasion.combat.fleet import normalize_coords
-from spaceinvasion.core.state import GameState
+from spaceinvasion.core.coords import normalize_coords
+from spaceinvasion.core.model import GameState
 from spaceinvasion.runtime.bridge._helpers import safe_api_float, safe_api_int
 
 _ORIGIN_FULL_RE = re.compile(r"(\d+):(\d+):(\d+)", re.ASCII)

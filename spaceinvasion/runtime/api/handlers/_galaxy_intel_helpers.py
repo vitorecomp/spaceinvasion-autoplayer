@@ -6,9 +6,9 @@ from collections.abc import Mapping, Sequence
 import logging
 import re
 
-from spaceinvasion.combat.fleet import select_smart_galaxy_scan_batch
+from spaceinvasion.combat.scanner import select_smart_galaxy_scan_batch
 from spaceinvasion.core.coords import coords_distance, normalize_coords
-from spaceinvasion.core.state import GameState, normalize_planet_type
+from spaceinvasion.core.model import GameState, normalize_planet_type
 from spaceinvasion.runtime.api.handlers._bridge_proto import BridgeApiFacade
 from spaceinvasion.runtime.bridge._context import BridgeContext
 from spaceinvasion.runtime.bridge._helpers import (

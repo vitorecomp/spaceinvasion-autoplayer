@@ -9,9 +9,9 @@ from typing import Protocol, runtime_checkable
 from spaceinvasion.combat.fleet import SHIP_SLUG_BY_KEY
 from spaceinvasion.core import game_data
 from spaceinvasion.core.coercion import coerce_finite_float, coerce_int
-from spaceinvasion.planner.config_opt._overrides_helpers import StateInput
-from spaceinvasion.planner.config_opt._protocols import as_mapping
-from spaceinvasion.planner.config_opt.catalog_math import (
+from spaceinvasion.planner.config_optimizer._overrides_helpers import StateInput
+from spaceinvasion.planner.config_optimizer._protocols import as_mapping
+from spaceinvasion.planner.config_optimizer.catalog_math import (
     build_monotonic_base_times,
     building_cost_map,
     building_level_economy,
@@ -26,8 +26,8 @@ from spaceinvasion.planner.config_opt.catalog_math import (
     solar_cell_energy_per_unit,
     spice_eq,
 )
-from spaceinvasion.planner.config_opt.constants import RESOURCE_KEYS
-from spaceinvasion.planner.config_opt.tech_graph import (
+from spaceinvasion.planner.config_optimizer.constants import RESOURCE_KEYS
+from spaceinvasion.planner.config_optimizer.tech_graph import (
     TECH_GRAPH,
     research_requirements,
     same_planet_building_requirements,

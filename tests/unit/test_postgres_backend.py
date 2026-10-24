@@ -18,7 +18,7 @@ from spaceinvasion.parsing.models import (
     GalaxySlot,
     SpyReport,
 )
-from spaceinvasion.core.logging_utils import append_tick_logs
+from spaceinvasion.runtime.logs import append_tick_logs
 from spaceinvasion.core.model import (
     EnergyBalance,
     GameState,
@@ -35,7 +35,7 @@ from spaceinvasion.db.backend import (
 from spaceinvasion.db.migrations import LATEST_SCHEMA_VERSION
 from spaceinvasion.db.postgres import PostgresRow, translate_sqlite_to_postgres_sql
 from spaceinvasion.db.storage import GameDatabase
-from spaceinvasion.runtime.api_server import GameApiBridge
+from spaceinvasion.runtime.bridge import GameApiBridge
 from tests.pg_harness import (
     FORBIDDEN_LIVE_PORTS,
     REPO_ROOT,

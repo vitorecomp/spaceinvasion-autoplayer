@@ -8,7 +8,7 @@ import time
 import numpy as np
 
 from spaceinvasion.core.coords import normalize_coords
-from spaceinvasion.planner.config_opt._overrides_helpers import (
+from spaceinvasion.planner.config_optimizer._overrides_helpers import (
     OptimizerStateLike,
     StateInput,
     _evaluate_planet_map,
@@ -17,7 +17,7 @@ from spaceinvasion.planner.config_opt._overrides_helpers import (
     _OverrideSetup,
     _prepare_override_setup,
 )
-from spaceinvasion.planner.config_opt._overrides_report import (
+from spaceinvasion.planner.config_optimizer._overrides_report import (
     _assemble_override_result,
     _build_limits_and_bottlenecks,
     _build_single_planet_record,
@@ -26,16 +26,16 @@ from spaceinvasion.planner.config_opt._overrides_report import (
     _extract_baseline_maps,
     _ShipEvalSpec,
 )
-from spaceinvasion.planner.config_opt._params_norm import (
+from spaceinvasion.planner.config_optimizer._params_norm import (
     normalize_planet_name,
     normalize_planet_specialization,
     normalize_planet_target_buildings,
 )
-from spaceinvasion.planner.config_opt._protocols import as_int_dict, as_mapping, as_str_dict, map_float, map_int
-from spaceinvasion.planner.config_opt.catalog_math import catalog_top_level, full_cost, ship_info
-from spaceinvasion.planner.config_opt.constants import RESOURCE_KEYS, FloatArray
-from spaceinvasion.planner.config_opt.rows import _warehouse_requirement_rows
-from spaceinvasion.planner.config_opt.tech_graph import same_planet_building_requirements
+from spaceinvasion.planner.config_optimizer._protocols import as_int_dict, as_mapping, as_str_dict, map_float, map_int
+from spaceinvasion.planner.config_optimizer.catalog_math import catalog_top_level, full_cost, ship_info
+from spaceinvasion.planner.config_optimizer.constants import RESOURCE_KEYS, FloatArray
+from spaceinvasion.planner.config_optimizer.rows import _warehouse_requirement_rows
+from spaceinvasion.planner.config_optimizer.tech_graph import same_planet_building_requirements
 
 
 def _locate_target_planet_idx(

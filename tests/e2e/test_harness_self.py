@@ -311,13 +311,13 @@ class TestHarnessSelf(unittest.TestCase):
                     h8.api.send_command({"command": "build", "building_id": 1, "dry_run": False})
 
     def test_self_07_enter_exception_rolls_back_patches_and_tmpdir(self) -> None:
-        import spaceinvasion.runtime.api_server as api_server_mod
-        import spaceinvasion.session.client as client_mod
         import spaceinvasion.combat._rank_history as rank_history_mod
+        import spaceinvasion.session.browser as browser_mod
+        import spaceinvasion.session.client as client_mod
 
         orig_client_time = client_mod.time
         orig_ranking_time = rank_history_mod.time
-        orig_dbg_fn = api_server_mod.is_debug_port_open
+        orig_dbg_fn = browser_mod.is_debug_port_open
         orig_default_lim = getattr(client_mod, "_DEFAULT_PAGE_VIEW_LIMITER", None)
         orig_cls_lim = getattr(GameBrowserClient, "page_limiter", None)
 
@@ -336,7 +336,7 @@ class TestHarnessSelf(unittest.TestCase):
 
         self.assertIs(client_mod.time, orig_client_time)
         self.assertIs(rank_history_mod.time, orig_ranking_time)
-        self.assertIs(api_server_mod.is_debug_port_open, orig_dbg_fn)
+        self.assertIs(browser_mod.is_debug_port_open, orig_dbg_fn)
         self.assertIs(getattr(client_mod, "_DEFAULT_PAGE_VIEW_LIMITER", None), orig_default_lim)
         self.assertIs(getattr(GameBrowserClient, "page_limiter", None), orig_cls_lim)
         self.assertIs(_real_time, orig_client_time)

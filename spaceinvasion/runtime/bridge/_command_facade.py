@@ -4,10 +4,9 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 
-from spaceinvasion.combat.fleet import GalaxySlot
 from spaceinvasion.core.config import StrategyConfig
-from spaceinvasion.core.state import GameState, PlanetState
-from spaceinvasion.planner.strategy import PlannedAction
+from spaceinvasion.core.model import GameState, PlanetState, PlannedAction
+from spaceinvasion.parsing import GalaxySlot
 from spaceinvasion.runtime.bridge._context import BridgeContext
 from spaceinvasion.runtime.bridge.execution import ActionExecutionService
 from spaceinvasion.runtime.bridge.galaxy_sweep import GalaxySweepService

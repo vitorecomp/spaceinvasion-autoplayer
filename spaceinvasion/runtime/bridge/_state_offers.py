@@ -6,10 +6,10 @@ from collections.abc import Mapping, Sequence
 from dataclasses import replace
 import time
 
-from spaceinvasion.combat.fleet import normalize_coords
-from spaceinvasion.core import game_data
-from spaceinvasion.core.state import GameState, PlanetState, QueueJob, ResearchOffer
-from spaceinvasion.planner.strategy import _resources_from_dict
+from spaceinvasion.core import catalog as game_data
+from spaceinvasion.core.coords import normalize_coords
+from spaceinvasion.core.model import GameState, PlanetState, QueueJob, ResearchOffer
+from spaceinvasion.planner.heuristics import _resources_from_dict
 from spaceinvasion.runtime.bridge._context import BridgeContext
 from spaceinvasion.runtime.bridge._helpers import (
     bounded_api_str,

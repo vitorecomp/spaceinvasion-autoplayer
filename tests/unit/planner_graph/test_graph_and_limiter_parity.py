@@ -22,7 +22,7 @@ from spaceinvasion.planner.graph import (
     merge_strategy_config_overrides,
 )
 from spaceinvasion.planner.heuristics import plan_actions
-from spaceinvasion.runtime.api_server import _freeze_sig_tree as legacy_freeze_sig_tree
+from spaceinvasion.runtime.bridge._helpers_sig import freeze_sig_tree as legacy_freeze_sig_tree
 from spaceinvasion.session import client as legacy_client
 from spaceinvasion.session.limiter import (
     PageViewLimiter,

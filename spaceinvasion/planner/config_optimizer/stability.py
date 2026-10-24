@@ -9,20 +9,20 @@ import numpy as np
 
 from spaceinvasion.core.coercion import coerce_finite_float, coerce_int
 from spaceinvasion.core.coords import normalize_coords
-from spaceinvasion.planner.config_opt._protocols import as_int_dict, map_int, map_str
-from spaceinvasion.planner.config_opt._search_catalogue import improve_design, planet_moves, smallest_limit
-from spaceinvasion.planner.config_opt.constants import (
+from spaceinvasion.planner.config_optimizer._protocols import as_int_dict, map_int, map_str
+from spaceinvasion.planner.config_optimizer._search_catalogue import improve_design, planet_moves, smallest_limit
+from spaceinvasion.planner.config_optimizer.constants import (
     SPECIALIZATION_ALLOWED_BUILDINGS,
     WAREHOUSE_KEYS,
     BoolArray,
     FloatArray,
     IntArray,
 )
-from spaceinvasion.planner.config_opt.model import EmpireProductionModel
-from spaceinvasion.planner.config_opt.params import normalize_planet_specialization
-from spaceinvasion.planner.config_opt.rows import detect_planet_specialization
-from spaceinvasion.planner.config_opt.search import central_reserve_needed, polish_both_ways
-from spaceinvasion.planner.config_opt.tech_graph import building_upgrade_cost_spice_eq
+from spaceinvasion.planner.config_optimizer.model import EmpireProductionModel
+from spaceinvasion.planner.config_optimizer.params import normalize_planet_specialization
+from spaceinvasion.planner.config_optimizer.rows import detect_planet_specialization
+from spaceinvasion.planner.config_optimizer.search import central_reserve_needed, polish_both_ways
+from spaceinvasion.planner.config_optimizer.tech_graph import building_upgrade_cost_spice_eq
 
 SimOutcome = dict[str, FloatArray | IntArray | BoolArray]
 

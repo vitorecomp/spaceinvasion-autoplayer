@@ -22,7 +22,7 @@ from spaceinvasion.core.model import (
 from spaceinvasion.planner import config_optimizer as co
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-MODULE_PATH = REPO_ROOT / "spaceinvasion" / "planner" / "config_optimizer.py"
+PACKAGE_DIR = REPO_ROOT / "spaceinvasion" / "planner" / "config_optimizer"
 NOTEBOOK_PATH = REPO_ROOT / "notebooks" / "config_optimizer.ipynb"
 
 
@@ -81,19 +81,22 @@ def _fast_params(**overrides: object) -> dict[str, object]:
 
 class ConfigOptimizerUnitTests(unittest.TestCase):
     def test_zero_forbidden_dependencies(self) -> None:
-        source = MODULE_PATH.read_text(encoding="utf-8")
-        tree = ast.parse(source)
         forbidden = {"pandas", "selenium", "IPython", "jupyter", "requests"}
         found: set[str] = set()
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Import):
-                for alias in node.names:
-                    found.add(alias.name.split(".")[0])
-            elif isinstance(node, ast.ImportFrom) and node.module:
-                found.add(node.module.split(".")[0])
+        py_files = sorted(PACKAGE_DIR.glob("*.py"))
+        self.assertGreater(len(py_files), 0)
+        for path in py_files:
+            source = path.read_text(encoding="utf-8")
+            tree = ast.parse(source)
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    for alias in node.names:
+                        found.add(alias.name.split(".")[0])
+                elif isinstance(node, ast.ImportFrom) and node.module:
+                    found.add(node.module.split(".")[0])
+            self.assertNotIn("9222", source, f"{path} mentions debug port 9222")
+            self.assertNotIn("spaceinvasion.db", source, f"{path} imports spaceinvasion.db")
         self.assertEqual(found & forbidden, set())
-        self.assertNotIn("9222", source)
-        self.assertNotIn("spaceinvasion.db", source)
 
     def test_default_params_match_contract(self) -> None:
         d = co.DEFAULT_CONFIG_OPTIMIZER_PARAMS
@@ -1029,7 +1032,7 @@ class ConfigOptimizerUnitTests(unittest.TestCase):
 
     def test_manual_planet_override_yearly_projection_and_ingame_planet_name_sync(self) -> None:
         from unittest.mock import MagicMock
-        from spaceinvasion.runtime.api_server import GameApiBridge
+        from spaceinvasion.runtime.bridge import GameApiBridge
         from spaceinvasion.session.executor import ActionExecutor
 
         p1 = _make_planet(

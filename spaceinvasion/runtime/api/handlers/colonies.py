@@ -8,7 +8,7 @@ import logging
 import re
 
 from spaceinvasion.core.coords import normalize_coords
-from spaceinvasion.core.state import GameState, count_allocated_normal_planets
+from spaceinvasion.core.model import GameState, count_allocated_normal_planets
 from spaceinvasion.runtime.api.handlers._bridge_proto import BridgeApiFacade
 from spaceinvasion.runtime.api.registry import CommandRegistry
 from spaceinvasion.runtime.api.validation import ApiRequestError, FieldBounds

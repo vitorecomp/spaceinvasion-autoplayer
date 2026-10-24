@@ -13,11 +13,13 @@ from spaceinvasion.core.catalog import (
     fmt_compact_int,
     mine_production_per_hour,
     safe_big_ratio,
-    safe_finite_float,
     safe_int,
     safe_key,
     safe_optional_int,
     spice_equivalent,
+)
+from spaceinvasion.core.catalog import (
+    safe_finite_float as safe_finite_float,
 )
 from spaceinvasion.core.model import GameState, PlanetState, Resources
 

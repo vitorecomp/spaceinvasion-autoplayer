@@ -5,10 +5,10 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from dataclasses import replace
 
-from spaceinvasion.combat.fleet import normalize_coords
-from spaceinvasion.combat.ranking import record_rank_snapshot
-from spaceinvasion.core import game_data
-from spaceinvasion.core.state import GameState, PlanetState
+from spaceinvasion.combat.points import record_rank_snapshot
+from spaceinvasion.core import catalog as game_data
+from spaceinvasion.core.coords import normalize_coords
+from spaceinvasion.core.model import GameState, PlanetState
 from spaceinvasion.runtime.bridge._context import BridgeContext
 from spaceinvasion.runtime.bridge._context_init import BridgeConstants
 from spaceinvasion.runtime.bridge._helpers import safe_api_int

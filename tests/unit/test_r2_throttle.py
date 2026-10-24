@@ -19,10 +19,8 @@ from selenium.webdriver.common.by import By
 
 import commander
 from spaceinvasion.core import catalog as game_data
-from spaceinvasion.runtime.api_server import (
-    GameApiBridge,
-    create_api_server,
-)
+from spaceinvasion.runtime.api.http_server import create_api_server
+from spaceinvasion.runtime.bridge import GameApiBridge
 from spaceinvasion.session.client import (
     GameBrowserClient,
     PageViewLimiter,
@@ -153,7 +151,7 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
         port = server.server_address[1]
         threading.Thread(target=server.serve_forever, daemon=True).start()
         try:
-            with patch("spaceinvasion.runtime.api_server.is_debug_port_open", return_value=True):
+            with patch("spaceinvasion.session.browser.is_debug_port_open", return_value=True):
                 resp = requests.post(
                     f"http://127.0.0.1:{port}/command",
                     json={"command": "scan_galaxy", "dry_run": False},
@@ -699,7 +697,7 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
         port = server.server_address[1]
         threading.Thread(target=server.serve_forever, daemon=True).start()
         try:
-            with patch("spaceinvasion.runtime.api_server.is_debug_port_open", return_value=True):
+            with patch("spaceinvasion.session.browser.is_debug_port_open", return_value=True):
                 # 1. Normal GET /state hits local budget -> HTTP 429, cooldown remains 0.0, hits == 0
                 st_resp = requests.get(f"http://127.0.0.1:{port}/state", timeout=5)
                 self.assertEqual(st_resp.status_code, 429)
@@ -1171,7 +1169,7 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
                 # 1. Closed port -> health and dashboard both report in_game=False even with cached state + cooldown
                 bridge._last_state = state
                 bridge.record_rate_limit(30.0)
-                with patch("spaceinvasion.runtime.api_server.is_debug_port_open", return_value=False):
+                with patch("spaceinvasion.session.browser.is_debug_port_open", return_value=False):
                     h = bridge.health()
                     d = bridge.dashboard(refresh=False)
                 self.assertFalse(h["in_game"])
@@ -1837,7 +1835,7 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
             port = server.server_address[1]
             threading.Thread(target=server.serve_forever, daemon=True).start()
             try:
-                with patch("spaceinvasion.runtime.api_server.is_debug_port_open", return_value=True):
+                with patch("spaceinvasion.session.browser.is_debug_port_open", return_value=True):
                     # Prime _last_state once, then reset limiter to test interactive headroom cleanly
                     bridge.get_state(include_buildings=True)
 
@@ -3131,7 +3129,11 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
                 hostile_alerts=["Hostile Attack from 02:380:99 arriving in 00:05:00"],
             )
             try:
-                with patch("spaceinvasion.runtime.api_server.time", _TimeProxy(clock)):
+                with (
+                    patch("spaceinvasion.runtime.bridge.state_cache.time", _TimeProxy(clock)),
+                    patch("spaceinvasion.runtime.bridge._exec_after_state.time", _TimeProxy(clock)),
+                    patch("spaceinvasion.runtime.api.handlers._browser_session.time", _TimeProxy(clock)),
+                ):
                     lim.record_view(18)
                     drv._navigate_frame("F_Hauptframe", "indexInternal.es?action=internalGalaxy")
                     r_scan = bridge.handle_command(
@@ -3162,7 +3164,11 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
                 hostile_alerts=["Hostile Attack from 02:380:99 arriving in 00:05:00"],
             )
             try:
-                with patch("spaceinvasion.runtime.api_server.time", _TimeProxy(clock_b)):
+                with (
+                    patch("spaceinvasion.runtime.bridge.state_cache.time", _TimeProxy(clock_b)),
+                    patch("spaceinvasion.runtime.bridge._exec_after_state.time", _TimeProxy(clock_b)),
+                    patch("spaceinvasion.runtime.api.handlers._browser_session.time", _TimeProxy(clock_b)),
+                ):
                     drv_b._navigate_frame("F_Hauptframe", "indexInternal.es?action=internalGalaxy")
                     bridge_b.handle_command({"command": "build", "building_id": 1, "dry_run": True})
                     self.assertFalse(bridge_b._last_home_fetched)

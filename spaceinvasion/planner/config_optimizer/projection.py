@@ -6,15 +6,15 @@ from collections.abc import Mapping, Sequence
 import heapq
 import math
 
-from spaceinvasion.planner.config_opt._overrides_helpers import StateInput, json_ready_dict
-from spaceinvasion.planner.config_opt._projection_eval import (
+from spaceinvasion.planner.config_optimizer._overrides_helpers import StateInput, json_ready_dict
+from spaceinvasion.planner.config_optimizer._projection_eval import (
     _eval_snapshot,
     _init_research_levels,
     _init_sim_planets,
     _score_building_weight,
     _score_research_weight,
 )
-from spaceinvasion.planner.config_opt._projection_helpers import (
+from spaceinvasion.planner.config_optimizer._projection_helpers import (
     _build_caches,
     _build_projection_config,
     _JobCandidate,
@@ -22,8 +22,8 @@ from spaceinvasion.planner.config_opt._projection_helpers import (
     _SimPlanet,
     _Snapshot,
 )
-from spaceinvasion.planner.config_opt._protocols import map_float
-from spaceinvasion.planner.config_opt.tech_graph import TECH_GRAPH
+from spaceinvasion.planner.config_optimizer._protocols import map_float
+from spaceinvasion.planner.config_optimizer.tech_graph import TECH_GRAPH
 
 
 class _ProjectionRunner:

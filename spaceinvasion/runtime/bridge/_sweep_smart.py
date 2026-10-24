@@ -6,9 +6,9 @@ from collections.abc import Mapping, Sequence
 import re
 import time
 
-from spaceinvasion.combat.fleet import plan_escape_flight, select_smart_galaxy_scan_batch
-from spaceinvasion.core.logging_utils import append_crash_debug_log
-from spaceinvasion.core.state import GameState, count_allocated_normal_planets
+from spaceinvasion.combat.cargo import plan_escape_flight
+from spaceinvasion.combat.scanner import select_smart_galaxy_scan_batch
+from spaceinvasion.core.model import GameState, count_allocated_normal_planets
 from spaceinvasion.runtime.bridge._context import BridgeContext
 from spaceinvasion.runtime.bridge._helpers import BRIDGE_RUNTIME_ERRORS, safe_api_float, safe_api_int
 from spaceinvasion.runtime.bridge._intel_sectors import (
@@ -18,6 +18,7 @@ from spaceinvasion.runtime.bridge._intel_sectors import (
     own_sweep_coords_for_ctx,
     sweep_target_galaxies_for_ctx,
 )
+from spaceinvasion.runtime.logs import append_crash_debug_log
 
 SMART_SWEEP_SUMMARY_TTL_S: float = 60.0
 SMART_SWEEP_STATE_KEYS: tuple[str, ...] = (

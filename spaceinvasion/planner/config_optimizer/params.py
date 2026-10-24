@@ -10,7 +10,7 @@ from spaceinvasion.core import game_data
 from spaceinvasion.core.coercion import coerce_int
 from spaceinvasion.core.coords import normalize_coords
 from spaceinvasion.core.model import EnergyBalance, PlanetState, Resources
-from spaceinvasion.planner.config_opt._params_norm import (
+from spaceinvasion.planner.config_optimizer._params_norm import (
     _apply_manual_planet_pins,
     _json_ready,
     _normalize_params,
@@ -23,10 +23,10 @@ from spaceinvasion.planner.config_opt._params_norm import (
     normalize_planet_specializations_map,
     normalize_planet_target_buildings,
 )
-from spaceinvasion.planner.config_opt._protocols import PlanetLike
-from spaceinvasion.planner.config_opt.catalog_math import catalog_top_level, warehouse_capacity
-from spaceinvasion.planner.config_opt.constants import WAREHOUSE_KEYS
-from spaceinvasion.planner.config_opt.tech_graph import same_planet_building_requirements
+from spaceinvasion.planner.config_optimizer._protocols import PlanetLike
+from spaceinvasion.planner.config_optimizer.catalog_math import catalog_top_level, warehouse_capacity
+from spaceinvasion.planner.config_optimizer.constants import WAREHOUSE_KEYS
+from spaceinvasion.planner.config_optimizer.tech_graph import same_planet_building_requirements
 
 
 def _empty_colony_slot(slot_number: int, fields: int, temperature_c: int = 0) -> PlanetState:

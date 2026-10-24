@@ -8,9 +8,9 @@ import random
 import threading
 import time
 
-from spaceinvasion.core.logging_utils import append_crash_debug_log
 from spaceinvasion.runtime.bridge._context import BridgeContext
 from spaceinvasion.runtime.bridge._helpers import BRIDGE_RUNTIME_ERRORS, sanitize_json_dict
+from spaceinvasion.runtime.logs import append_crash_debug_log
 
 _LOGGER = logging.getLogger(__name__)
 

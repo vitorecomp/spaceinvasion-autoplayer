@@ -7,10 +7,10 @@ from dataclasses import dataclass
 import re
 import time
 
-from spaceinvasion.combat.fleet import normalize_coords
-from spaceinvasion.core import game_data
-from spaceinvasion.core.state import GameState, PlanetState
-from spaceinvasion.planner.strategy import AI_INFRA_CARGO_TAG, PlannedAction
+from spaceinvasion.core import catalog as game_data
+from spaceinvasion.core.coords import normalize_coords
+from spaceinvasion.core.model import GameState, PlanetState, PlannedAction
+from spaceinvasion.planner.heuristics import AI_INFRA_CARGO_TAG
 from spaceinvasion.runtime.bridge._context import BridgeContext
 from spaceinvasion.runtime.bridge._context_init import BridgeConstants
 from spaceinvasion.runtime.bridge._exec_preflight import compute_fleet_slot_busy_cooldown_s

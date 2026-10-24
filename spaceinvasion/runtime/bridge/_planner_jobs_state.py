@@ -8,9 +8,9 @@ import logging
 import math
 import time
 
-from spaceinvasion.combat.fleet import normalize_coords
-from spaceinvasion.core import game_data
-from spaceinvasion.core.state import GameState
+from spaceinvasion.core import catalog as game_data
+from spaceinvasion.core.coords import normalize_coords
+from spaceinvasion.core.model import GameState
 from spaceinvasion.planner import config_optimizer as co_mod
 from spaceinvasion.runtime.bridge._context import BridgeContext
 from spaceinvasion.runtime.bridge._helpers import BRIDGE_RUNTIME_ERRORS, safe_api_float, safe_api_int

@@ -7,9 +7,8 @@ import logging
 import time
 
 from spaceinvasion.core.config import StrategyConfig
-from spaceinvasion.core.state import GameState, Resources
-from spaceinvasion.planner import ai_planner as ai_mod
-from spaceinvasion.planner.strategy import PlannedAction
+from spaceinvasion.core.model import GameState, PlannedAction, Resources
+from spaceinvasion.planner import ai as ai_mod
 from spaceinvasion.runtime.bridge._context import BridgeContext
 from spaceinvasion.runtime.bridge._context_init import BridgeConstants
 from spaceinvasion.runtime.bridge._helpers import BRIDGE_RUNTIME_ERRORS, safe_api_float, safe_api_int

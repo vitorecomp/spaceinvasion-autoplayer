@@ -5,12 +5,15 @@ from __future__ import annotations
 from collections import deque
 from dataclasses import asdict
 from html.parser import HTMLParser
+import importlib
 import inspect
 import json
 from pathlib import Path
+import pkgutil
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 import time as _real_time
@@ -28,11 +31,12 @@ from selenium.common.exceptions import (
 from selenium.webdriver.common.by import By
 
 import commander
-import spaceinvasion.runtime.api_server as api_server_mod
-from spaceinvasion.runtime.api_server import (
-    GameApiBridge,
-    create_api_server,
-)
+import spaceinvasion.runtime.api as api_pkg
+from spaceinvasion.runtime.api.http_server import create_api_server
+import spaceinvasion.runtime.bridge as bridge_pkg
+from spaceinvasion.runtime.bridge import GameApiBridge
+import spaceinvasion.runtime.commander as commander_pkg
+import spaceinvasion.session.browser as browser_mod
 import spaceinvasion.session.client as client_mod
 from spaceinvasion.session.client import GameBrowserClient
 from spaceinvasion.runtime.commander_client import GameApiClient
@@ -1905,7 +1909,7 @@ class E2ETestHarness:
                 save_strategy_config(self.initial_config, self.config_path)
 
             p_dbg = patch.object(
-                api_server_mod,
+                browser_mod,
                 "is_debug_port_open",
                 side_effect=lambda *_a, **_kw: self.debug_port_open,
             )
@@ -1914,17 +1918,29 @@ class E2ETestHarness:
 
             if self.patch_clocks:
                 proxy = _ClockTimeProxy(self.clock)
-                for mod in (
+                clock_mods: list[Any] = [
                     client_mod,
                     executor_mod,
-                    api_server_mod,
                     storage_mod,
                     fleet_mod,
                     rank_history_mod,
                     fleet_ctx_mod,
                     blast_furnace_mod,
                     commander,
-                ):
+                ]
+                for pkg in (bridge_pkg, api_pkg, commander_pkg):
+                    clock_mods.append(pkg)
+                    if hasattr(pkg, "__path__"):
+                        for mod_info in pkgutil.walk_packages(pkg.__path__, prefix=f"{pkg.__name__}."):
+                            sub = sys.modules.get(mod_info.name)
+                            if sub is None:
+                                sub = importlib.import_module(mod_info.name)
+                            clock_mods.append(sub)
+                seen_ids: set[int] = set()
+                for mod in clock_mods:
+                    if id(mod) in seen_ids or "time" not in getattr(mod, "__dict__", {}):
+                        continue
+                    seen_ids.add(id(mod))
                     p_time = patch.object(mod, "time", proxy)
                     p_time.start()
                     self._patches.append(p_time)

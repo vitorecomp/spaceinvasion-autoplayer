@@ -6,11 +6,12 @@ from collections.abc import Mapping
 import logging
 import time
 
-from spaceinvasion.combat.fleet import SHIP_SLUG_BY_KEY, fleet_cargo_capacity
-from spaceinvasion.core import game_data
+from spaceinvasion.combat.cargo import fleet_cargo_capacity
+from spaceinvasion.core import catalog as game_data
+from spaceinvasion.core.catalog import SHIP_SLUG_BY_KEY
 from spaceinvasion.core.config import StrategyConfig
-from spaceinvasion.core.state import GameState, Resources
-from spaceinvasion.planner.strategy import PlannedAction, compute_spare_ship_budget
+from spaceinvasion.core.model import GameState, PlannedAction, Resources
+from spaceinvasion.planner.heuristics import compute_spare_ship_budget
 from spaceinvasion.runtime.bridge._context import BridgeContext
 from spaceinvasion.runtime.bridge._context_init import BridgeConstants
 from spaceinvasion.runtime.bridge._helpers import BRIDGE_RUNTIME_ERRORS, safe_api_float, safe_api_int

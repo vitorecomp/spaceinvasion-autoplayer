@@ -7,11 +7,12 @@ from dataclasses import asdict
 import logging
 import math
 
-from spaceinvasion.combat.fleet import normalize_coords, plan_escape_flight
-from spaceinvasion.combat.ranking import attach_action_etas
-from spaceinvasion.core import game_data
-from spaceinvasion.core.state import GameState, PlanetState, Resources, normalize_planet_type
-from spaceinvasion.planner.strategy import AI_INFRA_CARGO_TAG, PlannedAction
+from spaceinvasion.combat.cargo import plan_escape_flight
+from spaceinvasion.core import catalog as game_data
+from spaceinvasion.core.coords import normalize_coords
+from spaceinvasion.core.model import GameState, PlanetState, PlannedAction, Resources, normalize_planet_type
+from spaceinvasion.planner.eta import attach_action_etas
+from spaceinvasion.planner.heuristics import AI_INFRA_CARGO_TAG
 from spaceinvasion.runtime.bridge._context import BridgeContext
 from spaceinvasion.runtime.bridge._helpers import (
     BRIDGE_RUNTIME_ERRORS,

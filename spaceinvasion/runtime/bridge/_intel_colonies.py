@@ -5,10 +5,10 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import replace
 
-from spaceinvasion.combat.fleet import normalize_coords
 from spaceinvasion.core.config import StrategyConfig
-from spaceinvasion.core.state import GameState, count_allocated_normal_planets
-from spaceinvasion.planner.strategy import _tutorial_colonize_task
+from spaceinvasion.core.coords import normalize_coords
+from spaceinvasion.core.model import GameState, count_allocated_normal_planets
+from spaceinvasion.planner.heuristics import _tutorial_colonize_task
 from spaceinvasion.runtime.bridge._context import BridgeContext
 from spaceinvasion.runtime.bridge._helpers import safe_api_float, safe_api_int, sanitize_json_dict
 from spaceinvasion.runtime.bridge._intel_colony_ledger import build_colony_attempts_payload

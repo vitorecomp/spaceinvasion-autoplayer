@@ -12,9 +12,9 @@ from spaceinvasion.core import game_data
 from spaceinvasion.core.coercion import coerce_finite_float, coerce_int, coerce_optional_int
 from spaceinvasion.core.coords import normalize_coords
 from spaceinvasion.core.model import is_building_allowed_on_planet_type
-from spaceinvasion.planner.config_opt._protocols import GameStateLike, as_int_dict, map_int, map_str
-from spaceinvasion.planner.config_opt.catalog_math import catalog_top_level
-from spaceinvasion.planner.config_opt.constants import (
+from spaceinvasion.planner.config_optimizer._protocols import GameStateLike, as_int_dict, map_int, map_str
+from spaceinvasion.planner.config_optimizer.catalog_math import catalog_top_level
+from spaceinvasion.planner.config_optimizer.constants import (
     _SPECIALIZATION_ALIASES,
     _UPPER_PARAM_ALIASES,
     DEFAULT_CONFIG_OPTIMIZER_PARAMS,

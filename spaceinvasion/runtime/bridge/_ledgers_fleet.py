@@ -7,16 +7,16 @@ from dataclasses import replace
 import math
 import time
 
-from spaceinvasion.combat.fleet import normalize_coords
 from spaceinvasion.core.config import StrategyConfig
-from spaceinvasion.core.state import (
+from spaceinvasion.core.coords import normalize_coords
+from spaceinvasion.core.model import (
     GameState,
     PlanetState,
+    PlannedAction,
     count_in_flight_fleets_for_planet,
     count_in_flight_spy_fleets_for_planet,
     is_in_flight_fleet_job,
 )
-from spaceinvasion.planner.strategy import PlannedAction
 from spaceinvasion.runtime.bridge._context import BridgeContext
 from spaceinvasion.runtime.bridge._context_init import BridgeConstants
 from spaceinvasion.runtime.bridge._helpers import safe_api_int

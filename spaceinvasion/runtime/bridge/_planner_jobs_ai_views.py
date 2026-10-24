@@ -5,10 +5,10 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 import math
 
-from spaceinvasion.combat.fleet import normalize_coords
-from spaceinvasion.core.state import GameState
-from spaceinvasion.planner import ai_planner as ai_mod
-from spaceinvasion.planner.action_graph import build_ai_planner_graph
+from spaceinvasion.core.coords import normalize_coords
+from spaceinvasion.core.model import GameState
+from spaceinvasion.planner import ai as ai_mod
+from spaceinvasion.planner.graph import build_ai_planner_graph
 from spaceinvasion.runtime.api.validation import ApiRequestError
 from spaceinvasion.runtime.bridge._context import BridgeContext
 from spaceinvasion.runtime.bridge._context_init import BridgeConstants

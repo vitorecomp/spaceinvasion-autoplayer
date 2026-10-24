@@ -329,7 +329,7 @@ class TestTier1R1(unittest.TestCase):
                 "-c",
                 (
                     "import spaceinvasion.core.config, "
-                    "spaceinvasion.planner.heuristics, spaceinvasion.runtime.api_server; "
+                    "spaceinvasion.planner.heuristics, spaceinvasion.runtime.bridge; "
                     "print('OK')"
                 ),
             ],

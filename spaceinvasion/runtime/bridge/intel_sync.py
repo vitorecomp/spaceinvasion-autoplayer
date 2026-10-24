@@ -5,15 +5,15 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 import time
 
-from spaceinvasion.combat.fleet import (
+from spaceinvasion.core.config import StrategyConfig
+from spaceinvasion.core.model import GameState
+from spaceinvasion.parsing import (
     GalaxySlot,
     InboxMessage,
     SpyReport,
     extract_galaxy_system_coords,
     parse_galaxy_system_html,
 )
-from spaceinvasion.core.config import StrategyConfig
-from spaceinvasion.core.state import GameState
 from spaceinvasion.runtime.bridge._context import BridgeContext
 from spaceinvasion.runtime.bridge._helpers import safe_api_int, sanitize_json_dict
 from spaceinvasion.runtime.bridge._intel_colonies import (

@@ -5,9 +5,9 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 import time
 
-from spaceinvasion.core import game_data
-from spaceinvasion.core.state import normalize_planet_type, parse_economy_rates
-from spaceinvasion.planner.strategy import PlannedAction
+from spaceinvasion.core import catalog as game_data
+from spaceinvasion.core.model import PlannedAction, normalize_planet_type
+from spaceinvasion.parsing import parse_economy_rates
 from spaceinvasion.runtime.api.handlers._browser_proto import BrowserBridgeFacade
 from spaceinvasion.runtime.api.handlers._browser_session import BrowserCommandSession, run_browser_command
 from spaceinvasion.runtime.api.registry import CommandRegistry

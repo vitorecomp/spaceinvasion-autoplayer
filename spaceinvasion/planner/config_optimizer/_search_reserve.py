@@ -7,9 +7,9 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from spaceinvasion.planner.config_opt._search_catalogue import ProgressCallback, planet_moves
-from spaceinvasion.planner.config_opt.constants import RESOURCE_KEYS, FloatArray, IntArray
-from spaceinvasion.planner.config_opt.model import EmpireProductionModel
+from spaceinvasion.planner.config_optimizer._search_catalogue import ProgressCallback, planet_moves
+from spaceinvasion.planner.config_optimizer.constants import RESOURCE_KEYS, FloatArray, IntArray
+from spaceinvasion.planner.config_optimizer.model import EmpireProductionModel
 
 GAHistoryRow = dict[str, int | float]
 RoundRow = dict[str, object]

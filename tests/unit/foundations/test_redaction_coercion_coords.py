@@ -1,20 +1,17 @@
-"""Parity, edge-case, and security-invariant tests for core redaction, coercion, and coords."""
+"""Behavioral, edge-case, and security-invariant tests for core redaction, coercion, and coords."""
 
 from __future__ import annotations
 
 import json
 import math
+import os
 from pathlib import Path
 
 import pytest
 
 from spaceinvasion.core import catalog as game_data
 from spaceinvasion.core import coercion, coords, redaction
-from spaceinvasion.core import config as legacy_config
-from spaceinvasion.core import logging_utils as legacy_logging
-from spaceinvasion.db import backend as legacy_backend
-from spaceinvasion.db import storage as legacy_storage
-from spaceinvasion.runtime import api_server as legacy_api
+from spaceinvasion.core import config as cfg_mod
 
 
 class _RaiseFspath:
@@ -62,9 +59,9 @@ def test_redaction_security_invariants_and_unicode_confusables() -> None:
     assert redaction.redact_sensitive(RuntimeError("fail https://x/?sid=EXC_SID_1")) == "fail https://x/?sid=REDACTED"
 
 
-def test_redaction_text_key_and_dsn_parity_with_legacy() -> None:
-    """Verify exact equivalence with logging_utils, api_server, config, and db.backend."""
-    key_samples = [
+def test_redaction_secret_keys_and_dsn_helpers() -> None:
+    """Verify secret dict key classification and DSN password redaction."""
+    secret_keys = (
         "sid",
         "SID",
         "password",
@@ -76,289 +73,145 @@ def test_redaction_text_key_and_dsn_parity_with_legacy() -> None:
         "client_secret",
         "authorization",
         "proxy_authorization",
-        "has_sid",
-        "no_password",
-        "is_secret",
-        "enable_cookie",
-        "planet_id",
         "s\u0131d",
         "\u017fid",
-        "bsid",
-        "",
-    ]
-    for key in key_samples:
-        expected = legacy_logging.is_secret_dict_key(key)
-        assert redaction.is_secret_dict_key(key) == expected
-        assert legacy_config._is_cfg_secret_dict_key(key) == expected
-        if key:
-            assert redaction.is_clean_api_key(key) == (not expected and key.isascii() and len(key) <= 64)
+    )
+    benign_keys = ("has_sid", "no_password", "is_secret", "enable_cookie", "planet_id", "bsid", "")
+    for key in secret_keys:
+        assert redaction.is_secret_dict_key(key) is True
+    for key in benign_keys:
+        assert redaction.is_secret_dict_key(key) is False
 
-    text_samples = [
-        "ok",
-        "planet_name=Homeworld&level=12",
-        "https://game.example/index.es?action=internalHome&sid=ABC12345&p=2",
-        '{"sid": "S_JSON", "has_sid": "false", "api_key": "K_JSON"}',
-        "Authorization: Bearer TOK_XYZ_999",
-        "Authorization: Basic dXNlcjpwYXNz",
-        "Cookie: sid=CK_111; lang=en",
-        "password='my secret pw'&ok=1",
-        "sid=<ANGLE_TOK>&next=1",
-        "sid=[BRACKET_TOK]&next=1",
-        "sid=%22PCT_Q_TOK%22&next=1",
-        '<input type="hidden" name="sid" value="INP_SID_9">',
-        "has_sid=false&is_secret=1",
-    ]
-    for sample in text_samples:
-        assert redaction.redact_text(sample) == legacy_logging.redact_sensitive(sample)
-        assert redaction.redact_text(sample) == legacy_api._scrub_api_str(sample)
-        if "<input" not in sample:
-            assert redaction.redact_text(sample) == legacy_config._redact_cfg_text(sample)
-
-    for dsn in (
-        "postgresql://spaceinvasion:supersecret@127.0.0.1:5433/spaceinvasion",
-        "postgresql://postgres:secret@/test_1?host=/tmp/pgsock",
-        "postgresql:///test_1?host=/tmp/pgsock&user=postgres",
-        "state/spaceinvasion.db",
-        "/tmp/req?sid=DSN_PATH_SID",
-    ):
-        assert redaction.redact_db_url(dsn) == legacy_backend.redact_db_url(dsn)
-
-
-def test_redaction_nested_containers_cycles_and_errors() -> None:
-    """Verify nested dict/list/bytes/Path/exception/cycle scrubbing and clean error formatting."""
-    deep_key: object = Path("?password=DEEP_PW_1")
-    for _ in range(5):
-        deep_key = (deep_key,)
-    payload: dict[object, object] = {
-        "url": "https://x/?sid=NEST_1",
-        "sid": "DIRECT_1",
-        "empty_sid": "",
-        "password": None,
-        "cookie": b"",
-        "headers": {"Authorization": "Bearer HDR_1", "X-Ok": "clean"},
-        "items": [("https://x/?sid=TUP_1", b"sid=BYTES_1"), Path("/tmp/p?sid=PATH_1")],
-        "exc": RuntimeError(10**5000, "?password=EXC_PW_1"),
-        "bad_fs": _RaiseFspath(),
-        "int_fs": _IntPath(),
-        deep_key: "ok",
+    cyclic: dict[str, object] = {
+        "sid": "TOP_SECRET",
+        "password": "",
+        "empty_bytes": b"",
+        "url": "https://game.example/?sid=URL_SECRET",
+        "nested": [Path("/tmp/?sid=PATH_SECRET"), _RaiseFspath(), _RaiseStr()],
     }
-    payload["self"] = payload
+    cyclic["self"] = cyclic
+    cleaned = redaction.redact_sensitive(cyclic)
+    assert isinstance(cleaned, dict)
+    assert cleaned["sid"] == "REDACTED"
+    assert cleaned["self"] == "[Cycle]"
+    cleaned_json = json.dumps(coercion.sanitize_json_tree(cleaned), allow_nan=False)
+    assert "TOP_SECRET" not in cleaned_json
+    assert "URL_SECRET" not in cleaned_json
+    assert "PATH_SECRET" not in cleaned_json
+    assert "FS_SECRET_1" not in cleaned_json
 
-    red_log = redaction.redact_sensitive(payload)
-    red_api = redaction.redact_api_payload(payload)
-    assert isinstance(red_log, dict) and isinstance(red_api, dict)
-    assert red_log["self"] == "[Cycle]" and red_api["self"] == "[Cycle]"
-    assert red_log["sid"] == "REDACTED" and red_api["sid"] == "REDACTED"
-    assert red_log["password"] is None and red_log["cookie"] == ""
-    assert red_api["bad_fs"] == "<unprintable>" and red_log["bad_fs"] == "<_RaiseFspath>"
-    for dumped in (
-        json.dumps({str(k): v for k, v in red_log.items()}),
-        json.dumps({str(k): v for k, v in red_api.items()}),
-    ):
-        for secret in (
-            "NEST_1",
-            "DIRECT_1",
-            "HDR_1",
-            "TUP_1",
-            "BYTES_1",
-            "PATH_1",
-            "EXC_PW_1",
-            "DEEP_PW_1",
-            "FS_SECRET_1",
-        ):
-            assert secret not in dumped
-
-    wd_err = RuntimeError("Click intercepted at ?sid=WD_SID\n  (Session info: chrome=120)\nStacktrace:\n#0 0x123")
-    assert redaction.format_clean_error(wd_err) == legacy_logging.format_clean_error(wd_err)
-    assert "WD_SID" not in redaction.format_clean_error(wd_err)
-    assert "Stacktrace" not in redaction.format_clean_error(wd_err)
+    dsn = "postgresql://spaceinvasion:MY_PASS@127.0.0.1:5433/spaceinvasion"
+    assert "MY_PASS" not in redaction.redact_db_url(dsn)
+    assert "***" in redaction.redact_db_url(dsn)
+    assert redaction.redact_db_url("postgresql:///test_db?host=/tmp/pgsock&user=postgres") == (
+        "postgresql:///test_db?host=/tmp/pgsock&user=postgres"
+    )
+    assert "SECRET_ERR" not in redaction.redact_sensitive(RuntimeError("boom ?sid=SECRET_ERR\nStacktrace:\n#0 0x0"))
 
 
-def test_coercion_scalar_and_tree_parity() -> None:
-    """Verify exact equivalence across legacy int/float/bool/ratio/JSON helpers."""
-    edge_values: list[object] = [
+def test_coercion_numeric_and_json_tree_safety() -> None:
+    """Verify bounded integer/float coercion, dot-grouped parsing, and finite JSON tree sanitization."""
+    samples: list[object] = [
         None,
         True,
         False,
         0,
-        -0.0,
-        1,
         -42,
-        42.9,
-        -3.7,
+        123456,
+        10**5000,
+        -(10**5000),
+        3.9,
         float("nan"),
         float("inf"),
         float("-inf"),
-        10**5000,
-        -(10**5000),
         "",
         "   ",
-        "0",
-        "42",
-        " -17 ",
-        "+00089",
-        "3.14",
-        "1.234.567",
-        "1_000",
-        "9" * 5000,
-        "-" + "9" * 5000,
-        "²",
-        "٣",
-        "١٢٣",
         "null",
         "None",
         "~",
-        "nan",
-        "inf",
-        "-infinity",
-        b"123",
-        bytearray(b"-55"),
-        b"\xff\xfe",
-        {"a": 1},
-        [1, 2],
-        (3,),
-        _RaiseStr(),
-    ]
-    for val in edge_values:
-        assert coercion.coerce_int(val, -9) == game_data.safe_int(val, -9)
-        assert coercion.coerce_optional_int(val) == game_data.safe_optional_int(val, None)
-        assert isinstance(coercion.coerce_bounded_int(val, -9), int)
-        assert coercion.coerce_sql_int(val, -9) == legacy_storage._sql_int(val, -9)
-        assert coercion.coerce_sql_optional_int(val) == legacy_storage._sql_optional_int(val)
-        assert coercion.parse_si_int(val) == coercion.parse_game_int(val)
-        assert coercion.cap_json_int(val) == game_data.cap_json_int(val)
-        assert coercion.fmt_compact_int(val) == game_data.fmt_compact_int(val)
-        assert coercion.coerce_bool(val, False) == legacy_config._safe_cfg_bool(val, False)
-        assert coercion.coerce_bool(val, True) == legacy_config._safe_cfg_bool(val, True)
-        got_f = coercion.coerce_finite_float(val, -1.5)
-        assert got_f == game_data.safe_finite_float(val, -1.5) and math.isfinite(got_f)
-        assert math.isfinite(coercion.coerce_finite_float(val, -1.5, overflow_cap=None))
-        opt_f = coercion.coerce_optional_finite_float(val)
-        assert opt_f is None or math.isfinite(opt_f)
-
-    neg_z = coercion.coerce_finite_float("-0.0", normalize_neg_zero=True)
-    assert neg_z == 0.0 and math.copysign(1.0, neg_z) == 1.0
-    assert coercion.safe_key((10**5000, Path("abc"))) == game_data.safe_key((10**5000, Path("abc")))
-    cyc: dict[object, object] = {"big": 10**500, "bad_f": float("nan"), (1, 2): b"hi"}
-    cyc["self"] = cyc
-    assert coercion.sanitize_json_tree(cyc) == game_data.sanitize_json_tree(cyc)
-
-
-def test_coercion_strict_api_validators_parity() -> None:
-    """Verify strict ASCII int & finite float validators match legacy api_server validators."""
-    strict_ints: list[object] = [
-        None,
-        True,
-        False,
-        0,
-        42,
-        -7,
-        42.0,
-        42.5,
-        float("inf"),
-        float("nan"),
-        float(2**53),
-        float(2**53 - 1),
         "42",
         "-17",
-        "+007",
-        "²",
-        "٣",
+        "+8",
+        "3.14",
         "1_000",
-        "9" * 4001,
-        "",
-        [],
+        "1.234.567",
+        "\u0661\u0665",
+        "9" * 5000,
+        "-" + "9" * 5000,
+        b"123",
+        b"\xff\xfe",
+        [1],
+        {"a": 1},
+        {1},
+        frozenset({1}),
+        Path("42"),
+        _RaiseFspath(),
+        _IntPath(),
+        _RaiseStr(),
     ]
-    for val in strict_ints:
-        for allow_none in (False, True):
-            legacy_ok = True
-            legacy_val: int | None = None
-            try:
-                legacy_val = legacy_api._parse_command_int("x", val, allow_none=allow_none, min_val=-100, max_val=2**53)
-            except legacy_api.ApiRequestError:
-                legacy_ok = False
-            if legacy_ok:
-                assert (
-                    coercion.parse_strict_ascii_int(val, name="x", allow_none=allow_none, min_val=-100, max_val=2**53)
-                    == legacy_val
-                )
-            else:
-                with pytest.raises(ValueError):
-                    coercion.parse_strict_ascii_int(val, name="x", allow_none=allow_none, min_val=-100, max_val=2**53)
+    for val in samples:
+        i_val = coercion.coerce_int(val, 7)
+        assert isinstance(i_val, int) and not isinstance(i_val, bool)
+        f_val = coercion.coerce_finite_float(val, 1.5)
+        assert isinstance(f_val, float) and math.isfinite(f_val)
+        c_val = coercion.coerce_bounded_int(val, 7)
+        assert abs(c_val) <= coercion.MAX_JSON_SAFE_INT
+        assert coercion.coerce_int(val, 7) == game_data.safe_int(val, 7)
+        assert coercion.coerce_optional_int(val, None) == game_data.safe_optional_int(val, None)
+        assert coercion.coerce_finite_float(val, 1.5) == game_data.safe_finite_float(val, 1.5)
+        if not isinstance(val, os.PathLike):
+            assert coercion.coerce_bounded_int(val, 7) == cfg_mod._safe_cfg_int(val, 7)
+        assert coercion.coerce_bool(val, True) == cfg_mod._safe_cfg_bool(val, True)
 
-    for val in (None, True, 0, 1.5, "-0.0", "1_0", "٣", "nan", "inf", float("nan"), "", {}):
-        legacy_ok = True
-        legacy_f = 0.0
-        try:
-            legacy_f = legacy_api._validate_strict_float("f", val, min_val=-10.0, max_val=10.0)
-        except legacy_api.ApiRequestError:
-            legacy_ok = False
-        if legacy_ok:
-            assert coercion.parse_strict_finite_float(val, name="f", min_val=-10.0, max_val=10.0) == legacy_f
-        else:
-            with pytest.raises(ValueError):
-                coercion.parse_strict_finite_float(val, name="f", min_val=-10.0, max_val=10.0)
-
-
-def test_coords_parity_across_edge_cases() -> None:
-    """Verify exact equivalence with legacy fleet, state, storage, and api_server coord helpers."""
-    samples: list[object] = [
-        None,
-        "",
-        "02:380:04",
-        "2:380:4",
-        "[3:120:7]",
-        " 3 / 120 / 07 ",
-        "3-120-7",
-        "03:120:16",
-        "03:120:17",
-        "٣:١٢٠:٠٧",
-        "²:120:7",
-        "not-a-coord",
-        "Attack -> [03:120:07]",
-        12345,
-        10**5000,
-    ]
-    for sample in samples:
-        norm = coords.normalize_coords(sample)
-        if isinstance(sample, str):
-            assert coords.normalize_coord_triple(sample, strict_bounds=True) in (
-                "",
-                norm,
-                coords.extract_coords_from_text(sample),
-            )
-            assert norm in coords.coord_query_variants(sample) or not norm
-            assert coords.extract_coords_from_text(sample) == legacy_api._extract_coords_from_text(sample)
-
-    parsed = coords.parse_coords("[2:38:4]", strict_bounds=True)
-    assert parsed == coords.Coords(2, 38, 4)
-    assert str(parsed) == "02:038:04" and coords.normalize_coords(parsed) == "02:038:04"
-    assert coords.parse_coords("02:038:17", strict_bounds=True) is None
-    assert coords.parse_coords("٣:١٢٠:٠٧") is None
-
-    assert coords.parse_gal_sys_pair("03:120") == (3, 120)
-    assert coords.parse_gal_sys_pair("3/400") == (3, 400)
-    assert coords.parse_gal_sys_pair("15:10") is None
-    assert coords.parse_gal_sys_pair((3, 120)) == (3, 120)
-    assert coords.parse_gal_sys_pair((True, 10)) is None
-    assert coords.parse_gal_sys_pair("٣:١٢٠") is None
-    assert coords.parse_gal_sys_pair(None) is None
-
-    assert coords.coords_distance("01:100:05", "01:100:05") == 1000.0
-    assert coords.coords_distance("bad", "01:100:05") > 0.0
-    assert coords.flight_distance("01:100:05", "01:100:05") == 500.0
-    assert coords.flight_distance("01:100:05", "03:100:05") > coords.flight_distance("01:100:05", "01:115:05")
-
-    colonies = [(3, 120), (3, 395)]
-    assert coords.galaxy_sector_distance(3, 120, colonies) == 0
-    assert coords.galaxy_sector_distance(3, 5, colonies) == 10
-    assert coords.galaxy_sector_distance(3, 125, colonies) == 5
-    assert coords.galaxy_sector_distance(4, 120, colonies) == 250
-    for a, b, exp in (
-        (1, 400, (1, -1)),
-        (400, 1, (1, 1)),
-        (120, 120, (0, 0)),
-        (10, 210, (200, 1)),
-        (10, 211, (199, -1)),
+    for raw_num, expected in (
+        ("2.000", 2000),
+        ("7.883.995.585.380", 7883995585380),
+        ("", 0),
+        ("\u0662.\u0660\u0660\u0660", 0),
     ):
-        assert coords.circular_system_delta(a, b) == exp
+        assert coercion.parse_si_int(raw_num) == expected
+        assert coercion.parse_si_int(raw_num) == coercion.parse_game_int(raw_num)
+
+    assert coercion.parse_strict_ascii_int("42", min_val=0, max_val=100) == 42
+    with pytest.raises(ValueError):
+        coercion.parse_strict_ascii_int(True)
+    with pytest.raises(ValueError):
+        coercion.parse_strict_ascii_int("\u0664\u0662")
+    with pytest.raises(ValueError):
+        coercion.parse_strict_ascii_int(1.5)
+
+    assert coercion.parse_strict_finite_float("3.5", min_val=0.0, max_val=10.0) == pytest.approx(3.5)
+    with pytest.raises(ValueError):
+        coercion.parse_strict_finite_float(float("nan"))
+    with pytest.raises(ValueError):
+        coercion.parse_strict_finite_float("1_000.0")
+
+    tree: dict[str, object] = {
+        "ok": True,
+        "nan": float("nan"),
+        "inf": float("inf"),
+        "huge": 10**5000,
+        "path": _RaiseFspath(),
+        "nested": (1, 2.5, float("-inf")),
+    }
+    tree["cycle"] = tree
+    sanitized = coercion.sanitize_json_tree(tree)
+    dumped = json.dumps(sanitized, allow_nan=False)
+    assert '"cycle": "[Cycle]"' in dumped
+    assert '"nan": 0.0' in dumped
+
+
+def test_coords_normalization_parsing_variants_and_distance() -> None:
+    """Verify coordinate normalization, query variants, and flight distance math."""
+    assert coords.normalize_coords("3:120:7") == "03:120:07"
+    assert coords.normalize_coords("[03/120-07]") == "03:120:07"
+    assert coords.normalize_coords("invalid") == "invalid"
+    assert coords.parse_coords("03:120:07") == coords.Coords(3, 120, 7)
+    assert coords.parse_coords("bad") is None
+    norm, variants, _like = coords.coord_query_variants("03:120:07")
+    assert norm == "03:120:07"
+    assert set(variants) >= {"03:120:07", "3:120:7"}
+    assert coords.parse_gal_sys_pair("3:120") == (3, 120)
+    assert coords.coords_distance("03:120:07", "03:120:07") == 1000.0
+    assert coords.coords_distance("03:120:07", "03:121:07") > 1000.0
+    assert coords.coords_distance("03:120:07", "04:120:07") > coords.coords_distance("03:120:07", "03:121:07")

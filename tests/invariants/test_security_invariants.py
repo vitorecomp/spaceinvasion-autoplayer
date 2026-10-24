@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from spaceinvasion.core.logging_utils import redact_sensitive
+from spaceinvasion.core.redaction import redact_sensitive
 
 pytestmark = pytest.mark.invariants
 

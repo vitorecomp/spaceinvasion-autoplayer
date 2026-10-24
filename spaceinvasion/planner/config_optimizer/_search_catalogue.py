@@ -6,8 +6,8 @@ from collections.abc import Callable
 
 import numpy as np
 
-from spaceinvasion.planner.config_opt.constants import FloatArray, IntArray
-from spaceinvasion.planner.config_opt.model import EmpireProductionModel
+from spaceinvasion.planner.config_optimizer.constants import FloatArray, IntArray
+from spaceinvasion.planner.config_optimizer.model import EmpireProductionModel
 
 ScoreFn = Callable[[FloatArray], FloatArray]
 ProgressCallback = Callable[[str, float], None]

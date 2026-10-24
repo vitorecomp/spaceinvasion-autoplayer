@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, replace
 
-from spaceinvasion.combat.fleet import plan_escape_flight
+from spaceinvasion.combat.cargo import plan_escape_flight
 from spaceinvasion.core.config import StrategyConfig, normalize_planner_mode
-from spaceinvasion.core.state import GameState
+from spaceinvasion.core.model import GameState
 from spaceinvasion.runtime.api.handlers._browser_proto import BrowserBridgeFacade
 from spaceinvasion.runtime.api.handlers._browser_session import BrowserCommandSession, run_browser_command
 from spaceinvasion.runtime.api.handlers._planning_views import (

@@ -236,15 +236,19 @@ def install_log_artifact_guard() -> None:
     with _GUARD_LOCK:
         if _LOG_GUARD_INSTALLED:
             return
-        from spaceinvasion.core import logging_utils
+        from spaceinvasion.runtime import logs as logs_mod
 
         hermetic_tmp = _ensure_hermetic_tmp_dir()
         repo_root_resolved = REPO_ROOT.resolve()
         repo_logs_resolved = (REPO_ROOT / "logs").resolve()
         repo_state_resolved = (REPO_ROOT / "state").resolve()
-        orig_skip = logging_utils._should_skip_disk_log
+        orig_skip = logs_mod._should_skip_disk_log
 
-        def _hermetic_should_skip_disk_log(target_dir: Optional[Path]) -> bool:
+        def _hermetic_should_skip_disk_log(
+            target_dir: Optional[Path],
+            *,
+            allow_default_disk_logs: bool = False,
+        ) -> bool:
             if target_dir is None:
                 return True
             try:
@@ -259,10 +263,10 @@ def install_log_artifact_guard() -> None:
                 return True
             if resolved in (repo_root_resolved, repo_logs_resolved, repo_state_resolved):
                 return True
-            return orig_skip(target_dir)
+            return orig_skip(target_dir, allow_default_disk_logs=allow_default_disk_logs)
 
-        logging_utils._should_skip_disk_log = _hermetic_should_skip_disk_log
-        logging_utils.DEFAULT_CRASH_LOG_DIR = (hermetic_tmp / "crash_logs").resolve()
+        logs_mod._should_skip_disk_log = _hermetic_should_skip_disk_log
+        logs_mod.DEFAULT_CRASH_LOG_DIR = (hermetic_tmp / "crash_logs").resolve()
         _LOG_GUARD_INSTALLED = True
 
 

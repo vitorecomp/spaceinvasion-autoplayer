@@ -5,9 +5,9 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 
 from spaceinvasion.core.config import StrategyConfig
-from spaceinvasion.core.state import GameState
-from spaceinvasion.planner.action_graph import build_action_graph
-from spaceinvasion.planner.strategy import PlannedAction, plan_actions
+from spaceinvasion.core.model import GameState, PlannedAction
+from spaceinvasion.planner.graph import build_action_graph
+from spaceinvasion.planner.heuristics import plan_actions
 from spaceinvasion.runtime.bridge._context import BridgeContext
 from spaceinvasion.runtime.bridge._helpers import sanitize_json_dict
 from spaceinvasion.runtime.bridge._helpers_sig import redact_action_graph_strings

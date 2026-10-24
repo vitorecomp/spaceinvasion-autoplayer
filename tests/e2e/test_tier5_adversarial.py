@@ -32,7 +32,7 @@ from tests.e2e.harness import (
     FakeSpaceInvasionServer,
     run_ui_in_node,
 )
-from spaceinvasion.runtime.api_server import GameApiBridge
+from spaceinvasion.runtime.bridge import GameApiBridge
 from spaceinvasion.session.client import (
     GameBrowserClient,
     PageViewLimiter,
@@ -40,7 +40,7 @@ from spaceinvasion.session.client import (
 from spaceinvasion.core.config import StrategyConfig
 from spaceinvasion.session.executor import ActionExecutor
 from spaceinvasion.parsing.models import GalaxySlot
-from spaceinvasion.core.logging_utils import append_api_log
+from spaceinvasion.runtime.logs import append_api_log
 from spaceinvasion.planner.eta import (
     format_duration as _format_duration,
     build_buildings_eta,
@@ -787,9 +787,9 @@ class TestTier5Adversarial(unittest.TestCase):
             self.assertEqual(sc["countAfterRecalc"], 0)
 
     def test_adv_t5_06_unnormalized_coords_api_guards_and_deep_sid_redaction(self) -> None:
-        from spaceinvasion.runtime.api_server import _redact_api_payload
+        from spaceinvasion.runtime.bridge._helpers import redact_api_payload as _redact_api_payload
         from spaceinvasion.parsing.spy import parse_spy_report_html
-        from spaceinvasion.core.logging_utils import redact_sensitive
+        from spaceinvasion.core.redaction import redact_sensitive
 
         clock = FakeClock()
         planets = {
@@ -1389,7 +1389,7 @@ class TestTier5Adversarial(unittest.TestCase):
     def test_adv_t5_11_extreme_ints_1e1m_nan_rank_history_http_state_and_ui_node(self) -> None:
         import time
         from spaceinvasion.core import catalog as game_data
-        from spaceinvasion.core.logging_utils import append_tick_logs
+        from spaceinvasion.runtime.logs import append_tick_logs
         from spaceinvasion.combat.points import (
             build_combat_overview,
             build_ranking_evolution,
@@ -2141,7 +2141,7 @@ async (url) => {
         import scripts.sync_wiki_data as sync_wiki_data
         from spaceinvasion.session import browser
         from spaceinvasion.core import catalog as game_data
-        from spaceinvasion.runtime.api_server import MAX_REQUEST_BYTES
+        from spaceinvasion.runtime.bridge import MAX_REQUEST_BYTES
         from spaceinvasion.session.auth import SpaceInvasionAuthError
         from spaceinvasion.session.browser import BrowserConfig
         from spaceinvasion.core.config import strategy_config_from_dict
@@ -2471,7 +2471,7 @@ async (url, opts, fullUrl, nativeFetch) => {
         from unittest.mock import MagicMock, patch
         import requests
         import commander
-        from spaceinvasion.runtime.api_server import ApiRequestError
+        from spaceinvasion.runtime.api.validation import ApiRequestError
         from spaceinvasion.session.client import PageViewLimiter
         from spaceinvasion.runtime.commander_client import (
             GameApiClient,
@@ -2634,7 +2634,7 @@ async (url, opts, fullUrl, nativeFetch) => {
             held_err = None
 
     def test_adv_t5_19_r9_priority_asteroid_full_field_defender_research_rate_limit_and_ascii_parity(self) -> None:
-        from spaceinvasion.runtime.api_server import ApiRequestError
+        from spaceinvasion.runtime.api.validation import ApiRequestError
         from spaceinvasion.core.config import (
             normalize_planner_mode,
             strategy_config_from_dict,
@@ -2779,10 +2779,8 @@ async (url, opts, fullUrl, nativeFetch) => {
                 self.assertNotIn("T5_METHOD_SID", log_p.read_text(encoding="utf-8"))
 
     def test_adv_t5_20_r10_e2e_unicode_digits_negative_fields_blob_redaction_and_raid_asteroid_parity(self) -> None:
-        from spaceinvasion.runtime.api_server import (
-            GameApiBridge,
-            create_api_server,
-        )
+        from spaceinvasion.runtime.api.http_server import create_api_server
+        from spaceinvasion.runtime.bridge import GameApiBridge
         from spaceinvasion.session.client import RateLimitError
         from spaceinvasion.core.config import StrategyConfig
         from spaceinvasion.session.executor import ActionExecutor
@@ -2930,7 +2928,7 @@ async (url, opts, fullUrl, nativeFetch) => {
             _sanitize_cfg_json_tree,
             strategy_config_from_dict,
         )
-        from spaceinvasion.core.logging_utils import redact_sensitive
+        from spaceinvasion.core.redaction import redact_sensitive
         from spaceinvasion.core.model import (
             BuildingOffer,
             QueueJob,
@@ -3167,7 +3165,7 @@ async (url, opts, fullUrl, nativeFetch) => {
         self,
     ) -> None:
         from spaceinvasion.core.coords import normalize_coords
-        from spaceinvasion.core.logging_utils import redact_sensitive
+        from spaceinvasion.core.redaction import redact_sensitive
         from spaceinvasion.combat.points import build_combat_overview
         from spaceinvasion.core.model import (
             BuildingOffer,
@@ -3346,7 +3344,7 @@ async (url, opts, fullUrl, nativeFetch) => {
             GameApiError,
         )
         from spaceinvasion.parsing.spy import parse_spy_messages_html
-        from spaceinvasion.core.logging_utils import redact_sensitive
+        from spaceinvasion.core.redaction import redact_sensitive
         from spaceinvasion.core.model import (
             QueueJob,
             TutorialStatus,

@@ -16,13 +16,9 @@ import requests
 
 from scripts.capture_goldens import BACKEND_SPECIFIC_PATHS, REFERENCE_DIR, _drop_path, render
 from spaceinvasion.core import config as config_mod
-from spaceinvasion.core import state as state_mod
-from spaceinvasion.runtime import api_server as legacy_api_server
+from spaceinvasion.core import model as state_mod
 import spaceinvasion.runtime.api as api_pkg
-from spaceinvasion.runtime.api.http_server import create_modular_api_server
 import spaceinvasion.runtime.bridge as bridge_pkg
-from spaceinvasion.runtime.bridge.bridge import ModularGameApiBridge
-from spaceinvasion.session import browser as browser_mod
 from tests.e2e.harness import E2ETestHarness, _ClockTimeProxy
 from tests.goldens.api_scenario import (
     API_STEPS,
@@ -71,18 +67,7 @@ def _run_modular_api_session(*, timeout: float = 600.0) -> dict[str, object]:
     harness = E2ETestHarness(server=server, clock=clock, config=build_config(), http_timeout=timeout)
     with ExitStack() as stack:
         stack.callback(http.close)
-        # Swap the harness's bridge & HTTP server to the Phase 4 modular implementation.
-        import tests.e2e.harness as harness_mod
-
-        stack.enter_context(mock.patch.object(harness_mod, "GameApiBridge", ModularGameApiBridge))
-        stack.enter_context(mock.patch.object(harness_mod, "create_api_server", create_modular_api_server))
-        stack.enter_context(mock.patch.object(legacy_api_server, "GameApiBridge", ModularGameApiBridge))
-        stack.enter_context(mock.patch.object(legacy_api_server, "create_api_server", create_modular_api_server))
-        stack.enter_context(
-            mock.patch.object(browser_mod, "is_debug_port_open", side_effect=lambda *_a, **_kw: harness.debug_port_open)
-        )
-
-        # Freeze `time` across every modular bridge & API submodule (matching `api_scenario.py`).
+        # Freeze `time` across core modules (E2ETestHarness freezes all bridge & api submodules).
         for module in (state_mod, config_mod, *_iter_submodules(bridge_pkg), *_iter_submodules(api_pkg)):
             if "time" in module.__dict__:
                 stack.enter_context(mock.patch.object(module, "time", proxy))

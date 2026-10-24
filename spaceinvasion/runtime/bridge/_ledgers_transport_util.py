@@ -6,8 +6,9 @@ from collections.abc import Mapping
 import math
 import time
 
-from spaceinvasion.combat.fleet import fleet_cargo_capacity, normalize_coords
-from spaceinvasion.core.state import (
+from spaceinvasion.combat.cargo import fleet_cargo_capacity
+from spaceinvasion.core.coords import normalize_coords
+from spaceinvasion.core.model import (
     GameState,
     Resources,
     count_in_flight_ships_by_planet,

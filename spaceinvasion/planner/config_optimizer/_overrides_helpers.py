@@ -12,9 +12,9 @@ import numpy as np
 from spaceinvasion.core import game_data
 from spaceinvasion.core.coercion import coerce_finite_float, coerce_int, coerce_optional_int
 from spaceinvasion.core.model import normalize_planet_type
-from spaceinvasion.planner.config_opt._model_plans import build_planet_plans, plan_research_levels
-from spaceinvasion.planner.config_opt._params_norm import _json_ready, _normalize_params
-from spaceinvasion.planner.config_opt._protocols import (
+from spaceinvasion.planner.config_optimizer._model_plans import build_planet_plans, plan_research_levels
+from spaceinvasion.planner.config_optimizer._params_norm import _json_ready, _normalize_params
+from spaceinvasion.planner.config_optimizer._protocols import (
     GameStateLike,
     PlanetLike,
     as_int_dict,
@@ -23,23 +23,23 @@ from spaceinvasion.planner.config_opt._protocols import (
     map_float,
     map_int,
 )
-from spaceinvasion.planner.config_opt.catalog_math import (
+from spaceinvasion.planner.config_optimizer.catalog_math import (
     building_level_flows,
     research_catalog,
     shipyard_time_divisor,
     solar_cell_energy_per_unit,
     technology_multiplier,
 )
-from spaceinvasion.planner.config_opt.constants import (
+from spaceinvasion.planner.config_optimizer.constants import (
     PRODUCTION_FLOW_KEYS,
     RESOURCE_KEYS,
     FloatArray,
 )
-from spaceinvasion.planner.config_opt.params import (
+from spaceinvasion.planner.config_optimizer.params import (
     _empty_colony_slot,
     check_optimizer_settings,
 )
-from spaceinvasion.planner.config_opt.tech_graph import (
+from spaceinvasion.planner.config_optimizer.tech_graph import (
     research_requirements,
     research_upgrade_costs,
 )

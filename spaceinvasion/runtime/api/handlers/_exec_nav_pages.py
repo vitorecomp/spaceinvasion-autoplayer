@@ -6,17 +6,15 @@ from dataclasses import asdict, dataclass, replace
 import re
 import time
 
-from spaceinvasion.combat.fleet import (
+from spaceinvasion.core import catalog as game_data
+from spaceinvasion.core.coords import normalize_coords
+from spaceinvasion.parsing import (
     SpyReport,
     extract_galaxy_system_coords,
     extract_message_folder_links,
-    normalize_coords,
-    parse_galaxy_system_html,
-)
-from spaceinvasion.core import game_data
-from spaceinvasion.core.state import (
     parse_daily_login_bonus,
     parse_economy_rates,
+    parse_galaxy_system_html,
     parse_home_metadata,
     parse_universe_research_records,
 )

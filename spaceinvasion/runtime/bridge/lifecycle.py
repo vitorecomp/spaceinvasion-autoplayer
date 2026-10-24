@@ -9,8 +9,8 @@ import math
 import time
 
 from spaceinvasion.core.config import strategy_config_from_dict
+from spaceinvasion.core.model import GameState
 from spaceinvasion.core.redaction import redact_text
-from spaceinvasion.core.state import GameState
 from spaceinvasion.runtime.bridge._context import BridgeContext
 from spaceinvasion.runtime.bridge._context_init import BridgeConstants
 from spaceinvasion.runtime.bridge._helpers import (

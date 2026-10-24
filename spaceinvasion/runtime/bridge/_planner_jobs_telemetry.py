@@ -7,8 +7,8 @@ import logging
 import time
 
 from spaceinvasion.core.config import StrategyConfig, normalize_planner_mode
-from spaceinvasion.core.state import GameState, count_allocated_normal_planets
-from spaceinvasion.planner import ai_planner as ai_mod
+from spaceinvasion.core.model import GameState, count_allocated_normal_planets
+from spaceinvasion.planner import ai as ai_mod
 from spaceinvasion.runtime.bridge._context import BridgeContext
 from spaceinvasion.runtime.bridge._context_init import BridgeConstants
 from spaceinvasion.runtime.bridge._helpers import BRIDGE_RUNTIME_ERRORS, safe_api_float, safe_api_int

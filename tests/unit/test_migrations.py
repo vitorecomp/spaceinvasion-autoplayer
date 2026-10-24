@@ -16,10 +16,8 @@ from unittest.mock import MagicMock
 
 import requests
 
-from spaceinvasion.runtime.api_server import (
-    GameApiBridge,
-    create_api_server,
-)
+from spaceinvasion.runtime.api.http_server import create_api_server
+from spaceinvasion.runtime.bridge import GameApiBridge
 from spaceinvasion.db.migrations import (
     GAME_DB_MIGRATIONS,
     GAME_REQUIRED_TABLES,

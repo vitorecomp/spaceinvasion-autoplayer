@@ -22,7 +22,7 @@ from spaceinvasion.parsing.account_pages import (
 from spaceinvasion.db.storage import GameDatabase
 from spaceinvasion.core.model import PlannedAction
 from spaceinvasion.planner.heuristics import plan_actions
-from spaceinvasion.runtime.api_server import GameApiBridge
+from spaceinvasion.runtime.bridge import GameApiBridge
 from spaceinvasion.session.executor import ActionExecutor
 
 
@@ -792,7 +792,8 @@ class TestSweepAndTransmitter(unittest.TestCase):
             GalaxySlot,
             SpyReport,
         )
-        from spaceinvasion.runtime.api_server import ApiRequestError, GameApiBridge
+        from spaceinvasion.runtime.api.validation import ApiRequestError
+        from spaceinvasion.runtime.bridge import GameApiBridge
 
         # 1. Passive #json-element colonize extraction on 2D Galaxy view
         gal_2d_html = """
@@ -899,7 +900,7 @@ class TestSweepAndTransmitter(unittest.TestCase):
         from spaceinvasion.combat.colonies import grade_colony_candidate
         from spaceinvasion.parsing.models import GalaxySlot
         from spaceinvasion.session.executor import ActionExecutor
-        from spaceinvasion.runtime.api_server import GameApiBridge
+        from spaceinvasion.runtime.bridge import GameApiBridge
 
         # 1. Range-based ecology grading (140-340 fields @ 28C -> Grade S, meets 300+ target; 100-220 -> Grade D, skipped)
         g_prime = grade_colony_candidate(
@@ -1465,7 +1466,7 @@ class TestSweepAndTransmitter(unittest.TestCase):
 
         with tempfile.TemporaryDirectory(prefix="si_cap_freeze_") as tmp_dir:
             tp = Path(tmp_dir)
-            with patch("spaceinvasion.runtime.api_server.is_debug_port_open", return_value=True):
+            with patch("spaceinvasion.session.browser.is_debug_port_open", return_value=True):
                 bridge = GameApiBridge(
                     debug_port=19996,
                     config_path=tp / "cfg.json",

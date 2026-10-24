@@ -6,8 +6,9 @@ from collections.abc import Callable
 import random
 import time
 
-from spaceinvasion.combat.fleet import ARROW_NAV_MAX_DISTANCE, extract_galaxy_system_coords, parse_galaxy_system_html
-from spaceinvasion.core.state import count_allocated_normal_planets
+from spaceinvasion.core.coords import ARROW_NAV_MAX_DISTANCE
+from spaceinvasion.core.model import count_allocated_normal_planets
+from spaceinvasion.parsing import extract_galaxy_system_coords, parse_galaxy_system_html
 from spaceinvasion.runtime.bridge._context import BridgeContext
 from spaceinvasion.runtime.bridge._helpers import safe_api_float, safe_api_int
 from spaceinvasion.runtime.bridge._helpers_sig import call_with_optional_priority, supports_kwarg

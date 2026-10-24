@@ -5,8 +5,9 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
 
-from spaceinvasion.combat.fleet import fleet_cargo_capacity, normalize_coords
-from spaceinvasion.core.state import GameState, QueueJob, Resources, is_in_flight_fleet_job
+from spaceinvasion.combat.cargo import fleet_cargo_capacity
+from spaceinvasion.core.coords import normalize_coords
+from spaceinvasion.core.model import GameState, QueueJob, Resources, is_in_flight_fleet_job
 from spaceinvasion.db.storage import GameDatabase
 from spaceinvasion.runtime.bridge._context import BridgeContext
 from spaceinvasion.runtime.bridge._helpers import safe_api_int

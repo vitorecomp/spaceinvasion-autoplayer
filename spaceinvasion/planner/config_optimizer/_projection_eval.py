@@ -7,12 +7,12 @@ import math
 
 from spaceinvasion.core import game_data
 from spaceinvasion.core.coercion import coerce_int
-from spaceinvasion.planner.config_opt._overrides_helpers import (
+from spaceinvasion.planner.config_optimizer._overrides_helpers import (
     StateInput,
     _extract_planned_building_map_from_entry,
     state_researches,
 )
-from spaceinvasion.planner.config_opt._projection_helpers import (
+from spaceinvasion.planner.config_optimizer._projection_helpers import (
     _HasResources,
     _ProjectionConfig,
     _ResourcesLike,
@@ -20,14 +20,14 @@ from spaceinvasion.planner.config_opt._projection_helpers import (
     _SimPlanet,
     _Snapshot,
 )
-from spaceinvasion.planner.config_opt._protocols import PlanetLike, as_mapping, map_int
-from spaceinvasion.planner.config_opt.catalog_math import (
+from spaceinvasion.planner.config_optimizer._protocols import PlanetLike, as_mapping, map_int
+from spaceinvasion.planner.config_optimizer.catalog_math import (
     research_catalog,
     shipyard_time_divisor,
     spice_eq,
     technology_multiplier,
 )
-from spaceinvasion.planner.config_opt.constants import RESOURCE_KEYS, WAREHOUSE_KEYS
+from spaceinvasion.planner.config_optimizer.constants import RESOURCE_KEYS, WAREHOUSE_KEYS
 
 
 def _init_research_levels(

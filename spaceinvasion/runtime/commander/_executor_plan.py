@@ -21,16 +21,7 @@ from spaceinvasion.core.model import (
 from spaceinvasion.core.model import (
     game_state_from_dict as model_game_state_from_dict,
 )
-from spaceinvasion.core.model import (
-    game_state_to_dict as model_game_state_to_dict,
-)
-from spaceinvasion.core.state import (
-    GameState as LegacyGameState,
-)
-from spaceinvasion.core.state import (
-    game_state_from_dict as legacy_game_state_from_dict,
-)
-from spaceinvasion.planner.strategy import (
+from spaceinvasion.planner.heuristics import (
     _count_planet_building_queues,
     merge_manual_queue_actions,
     plan_actions,
@@ -61,18 +52,15 @@ _PRIO_RANK: dict[str, int] = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
 
 
 def decode_matching_state(raw_state: Mapping[str, object], reference: object) -> GameStateCmdLike:
-    """Decode ``raw_state`` into ``core.model.GameState`` or legacy ``core.state.GameState``."""
-    if isinstance(reference, ModelGameState):
-        return model_game_state_from_dict(raw_state)
-    return legacy_game_state_from_dict(dict(raw_state))
+    """Decode ``raw_state`` into ``core.model.GameState``."""
+    _ = reference
+    return model_game_state_from_dict(raw_state)
 
 
-def _to_legacy_state(state: GameStateCmdLike) -> LegacyGameState:
-    if isinstance(state, LegacyGameState):
-        return state
+def _to_legacy_state(state: GameStateCmdLike) -> ModelGameState:
     if isinstance(state, ModelGameState):
-        return legacy_game_state_from_dict(model_game_state_to_dict(state))
-    return legacy_game_state_from_dict({"universe_id": state.universe_id})
+        return state
+    return model_game_state_from_dict({"universe_id": state.universe_id})
 
 
 def to_canonical_action(act: PlannedActionCmdLike) -> PlannedAction:

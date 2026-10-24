@@ -6,10 +6,10 @@ from collections.abc import Mapping
 from dataclasses import dataclass, replace
 import re
 
-from spaceinvasion.combat.fleet import format_station_ships_spec, normalize_coords, parse_station_ships_spec
-from spaceinvasion.core import game_data
-from spaceinvasion.core.state import GameState, PlanetState, Resources, normalize_planet_type
-from spaceinvasion.planner.strategy import PlannedAction
+from spaceinvasion.core import catalog as game_data
+from spaceinvasion.core.coords import normalize_coords
+from spaceinvasion.core.model import GameState, PlanetState, PlannedAction, Resources, normalize_planet_type
+from spaceinvasion.parsing import format_station_ships_spec, parse_station_ships_spec
 from spaceinvasion.runtime.api.handlers._browser_proto import BrowserBridgeFacade
 from spaceinvasion.runtime.api.handlers._browser_session import BrowserCommandSession, run_browser_command
 from spaceinvasion.runtime.api.handlers._exec_fleet_helpers import aborted_action_response

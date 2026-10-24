@@ -6,7 +6,7 @@ from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field
 
 from spaceinvasion.core.config import StrategyConfig, save_strategy_config, strategy_config_from_dict
-from spaceinvasion.core.state import GameState
+from spaceinvasion.core.model import GameState
 from spaceinvasion.planner.graph.heuristics import build_action_graph
 from spaceinvasion.runtime.api.handlers._bridge_proto import BridgeApiFacade
 from spaceinvasion.runtime.api.registry import CommandRegistry

@@ -6,8 +6,7 @@ from collections.abc import Mapping, Sequence
 from typing import Protocol
 
 from spaceinvasion.core.config import StrategyConfig
-from spaceinvasion.core.state import GameState
-from spaceinvasion.planner.strategy import PlannedAction
+from spaceinvasion.core.model import GameState, PlannedAction
 from spaceinvasion.runtime.bridge._context import BridgeContext
 from spaceinvasion.runtime.bridge.lifecycle import BridgeLifecycleService
 from spaceinvasion.runtime.bridge.planet_names import PlanetNameService

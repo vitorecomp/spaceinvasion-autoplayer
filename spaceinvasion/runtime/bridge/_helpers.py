@@ -8,7 +8,7 @@ from pathlib import Path
 import secrets
 import time
 
-from spaceinvasion.core import game_data
+from spaceinvasion.core import catalog as game_data
 from spaceinvasion.core.catalog.json_sanitize import sanitize_json_tree
 from spaceinvasion.core.redaction import format_clean_error, redact_text
 from spaceinvasion.core.redaction import redact_api_payload as _core_redact_api_payload

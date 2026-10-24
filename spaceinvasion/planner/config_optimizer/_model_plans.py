@@ -7,28 +7,28 @@ import math
 
 from spaceinvasion.core.coercion import coerce_int
 from spaceinvasion.core.model import normalize_planet_type
-from spaceinvasion.planner.config_opt._protocols import PlanetLike, as_float_dict, as_int_dict, as_str_dict
-from spaceinvasion.planner.config_opt.catalog_math import (
+from spaceinvasion.planner.config_optimizer._protocols import PlanetLike, as_float_dict, as_int_dict, as_str_dict
+from spaceinvasion.planner.config_optimizer.catalog_math import (
     catalog_top_level,
     full_cost,
     research_catalog,
     ship_info,
     spice_eq,
 )
-from spaceinvasion.planner.config_opt.constants import (
+from spaceinvasion.planner.config_optimizer.constants import (
     _MINE_BUILDING_TO_RESOURCE,
     RESOURCE_KEYS,
     SPECIALIZATION_ALLOWED_BUILDINGS,
     WAREHOUSE_KEYS,
 )
-from spaceinvasion.planner.config_opt.params import (
+from spaceinvasion.planner.config_optimizer.params import (
     _resolve_planet_display_name,
     _resolve_planet_reserved_floors,
     _resolve_planet_specialization,
     normalize_planet_name,
     normalize_planet_specialization,
 )
-from spaceinvasion.planner.config_opt.tech_graph import (
+from spaceinvasion.planner.config_optimizer.tech_graph import (
     building_upgrade_costs,
     largest_costs,
     same_planet_building_requirements,

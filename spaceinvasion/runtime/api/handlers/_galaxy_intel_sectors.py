@@ -5,9 +5,9 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
-from spaceinvasion.combat.fleet import score_galaxy_scan_sectors
+from spaceinvasion.combat.scanner import score_galaxy_scan_sectors
 from spaceinvasion.core.coords import normalize_coords
-from spaceinvasion.core.state import GameState, count_allocated_normal_planets
+from spaceinvasion.core.model import GameState, count_allocated_normal_planets
 from spaceinvasion.runtime.api.handlers._bridge_proto import BridgeApiFacade
 from spaceinvasion.runtime.api.handlers._galaxy_intel_helpers import (
     max_galaxies_for_ctx,

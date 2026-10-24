@@ -7,14 +7,9 @@ from dataclasses import asdict
 import logging
 import time
 
-from spaceinvasion.combat.fleet import (
-    InboxMessage,
-    SpyReport,
-    normalize_coords,
-    parse_inbox_messages_html,
-    parse_spy_messages_html,
-)
-from spaceinvasion.core.state import GameState
+from spaceinvasion.core.coords import normalize_coords
+from spaceinvasion.core.model import GameState
+from spaceinvasion.parsing import InboxMessage, SpyReport, parse_inbox_messages_html, parse_spy_messages_html
 from spaceinvasion.runtime.bridge._context import BridgeContext
 from spaceinvasion.runtime.bridge._helpers import (
     BRIDGE_RUNTIME_ERRORS,

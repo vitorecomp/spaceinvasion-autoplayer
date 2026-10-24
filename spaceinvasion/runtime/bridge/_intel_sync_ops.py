@@ -5,8 +5,8 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import asdict
 
-from spaceinvasion.combat.fleet import InboxMessage, SpyReport, extract_message_folder_links
-from spaceinvasion.core.state import GameState
+from spaceinvasion.core.model import GameState
+from spaceinvasion.parsing import InboxMessage, SpyReport, extract_message_folder_links
 from spaceinvasion.runtime.bridge._context import BridgeContext
 from spaceinvasion.runtime.bridge._helpers import redact_api_payload, sanitize_json_dict
 from spaceinvasion.runtime.bridge._helpers_sig import call_with_optional_priority

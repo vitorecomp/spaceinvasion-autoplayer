@@ -11,30 +11,30 @@ import numpy as np
 from spaceinvasion.core import game_data
 from spaceinvasion.core.coercion import coerce_int
 from spaceinvasion.core.coords import normalize_coords
-from spaceinvasion.planner.config_opt._overrides_helpers import (
+from spaceinvasion.planner.config_optimizer._overrides_helpers import (
     PlanetEvalResult,
     _extract_planned_building_map_from_entry,
     _OverrideSetup,
     json_ready_dict,
 )
-from spaceinvasion.planner.config_opt._params_norm import (
+from spaceinvasion.planner.config_optimizer._params_norm import (
     _resolve_manual_planet_config,
     normalize_planet_specialization,
 )
-from spaceinvasion.planner.config_opt._protocols import as_int_dict, as_mapping, map_float, map_int
-from spaceinvasion.planner.config_opt.catalog_math import spice_eq
-from spaceinvasion.planner.config_opt.constants import (
+from spaceinvasion.planner.config_optimizer._protocols import as_int_dict, as_mapping, map_float, map_int
+from spaceinvasion.planner.config_optimizer.catalog_math import spice_eq
+from spaceinvasion.planner.config_optimizer.constants import (
     RESOURCE_KEYS,
     SPECIALIZATION_ALLOWED_BUILDINGS,
     WAREHOUSE_KEYS,
     FloatArray,
 )
-from spaceinvasion.planner.config_opt.rows import (
+from spaceinvasion.planner.config_optimizer.rows import (
     _planet_building_rows,
     _warehouse_requirement_rows,
     detect_planet_specialization,
 )
-from spaceinvasion.planner.config_opt.tech_graph import (
+from spaceinvasion.planner.config_optimizer.tech_graph import (
     building_upgrade_cost_spice_eq,
     research_upgrade_cost_spice_eq,
 )

@@ -25,8 +25,10 @@ NOTEBOOK_SHIM_FILES: frozenset[str] = frozenset(
     {
         "spaceinvasion/core/game_data.py",
         "spaceinvasion/core/state.py",
+        "spaceinvasion/core/logging_utils.py",
         "spaceinvasion/combat/fleet.py",
         "spaceinvasion/combat/ranking.py",
+        "spaceinvasion/db/storage.py",
     }
 )
 
@@ -34,11 +36,16 @@ RETIRED_MONOLITHS: frozenset[str] = frozenset(
     {
         "spaceinvasion.core.game_data",
         "spaceinvasion.core.state",
+        "spaceinvasion.core.logging_utils",
         "spaceinvasion.combat.fleet",
         "spaceinvasion.combat.ranking",
         "spaceinvasion.planner.strategy",
         "spaceinvasion.planner.ai_planner",
         "spaceinvasion.planner.action_graph",
+        "spaceinvasion.db.storage",
+        "spaceinvasion.db.postgres",
+        "spaceinvasion.db.backend",
+        "spaceinvasion.runtime.api_server",
     }
 )
 

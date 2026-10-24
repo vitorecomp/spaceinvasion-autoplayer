@@ -8,8 +8,8 @@ import threading
 import time
 
 from spaceinvasion.core.config import StrategyConfig
-from spaceinvasion.core.state import GameState
-from spaceinvasion.planner import ai_planner as ai_mod
+from spaceinvasion.core.model import GameState
+from spaceinvasion.planner import ai as ai_mod
 from spaceinvasion.planner import config_optimizer as co_mod
 from spaceinvasion.runtime.api.validation import ApiRequestError
 from spaceinvasion.runtime.bridge._context import BridgeContext

@@ -5,8 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 
 from spaceinvasion.core.config import StrategyConfig
-from spaceinvasion.core.state import GameState, PlanetState, Resources
-from spaceinvasion.planner.strategy import PlannedAction
+from spaceinvasion.core.model import GameState, PlanetState, PlannedAction, Resources
 from spaceinvasion.runtime.bridge import (
     _ledgers_adaptive as _adaptive,
 )

@@ -6,7 +6,7 @@ from collections.abc import Mapping, Sequence
 import logging
 import random
 
-from spaceinvasion.core.state import count_allocated_normal_planets
+from spaceinvasion.core.model import count_allocated_normal_planets
 from spaceinvasion.parsing.account_pages import parse_universe_research_records
 from spaceinvasion.runtime.api.handlers._bridge_proto import BridgeApiFacade
 from spaceinvasion.runtime.api.handlers._galaxy_intel_helpers import (

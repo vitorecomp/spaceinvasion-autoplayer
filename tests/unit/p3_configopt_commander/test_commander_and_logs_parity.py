@@ -1,4 +1,4 @@
-"""Parity, behavioral, and Section 4 tests for ``runtime.logs`` and ``runtime.commander``."""
+"""Behavioral, resilience, and Section 4 tests for ``runtime.logs`` and ``runtime.commander``."""
 
 from __future__ import annotations
 
@@ -13,8 +13,6 @@ import sys
 import pytest
 import requests
 
-import bin.commander as legacy_cmd
-from spaceinvasion.core import logging_utils as legacy_logs
 from spaceinvasion.core.config import StrategyConfig
 from spaceinvasion.core.model import (
     EnergyBalance,
@@ -24,13 +22,6 @@ from spaceinvasion.core.model import (
     QueueJob,
     Resources,
 )
-from spaceinvasion.core.state import (
-    EnergyBalance as LegacyEnergy,
-    GameState as LegacyGameState,
-    PlanetState as LegacyPlanetState,
-    Resources as LegacyResources,
-)
-from spaceinvasion.planner.strategy import PlannedAction as LegacyPlannedAction
 from spaceinvasion.runtime import logs as new_logs
 from spaceinvasion.runtime.commander import (
     CommanderOptions,
@@ -80,38 +71,13 @@ def _make_model_state() -> GameState:
     )
 
 
-def _make_legacy_state() -> LegacyGameState:
-    planet = LegacyPlanetState(
-        planet_id=101,
-        name="Homeworld",
-        coords="01:100:04",
-        planet_type="normal",
-        temperature=25,
-        fields_used=40,
-        fields_max=300,
-        resources=LegacyResources(pig_iron=5000, metal=3000, kryptonite=2000, spice=1000),
-        storage=LegacyResources(pig_iron=100_000, metal=100_000, kryptonite=100_000, spice=100_000),
-        energy=LegacyEnergy(produced=500, used=400),
-        buildings={"b1": 10, "b2": 8, "b3": 6, "b4": 5, "b5": 8, "b7": 4},
-        economy_rates={"resource2": 100},
-    )
-    return LegacyGameState(
-        universe_id=313,
-        user_id=999,
-        nickname="Tester",
-        timestamp=1_700_000_000.0,
-        active_planet_id=101,
-        planets=[planet],
-    )
-
-
 class _FakeApi:
     """In-memory fake HTTP API implementing ``CommanderApiLike``."""
 
     def __init__(
         self,
         *,
-        state: GameState | LegacyGameState | None = None,
+        state: GameState | None = None,
         bot_controls: list[dict[str, object] | Exception] | None = None,
         command_results: list[dict[str, object] | Exception] | None = None,
         health_results: list[dict[str, object] | Exception] | None = None,
@@ -177,15 +143,16 @@ def test_zero_selenium_imports_in_runtime_logs_and_commander() -> None:
     assert proc.returncode == 0, proc.stderr
 
 
-def test_runtime_logs_parity_with_legacy_logging_utils(tmp_path: Path) -> None:
+def test_runtime_logs_formatting_redaction_and_disk_guards(tmp_path: Path) -> None:
     wd_err = (
         "Message: element click intercepted sid=SUPERSECRET123\n"
         "  (Session info: chrome=124.0)\n"
         "Stacktrace:\n#0 0x1234 base::debug\n"
     )
-    assert new_logs.strip_webdriver_stacktrace(wd_err) == legacy_logs.strip_webdriver_stacktrace(wd_err)
-    assert new_logs.format_clean_error(wd_err) == legacy_logs.format_clean_error(wd_err)
-    assert "SUPERSECRET123" not in new_logs.format_clean_error(wd_err)
+    stripped = new_logs.strip_webdriver_stacktrace(wd_err)
+    assert "Stacktrace:" not in stripped and "Session info:" not in stripped
+    cleaned_err = new_logs.format_clean_error(wd_err)
+    assert "SUPERSECRET123" not in cleaned_err and "REDACTED" in cleaned_err
 
     act_new = PlannedAction(
         priority="P1",
@@ -199,20 +166,8 @@ def test_runtime_logs_parity_with_legacy_logging_utils(tmp_path: Path) -> None:
         missing=Resources(pig_iron=250, metal=0, kryptonite=100, spice=0),
         executable_now=False,
     )
-    act_leg = LegacyPlannedAction(
-        priority="P1",
-        kind="BUILD",
-        planet_id=101,
-        planet_coords="01:100:04",
-        target_name="Pig iron mine",
-        reason="grow",
-        target_id=1,
-        target_level=11,
-        missing=LegacyResources(pig_iron=250, metal=0, kryptonite=100, spice=0),
-        executable_now=False,
-    )
-    assert new_logs.format_action_summary(act_new) == legacy_logs.format_action_summary(act_leg)
-    assert new_logs.format_action_summary(None) == legacy_logs.format_action_summary(None)
+    assert "BUILD" in new_logs.format_action_summary(act_new)
+    assert new_logs.format_action_summary(None) == "none"
 
     act2 = PlannedAction(
         priority="P2",
@@ -256,7 +211,6 @@ def test_runtime_logs_parity_with_legacy_logging_utils(tmp_path: Path) -> None:
     assert "TOKEN999" not in jsonl_p.read_text(encoding="utf-8")
     assert "TOKEN999" not in log_p.read_text(encoding="utf-8")
 
-    # Default repo logs dir is skipped unless explicitly opted in.
     skipped_j, skipped_t = new_logs.append_tick_logs(
         REPO_ROOT / "logs",
         source="commander",
@@ -269,7 +223,6 @@ def test_runtime_logs_parity_with_legacy_logging_utils(tmp_path: Path) -> None:
     )
     assert skipped_j == Path("/dev/null") and skipped_t == Path("/dev/null")
 
-    # API log & crash log stdout/stderr stream behavior + explicit dir writing
     buf = io.StringIO()
     new_logs.append_api_log(
         None, method="POST", path="/command?sid=ABC123", status=200, payload={"command": "db_summary"}, stream=buf
@@ -298,253 +251,119 @@ def test_runtime_logs_parity_with_legacy_logging_utils(tmp_path: Path) -> None:
     assert "pw123" not in crash_j.read_text(encoding="utf-8")
 
 
-def test_commander_error_and_payload_parity_against_legacy_bin() -> None:
-    rl_cases = [
-        ("normal error", None),
-        ("HTTP 429 Too Many Requests retry-after 120s", None),
-        ("page-view throttle cooldown active 65s", {"rate_limited": True, "retry_after": 95}),
-        ("rate limit hit", {"rate_limited": True, "retry_after": 99999}),
-    ]
-    for text, health in rl_cases:
-        assert compute_rate_limit_backoff(text, health) == legacy_cmd.compute_rate_limit_backoff(text, health)
-
-    for text in ("ok", "Cloudflare Turnstile active", "Sicherheitsprüfung required", "anti-bot challenge"):
-        assert is_captcha_error(text) == legacy_cmd.is_captcha_error(text)
+def test_commander_error_classification_timers_and_all_16_payload_kinds() -> None:
+    assert compute_rate_limit_backoff("normal error", None) is None
+    assert compute_rate_limit_backoff("HTTP 429 Too Many Requests retry-after 120s", None) is not None
+    assert compute_rate_limit_backoff(
+        "page-view throttle cooldown active 65s", {"rate_limited": True, "retry_after": 95}
+    ) == pytest.approx(95.0)
+    assert is_captcha_error("ok") is False
+    for text in ("Cloudflare Turnstile active", "Sicherheitsprüfung required", "anti-bot challenge"):
+        assert is_captcha_error(text) is True
     assert is_captcha_error("", bot_ctrl={"captcha_blocked": True}) is True
-
-    assert is_galaxy_scan_busy_error("Galaxy sweep in progress") == legacy_cmd.is_galaxy_scan_busy_error(
-        "Galaxy sweep in progress"
-    )
+    assert is_galaxy_scan_busy_error("Galaxy sweep in progress") is True
     assert (
         is_galaxy_scan_busy_error("", bot_ctrl={"galaxy_scan_blocking": True, "p0_escape_flight_ready": True}) is False
     )
     assert is_connection_refused_error(requests.exceptions.ConnectionError("refused")) is True
 
-    for t in ("", "01:02:03", "2h 5m 10s", "45s", "none"):
-        assert parse_queue_timer_seconds(t) == legacy_cmd._parse_queue_timer_seconds(t)
+    assert parse_queue_timer_seconds("") is None
+    assert parse_queue_timer_seconds("01:02:03") == 3723
+    assert parse_queue_timer_seconds("2h 5m 10s") == 7510
+    assert parse_queue_timer_seconds("45s") == 45
 
-    # All 16 command payload kinds match legacy bin/commander.py 1:1
-    action_specs = [
-        dict(
-            priority="P1",
-            kind="CLAIM_TUTORIAL",
-            planet_id=101,
-            planet_coords="01:100:04",
-            target_name="Tutorial",
-            reason="claim",
+    expected_cmd_by_kind = [
+        ("CLAIM_TUTORIAL", "claim_tutorial", {}),
+        ("BUILD", "build", {"target_id": 1, "target_level": 11}),
+        ("DEMOLISH_BUILDING", "demolish_building", {"target_id": 6, "target_level": 0}),
+        ("RESEARCH", "research", {"target_id": 1, "target_level": 4}),
+        ("BUILD_SHIP", "build_ship", {"target_id": 11, "target_level": 5}),
+        ("THROTTLE_BUILDING", "throttle_building", {"target_id": 2, "target_level": 0}),
+        ("ESCAPE_FLIGHT", "escape_flight", {"target_name": "Escape 01:100:05"}),
+        ("SCAN_GALAXY", "scan_galaxy", {"target_name": "Scan 02:150"}),
+        ("SPY", "spy", {"target_name": "Spy 01:101:09", "target_level": 3}),
+        ("RECYCLE", "recycle", {"target_name": "DF 01:101:09", "target_level": 4}),
+        (
+            "TRANSPORT",
+            "transport",
+            {
+                "target_name": "To 01:102:06",
+                "target_id": 102,
+                "cost": {"pig_iron": 100, "metal": 200, "kryptonite": 50, "spice": 10},
+            },
         ),
-        dict(
-            priority="P1",
-            kind="BUILD",
-            planet_id=101,
-            planet_coords="01:100:04",
-            target_name="Mine",
-            reason="grow",
-            target_id=1,
-            target_level=11,
-        ),
-        dict(
-            priority="P2",
-            kind="DEMOLISH_BUILDING",
-            planet_id=101,
-            planet_coords="01:100:04",
-            target_name="Thermo",
-            reason="free",
-            target_id=6,
-            target_level=0,
-        ),
-        dict(
-            priority="P1",
-            kind="RESEARCH",
-            planet_id=101,
-            planet_coords="01:100:04",
-            target_name="Mining",
-            reason="tech",
-            target_id=1,
-            target_level=4,
-        ),
-        dict(
-            priority="P2",
-            kind="BUILD_SHIP",
-            planet_id=101,
-            planet_coords="01:100:04",
-            target_name="Transmitter",
-            reason="cargo",
-            target_id=11,
-            target_level=5,
-        ),
-        dict(
-            priority="P1",
-            kind="THROTTLE_BUILDING",
-            planet_id=101,
-            planet_coords="01:100:04",
-            target_name="Blast furnace",
-            reason="metal storage full",
-            target_id=2,
-            target_level=0,
-        ),
-        dict(
-            priority="P0",
-            kind="ESCAPE_FLIGHT",
-            planet_id=101,
-            planet_coords="01:100:04",
-            target_name="Escape 01:100:05",
-            reason="hostile incoming",
-        ),
-        dict(
-            priority="P2",
-            kind="SCAN_GALAXY",
-            planet_id=101,
-            planet_coords="01:100:04",
-            target_name="Scan 02:150",
-            reason="explore",
-        ),
-        dict(
-            priority="P1",
-            kind="SPY",
-            planet_id=101,
-            planet_coords="01:100:04",
-            target_name="Spy 01:101:09",
-            reason="intel",
-            target_level=3,
-        ),
-        dict(
-            priority="P2",
-            kind="RECYCLE",
-            planet_id=101,
-            planet_coords="01:100:04",
-            target_name="DF 01:101:09",
-            reason="debris",
-            target_level=4,
-        ),
-        dict(
-            priority="P1",
-            kind="TRANSPORT",
-            planet_id=101,
-            planet_coords="01:100:04",
-            target_name="To 01:102:06",
-            reason="feed",
-            target_id=102,
-            cost={"pig_iron": 100, "metal": 200, "kryptonite": 50, "spice": 10},
-        ),
-        dict(
-            priority="P2",
-            kind="STATION",
-            planet_id=101,
-            planet_coords="01:100:04",
-            target_name="01:102:06 [10x s11, 2x s4]",
-            reason="rebalance",
-            target_id=102,
-        ),
-        dict(
-            priority="P1",
-            kind="COLONIZE",
-            planet_id=101,
-            planet_coords="01:100:04",
-            target_name="Colony 01:105:08",
-            reason="expand",
-        ),
-        dict(
-            priority="P1",
-            kind="ABANDON_COLONY",
-            planet_id=102,
-            planet_coords="01:102:06",
-            target_name="Small",
-            reason="too small",
-            target_level=300,
-        ),
-        dict(
-            priority="P2",
-            kind="ACTIVATE_TRANSMITTER",
-            planet_id=101,
-            planet_coords="01:100:04",
-            target_name="Transmitter",
-            reason="spin",
-        ),
-        dict(
-            priority="P1",
-            kind="ATTACK",
-            planet_id=101,
-            planet_coords="01:100:04",
-            target_name="Raid 01:101:09",
-            reason="loot",
-        ),
-        dict(
-            priority="P3",
-            kind="WAIT_RESOURCES",
-            planet_id=101,
-            planet_coords="01:100:04",
-            target_name="Wait",
-            reason="saving",
-        ),
+        ("STATION", "station", {"target_name": "01:102:06 [10x s11, 2x s4]", "target_id": 102}),
+        ("COLONIZE", "colonize", {"target_name": "Colony 01:105:08"}),
+        ("ABANDON_COLONY", "abandon_colony", {"planet_id": 102, "planet_coords": "01:102:06", "target_level": 300}),
+        ("ACTIVATE_TRANSMITTER", "activate_transmitter", {}),
+        ("ATTACK", "attack", {"target_name": "Raid 01:101:09"}),
     ]
-    for spec in action_specs:
-        new_act = planned_action_from_dict(spec)
-        leg_act = legacy_cmd._planned_action_from_dict(spec)
-        assert new_act is not None and leg_act is not None
-        for dry_run in (True, False):
-            assert action_to_command_payload(new_act, dry_run=dry_run) == legacy_cmd._action_to_command_payload(
-                leg_act, dry_run=dry_run
-            )
+    for kind, expected_cmd, extra in expected_cmd_by_kind:
+        spec: dict[str, object] = {
+            "priority": "P1",
+            "kind": kind,
+            "planet_id": 101,
+            "planet_coords": "01:100:04",
+            "target_name": "Target",
+            "reason": "test",
+            **extra,
+        }
+        act = planned_action_from_dict(spec)
+        assert act is not None
+        payload = action_to_command_payload(act, dry_run=True)
+        assert payload is not None and payload["command"] == expected_cmd and payload["dry_run"] is True
 
-    # Busy fleet slot holding parity
+    wait_act = planned_action_from_dict(
+        {
+            "priority": "P3",
+            "kind": "WAIT_RESOURCES",
+            "planet_id": 101,
+            "planet_coords": "01:100:04",
+            "target_name": "Wait",
+            "reason": "saving",
+        }
+    )
+    assert wait_act is not None and action_to_command_payload(wait_act, dry_run=True) == {
+        "command": "plan",
+        "dry_run": True,
+    }
+
     a_fleet = planned_action_from_dict(
-        dict(
-            priority="P1",
-            kind="SPY",
-            planet_id=101,
-            planet_coords="01:100:04",
-            target_name="01:101:09",
-            reason="probe",
-            executable_now=True,
-        )
+        {
+            "priority": "P1",
+            "kind": "SPY",
+            "planet_id": 101,
+            "planet_coords": "01:100:04",
+            "target_name": "01:101:09",
+            "reason": "probe",
+            "executable_now": True,
+        }
     )
     a_build = planned_action_from_dict(
-        dict(
-            priority="P1",
-            kind="BUILD",
-            planet_id=101,
-            planet_coords="01:100:04",
-            target_name="Mine",
-            reason="grow",
-            target_id=1,
-            target_level=11,
-            executable_now=True,
-        )
+        {
+            "priority": "P1",
+            "kind": "BUILD",
+            "planet_id": 101,
+            "planet_coords": "01:100:04",
+            "target_name": "Mine",
+            "reason": "grow",
+            "target_id": 1,
+            "target_level": 11,
+            "executable_now": True,
+        }
     )
     assert a_fleet is not None and a_build is not None
     held_new = hold_busy_fleet_slots([a_fleet, a_build], {101: 45.0}, re_sort_priority=True)
     assert held_new[0].kind == "BUILD" and held_new[1].kind == "SPY" and not held_new[1].executable_now
     assert "[Hold: fleet slots busy / returning]" in held_new[1].reason
 
-    # Wakeup computation parity
     st_model = _make_model_state()
-    st_legacy = _make_legacy_state()
-    w_new = compute_next_wakeup_seconds(st_model, a_build, [], min_interval_s=30.0, max_idle_s=600.0)
-    w_leg = legacy_cmd.compute_next_wakeup_seconds(
-        st_legacy,
-        legacy_cmd._planned_action_from_dict(
-            dict(
-                priority="P1",
-                kind="BUILD",
-                planet_id=101,
-                planet_coords="01:100:04",
-                target_name="Mine",
-                reason="grow",
-                target_id=1,
-                target_level=11,
-                executable_now=True,
-            )
-        ),
-        [],
-        min_interval_s=30.0,
-        max_idle_s=600.0,
-    )
-    assert w_new == w_leg
+    w_new, w_reason = compute_next_wakeup_seconds(st_model, a_build, [], min_interval_s=30.0, max_idle_s=600.0)
+    assert 30.0 <= w_new <= 600.0
+    assert isinstance(w_reason, str) and w_reason
 
 
 def test_commander_loop_captcha_passive_wait_reconnect_and_rate_limit(tmp_path: Path) -> None:
-    # 1. CAPTCHA passive wait: ZERO get_state / send_command calls while captcha_blocked=True!
     sleeps: list[float] = []
     api_cap = _FakeApi(
         bot_controls=[
@@ -568,7 +387,6 @@ def test_commander_loop_captcha_passive_wait_reconnect_and_rate_limit(tmp_path: 
     assert sleeps == [5.0]
     assert api_cap.closed
 
-    # 2. ConnectionRefused reload window: reconnect succeeds via health() poll!
     api_reconn = _FakeApi(
         bot_controls=[
             requests.exceptions.ConnectionError("Connection refused"),
@@ -587,7 +405,6 @@ def test_commander_loop_captcha_passive_wait_reconnect_and_rate_limit(tmp_path: 
     )
     assert rc2 == 0 and api_reconn.health_calls == 2 and api_reconn.bot_ctrl_calls == 2
 
-    # 3. Rate-limit backoff queries health() retry_after and backs off!
     api_rl = _FakeApi(
         bot_controls=[{"paused": False, "captcha_blocked": False}],
         state_errors=[GameApiError("HTTP 429 rate-limit cooldown active")],
@@ -604,7 +421,6 @@ def test_commander_loop_captcha_passive_wait_reconnect_and_rate_limit(tmp_path: 
     )
     assert rc3 == 0 and sleeps3 and sleeps3[0] == pytest.approx(76.0)
 
-    # 4. Direct tick execution in AI planner mode via /command plan
     api_ai = _FakeApi(
         command_results=[
             {

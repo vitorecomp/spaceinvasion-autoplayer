@@ -29,7 +29,8 @@ from spaceinvasion.core.settings import (
     validate_config_patch,
 )
 from spaceinvasion.runtime.api.payloads import PAYLOAD_MODELS
-from spaceinvasion.runtime.api_server import ApiRequestError, _validate_config_patch
+from spaceinvasion.runtime.api.validation import ApiRequestError
+from spaceinvasion.runtime.bridge._helpers_validation import validate_config_patch as _validate_config_patch
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 GEN_SCRIPT = REPO_ROOT / "scripts" / "generate_ts_types.py"

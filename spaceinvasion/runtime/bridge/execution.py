@@ -5,9 +5,8 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import asdict
 
-from spaceinvasion.combat.ranking import attach_action_etas
-from spaceinvasion.core.state import GameState, PlanetState
-from spaceinvasion.planner.strategy import PlannedAction
+from spaceinvasion.core.model import GameState, PlanetState, PlannedAction
+from spaceinvasion.planner.eta import attach_action_etas
 from spaceinvasion.runtime.bridge._context import BridgeContext
 from spaceinvasion.runtime.bridge._exec_after_state import (
     build_execution_summary,

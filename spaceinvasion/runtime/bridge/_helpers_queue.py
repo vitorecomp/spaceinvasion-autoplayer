@@ -5,9 +5,11 @@ from __future__ import annotations
 from collections.abc import Mapping
 import re
 
-from spaceinvasion.combat.fleet import SHIP_SLUG_BY_KEY, normalize_coords
-from spaceinvasion.core import game_data
-from spaceinvasion.core.state import BUILDING_ID_BY_NAME, Resources, parse_si_int
+from spaceinvasion.core import catalog as game_data
+from spaceinvasion.core.catalog import SHIP_SLUG_BY_KEY
+from spaceinvasion.core.coercion import parse_si_int
+from spaceinvasion.core.coords import normalize_coords
+from spaceinvasion.core.model import BUILDING_ID_BY_NAME, Resources
 from spaceinvasion.runtime.bridge._helpers import safe_api_int
 
 _COORDS_INLINE_RE = re.compile(r"(\d{1,2}:\d{1,3}:\d{1,2})", re.ASCII)

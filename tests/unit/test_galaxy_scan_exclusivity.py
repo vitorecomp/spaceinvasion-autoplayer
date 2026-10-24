@@ -31,13 +31,10 @@ from spaceinvasion.core.model import (
     PlanetState,
     Resources,
 )
-from spaceinvasion.runtime.api_server import (
-    ApiRequestError,
-    GalaxyScanInProgressError,
-    GameApiBridge,
-    _validate_config_patch,
-    create_api_server,
-)
+from spaceinvasion.runtime.api.http_server import create_api_server
+from spaceinvasion.runtime.api.validation import ApiRequestError
+from spaceinvasion.runtime.bridge import GalaxyScanInProgressError, GameApiBridge
+from spaceinvasion.runtime.bridge._helpers_validation import validate_config_patch as _validate_config_patch
 
 
 def _make_galaxy_html(galaxy: int, system: int) -> str:
@@ -182,7 +179,7 @@ class GalaxyScanExclusivityTest(unittest.TestCase):
                 ),
                 cfg_path,
             )
-            with patch("spaceinvasion.runtime.api_server.is_debug_port_open", return_value=True):
+            with patch("spaceinvasion.session.browser.is_debug_port_open", return_value=True):
                 bridge = GameApiBridge(
                     debug_port=19981,
                     config_path=cfg_path,
@@ -329,7 +326,7 @@ class GalaxyScanExclusivityTest(unittest.TestCase):
                 ),
                 cfg_path,
             )
-            with patch("spaceinvasion.runtime.api_server.is_debug_port_open", return_value=True):
+            with patch("spaceinvasion.session.browser.is_debug_port_open", return_value=True):
                 bridge = GameApiBridge(
                     debug_port=19982,
                     config_path=cfg_path,

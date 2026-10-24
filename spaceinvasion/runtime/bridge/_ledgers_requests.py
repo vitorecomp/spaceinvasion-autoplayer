@@ -6,15 +6,15 @@ from collections.abc import Mapping, Sequence
 import math
 import re
 
-from spaceinvasion.combat.fleet import normalize_coords
-from spaceinvasion.core.state import (
+from spaceinvasion.core.coords import normalize_coords
+from spaceinvasion.core.model import (
     BUILDING_ID_BY_NAME,
     GameState,
     PlanetState,
+    PlannedAction,
     Resources,
     is_in_flight_fleet_job,
 )
-from spaceinvasion.planner.strategy import PlannedAction
 from spaceinvasion.runtime.bridge._helpers import safe_api_float, safe_api_int
 from spaceinvasion.runtime.bridge._helpers_queue import extract_coords_from_text, parse_building_target_hint
 

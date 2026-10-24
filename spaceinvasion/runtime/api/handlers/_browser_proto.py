@@ -6,8 +6,7 @@ from collections.abc import Callable
 from typing import Protocol
 
 from spaceinvasion.core.config import StrategyConfig
-from spaceinvasion.core.state import GameState, PlanetState
-from spaceinvasion.planner.strategy import PlannedAction
+from spaceinvasion.core.model import GameState, PlanetState, PlannedAction
 from spaceinvasion.runtime.api.handlers._bridge_proto import BridgeApiFacade
 from spaceinvasion.session.client import GameBrowserClient
 

@@ -8,13 +8,13 @@ import copy
 import numpy as np
 
 from spaceinvasion.core.coercion import coerce_finite_float, coerce_int
-from spaceinvasion.planner.config_opt._model_plans import (
+from spaceinvasion.planner.config_optimizer._model_plans import (
     build_planet_plan,
     build_planet_plans,
     plan_research_levels,
 )
-from spaceinvasion.planner.config_opt._protocols import as_float_dict, as_int_dict, map_int
-from spaceinvasion.planner.config_opt.catalog_math import (
+from spaceinvasion.planner.config_optimizer._protocols import as_float_dict, as_int_dict, map_int
+from spaceinvasion.planner.config_optimizer.catalog_math import (
     building_cost_map,
     building_level_flows,
     catalog_top_level,
@@ -25,7 +25,7 @@ from spaceinvasion.planner.config_opt.catalog_math import (
     technology_multiplier,
     warehouse_capacity,
 )
-from spaceinvasion.planner.config_opt.constants import (
+from spaceinvasion.planner.config_optimizer.constants import (
     PRODUCTION_FLOW_KEYS,
     RESOURCE_KEYS,
     WAREHOUSE_KEYS,
@@ -33,7 +33,7 @@ from spaceinvasion.planner.config_opt.constants import (
     FloatArray,
     IntArray,
 )
-from spaceinvasion.planner.config_opt.tech_graph import same_planet_building_requirements
+from spaceinvasion.planner.config_optimizer.tech_graph import same_planet_building_requirements
 
 
 def upgrade_cost_table(key: str, built_level: int, top_level: int) -> FloatArray:

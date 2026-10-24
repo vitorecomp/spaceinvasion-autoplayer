@@ -15,10 +15,8 @@ from unittest.mock import MagicMock, patch
 
 import requests
 
-from spaceinvasion.runtime.api_server import (
-    GameApiBridge,
-    create_api_server,
-)
+from spaceinvasion.runtime.api.http_server import create_api_server
+from spaceinvasion.runtime.bridge import GameApiBridge
 from spaceinvasion.core.model import (
     BuildingOffer,
     EnergyBalance,
@@ -530,7 +528,7 @@ class TestOperatorControlUi(unittest.TestCase):
     def test_static_html_css_js_contracts_and_single_svg_invariant(self) -> None:
         bridge, server, base_url = self._start_server()
         try:
-            with patch("spaceinvasion.runtime.api_server.is_debug_port_open", return_value=True):
+            with patch("spaceinvasion.session.browser.is_debug_port_open", return_value=True):
                 html_r = requests.get(f"{base_url}/", timeout=5)
                 css_r = requests.get(f"{base_url}/styles.css", timeout=5)
                 js_r = requests.get(f"{base_url}/app.js", timeout=5)
@@ -767,7 +765,7 @@ class TestOperatorControlUi(unittest.TestCase):
                 "  return { ok: true, status: 200, json: async () => d }; "
                 "} }"
             )
-            with patch("spaceinvasion.runtime.api_server.is_debug_port_open", return_value=True):
+            with patch("spaceinvasion.session.browser.is_debug_port_open", return_value=True):
                 res = _run_node_ui(
                     base_url,
                     """
@@ -838,7 +836,7 @@ class TestOperatorControlUi(unittest.TestCase):
     def test_node_vm_config_dirty_guard_blank_seed_and_rate_limit_warn_banner(self) -> None:
         bridge, server, base_url = self._start_server(planner_mode="priority")
         try:
-            with patch("spaceinvasion.runtime.api_server.is_debug_port_open", return_value=True):
+            with patch("spaceinvasion.session.browser.is_debug_port_open", return_value=True):
                 res = _run_node_ui(
                     base_url,
                     """
@@ -874,7 +872,7 @@ class TestOperatorControlUi(unittest.TestCase):
 
             # Rate limit 429 on scan_galaxy produces .is-warn banner and keeps Chrome ONLINE
             bridge.record_rate_limit(42.0)
-            with patch("spaceinvasion.runtime.api_server.is_debug_port_open", return_value=True):
+            with patch("spaceinvasion.session.browser.is_debug_port_open", return_value=True):
                 rl_res = _run_node_ui(
                     base_url,
                     """
@@ -908,7 +906,7 @@ class TestOperatorControlUi(unittest.TestCase):
         # 1) Hidden in priority mode
         _, server_pri, url_pri = self._start_server(planner_mode="priority")
         try:
-            with patch("spaceinvasion.runtime.api_server.is_debug_port_open", return_value=True):
+            with patch("spaceinvasion.session.browser.is_debug_port_open", return_value=True):
                 r_pri = _run_node_ui(
                     url_pri,
                     """
@@ -945,7 +943,7 @@ class TestOperatorControlUi(unittest.TestCase):
                 "  return { ok: true, status: 200, json: async () => d }; "
                 "} }"
             )
-            with patch("spaceinvasion.runtime.api_server.is_debug_port_open", return_value=True):
+            with patch("spaceinvasion.session.browser.is_debug_port_open", return_value=True):
                 r_ga = _run_node_ui(
                     url_ga,
                     """
@@ -998,7 +996,7 @@ class TestOperatorControlUi(unittest.TestCase):
     def test_css_bar_specificity_blocked_contrast_and_mobile_window_bar_wrap(self) -> None:
         _, server, base_url = self._start_server()
         try:
-            with patch("spaceinvasion.runtime.api_server.is_debug_port_open", return_value=True):
+            with patch("spaceinvasion.session.browser.is_debug_port_open", return_value=True):
                 html_txt = requests.get(f"{base_url}/", timeout=5).text
                 css_txt = re.sub(
                     r"/\*.*?\*/", "", requests.get(f"{base_url}/styles.css", timeout=5).text, flags=re.DOTALL
@@ -1081,7 +1079,7 @@ class TestOperatorControlUi(unittest.TestCase):
                 "  } "
                 "} }"
             )
-            with patch("spaceinvasion.runtime.api_server.is_debug_port_open", return_value=True):
+            with patch("spaceinvasion.session.browser.is_debug_port_open", return_value=True):
                 r_race = _run_node_ui(
                     base_url,
                     """
@@ -1133,7 +1131,7 @@ class TestOperatorControlUi(unittest.TestCase):
                 "  return { ok: true, status: 200, json: async () => d }; "
                 "} }"
             )
-            with patch("spaceinvasion.runtime.api_server.is_debug_port_open", return_value=True):
+            with patch("spaceinvasion.session.browser.is_debug_port_open", return_value=True):
                 r_extra = _run_node_ui(
                     base_url,
                     """
@@ -1184,7 +1182,7 @@ class TestOperatorControlUi(unittest.TestCase):
         _, server, base_url = self._start_server(planner_mode="ga_nn")
         try:
             # 1) Verify @media (max-width: 1100px) resets flex: 0 0 auto (preventing 0px table collapse)
-            with patch("spaceinvasion.runtime.api_server.is_debug_port_open", return_value=True):
+            with patch("spaceinvasion.session.browser.is_debug_port_open", return_value=True):
                 css_txt = re.sub(
                     r"/\*.*?\*/",
                     "",
@@ -1231,7 +1229,7 @@ class TestOperatorControlUi(unittest.TestCase):
                 "  } "
                 "} }"
             )
-            with patch("spaceinvasion.runtime.api_server.is_debug_port_open", return_value=True):
+            with patch("spaceinvasion.session.browser.is_debug_port_open", return_value=True):
                 r_mid = _run_node_ui(
                     base_url,
                     """
@@ -1293,7 +1291,7 @@ class TestOperatorControlUi(unittest.TestCase):
                 "  return { ok: true, status: 200, json: async () => d }; "
                 "} }"
             )
-            with patch("spaceinvasion.runtime.api_server.is_debug_port_open", return_value=True):
+            with patch("spaceinvasion.session.browser.is_debug_port_open", return_value=True):
                 r_boot = _run_node_ui(
                     base_url,
                     """
@@ -1329,7 +1327,7 @@ class TestOperatorControlUi(unittest.TestCase):
     def test_adv_ui_gacalc_refcount_fmt_neg_zero_finite_num_and_responsive_css(self) -> None:
         _, server, base_url = self._start_server(planner_mode="ga_nn")
         try:
-            with patch("spaceinvasion.runtime.api_server.is_debug_port_open", return_value=True):
+            with patch("spaceinvasion.session.browser.is_debug_port_open", return_value=True):
                 css_txt = re.sub(
                     r"/\*.*?\*/",
                     "",
@@ -1359,7 +1357,7 @@ class TestOperatorControlUi(unittest.TestCase):
                 "  } "
                 "} }"
             )
-            with patch("spaceinvasion.runtime.api_server.is_debug_port_open", return_value=True):
+            with patch("spaceinvasion.session.browser.is_debug_port_open", return_value=True):
                 res = _run_node_ui(
                     base_url,
                     """
@@ -1438,7 +1436,7 @@ class TestOperatorControlUi(unittest.TestCase):
                 "  return { ok: false, status: 502, text: async () => '<html><body>502 Bad Gateway</body></html>' }; "
                 "} }"
             )
-            with patch("spaceinvasion.runtime.api_server.is_debug_port_open", return_value=True):
+            with patch("spaceinvasion.session.browser.is_debug_port_open", return_value=True):
                 res = _run_node_ui(
                     base_url,
                     """
@@ -1604,7 +1602,7 @@ async (url) => {
   return { ok: mp.ok, status: mp.status, async text() { return mp.body; } };
 }
 """
-            with patch("spaceinvasion.runtime.api_server.is_debug_port_open", return_value=True):
+            with patch("spaceinvasion.session.browser.is_debug_port_open", return_value=True):
                 res = _run_node_ui(base_url, scenario_js, fetch_patch_js=fetch_patch_js)
             sc = res["scenario"]
             for item in sc["parseResults"]:
@@ -1763,7 +1761,7 @@ return {
   rnkHorizons,
 };
 """
-            with patch("spaceinvasion.runtime.api_server.is_debug_port_open", return_value=True):
+            with patch("spaceinvasion.session.browser.is_debug_port_open", return_value=True):
                 res = _run_node_ui(base_url, scenario_js)
             self.assertEqual(res["errors"], [])
             sc = res["scenario"]
@@ -1869,7 +1867,7 @@ return {
   badgeText: el("dash-planner-mode-badge").textContent,
 };
 """
-            with patch("spaceinvasion.runtime.api_server.is_debug_port_open", return_value=True):
+            with patch("spaceinvasion.session.browser.is_debug_port_open", return_value=True):
                 res = _run_node_ui(base_url, scenario_js, fetch_patch_js=race_patch)
             self.assertEqual(res["errors"], [])
             sc = res["scenario"]
@@ -2001,7 +1999,7 @@ return {
   finalMode: state.dashboard?.config?.planner_mode,
 };
 """
-            with patch("spaceinvasion.runtime.api_server.is_debug_port_open", return_value=True):
+            with patch("spaceinvasion.session.browser.is_debug_port_open", return_value=True):
                 res = _run_node_ui(base_url, scenario_js, fetch_patch_js=poll_patch)
             self.assertEqual(res["errors"], [])
             sc = res["scenario"]
@@ -2019,7 +2017,7 @@ return {
             self._tmp.cleanup()
 
     def test_action_graph_static_html_css_js_and_english_only_contracts(self) -> None:
-        from spaceinvasion.runtime.api_server import UI_DIR
+        from spaceinvasion.runtime.bridge import UI_DIR
 
         html_txt = (UI_DIR / "index.html").read_text(encoding="utf-8")
         css_txt = (UI_DIR / "styles.css").read_text(encoding="utf-8")
@@ -2303,7 +2301,7 @@ return {
   hasUndefinedOrNan: /\b(undefined|NaN|Infinity)\b/.test(fullText),
 };
 """
-            with patch("spaceinvasion.runtime.api_server.is_debug_port_open", return_value=True):
+            with patch("spaceinvasion.session.browser.is_debug_port_open", return_value=True):
                 res = _run_node_ui(base_url, scenario_js, fetch_patch_js=fetch_patch_js)
             self.assertEqual(res["errors"], [])
             sc = res["scenario"]
@@ -2448,7 +2446,7 @@ return {
   bannerText: banner.textContent,
 };
 """
-                with patch("spaceinvasion.runtime.api_server.is_debug_port_open", return_value=True):
+                with patch("spaceinvasion.session.browser.is_debug_port_open", return_value=True):
                     res = _run_node_ui(base_url, scenario_js)
                 self.assertEqual(res["errors"], [])
                 sc = res["scenario"]
@@ -2645,7 +2643,7 @@ return {
   recTxt,
 };
 """
-                with patch("spaceinvasion.runtime.api_server.is_debug_port_open", return_value=True):
+                with patch("spaceinvasion.session.browser.is_debug_port_open", return_value=True):
                     res = _run_node_ui(base_url, scenario_js)
                 self.assertEqual(res["errors"], [])
                 sc = res["scenario"]
@@ -2776,7 +2774,7 @@ return {
   opsText: el("view-operations").textContent,
 };
 """
-                with patch("spaceinvasion.runtime.api_server.is_debug_port_open", return_value=True):
+                with patch("spaceinvasion.session.browser.is_debug_port_open", return_value=True):
                     res = _run_node_ui(base_url, scenario_js)
                 self.assertEqual(res["errors"], [])
                 sc = res["scenario"]
@@ -2926,7 +2924,7 @@ return {
   mqKindAfterFleetJump,
 };
 """
-                with patch("spaceinvasion.runtime.api_server.is_debug_port_open", return_value=True):
+                with patch("spaceinvasion.session.browser.is_debug_port_open", return_value=True):
                     res = _run_node_ui(base_url, scenario_js)
                 self.assertEqual(res["errors"], [])
                 sc = res["scenario"]
@@ -3056,7 +3054,7 @@ const badgeHiddenAfterAck = document.getElementById("notif-unread-badge").hidden
 
 return { badgeBefore, helpAutoOpened, helpTitle, helpPrompt, centerText, badgeHiddenAfterAck };
 """
-                with patch("spaceinvasion.runtime.api_server.is_debug_port_open", return_value=True):
+                with patch("spaceinvasion.session.browser.is_debug_port_open", return_value=True):
                     res = _run_node_ui(base_url, scenario_js)
                 self.assertEqual(res["errors"], [])
                 sc = res["scenario"]
@@ -3165,7 +3163,7 @@ const finPills = Array.from(document.querySelectorAll("#view-dashboard .eta-pill
 const stripTxt = document.getElementById("active-queues-list").textContent;
 return { bldExecTxt, fltExecTxt, resExecTxt, finPills, stripTxt };
 """
-                with patch("spaceinvasion.runtime.api_server.is_debug_port_open", return_value=True):
+                with patch("spaceinvasion.session.browser.is_debug_port_open", return_value=True):
                     res = _run_node_ui(base_url, scenario_js)
                 self.assertEqual(res["errors"], [])
                 sc = res["scenario"]
@@ -3245,7 +3243,7 @@ return {
   ),
 };
 """
-            with patch("spaceinvasion.runtime.api_server.is_debug_port_open", return_value=True):
+            with patch("spaceinvasion.session.browser.is_debug_port_open", return_value=True):
                 res = _run_node_ui(base_url, scenario_js)
             self.assertEqual(res["errors"], [])
             sc = res["scenario"]
@@ -3393,7 +3391,7 @@ return {
   uniTbodyText: el("universe-research-max-tbody").textContent,
 };
 """
-                with patch("spaceinvasion.runtime.api_server.is_debug_port_open", return_value=True):
+                with patch("spaceinvasion.session.browser.is_debug_port_open", return_value=True):
                     res = _run_node_ui(base_url, scenario_js)
                 self.assertEqual(res["errors"], [])
                 sc = res["scenario"]
@@ -3654,7 +3652,7 @@ return {
   syncedCfgMinLoot,
 };
 """
-            with patch("spaceinvasion.runtime.api_server.is_debug_port_open", return_value=True):
+            with patch("spaceinvasion.session.browser.is_debug_port_open", return_value=True):
                 res = _run_node_ui(base_url, scenario_js, fetch_patch_js=fetch_patch_js)
             self.assertEqual(res["errors"], [])
             sc = res["scenario"]

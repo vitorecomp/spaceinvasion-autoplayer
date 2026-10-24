@@ -7,10 +7,11 @@ import logging
 import re
 import time
 
-from spaceinvasion.combat.fleet import GalaxySlot, normalize_coords
 from spaceinvasion.core.config import StrategyConfig
-from spaceinvasion.core.state import GameState, normalize_planet_type
+from spaceinvasion.core.coords import normalize_coords
+from spaceinvasion.core.model import GameState, normalize_planet_type
 from spaceinvasion.db.storage import GameDatabase
+from spaceinvasion.parsing import GalaxySlot
 from spaceinvasion.runtime.bridge._context import BridgeContext
 from spaceinvasion.runtime.bridge._helpers import (
     BRIDGE_RUNTIME_ERRORS,

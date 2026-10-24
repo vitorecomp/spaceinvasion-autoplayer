@@ -6,8 +6,8 @@ from collections.abc import Callable, Sequence
 import logging
 import time
 
-from spaceinvasion.combat.fleet import InboxMessage, SpyReport, extract_message_folder_links
-from spaceinvasion.core.state import GameState, parse_unread_banner_count
+from spaceinvasion.core.model import GameState
+from spaceinvasion.parsing import InboxMessage, SpyReport, extract_message_folder_links, parse_unread_banner_count
 from spaceinvasion.runtime.bridge._context import BridgeContext
 from spaceinvasion.runtime.bridge._context_init import BridgeConstants
 from spaceinvasion.runtime.bridge._helpers import BRIDGE_RUNTIME_ERRORS, safe_api_int

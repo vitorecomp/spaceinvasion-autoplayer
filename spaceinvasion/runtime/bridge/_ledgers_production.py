@@ -6,10 +6,10 @@ from collections.abc import Mapping
 import logging
 import time
 
-from spaceinvasion.combat.fleet import normalize_coords
-from spaceinvasion.combat.ranking import estimate_hourly_economy
-from spaceinvasion.core import game_data
-from spaceinvasion.core.state import GameState, normalize_planet_type
+from spaceinvasion.combat.points import estimate_hourly_economy
+from spaceinvasion.core import catalog as game_data
+from spaceinvasion.core.coords import normalize_coords
+from spaceinvasion.core.model import GameState, normalize_planet_type
 from spaceinvasion.runtime.bridge._context import BridgeContext
 from spaceinvasion.runtime.bridge._context_init import BridgeConstants
 from spaceinvasion.runtime.bridge._helpers import (
