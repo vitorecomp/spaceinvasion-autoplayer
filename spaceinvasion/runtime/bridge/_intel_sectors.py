@@ -10,9 +10,9 @@ import time
 from spaceinvasion.core.config import StrategyConfig
 from spaceinvasion.core.coords import normalize_coords
 from spaceinvasion.core.model import GameState, normalize_planet_type
-from spaceinvasion.db.storage import GameDatabase
 from spaceinvasion.parsing import GalaxySlot
 from spaceinvasion.runtime.bridge._context import BridgeContext
+from spaceinvasion.runtime.bridge._db_gateway import RuntimeDatabaseGateway
 from spaceinvasion.runtime.bridge._helpers import (
     BRIDGE_RUNTIME_ERRORS,
     bounded_api_str,
@@ -159,7 +159,7 @@ def _persist_galaxy_slots_in_memory(
 
 
 def call_get_galaxy_sector_intel(
-    db_obj: GameDatabase | None,
+    db_obj: RuntimeDatabaseGateway | None,
     *,
     galaxies: Sequence[int] | None,
     now_ts: float,

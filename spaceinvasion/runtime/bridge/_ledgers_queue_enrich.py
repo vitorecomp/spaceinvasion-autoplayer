@@ -8,8 +8,8 @@ from dataclasses import replace
 from spaceinvasion.combat.cargo import fleet_cargo_capacity
 from spaceinvasion.core.coords import normalize_coords
 from spaceinvasion.core.model import GameState, QueueJob, Resources, is_in_flight_fleet_job
-from spaceinvasion.db.storage import GameDatabase
 from spaceinvasion.runtime.bridge._context import BridgeContext
+from spaceinvasion.runtime.bridge._db_gateway_telemetry import _normalize_cargo_dict
 from spaceinvasion.runtime.bridge._helpers import safe_api_int
 from spaceinvasion.runtime.bridge._helpers_queue import (
     cap_resources_by_capacity,
@@ -42,7 +42,7 @@ def _reserve_outbound_dispatch_indices(ctx: BridgeContext, queues: Sequence[Queu
         t0 = extract_coords_from_text(n0)
         if not t0:
             continue
-        c0_norm = GameDatabase._normalize_cargo_dict(c0)
+        c0_norm = _normalize_cargo_dict(c0)
         for idx in range(len(ctx.recent_transport_dispatches) - 1, -1, -1):
             if idx in used_idxs:
                 continue
@@ -51,7 +51,7 @@ def _reserve_outbound_dispatch_indices(ctx: BridgeContext, queues: Sequence[Queu
                 continue
             if o0 and ent.get("origin_coords") and ent.get("origin_coords") != o0:
                 continue
-            if GameDatabase._normalize_cargo_dict(ent.get("cargo")) == c0_norm:
+            if _normalize_cargo_dict(ent.get("cargo")) == c0_norm:
                 used_idxs.add(idx)
                 break
     return used_idxs

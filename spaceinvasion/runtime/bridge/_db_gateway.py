@@ -12,14 +12,16 @@ from spaceinvasion.db.dto.serializers import (
 )
 from spaceinvasion.db.migrations import NO_BACKUP, BackupOption
 from spaceinvasion.db.queries import query_db_summary, query_db_verify
+from spaceinvasion.db.repos.notifications import format_notification_code, parse_notification_id
 from spaceinvasion.db.session import DEFAULT_MAX_OVERFLOW, DEFAULT_POOL_SIZE, DEFAULT_STATEMENT_TIMEOUT_MS
 from spaceinvasion.db.store import DatabaseStore
 from spaceinvasion.runtime.bridge._db_gateway_combat import _CombatGatewayMixin
+from spaceinvasion.runtime.bridge._db_gateway_common import server_day_key
 from spaceinvasion.runtime.bridge._db_gateway_intel import _IntelGatewayMixin
-from spaceinvasion.runtime.bridge._db_gateway_meta import _MetaGatewayMixin
+from spaceinvasion.runtime.bridge._db_gateway_meta import _MetaGatewayMixin, _sanitize_custom_planet_name
 from spaceinvasion.runtime.bridge._db_gateway_ops import _OpsGatewayMixin
 from spaceinvasion.runtime.bridge._db_gateway_state import _StateGatewayMixin
-from spaceinvasion.runtime.bridge._db_gateway_telemetry import _TelemetryGatewayMixin
+from spaceinvasion.runtime.bridge._db_gateway_telemetry import _normalize_cargo_dict, _TelemetryGatewayMixin
 
 
 class RuntimeDatabaseGateway(
@@ -61,6 +63,26 @@ class RuntimeDatabaseGateway(
         if ensure_ready:
             store.ensure_ready(backup_fn=backup_fn, allow_stamp_existing=allow_stamp_existing)
         return cls(store, postgres_url=dsn)
+
+    @staticmethod
+    def sanitize_custom_planet_name(raw: object, *, max_len: int = 48) -> str:
+        """Sanitize and clamp a custom planet display name."""
+        return _sanitize_custom_planet_name(raw, max_len=max_len)
+
+    @staticmethod
+    def parse_notification_id(raw: int | str | None) -> int | None:
+        """Parse a numeric or `#N`-formatted notification identifier."""
+        return parse_notification_id(raw)
+
+    @staticmethod
+    def format_notification_code(notification_id: int) -> str:
+        """Format a notification identifier as `NTF-XXXX`."""
+        return format_notification_code(notification_id)
+
+    @staticmethod
+    def normalize_cargo_dict(cargo: object) -> dict[str, int]:
+        """Normalize a cargo mapping or `Resources` into non-negative integer resource keys."""
+        return _normalize_cargo_dict(cargo)
 
     @property
     def backend(self) -> str:
@@ -175,4 +197,9 @@ class RuntimeDatabaseGateway(
         }
 
 
-__all__ = ["RuntimeDatabaseGateway"]
+__all__ = [
+    "RuntimeDatabaseGateway",
+    "format_notification_code",
+    "parse_notification_id",
+    "server_day_key",
+]

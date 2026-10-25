@@ -13,7 +13,6 @@ import time
 from urllib.parse import parse_qs, urlparse
 
 from spaceinvasion.core.redaction import format_clean_error
-from spaceinvasion.db.backend import is_container_runtime
 from spaceinvasion.runtime.api._http_helpers import (
     HttpApiBridge,
     RequestTooLargeError,
@@ -37,6 +36,7 @@ from spaceinvasion.runtime.bridge._helpers import (
 )
 from spaceinvasion.runtime.bridge._helpers_sig import compute_ui_assets_state
 from spaceinvasion.runtime.logs import append_api_log
+from spaceinvasion.runtime.postgres_ctl import is_container_runtime
 from spaceinvasion.session.auth import AntiBotChallengeError, SpaceInvasionAuthError
 from spaceinvasion.session.client import RateLimitError
 

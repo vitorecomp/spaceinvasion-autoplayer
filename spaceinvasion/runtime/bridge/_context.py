@@ -13,7 +13,6 @@ import weakref
 from spaceinvasion.core import catalog as game_data
 from spaceinvasion.core.config import StrategyConfig
 from spaceinvasion.core.model import GameState, PlanetState, PlannedAction
-from spaceinvasion.db.backend import is_container_runtime
 from spaceinvasion.runtime.api.validation import ApiRequestError
 from spaceinvasion.runtime.bridge._context_init import (
     BridgeConstants,
@@ -35,6 +34,7 @@ from spaceinvasion.runtime.bridge._helpers import (
     safe_limiter_wait,
 )
 from spaceinvasion.runtime.bridge.snapshot import SnapshotPublisher
+from spaceinvasion.runtime.postgres_ctl import is_container_runtime
 from spaceinvasion.session import browser as browser_mod
 from spaceinvasion.session.browser import DEFAULT_DEBUG_HOST, DEFAULT_DEBUG_PORT
 from spaceinvasion.session.client import GameBrowserClient, PageViewLimiter, RateLimitError

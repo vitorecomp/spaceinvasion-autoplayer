@@ -8,12 +8,12 @@ import threading
 from typing import TYPE_CHECKING
 
 from spaceinvasion.core.config import StrategyConfig
-from spaceinvasion.db.storage import GameDatabase
 from spaceinvasion.runtime.api.registry import CommandRegistry
 from spaceinvasion.runtime.bridge._bridge_wiring import wire_bridge_collaborators
 from spaceinvasion.runtime.bridge._command_facade import BridgeCommandFacade
 from spaceinvasion.runtime.bridge._context import BridgeContext, ClientFactory
 from spaceinvasion.runtime.bridge._context_init import BridgeConstants
+from spaceinvasion.runtime.bridge._db_gateway import RuntimeDatabaseGateway
 from spaceinvasion.runtime.bridge._helpers import sanitize_json_dict
 from spaceinvasion.runtime.bridge.execution import ActionExecutionService
 from spaceinvasion.runtime.bridge.galaxy_sweep import GalaxySweepService
@@ -177,11 +177,11 @@ class ModularGameApiBridge:
         self.ctx.dry_executor = value
 
     @property
-    def _db(self) -> GameDatabase | None:
+    def _db(self) -> RuntimeDatabaseGateway | None:
         return self.ctx.db
 
     @_db.setter
-    def _db(self, value: GameDatabase | None) -> None:
+    def _db(self, value: RuntimeDatabaseGateway | None) -> None:
         self.ctx.db = value
 
     def close(self) -> None:

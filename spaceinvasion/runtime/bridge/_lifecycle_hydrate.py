@@ -6,8 +6,8 @@ from collections.abc import Mapping, Sequence
 import logging
 import math
 
-from spaceinvasion.db.storage import GameDatabase
 from spaceinvasion.runtime.bridge._context import BridgeContext
+from spaceinvasion.runtime.bridge._db_gateway import RuntimeDatabaseGateway
 from spaceinvasion.runtime.bridge._helpers import (
     BRIDGE_RUNTIME_ERRORS,
     bounded_api_str,
@@ -209,7 +209,7 @@ def hydrate_adaptive_idle_buckets(ctx: BridgeContext, rt: Mapping[str, object]) 
     ctx.adaptive_idle_buckets = loaded_buckets
 
 
-def hydrate_db_auxiliary_caches(ctx: BridgeContext, db: GameDatabase) -> None:
+def hydrate_db_auxiliary_caches(ctx: BridgeContext, db: RuntimeDatabaseGateway) -> None:
     """Load persisted custom planet names, debris amounts, transport dispatches, and galaxy bounds."""
     try:
         loaded_names = db.get_custom_planet_names()

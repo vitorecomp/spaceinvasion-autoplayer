@@ -7,8 +7,8 @@ import time
 
 from spaceinvasion.core.coords import normalize_coords
 from spaceinvasion.core.model import GameState, Resources, is_in_flight_fleet_job
-from spaceinvasion.db.storage import GameDatabase
 from spaceinvasion.runtime.bridge._context import BridgeContext
+from spaceinvasion.runtime.bridge._db_gateway_telemetry import _normalize_cargo_dict
 from spaceinvasion.runtime.bridge._helpers import bounded_api_str, safe_api_float, safe_api_int
 from spaceinvasion.runtime.bridge._helpers_queue import extract_coords_from_text
 
@@ -40,7 +40,7 @@ def record_transport_dispatch(
     dest = normalize_coords(dest_coords)
     if not orig or not dest:
         return
-    cargo_d = GameDatabase._normalize_cargo_dict(cargo)
+    cargo_d = _normalize_cargo_dict(cargo)
     if sum(cargo_d.values()) <= 0:
         return
     now_ts = round(safe_api_float(ts, time.time()) if ts is not None else time.time(), 3)

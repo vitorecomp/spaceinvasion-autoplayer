@@ -5,20 +5,25 @@ from __future__ import annotations
 from pathlib import Path
 
 from spaceinvasion.core.config import StrategyConfig, load_strategy_config
-from spaceinvasion.db.backend import (
+from spaceinvasion.db.config_store import load_strategy_config as load_db_strategy_config
+from spaceinvasion.db.dsn import (
     ResolvedDatabaseConfig,
     build_default_postgres_url,
-    ensure_postgres_container_ready,
-    get_podman_postgres_status,
-    is_container_runtime,
     is_postgres_dsn,
     normalize_backend_name,
-    ping_postgres,
     redact_db_url,
     resolve_database_config,
 )
-from spaceinvasion.db.storage import GameDatabase
+from spaceinvasion.db.session import DEFAULT_MAX_OVERFLOW, DEFAULT_POOL_SIZE
+from spaceinvasion.runtime.bridge._db_gateway import RuntimeDatabaseGateway
 from spaceinvasion.runtime.bridge._helpers import REPO_ROOT_DIR, safe_hourly_budget
+from spaceinvasion.runtime.postgres_ctl import (
+    ensure_postgres_container_ready,
+    get_podman_postgres_status,
+    get_process_env,
+    is_container_runtime,
+    ping_postgres,
+)
 from spaceinvasion.session.client import PageViewLimiter
 from spaceinvasion.session.executor import ActionExecutor
 
@@ -136,21 +141,45 @@ def default_galaxy_sweep_state() -> dict[str, object]:
     }
 
 
+def open_runtime_gateway(
+    target: Path | str,
+    *,
+    db_backend: str | None = None,
+    pool_size: int = DEFAULT_POOL_SIZE,
+    max_overflow: int = DEFAULT_MAX_OVERFLOW,
+) -> RuntimeDatabaseGateway:
+    """Open a `RuntimeDatabaseGateway` from an explicit PostgreSQL DSN or fallback env config."""
+    if db_backend is not None and str(db_backend).strip().lower() not in ("", "auto"):
+        normalize_backend_name(db_backend)
+    raw = str(target).strip()
+    if is_postgres_dsn(raw):
+        dsn = raw
+    else:
+        resolved = resolve_database_config(
+            explicit_backend=db_backend,
+            root_dir=REPO_ROOT_DIR,
+            env=get_process_env(),
+        )
+        dsn = resolved.postgres_url
+    return RuntimeDatabaseGateway.from_dsn(dsn, pool_size=pool_size, max_overflow=max_overflow)
+
+
 def open_bridge_database(
     *,
     db_path: Path | str | None,
     db_backend: str | None,
     db_url: str | None,
     log_dir: Path | None,
-) -> tuple[GameDatabase | None, str, str]:
-    """Open the configured PostgreSQL `GameDatabase` (or None when disabled)."""
+) -> tuple[RuntimeDatabaseGateway | None, str, str]:
+    """Open the configured PostgreSQL `RuntimeDatabaseGateway` (or None when disabled)."""
     selection_source = "explicit"
-    resolved_url = build_default_postgres_url()
+    proc_env = get_process_env()
+    resolved_url = build_default_postgres_url(proc_env)
     if db_backend is not None and str(db_backend).strip().lower() not in ("", "auto"):
         normalize_backend_name(db_backend)
 
     is_live_repo_default_db = False
-    if db_path is None and (db_backend is not None or db_url is not None or is_container_runtime()):
+    if db_path is None and (db_backend is not None or db_url is not None or is_container_runtime(proc_env)):
         is_live_repo_default_db = True
     elif db_path is None and log_dir is not None:
         try:
@@ -161,23 +190,24 @@ def open_bridge_database(
     if db_path is not None and is_postgres_dsn(str(db_path)):
         selection_source = "explicit_dsn"
         resolved_url = str(db_path).strip()
-        return GameDatabase(resolved_url, backend="postgres"), selection_source, resolved_url
+        return open_runtime_gateway(resolved_url, db_backend="postgres"), selection_source, resolved_url
     if is_live_repo_default_db:
         resolved_cfg: ResolvedDatabaseConfig = resolve_database_config(
             explicit_backend=db_backend,
             explicit_db_url=db_url,
             root_dir=REPO_ROOT_DIR,
+            env=proc_env,
         )
         ensure_postgres_container_ready(
             resolved_cfg.postgres_url,
             root_dir=REPO_ROOT_DIR,
             auto_start=resolved_cfg.auto_start_podman,
         )
-        db = GameDatabase(resolved_cfg.postgres_url, backend="postgres")
+        db = open_runtime_gateway(resolved_cfg.postgres_url, db_backend="postgres")
         return db, resolved_cfg.selection_source, resolved_cfg.postgres_url
     if db_path is not None or log_dir is not None:
         eff_path: Path | str = db_path if db_path is not None else (Path(log_dir).parent / "state" / "postgres")  # type: ignore[arg-type]
-        db = GameDatabase(eff_path)
+        db = open_runtime_gateway(eff_path, db_backend=db_backend)
         pg_dsn = str(db.postgres_url or "")
         if is_postgres_dsn(pg_dsn):
             resolved_url = pg_dsn
@@ -196,7 +226,7 @@ def resolve_initial_strategy_config(
     if config_path is not None:
         return load_strategy_config(config_path)
     if log_dir is not None or db_backend is not None or db_url is not None or is_container_runtime():
-        return load_strategy_config(None)
+        return load_db_strategy_config(None)
     return StrategyConfig()
 
 
@@ -241,7 +271,7 @@ def build_action_executors(
 
 
 def build_db_backend_status_dict(
-    db: GameDatabase | None,
+    db: RuntimeDatabaseGateway | None,
     *,
     selection_source: str,
     resolved_postgres_url: str,

@@ -24,9 +24,9 @@ from spaceinvasion.runtime.cli_support import maybe_reexec_venv, safe_cli_str  #
 maybe_reexec_venv(_REPO_ROOT, skip=os.environ.get("SPACEINVASION_NO_REEXEC") == "1")
 
 from spaceinvasion.core.redaction import redact_sensitive  # noqa: E402
-from spaceinvasion.db.backend import is_container_runtime  # noqa: E402
 from spaceinvasion.runtime.api.http_server import create_api_server  # noqa: E402
 from spaceinvasion.runtime.bridge import GameApiBridge, ensure_debug_browser_ready  # noqa: E402
+from spaceinvasion.runtime.postgres_ctl import is_container_runtime  # noqa: E402
 from spaceinvasion.runtime.reloader import (  # noqa: E402
     current_python_cmd,
     discover_watch_paths,

@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import time
 
-from spaceinvasion.db.storage import server_day_key
 from spaceinvasion.runtime.bridge._context import BridgeContext
+from spaceinvasion.runtime.bridge._db_gateway_common import server_day_key
 from spaceinvasion.runtime.bridge._helpers import bounded_api_str, safe_api_float, safe_api_int
 
 

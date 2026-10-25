@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Final
 
-from spaceinvasion.db.storage import GameDatabase
+from spaceinvasion.db.repos.notifications import format_notification_code, parse_notification_id
 from spaceinvasion.runtime.api.handlers._bridge_proto import BridgeApiFacade
 from spaceinvasion.runtime.api.registry import CommandRegistry
 from spaceinvasion.runtime.api.validation import ApiRequestError, FieldBounds
@@ -138,7 +138,7 @@ def _handle_notification_get(bridge: BridgeApiFacade, params: NotificationGetPar
         if params.notification_id is not None
         else (params.notification_code if params.notification_code is not None else params.id)
     )
-    parsed_nid = GameDatabase.parse_notification_id(raw_nid)
+    parsed_nid = parse_notification_id(raw_nid if isinstance(raw_nid, (int, str)) else None)
     if parsed_nid is None:
         raise ApiRequestError("'notification_get' requires a valid 'notification_id' (e.g. 42 or 'NTF-0042').")
 
@@ -148,7 +148,7 @@ def _handle_notification_get(bridge: BridgeApiFacade, params: NotificationGetPar
             raise ApiRequestError("Database notifications are not configured.")
         found_item = db.get_notification(parsed_nid)
         if found_item is None:
-            raise ApiRequestError(f"Notification {GameDatabase.format_notification_code(parsed_nid)} not found.")
+            raise ApiRequestError(f"Notification {format_notification_code(parsed_nid)} not found.")
     return sanitize_json_dict({"ok": True, "command": "notification_get", "item": found_item})
 
 
@@ -156,7 +156,7 @@ def _handle_notification_ack(bridge: BridgeApiFacade, params: NotificationAckPar
     """Acknowledge, dismiss, or re-mark a single notification as unread."""
     raw_ack_nid: object = params.notification_id if params.notification_id is not None else params.notification_code
     nid = (
-        GameDatabase.parse_notification_id(raw_ack_nid)
+        parse_notification_id(raw_ack_nid)
         if isinstance(raw_ack_nid, str)
         else parse_command_int("notification_id", raw_ack_nid, min_val=1, max_val=2**62)
     )

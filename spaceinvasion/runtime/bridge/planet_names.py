@@ -8,8 +8,8 @@ import re
 
 from spaceinvasion.core.coords import normalize_coords
 from spaceinvasion.core.model import GameState, PlanetState, QueueJob, is_in_flight_fleet_job
-from spaceinvasion.db.storage import GameDatabase
 from spaceinvasion.runtime.bridge._context import BridgeContext
+from spaceinvasion.runtime.bridge._db_gateway import RuntimeDatabaseGateway
 from spaceinvasion.runtime.bridge._helpers import safe_api_int
 from spaceinvasion.runtime.bridge._helpers_queue import extract_coords_from_text
 
@@ -60,7 +60,7 @@ class PlanetNameService:
     def set_custom_planet_name_locked(self, planet_id: int, raw_name: object) -> dict[str, str]:
         """Set or clear a single custom planet name, persisting to DB when present."""
         pid = safe_api_int(planet_id, 0)
-        clean_name = GameDatabase.sanitize_custom_planet_name(raw_name)
+        clean_name = RuntimeDatabaseGateway.sanitize_custom_planet_name(raw_name)
         db = self._ctx.db
         if db is not None:
             updated = db.set_custom_planet_name(pid, clean_name)
@@ -78,14 +78,15 @@ class PlanetNameService:
         """Set or clear multiple custom planet names atomically."""
         db = self._ctx.db
         if db is not None:
-            updated = db.set_custom_planet_names(updates)
+            payload: dict[object, object] = {k: v for k, v in updates.items()}
+            updated = db.set_custom_planet_names(payload)
             self._ctx.custom_planet_names = dict(updated)
         else:
             for raw_pid, raw_name in updates.items():
                 pid = safe_api_int(raw_pid, 0)
                 if pid <= 0:
                     continue
-                clean_name = GameDatabase.sanitize_custom_planet_name(raw_name)
+                clean_name = RuntimeDatabaseGateway.sanitize_custom_planet_name(raw_name)
                 if clean_name:
                     self._ctx.custom_planet_names[str(pid)] = clean_name
                 else:

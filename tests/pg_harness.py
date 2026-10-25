@@ -599,24 +599,22 @@ class DisposablePostgresServer:
         )
 
     def _build_template_database(self) -> None:
-        from spaceinvasion.db.storage import GameDatabase
+        from spaceinvasion.db.migrations import NO_BACKUP
+        from spaceinvasion.db.store import DatabaseStore
 
         with psycopg.connect(self.admin_dsn, autocommit=True) as conn:
             conn.execute(f'DROP DATABASE IF EXISTS "{self.TEMPLATE_DB}"')
             conn.execute(f'CREATE DATABASE "{self.TEMPLATE_DB}"')
 
-        tpl_db = GameDatabase(
+        store = DatabaseStore.from_dsn(
             self.template_dsn,
-            backend="postgres",
-            pool_min_size=1,
-            pool_max_size=2,
+            pool_size=1,
+            max_overflow=1,
         )
         try:
-            ver = tpl_db.verify_schema(full_integrity=False)
-            if not ver.get("ok"):
-                raise RuntimeError(f"si_template schema verification failed: {ver}")
+            store.ensure_ready(backup_fn=NO_BACKUP, verify_schema=True)
         finally:
-            tpl_db.close()
+            store.close()
 
         # Ensure zero active connections linger on si_template before cloning
         with psycopg.connect(self.admin_dsn, autocommit=True) as conn:
@@ -794,11 +792,12 @@ class PostgresTestRedirector:
                 return
             from spaceinvasion.combat import points as points_mod
             from spaceinvasion.core import config as config_mod
-            from spaceinvasion.db import backend as backend_mod
             from spaceinvasion.db import config_store as config_store_mod
-            from spaceinvasion.db import storage as storage_mod
+            from spaceinvasion.db import dsn as dsn_mod
+            from spaceinvasion.runtime.bridge import _context_init as ctx_init_mod
+            from spaceinvasion.runtime.bridge._db_gateway import RuntimeDatabaseGateway
 
-            self._orig_db_init = storage_mod.GameDatabase.__init__
+            self._orig_open_gateway = ctx_init_mod.open_runtime_gateway
             self._orig_load_cfg = config_store_mod.load_strategy_config
             self._orig_save_cfg = config_store_mod.save_strategy_config
             self._orig_load_cfg_json = config_mod.load_strategy_config
@@ -806,77 +805,55 @@ class PostgresTestRedirector:
             self._orig_load_rank_history = points_mod.load_rank_history
             redirector = self
 
-            def _wrapped_db_init(
-                db_self: Any,
-                db_path: Any = None,
+            def _wrapped_open_gateway(
+                target: Any,
                 *,
-                backend: Optional[str] = None,
-                postgres_url: Optional[str] = None,
-                pool_min_size: int = 2,
-                pool_max_size: int = 16,
-                target_schema_version: Optional[int] = None,
-                backup_on_upgrade: Optional[bool] = None,
-            ) -> None:
-                explicit_invalid_backend = backend is not None and str(backend).strip().lower() in (
+                db_backend: Optional[str] = None,
+                pool_size: int = 2,
+                max_overflow: int = 4,
+            ) -> RuntimeDatabaseGateway:
+                explicit_invalid_backend = db_backend is not None and str(db_backend).strip().lower() in (
                     "sqlite",
                     "sqlite3",
                     "file",
                 )
-                raw_path_s = str(db_path or "").strip()
-                use_pg_redirect = (
-                    redirector._enabled
-                    and not explicit_invalid_backend
-                    and postgres_url is None
-                    and not backend_mod.is_postgres_dsn(raw_path_s)
-                )
+                if explicit_invalid_backend:
+                    dsn_mod.normalize_backend_name(db_backend)
+                raw_path_s = str(target or "").strip()
+                use_pg_redirect = redirector._enabled and not dsn_mod.is_postgres_dsn(raw_path_s)
                 if use_pg_redirect:
-                    key = _resolve_db_key(db_path)
+                    key = _resolve_db_key(target)
                     harness = get_shared_pg_harness()
-                    from_tpl = target_schema_version is None
                     if key is not None:
                         with redirector._lock:
                             mapped_dsn = redirector._path_to_dsn.get(key)
                         if mapped_dsn is None:
-                            new_dsn = harness.create_database(
-                                prefix="staged" if not from_tpl else "test",
-                                from_template=from_tpl,
-                            )
+                            new_dsn = harness.create_database(prefix="test", from_template=True)
                             with redirector._lock:
                                 mapped_dsn = redirector._path_to_dsn.setdefault(key, new_dsn)
                         _touch_pg_marker_if_outside_repo(Path(key), mapped_dsn)
                     else:
-                        mapped_dsn = harness.create_database(
-                            prefix="staged" if not from_tpl else "mem",
-                            from_template=from_tpl,
-                        )
-                    redirector._orig_db_init(
-                        db_self,
-                        db_path,
-                        backend="postgres",
-                        postgres_url=mapped_dsn,
-                        pool_min_size=min(max(1, int(pool_min_size)), 1),
-                        pool_max_size=min(max(2, int(pool_max_size)), 6),
-                        target_schema_version=target_schema_version,
-                        backup_on_upgrade=backup_on_upgrade,
+                        mapped_dsn = harness.create_database(prefix="mem", from_template=True)
+                    gw = RuntimeDatabaseGateway.from_dsn(
+                        mapped_dsn,
+                        pool_size=1,
+                        max_overflow=4,
+                        ensure_ready=False,
                     )
                     with redirector._lock:
                         redirector.redirected_count += 1
-                        redirector._open_dbs.append(weakref.ref(db_self))
-                    return
+                        redirector._open_dbs.append(weakref.ref(gw))
+                    return gw
 
-                redirector._orig_db_init(
-                    db_self,
-                    db_path,
-                    backend=backend,
-                    postgres_url=postgres_url,
-                    pool_min_size=pool_min_size,
-                    pool_max_size=pool_max_size,
-                    target_schema_version=target_schema_version,
-                    backup_on_upgrade=backup_on_upgrade,
+                gw = redirector._orig_open_gateway(
+                    target,
+                    db_backend=db_backend,
+                    pool_size=min(max(1, int(pool_size)), 2),
+                    max_overflow=min(max(1, int(max_overflow)), 4),
                 )
-                if getattr(db_self, "_is_postgres", False):
-                    with redirector._lock:
-                        redirector._open_dbs.append(weakref.ref(db_self))
+                with redirector._lock:
+                    redirector._open_dbs.append(weakref.ref(gw))
+                return gw
 
             def _wrapped_load_cfg(path: Any = None) -> Any:
                 if redirector._enabled and path is None:
@@ -900,16 +877,16 @@ class PostgresTestRedirector:
                 if redirector._enabled and history_path is not None:
                     mapped = redirector.lookup_mapped_dsn(history_path)
                     if mapped is not None:
-                        db = storage_mod.GameDatabase(
+                        gw = RuntimeDatabaseGateway.from_dsn(
                             mapped,
-                            backend="postgres",
-                            pool_min_size=1,
-                            pool_max_size=2,
+                            pool_size=1,
+                            max_overflow=1,
+                            ensure_ready=False,
                         )
                         try:
-                            return db.get_rank_samples()
+                            return gw.get_rank_samples()
                         finally:
-                            db.close()
+                            gw.close()
                 return redirector._orig_load_rank_history(history_path)
 
             def _wrapped_load_cfg_json(path: Any = None) -> Any:
@@ -926,14 +903,13 @@ class PostgresTestRedirector:
                         return redirector._orig_save_cfg(cfg, mapped)
                 return redirector._orig_save_cfg_json(cfg, path)
 
-            storage_mod.GameDatabase.__init__ = _wrapped_db_init  # type: ignore[assignment,method-assign]
+            ctx_init_mod.open_runtime_gateway = _wrapped_open_gateway  # type: ignore[assignment]
             config_store_mod.load_strategy_config = _wrapped_load_cfg
             config_store_mod.save_strategy_config = _wrapped_save_cfg
             config_mod.load_strategy_config = _wrapped_load_cfg_json
             config_mod.save_strategy_config = _wrapped_save_cfg_json
             points_mod.load_rank_history = _wrapped_load_rank_history
-            # Keep backend_mod referenced to ensure it's loaded before tests patch anything
-            _ = backend_mod.is_unix_socket_dsn
+            _ = dsn_mod.is_unix_socket_dsn
             self._installed = True
 
     def enable(self) -> None:

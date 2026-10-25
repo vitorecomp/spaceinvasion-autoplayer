@@ -6,7 +6,6 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 
 from spaceinvasion.core.model import GameState, PlanetState, PlannedAction, homeworld_planet_id
-from spaceinvasion.db.storage import GameDatabase
 from spaceinvasion.runtime.api.handlers._browser_proto import BrowserBridgeFacade
 from spaceinvasion.runtime.api.handlers._browser_session import BrowserCommandSession, run_browser_command
 from spaceinvasion.runtime.api.handlers._exec_nav_pages import (
@@ -17,6 +16,7 @@ from spaceinvasion.runtime.api.handlers._exec_nav_pages import (
 )
 from spaceinvasion.runtime.api.registry import CommandRegistry
 from spaceinvasion.runtime.api.validation import ApiRequestError
+from spaceinvasion.runtime.bridge._db_gateway import RuntimeDatabaseGateway
 from spaceinvasion.runtime.bridge._helpers import parse_command_int, safe_api_int, sanitize_json_dict
 from spaceinvasion.runtime.bridge._helpers_sig import call_with_optional_priority
 
@@ -70,7 +70,7 @@ def _resolve_planet_name_sync_targets(
                 raise ApiRequestError(f"Planet {raw_pid} does not belong to this empire.")
             if raw_nm is not None and not isinstance(raw_nm, str):
                 raise ApiRequestError("Planet names must be strings.")
-            clean_s = GameDatabase.sanitize_custom_planet_name(raw_nm)
+            clean_s = RuntimeDatabaseGateway.sanitize_custom_planet_name(raw_nm)
             batch_local[int(pid_s)] = clean_s
             if clean_s:
                 targets[int(pid_s)] = clean_s
