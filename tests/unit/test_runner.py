@@ -186,11 +186,10 @@ class TestRunnerDebugPortLifecycle(unittest.TestCase):
 
     def test_r7_run_stack_and_logging_redaction_and_bounds(self) -> None:
         import io
-        import json
         import math
         import tempfile
         import run_stack
-        from spaceinvasion.core.logging_utils import append_tick_logs
+        from spaceinvasion.runtime.logs import append_tick_logs
         from spaceinvasion.core.model import (
             EnergyBalance,
             GameState,
@@ -286,10 +285,7 @@ class TestRunnerDebugPortLifecycle(unittest.TestCase):
     def test_r8_append_tick_logs_and_api_log_huge_10e5000_tick_and_status(self) -> None:
         import json
         import tempfile
-        from spaceinvasion.core.logging_utils import (
-            append_api_log,
-            append_tick_logs,
-        )
+        from spaceinvasion.runtime.logs import append_api_log, append_tick_logs
         from spaceinvasion.core.model import (
             EnergyBalance,
             GameState,
@@ -347,7 +343,7 @@ class TestRunnerDebugPortLifecycle(unittest.TestCase):
 
     def test_r9_append_api_log_method_redaction(self) -> None:
         import tempfile
-        from spaceinvasion.core.logging_utils import append_api_log
+        from spaceinvasion.runtime.logs import append_api_log
 
         secret = "R9_RUNBOT_SID_777"
         with tempfile.TemporaryDirectory() as tmp:
@@ -366,7 +362,6 @@ class TestRunnerDebugPortLifecycle(unittest.TestCase):
             self.assertIn("REDACTED", atl.read_text(encoding="utf-8"))
 
     def test_r10_runner_stack_intervals_and_cli_json_redaction(self) -> None:
-        import io
         import json
         import login as login_cli
         import run_stack
@@ -397,11 +392,8 @@ class TestRunnerDebugPortLifecycle(unittest.TestCase):
             LoginResult,
         )
         from spaceinvasion.session.browser import BrowserLoginResult
-        from spaceinvasion.core.logging_utils import (
-            append_api_log,
-            append_tick_logs,
-            redact_sensitive,
-        )
+        from spaceinvasion.core.redaction import redact_sensitive
+        from spaceinvasion.runtime.logs import append_api_log, append_tick_logs
         from spaceinvasion.core.model import (
             EnergyBalance,
             GameState,
@@ -534,7 +526,7 @@ class TestRunnerDebugPortLifecycle(unittest.TestCase):
         import tempfile
         import game_api as game_api_cli
         import run_stack as run_stack_cli
-        from spaceinvasion.core.logging_utils import redact_sensitive
+        from spaceinvasion.core.redaction import redact_sensitive
 
         class _RaiseFspath:
             def __fspath__(self) -> str:
@@ -584,7 +576,7 @@ class TestRunnerDebugPortLifecycle(unittest.TestCase):
             self.assertNotIn(sec, dumped)
         self.assertIn("authorization: bearer redacted", dumped.lower())
 
-        from spaceinvasion.core.logging_utils import append_tick_logs
+        from spaceinvasion.runtime.logs import append_tick_logs
         from spaceinvasion.core.model import (
             EnergyBalance,
             GameState,
@@ -642,10 +634,7 @@ class TestRunnerDebugPortLifecycle(unittest.TestCase):
         import time
         import game_api as game_api_cli
         import run_stack as run_stack_cli
-        from spaceinvasion.core.logging_utils import (
-            is_secret_dict_key,
-            redact_sensitive,
-        )
+        from spaceinvasion.core.redaction import is_secret_dict_key, redact_sensitive
 
         cyc = RuntimeError("cyc")
         cyc.args = (10**5000, cyc)
@@ -708,7 +697,7 @@ class TestRunnerDebugPortLifecycle(unittest.TestCase):
 
     def test_r14_logging_urlenc_json_esc_quotes_pct20_redos_and_cli_dag20_cycles(self) -> None:
         import time
-        from spaceinvasion.core import logging_utils as lu
+        from spaceinvasion.core import redaction as lu
         import login as login_mod
         import commander as cmd_mod
         import run_stack as rs_mod

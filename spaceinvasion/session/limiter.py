@@ -29,8 +29,7 @@ def _parse_optional_float(val: object) -> float | None:
     if isinstance(val, (int, float)):
         parsed = float(val)
         return parsed if math.isfinite(parsed) else None
-    text = bytes(val).decode("utf-8", errors="replace") if isinstance(val, (bytes, bytearray)) else val
-    s = text.strip()
+    s = (bytes(val).decode("utf-8", errors="replace") if isinstance(val, (bytes, bytearray)) else val).strip()
     if not s or not s.isascii():
         return None
     try:
@@ -53,9 +52,7 @@ def _safe_clamp_cooldown(val: object, default: float) -> float:
 
 def _safe_clamped_int(val: object, default: int, *, min_val: int, max_val: int) -> int:
     safe_def = max(min_val, min(max_val, default))
-    if isinstance(val, bool) or not isinstance(val, (int, float, str, bytes, bytearray)):
-        return safe_def
-    if isinstance(val, int):
+    if isinstance(val, int) and not isinstance(val, bool):
         return max(min_val, min(max_val, val))
     parsed = _parse_optional_float(val)
     return safe_def if parsed is None else max(min_val, min(max_val, int(parsed)))
@@ -75,6 +72,14 @@ class RateLimitError(RuntimeError):
         self.retry_after = _safe_clamp_cooldown(retry_after, DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS)
         self.server_throttle = bool(server_throttle)
         self.recorded_limiter_id: int | None = None
+
+    @property
+    def _recorded_limiter_id(self) -> int | None:
+        return self.recorded_limiter_id
+
+    @_recorded_limiter_id.setter
+    def _recorded_limiter_id(self, value: int | None) -> None:
+        self.recorded_limiter_id = value
 
 
 class PageViewLimiter:
@@ -237,13 +242,13 @@ class PageViewLimiter:
     def _wait_deadline(self, wait_timeout: float | None) -> float | None:
         if wait_timeout is None:
             return None
-        return self._clock() + _safe_bounded_float(wait_timeout, 15.0, min_val=0.0, max_val=300.0)
+        return time.monotonic() + _safe_bounded_float(wait_timeout, 15.0, min_val=0.0, max_val=300.0)
 
     def _cond_wait_until(self, deadline: float | None) -> bool:
         if deadline is None:
             self._recovery_cond.wait()
             return True
-        rem = deadline - self._clock()
+        rem = deadline - time.monotonic()
         if rem <= 0.0:
             return False
         self._recovery_cond.wait(timeout=rem)
@@ -364,11 +369,8 @@ class PageViewLimiter:
     def reset(self) -> None:
         with self._recovery_cond:
             self._views.clear()
-            self._last_view_at = None
-            self._rate_limit_until = 0.0
-            self._rate_limit_hits = 0
-            self._throttle_recovery_pending = False
-            self._throttle_recovery_in_flight = False
+            self._last_view_at, self._rate_limit_until, self._rate_limit_hits = None, 0.0, 0
+            self._throttle_recovery_pending, self._throttle_recovery_in_flight = False, False
             self._throttle_recovery_token += 1
             self._throttle_recovery_generation += 1
             self._recovery_cond.notify_all()
