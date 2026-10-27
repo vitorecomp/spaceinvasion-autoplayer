@@ -2900,7 +2900,6 @@ class TestActionExecutor(unittest.TestCase):
 
     def test_adv_executor_10e5000_planet_switch_and_build_ship_and_actions(self) -> None:
         from spaceinvasion.core import catalog as game_data
-        from spaceinvasion.core.model import UnitOffer
 
         state, _ = _make_state_and_action()
         client = MagicMock(spec=GameBrowserClient)
@@ -3070,11 +3069,8 @@ class TestActionExecutor(unittest.TestCase):
         import tempfile
         from pathlib import Path
         from unittest.mock import MagicMock
-        from spaceinvasion.core.logging_utils import (
-            append_api_log,
-            append_tick_logs,
-            redact_sensitive,
-        )
+        from spaceinvasion.core.redaction import redact_sensitive
+        from spaceinvasion.runtime.logs import append_api_log, append_tick_logs
         from spaceinvasion.core.model import (
             EnergyBalance,
             GameState,
@@ -3431,7 +3427,7 @@ class TestActionExecutor(unittest.TestCase):
         self.assertEqual(ex.last_economy_rates[12476]["resource6"], 0)
 
     def test_live_internal_send_fleet_finish_gobutton_maxlength_and_html_sid_redaction(self) -> None:
-        from spaceinvasion.core.logging_utils import redact_sensitive
+        from spaceinvasion.core.redaction import redact_sensitive
 
         raw_html = (
             '<form id="ress"><input name="sid" type="hidden" value="181659802557cf6e707aa6177d2b66a6"/>'

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 import threading
+from typing import Any
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -2395,7 +2396,7 @@ class TestPageViewLimiterAndClient(unittest.TestCase):
             RateLimitError,
             is_server_rate_limit_html,
         )
-        from spaceinvasion.core.logging_utils import append_crash_debug_log
+        from spaceinvasion.runtime.logs import append_crash_debug_log
 
         # 1. Hidden unpopulated `internalGalaxy` modal does NOT trigger false RateLimitError
         gal_modal_html = (
@@ -2459,7 +2460,7 @@ class TestPageViewLimiterAndClient(unittest.TestCase):
                 '<div>You\'ve made more than <span id="pageview-amount">0</span> page views.</div>'
             )
         )
-        from spaceinvasion.core.logging_utils import redact_sensitive
+        from spaceinvasion.core.redaction import redact_sensitive
 
         self.assertEqual(
             redact_sensitive('<input type="password" name="password" value="p@ss\'word123">'),

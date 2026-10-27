@@ -17,6 +17,18 @@ from spaceinvasion.combat._scanner_walk import (
 from spaceinvasion.core.catalog import safe_finite_float
 from spaceinvasion.core.coercion import coerce_int
 
+_SAMPLE_TARGET_KEYS: tuple[str, ...] = (
+    "sector",
+    "galaxy",
+    "system",
+    "phase",
+    "score",
+    "distance",
+    "direct_raid_count",
+    "owner_affinity_raid_count",
+    "reason",
+)
+
 
 def _build_scanned_pool(items: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     pool = [dict(it, phase="targeted_refresh") for it in items if it["scanned"]]
@@ -107,6 +119,69 @@ def _select_explicit_split(
     return phase, priority_selected, selected_sectors, walk_exp, walk_ref
 
 
+def _select_exploratory_batch(
+    ranked: Sequence[dict[str, Any]],
+    eff_batch: int,
+    colony_gal_set: set[int],
+    primary_sys_by_gal: Mapping[int, int],
+    current_cursor: Optional[tuple[int, int]],
+    smooth_walk: bool,
+    n_sys: int,
+) -> tuple[str, list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    unscanned_pool = [dict(it, phase="exploratory") for it in ranked if not it["scanned"]]
+    take_exp = select_contiguous_exploratory_sectors(
+        unscanned_pool,
+        eff_batch,
+        colony_gal_set=colony_gal_set,
+        current_cursor=current_cursor,
+        systems_per_galaxy=n_sys,
+    )
+    rem_budget = max(0, eff_batch - len(take_exp))
+    take_ref = _build_scanned_pool(ranked)[:rem_budget] if rem_budget > 0 else []
+    priority_selected = [*take_exp, *take_ref]
+    walk_exp = _maybe_walk(
+        take_exp, smooth_walk=smooth_walk, primary_sys_by_gal=primary_sys_by_gal, cursor=current_cursor, n_sys=n_sys
+    )
+    walk_ref = _maybe_walk(
+        take_ref,
+        smooth_walk=smooth_walk,
+        primary_sys_by_gal=primary_sys_by_gal,
+        cursor=_cursor_after(walk_exp, current_cursor),
+        n_sys=n_sys,
+    )
+    return "exploratory", priority_selected, [*walk_exp, *walk_ref], walk_exp, walk_ref
+
+
+def _select_targeted_refresh_batch(
+    *,
+    score_kwargs: Mapping[str, Any],
+    eff_batch: int,
+    primary_sys_by_gal: Mapping[int, int],
+    current_cursor: Optional[tuple[int, int]],
+    smooth_walk: bool,
+    n_sys: int,
+) -> tuple[str, list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    ref_ranked = score_galaxy_scan_sectors(explore_first=False, **score_kwargs)
+    priority_selected = [dict(it, phase="targeted_refresh") for it in ref_ranked[:eff_batch]]
+    walk_ref = _maybe_walk(
+        priority_selected,
+        smooth_walk=smooth_walk,
+        primary_sys_by_gal=primary_sys_by_gal,
+        cursor=current_cursor,
+        n_sys=n_sys,
+    )
+    return "targeted_refresh", priority_selected, walk_ref, [], walk_ref
+
+
+def _build_colony_anchors(own_colonies: Sequence[tuple[int, int]]) -> tuple[dict[int, int], set[int]]:
+    primary_sys_by_gal: dict[int, int] = {}
+    colony_gal_set: set[int] = set()
+    for cg, cs in own_colonies:
+        primary_sys_by_gal.setdefault(cg, cs)
+        colony_gal_set.add(cg)
+    return primary_sys_by_gal, colony_gal_set
+
+
 def select_smart_galaxy_scan_batch(
     *,
     own_coords: Sequence[str] | str = (),
@@ -133,112 +208,50 @@ def select_smart_galaxy_scan_batch(
     n_sys, eff_batch = max(1, coerce_int(systems_per_galaxy, 400)), max(1, coerce_int(batch_size, 100))
     raw_refresh = max(0.0, min(100.0, safe_finite_float(refresh_pct, 0.0))) if refresh_pct is not None else None
     use_split = raw_refresh is not None and raw_refresh > 0.0
-    eff_refresh_pct: float = (
-        float(raw_refresh) if raw_refresh is not None and raw_refresh > 0.0 else (0.0 if explore_first else 100.0)
-    )
+    eff_refresh_pct = float(raw_refresh) if use_split and raw_refresh is not None else (0.0 if explore_first else 100.0)
     own_colonies, _ = extract_own_colonies_and_coords(own_coords, systems_per_galaxy=n_sys)
-    ranked = score_galaxy_scan_sectors(
-        own_coords=own_coords,
-        sector_intel=sector_intel,
-        galaxies=galaxies,
-        scanned_systems=scanned_systems,
-        raid_targets=raid_targets,
-        raid_stats=raid_stats,
-        raid_history=raid_history,
-        explore_first=bool(explore_first or use_split),
-        near_weight=near_weight,
-        attack_weight=attack_weight,
-        collect_colonies=collect_colonies,
-        min_freshness_seconds=min_freshness_seconds,
-        max_radius=max_radius,
-        systems_per_galaxy=n_sys,
-        now_ts=now_ts,
-    )
+    score_kwargs: dict[str, Any] = {
+        "own_coords": own_coords,
+        "sector_intel": sector_intel,
+        "galaxies": galaxies,
+        "scanned_systems": scanned_systems,
+        "raid_targets": raid_targets,
+        "raid_stats": raid_stats,
+        "raid_history": raid_history,
+        "near_weight": near_weight,
+        "attack_weight": attack_weight,
+        "collect_colonies": collect_colonies,
+        "min_freshness_seconds": min_freshness_seconds,
+        "max_radius": max_radius,
+        "systems_per_galaxy": n_sys,
+        "now_ts": now_ts,
+    }
+    ranked = score_galaxy_scan_sectors(explore_first=bool(explore_first or use_split), **score_kwargs)
     active_galaxies = list(dict.fromkeys(int(it["galaxy"]) for it in ranked)) or [1]
     total_systems = len(active_galaxies) * n_sys if max_radius is None else len(ranked)
     explored_systems = sum(1 for it in ranked if it["scanned"])
     unscanned_systems = max(0, total_systems - explored_systems)
     coverage_pct = round((explored_systems / total_systems) * 100.0, 2) if total_systems > 0 else 0.0
-    primary_sys_by_gal: dict[int, int] = {}
-    colony_gal_set: set[int] = set()
-    for cg, cs in own_colonies:
-        primary_sys_by_gal.setdefault(cg, cs)
-        colony_gal_set.add(cg)
+    primary_sys_by_gal, colony_gal_set = _build_colony_anchors(own_colonies)
+
     if use_split:
-        assert raw_refresh is not None
         phase, priority_selected, selected_sectors, walk_exp, walk_ref = _select_explicit_split(
             ranked, eff_batch, eff_refresh_pct, colony_gal_set, primary_sys_by_gal, current_cursor, smooth_walk, n_sys
         )
     elif explore_first and unscanned_systems > 0:
-        phase = "exploratory"
-        unscanned_pool = [dict(it, phase="exploratory") for it in ranked if not it["scanned"]]
-        take_exp = select_contiguous_exploratory_sectors(
-            unscanned_pool,
-            eff_batch,
-            colony_gal_set=colony_gal_set,
-            current_cursor=current_cursor,
-            systems_per_galaxy=n_sys,
+        phase, priority_selected, selected_sectors, walk_exp, walk_ref = _select_exploratory_batch(
+            ranked, eff_batch, colony_gal_set, primary_sys_by_gal, current_cursor, smooth_walk, n_sys
         )
-        rem_budget = max(0, eff_batch - len(take_exp))
-        take_ref = _build_scanned_pool(ranked)[:rem_budget] if rem_budget > 0 else []
-        priority_selected = [*take_exp, *take_ref]
-        walk_exp = _maybe_walk(
-            take_exp, smooth_walk=smooth_walk, primary_sys_by_gal=primary_sys_by_gal, cursor=current_cursor, n_sys=n_sys
-        )
-        walk_ref = _maybe_walk(
-            take_ref,
-            smooth_walk=smooth_walk,
-            primary_sys_by_gal=primary_sys_by_gal,
-            cursor=_cursor_after(walk_exp, current_cursor),
-            n_sys=n_sys,
-        )
-        selected_sectors = [*walk_exp, *walk_ref]
     else:
-        phase = "targeted_refresh"
-        ref_ranked = score_galaxy_scan_sectors(
-            own_coords=own_coords,
-            sector_intel=sector_intel,
-            galaxies=galaxies,
-            scanned_systems=scanned_systems,
-            raid_targets=raid_targets,
-            raid_stats=raid_stats,
-            raid_history=raid_history,
-            explore_first=False,
-            near_weight=near_weight,
-            attack_weight=attack_weight,
-            collect_colonies=collect_colonies,
-            min_freshness_seconds=min_freshness_seconds,
-            max_radius=max_radius,
-            systems_per_galaxy=n_sys,
-            now_ts=now_ts,
-        )
-        priority_selected = [dict(it, phase="targeted_refresh") for it in ref_ranked[:eff_batch]]
-        walk_exp = []
-        walk_ref = _maybe_walk(
-            priority_selected,
-            smooth_walk=smooth_walk,
+        phase, priority_selected, selected_sectors, walk_exp, walk_ref = _select_targeted_refresh_batch(
+            score_kwargs=score_kwargs,
+            eff_batch=eff_batch,
             primary_sys_by_gal=primary_sys_by_gal,
-            cursor=current_cursor,
+            current_cursor=current_cursor,
+            smooth_walk=smooth_walk,
             n_sys=n_sys,
         )
-        selected_sectors = walk_ref
-    sample_targets = [
-        {
-            k: it[k]
-            for k in (
-                "sector",
-                "galaxy",
-                "system",
-                "phase",
-                "score",
-                "distance",
-                "direct_raid_count",
-                "owner_affinity_raid_count",
-                "reason",
-            )
-        }
-        for it in priority_selected[:5]
-    ]
+
     return {
         "phase": phase,
         "scan_phase": phase,
@@ -252,5 +265,5 @@ def select_smart_galaxy_scan_batch(
         "exploratory_count": len(walk_exp),
         "refresh_count": len(walk_ref),
         "selected_sectors": selected_sectors,
-        "sample_targets": sample_targets,
+        "sample_targets": [{k: it[k] for k in _SAMPLE_TARGET_KEYS} for it in priority_selected[:5]],
     }
