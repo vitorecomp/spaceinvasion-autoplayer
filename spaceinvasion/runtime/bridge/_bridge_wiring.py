@@ -147,8 +147,23 @@ def _wire_execution_and_views(
         on_publish_snapshot=publish_void,
         on_attach_raid_stats=ledgers.attach_raid_stats,
     )
+
+    def _on_plan_with_summary(
+        state: GameState,
+        *,
+        config: StrategyConfig | None = None,
+        include_manual_queue: bool = True,
+        already_enriched: bool = False,
+    ) -> tuple[list[PlannedAction], dict[str, object] | None]:
+        return plan_assembly.plan_with_summary(
+            state,
+            config=config,
+            include_manual_queue=include_manual_queue,
+            already_enriched=already_enriched,
+        )
+
     views.bind_hooks(
-        on_plan_with_summary=plan_assembly.plan_with_summary,
+        on_plan_with_summary=_on_plan_with_summary,
         on_serialize_action=plan_assembly.serialize_action,
         on_get_co_building_goals=planner_jobs.get_config_optimizer_building_goals_locked,
         on_get_active_ai_planner=planner_jobs.get_active_ai_planner_locked,

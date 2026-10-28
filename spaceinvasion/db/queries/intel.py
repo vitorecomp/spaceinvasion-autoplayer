@@ -10,7 +10,7 @@ from sqlalchemy.sql.elements import ColumnElement
 
 from spaceinvasion.db.dto import SpyTargetRecord
 from spaceinvasion.db.models import SpyTarget
-from spaceinvasion.db.repos._helpers import normalize_coords, parse_coords_gsp
+from spaceinvasion.db.repos._helpers import clamp_limit, normalize_coords, parse_coords_gsp, to_float, to_int
 from spaceinvasion.db.repos.intel import spy_target_to_dto
 
 
@@ -49,9 +49,9 @@ def query_spy_targets(
     if only_debris:
         stmt = stmt.where(SpyTarget.has_debris == 1)
     if exclude_blocked_at_ts is not None:
-        stmt = stmt.where(SpyTarget.blocked_until_ts <= float(exclude_blocked_at_ts))
-    if galaxy is not None and int(galaxy) > 0:
-        stmt = stmt.where(SpyTarget.coords.like(f"{int(galaxy):02d}:%"))
+        stmt = stmt.where(SpyTarget.blocked_until_ts <= to_float(exclude_blocked_at_ts, 0.0))
+    if galaxy is not None and to_int(galaxy, 0) > 0:
+        stmt = stmt.where(SpyTarget.coords.like(f"{to_int(galaxy, 0):02d}:%"))
 
     priority_score: ColumnElement[int] = SpyTarget.is_inactive + SpyTarget.is_spacia + SpyTarget.has_debris
     has_spy_flag: ColumnElement[int] = case((SpyTarget.last_spied_ts > 0.0, 1), else_=0)
@@ -64,7 +64,7 @@ def query_spy_targets(
                 SpyTarget.last_scanned_ts.desc(),
                 SpyTarget.points.desc().nulls_last(),
                 SpyTarget.coords.asc(),
-            ).limit(max(1, int(limit)))
+            ).limit(clamp_limit(limit, 50))
         )
         .scalars()
         .all()
@@ -118,7 +118,7 @@ def query_active_debris_targets(
             SpyTarget.coords.asc(),
         )
 
-    rows = session.execute(ordered.limit(max(1, int(limit)))).scalars().all()
+    rows = session.execute(ordered.limit(clamp_limit(limit, 100))).scalars().all()
     return tuple(spy_target_to_dto(r) for r in rows)
 
 

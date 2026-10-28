@@ -8,7 +8,7 @@ import datetime
 
 import numpy as np
 
-from spaceinvasion.core import game_data
+from spaceinvasion.core import catalog as game_data
 from spaceinvasion.core.coercion import coerce_int
 from spaceinvasion.core.coords import normalize_coords
 from spaceinvasion.planner.config_optimizer._overrides_helpers import (

@@ -11,8 +11,12 @@ from spaceinvasion.core.config import StrategyConfig
 from spaceinvasion.core.model import GameState, PlannedAction
 from spaceinvasion.runtime.bridge._context import BridgeContext
 from spaceinvasion.runtime.bridge._helpers import safe_api_int, sanitize_json_dict
+from spaceinvasion.runtime.bridge._intel_messages import extract_client_current_url
 from spaceinvasion.runtime.bridge._intel_sectors import get_scanned_systems_for_ctx
 from spaceinvasion.runtime.bridge._sweep_smart import has_urgent_p0_escape_flight_for_ctx
+from spaceinvasion.runtime.bridge.lifecycle import BridgeLifecycleService
+from spaceinvasion.session.auth import AntiBotChallengeError, SpaceInvasionAuthError
+from spaceinvasion.session.client import RateLimitError
 
 
 @dataclass
@@ -41,7 +45,14 @@ class ViewHooks:
     on_attach_raid_stats: Callable[[GameState], GameState] | None = None
     on_get_raid_stats_cached: Callable[..., dict[str, object]] | None = None
     on_record_hourly_production: Callable[[GameState], dict[str, object]] | None = None
-    on_maybe_trigger_ai_drift_replan: Callable[[], bool] | None = None
+    on_maybe_trigger_ai_drift_replan: Callable[[], str | None] | None = None
+
+
+def _remaining_hourly_actions(ctx: BridgeContext) -> int:
+    try:
+        return int(ctx.live_executor.remaining_hourly_budget())
+    except AttributeError:
+        return safe_api_int(ctx.strategy_config.max_actions_per_hour, 60)
 
 
 def get_fleet_slot_cooldowns_for_ctx(ctx: BridgeContext) -> dict[str, float]:
@@ -97,7 +108,7 @@ def build_health_payload_lock_free(
         "rate_limit_hits": ctx.page_limiter.rate_limit_hits,
         "url": current_url if current_url else None,
         "action_batch_interval_seconds": ctx.strategy_config.action_batch_interval_seconds,
-        "remaining_hourly_actions": ctx.live_executor.remaining_hourly_budget(),
+        "remaining_hourly_actions": _remaining_hourly_actions(ctx),
         "galaxy_sweep_in_progress": sweep_active,
         "bot_control": bot_ctrl_snap,
         "db_backend": ctx.build_db_backend_status(include_ping=False),
@@ -105,6 +116,64 @@ def build_health_payload_lock_free(
     if include_busy_if_locked and busy:
         payload["busy"] = True
     return sanitize_json_dict(payload)
+
+
+def probe_health_with_client_locked(
+    ctx: BridgeContext,
+    lifecycle: BridgeLifecycleService,
+) -> tuple[dict[str, object], bool]:
+    """Probe Chrome `ensure_in_game()` under `ctx.lock` when idle and build `/health` payload."""
+    port_open = ctx.is_browser_port_open()
+    rate_rem = ctx.page_limiter.rate_limit_remaining()
+    cap_blocked = bool(ctx.bot_control.get("captcha_blocked"))
+    sweep_active = bool(ctx.sweep_in_progress)
+    in_game = False
+    antibot_hit = False
+    current_url: object = ctx.last_url
+    if port_open:
+        if cap_blocked:
+            in_game = False
+        elif rate_rem > 0.0 or sweep_active:
+            in_game = True
+        else:
+            try:
+                with ctx.client_factory(ctx.debug_port) as client:
+                    client.ensure_in_game()
+                    in_game = True
+                    url_now = extract_client_current_url(client)
+                    if url_now:
+                        current_url = url_now
+                        ctx.last_url = url_now
+            except RateLimitError as exc:
+                ctx.record_server_rate_limit(exc)
+                in_game = True
+            except AntiBotChallengeError as exc:
+                lifecycle.record_antibot_pause(exc)
+                in_game = False
+                antibot_hit = True
+            except SpaceInvasionAuthError:
+                in_game = False
+    rate_rem = ctx.page_limiter.rate_limit_remaining()
+    payload: dict[str, object] = {
+        "ok": port_open,
+        "debug_host": ctx.debug_host,
+        "debug_port": ctx.debug_port,
+        "debug_port_open": port_open,
+        "novnc_url": ctx.novnc_url,
+        "in_game": in_game,
+        "rate_limited": rate_rem > 0.0,
+        "retry_after": round(rate_rem, 1),
+        "page_views_last_60s": ctx.page_limiter.views_last_60s(),
+        "page_view_limit_per_minute": ctx.page_limiter.max_views_per_minute,
+        "rate_limit_hits": ctx.page_limiter.rate_limit_hits,
+        "url": current_url if current_url else None,
+        "action_batch_interval_seconds": ctx.strategy_config.action_batch_interval_seconds,
+        "remaining_hourly_actions": _remaining_hourly_actions(ctx),
+        "galaxy_sweep_in_progress": sweep_active,
+        "bot_control": dict(ctx.bot_control),
+        "db_backend": ctx.build_db_backend_status(include_ping=False),
+    }
+    return sanitize_json_dict(payload), antibot_hit
 
 
 def build_dashboard_embedded_health(
@@ -129,7 +198,7 @@ def build_dashboard_embedded_health(
         "url": current_url if current_url else None,
         "novnc_url": ctx.novnc_url,
         "action_batch_interval_seconds": ctx.strategy_config.action_batch_interval_seconds,
-        "remaining_hourly_actions": ctx.live_executor.remaining_hourly_budget(),
+        "remaining_hourly_actions": _remaining_hourly_actions(ctx),
     }
 
 

@@ -11,8 +11,7 @@ from spaceinvasion.combat.cargo import plan_escape_flight
 from spaceinvasion.core import catalog as game_data
 from spaceinvasion.core.coords import normalize_coords
 from spaceinvasion.core.model import GameState, PlanetState, PlannedAction, Resources, normalize_planet_type
-from spaceinvasion.planner.eta import attach_action_etas
-from spaceinvasion.planner.heuristics import AI_INFRA_CARGO_TAG
+from spaceinvasion.planner.heuristics import AI_INFRA_CARGO_TAG, attach_action_etas
 from spaceinvasion.runtime.bridge._context import BridgeContext
 from spaceinvasion.runtime.bridge._helpers import (
     BRIDGE_RUNTIME_ERRORS,

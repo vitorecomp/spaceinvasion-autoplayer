@@ -47,7 +47,7 @@ from spaceinvasion.core.model import (
     TutorialTask,
     game_state_from_dict,
 )
-from spaceinvasion.db.storage import GameDatabase
+from tests.pg_harness import open_test_db as GameDatabase, run_pg_query
 from spaceinvasion.core.model import PlannedAction
 from spaceinvasion.planner.heuristics import (
     BLAST_FURNACE,
@@ -1862,13 +1862,12 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
                             self.assertEqual(body["executed"], expect_executed, f"{payload} -> {body}")
                         self.assertLessEqual(limiter.views_last_60s(), 24)
 
-                    with bridge._db._lock:
-                        act_rows = bridge._db._conn.execute("SELECT command, executed FROM action_history").fetchall()
-                        raid_rows = bridge._db._conn.execute("SELECT target_coords FROM raid_history").fetchall()
-                    self.assertTrue(any(r[0] == "build" and r[1] == 1 for r in act_rows))
-                    self.assertTrue(any(r[0] == "attack" and r[1] == 1 for r in act_rows))
-                    self.assertTrue(any(r[0] == "spy" and r[1] == 1 for r in act_rows))
-                    self.assertTrue(any(r[0] == "02:380:04" for r in raid_rows))
+                    act_rows = run_pg_query(bridge._db, "SELECT command, executed FROM action_history")
+                    raid_rows = run_pg_query(bridge._db, "SELECT target_coords FROM raid_history")
+                    self.assertTrue(any(r["command"] == "build" and r["executed"] == 1 for r in act_rows))
+                    self.assertTrue(any(r["command"] == "attack" and r["executed"] == 1 for r in act_rows))
+                    self.assertTrue(any(r["command"] == "spy" and r["executed"] == 1 for r in act_rows))
+                    self.assertTrue(any(r["target_coords"] == "02:380:04" for r in raid_rows))
 
                     # 2. At 17/18 normal views: live build finishes post-click overview and writes SQLite action_history
                     now[0] += 100.0
@@ -1888,10 +1887,12 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
                     self.assertEqual(resp_b17.status_code, 200, resp_b17.text)
                     self.assertTrue(resp_b17.json()["executed"])
                     self.assertEqual(drv.build_clicks, 1)
-                    with bridge._db._lock:
-                        b_rows = bridge._db._conn.execute(
-                            "SELECT COUNT(*) FROM action_history WHERE command='build' AND executed=1"
-                        ).fetchone()[0]
+                    b_rows = int(
+                        run_pg_query(
+                            bridge._db,
+                            "SELECT COUNT(*) AS cnt FROM action_history WHERE command='build' AND executed=1",
+                        )[0]["cnt"]
+                    )
                     self.assertGreaterEqual(b_rows, 2)
 
                     # 3. Post-cooldown recovery at t=248.0 under 18/18 normal views:

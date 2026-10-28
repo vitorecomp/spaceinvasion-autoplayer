@@ -1928,10 +1928,14 @@ class E2ETestHarness:
                     blast_furnace_mod,
                     commander,
                 ]
-                for pkg in (bridge_pkg, api_pkg, commander_pkg):
+                import spaceinvasion.db as db_pkg
+
+                for pkg in (bridge_pkg, api_pkg, commander_pkg, client_mod, executor_mod, db_pkg):
                     clock_mods.append(pkg)
                     if hasattr(pkg, "__path__"):
                         for mod_info in pkgutil.walk_packages(pkg.__path__, prefix=f"{pkg.__name__}."):
+                            if ".migrations." in mod_info.name or mod_info.name.endswith(".migrations"):
+                                continue
                             sub = sys.modules.get(mod_info.name)
                             if sub is None:
                                 sub = importlib.import_module(mod_info.name)

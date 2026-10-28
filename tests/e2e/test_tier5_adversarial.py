@@ -54,7 +54,7 @@ from spaceinvasion.core.model import (
     Resources,
     UnitOffer,
 )
-from spaceinvasion.db.storage import GameDatabase
+from tests.pg_harness import open_test_db as GameDatabase, run_pg_exec, run_pg_query
 from spaceinvasion.core.model import PlannedAction
 from spaceinvasion.planner.heuristics import (
     SPICE_MINE,
@@ -290,7 +290,7 @@ class TestTier5Adversarial(unittest.TestCase):
                 for mem_uri in (":memory:", "file::memory:?cache=shared"):
                     db = GameDatabase(mem_uri)
                     try:
-                        self.assertTrue(db._is_postgres)
+                        self.assertEqual(db.backend_name, "postgres")
                         db.record_raid(
                             "2:380:4",
                             attacked_ts=float("nan"),
@@ -694,25 +694,28 @@ class TestTier5Adversarial(unittest.TestCase):
 
         with E2ETestHarness(config=StrategyConfig()) as h:
             assert h.bridge._db is not None
-            h.bridge._db._conn.execute(
-                "INSERT INTO economy_rates_cache(planet_id, coords, rates_json, updated_ts) VALUES(1, '01:001:01', 'null', 10.0)"
+            run_pg_exec(
+                h.bridge._db,
+                "INSERT INTO economy_rates_cache(planet_id, coords, rates_json, updated_ts) VALUES(1, '01:001:01', 'null', 10.0)",
             )
-            h.bridge._db._conn.execute(
-                "INSERT INTO spy_targets(coords, owner, fleet_json, defense_json, last_scanned_ts) VALUES('01:001:09', 'Bad', '{bad', '[]', 10.0)"
+            run_pg_exec(
+                h.bridge._db,
+                "INSERT INTO spy_targets(coords, owner, fleet_json, defense_json, last_scanned_ts) VALUES('01:001:09', 'Bad', '{bad', '[]', 10.0)",
             )
-            h.bridge._db._conn.execute(
+            run_pg_exec(
+                h.bridge._db,
                 "INSERT INTO planet_snapshots(ts, universe_id, planet_id, coords, name, planet_type, "
                 "temperature, fields_used, fields_max, pig_iron, metal, kryptonite, spice, "
                 "energy_produced, energy_used, buildings_json, ships_json, defense_json, "
                 "economy_rates_json, researches_json) "
                 "VALUES(10.0, 31, 1, '01:001:01', 'P', 'normal', 20, 10, 200, 0, 0, 0, 0, 0, 0, "
-                "'{bad', 'null', 'null', '{bad', 'null')"
+                "'{bad', 'null', 'null', '{bad', 'null')",
             )
-            h.bridge._db._conn.execute(
+            run_pg_exec(
+                h.bridge._db,
                 "INSERT INTO tutorial_progress(step, total_steps, tasks_json, reward_text, can_complete, first_seen_ts, last_seen_ts) "
-                "VALUES(1, 5, '{bad', 'Reward', 0, 10.0, 10.0)"
+                "VALUES(1, 5, '{bad', 'Reward', 0, 10.0, 10.0)",
             )
-            h.bridge._db._conn.commit()
             db_res = h.api.send_command({"command": "db_summary"})
             self.assertTrue(db_res.get("ok"))
             dash_res = h.get_dashboard(refresh=0)
@@ -865,10 +868,9 @@ class TestTier5Adversarial(unittest.TestCase):
             )
             self.assertEqual(extracted.target_coords, "2:380:4")
             h.bridge._db.record_spy_report(extracted)
-            with h.bridge._db._lock:
-                stored_rows = h.bridge._db._conn.execute("SELECT coords FROM spy_targets ORDER BY coords").fetchall()
-            self.assertIn("02:380:04", [str(r[0]) for r in stored_rows])
-            self.assertNotIn("2:380:4", [str(r[0]) for r in stored_rows])
+            stored_rows = run_pg_query(h.bridge._db, "SELECT coords FROM spy_targets ORDER BY coords")
+            self.assertIn("02:380:04", [str(r["coords"]) for r in stored_rows])
+            self.assertNotIn("2:380:4", [str(r["coords"]) for r in stored_rows])
 
             # BUG-01: unpadded own-planet coords blocked for attack and spy.
             res_own_atk = h.api.send_command({"command": "attack", "target_coords": "2:380:12", "dry_run": True})
@@ -1198,16 +1200,19 @@ class TestTier5Adversarial(unittest.TestCase):
         with E2ETestHarness(server=srv, clock=clock, config=cfg, max_actions_per_hour=50) as h:
             assert h.bridge._db is not None
             # GAP-04 + Caveat: legacy unnormalized row + corrupt snapshot rows handled cleanly on state read
-            h.bridge._db._conn.execute(
+            run_pg_exec(
+                h.bridge._db,
                 "INSERT INTO spy_targets(coords, owner, status_color, is_inactive, pig_iron, metal, kryptonite, spice, last_spied_ts, last_scanned_ts) "
-                "VALUES('2:380:4', 'OldOwner', 'white', 0, 9999, 100, 0, 0, 800.0, 500.0)"
+                "VALUES('2:380:4', 'OldOwner', 'white', 0, 9999, 100, 0, 0, 800.0, 500.0)",
             )
-            h.bridge._db._conn.execute(
+            run_pg_exec(
+                h.bridge._db,
                 "INSERT INTO rank_snapshots(ts, universe_id, estimated_points, pts_per_hr, spice_value, planets) "
                 "VALUES(?, 31, ?, 0.0, 0.0, 1)",
                 (float("nan"), float("inf")),
             )
-            h.bridge._db._conn.execute(
+            run_pg_exec(
+                h.bridge._db,
                 "INSERT INTO planet_snapshots(ts, universe_id, planet_id, coords, name, planet_type, "
                 "temperature, fields_used, fields_max, pig_iron, metal, kryptonite, spice, "
                 "energy_produced, energy_used, buildings_json, ships_json, defense_json, "
@@ -1215,13 +1220,12 @@ class TestTier5Adversarial(unittest.TestCase):
                 "VALUES(?, 31, 12476, '02:380:12', 'Home', 'normal', 31, 10, 230, 0, 0, 0, 0, 0, 0, '{}', '{}', '{}', '{}', '{}')",
                 (float("nan"),),
             )
-            h.bridge._db._conn.commit()
             h.bridge._db.record_galaxy_slots(
                 [GalaxySlot("02:380:04", 4, "Farm", "OldOwner", "yellow")],
                 ts=1000.0,
             )
-            rows = h.bridge._db._conn.execute("SELECT coords FROM spy_targets WHERE coords LIKE '%380%'").fetchall()
-            self.assertEqual([r[0] for r in rows], ["02:380:04"])
+            rows = run_pg_query(h.bridge._db, "SELECT coords FROM spy_targets WHERE coords LIKE '%380%'")
+            self.assertEqual([r["coords"] for r in rows], ["02:380:04"])
             direct = h.bridge._db.get_spy_target_by_coords("2:380:4")
             self.assertIsNotNone(direct)
             self.assertEqual(direct["resources"]["pig_iron"], 9999)
@@ -2653,7 +2657,7 @@ async (url, opts, fullUrl, nativeFetch) => {
         from spaceinvasion.core.model import BuildingOffer
         from spaceinvasion.parsing.overview import parse_planets_overview_json
         from spaceinvasion.parsing.pages import parse_economy_rates
-        from spaceinvasion.db.storage import _coord_query_candidates
+        from spaceinvasion.core.coords import coord_query_variants as _coord_query_candidates
 
         # 1. GAP-R9-01: priority mode obeys Asteroid REQ-BLD-003 and 0-free-field limit
         ast_p = PlanetState(
@@ -2798,7 +2802,7 @@ async (url, opts, fullUrl, nativeFetch) => {
             TutorialTask,
             UnitOffer,
         )
-        from spaceinvasion.db.storage import GameDatabase
+        from tests.pg_harness import open_test_db as GameDatabase, run_pg_exec, run_pg_query
         from spaceinvasion.planner.heuristics import (
             SOLAR_CELLS_ID,
             plan_actions,
@@ -2810,16 +2814,17 @@ async (url, opts, fullUrl, nativeFetch) => {
             db = GameDatabase(tp / "adv20.db")
             try:
                 sec = "T5_R10_BLOB_SID"
-                db._conn.execute(
+                run_pg_exec(
+                    db,
                     "INSERT INTO planet_snapshots(ts, universe_id, planet_id, coords, name, planet_type, temperature, fields_used, fields_max, pig_iron, metal, kryptonite, spice, energy_produced, energy_used, buildings_json, ships_json, defense_json, economy_rates_json, researches_json) "
                     "VALUES(?, 31, 7, ?, ?, 'normal', 20, 0, 200, 1, 1, 1, 1, 10, 5, ?, '{}', '{}', '{}', '{}')",
                     (float("nan"), "02:380:04", f"?sid={sec}", json.dumps({"sid": sec, "b1": 5}, allow_nan=False)),
                 )
-                db._conn.execute(
+                run_pg_exec(
+                    db,
                     "INSERT INTO raid_history(target_coords, attacked_ts, is_exempt, outcome, loot_json) VALUES(?, 1000.0, 0, ?, ?)",
                     ("02:380:04", f"?sid={sec}", json.dumps({"sid": sec, "pig_iron": 500}, allow_nan=False)),
                 )
-                db._conn.commit()
                 self.assertEqual(db.load_bash_tracker(now=1000.0).attacks_last_24h("02:380:04", timestamp=1000.0), 1)
                 for obj in (db.get_raid_stats()["telemetry_summary"], db.summary()):
                     self.assertNotIn(sec, json.dumps(obj, allow_nan=False))
@@ -2937,7 +2942,7 @@ async (url, opts, fullUrl, nativeFetch) => {
             BuildingOffer,
             QueueJob,
         )
-        from spaceinvasion.db.storage import _json_dumps
+        from spaceinvasion.db.repos._helpers import json_dumps as _json_dumps
 
         class _BytesPath:
             def __fspath__(self) -> bytes:

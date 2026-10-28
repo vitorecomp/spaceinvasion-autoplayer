@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+import math
 
 from sqlalchemy import case, func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -10,7 +11,15 @@ from sqlalchemy.orm import Session
 
 from spaceinvasion.db.dto import GameMessageRecord, RecycleHarvestSummary, RecycleReportRecord
 from spaceinvasion.db.models import GameMessage, RecycleReport
-from spaceinvasion.db.repos._helpers import affected_rows, normalize_coords, round_ts, sanitize_text
+from spaceinvasion.db.repos._helpers import (
+    affected_rows,
+    clamp_limit,
+    normalize_coords,
+    round_ts,
+    sanitize_text,
+    to_float,
+    to_int,
+)
 from spaceinvasion.db.repos._message_ingest import (
     FRACTION_ONLY_RE,
     GameMessageInput,
@@ -162,8 +171,8 @@ class MessagesRepository:
         rows = (
             self._session.execute(
                 stmt.order_by(GameMessage.ingested_ts.desc(), GameMessage.id.desc())
-                .offset(max(0, int(offset)))
-                .limit(max(1, int(limit)))
+                .offset(max(0, to_int(offset, 0)))
+                .limit(clamp_limit(limit, 200))
             )
             .scalars()
             .all()
@@ -182,7 +191,7 @@ class MessagesRepository:
             stmt = stmt.where(RecycleReport.coords == normalize_coords(coords))
         rows = (
             self._session.execute(
-                stmt.order_by(RecycleReport.ts.desc(), RecycleReport.id.desc()).limit(max(1, int(limit)))
+                stmt.order_by(RecycleReport.ts.desc(), RecycleReport.id.desc()).limit(clamp_limit(limit, 200))
             )
             .scalars()
             .all()
@@ -206,20 +215,20 @@ class MessagesRepository:
             func.coalesce(func.sum(RecycleReport.harvested_spice_eq), 0.0),
             func.max(RecycleReport.ts),
         )
-        if since_ts is not None:
+        if since_ts is not None and isinstance(since_ts, (int, float)) and math.isfinite(float(since_ts)):
             stmt = stmt.where(RecycleReport.ts >= float(since_ts))
         if coords is not None:
             stmt = stmt.where(RecycleReport.coords == normalize_coords(coords))
         row = self._session.execute(stmt).one()
         return RecycleHarvestSummary(
-            report_count=int(row[0] or 0),
-            total_recyclers=int(row[1] or 0),
-            total_pig_iron=int(row[2] or 0),
-            total_metal=int(row[3] or 0),
-            total_kryptonite=int(row[4] or 0),
-            total_spice=int(row[5] or 0),
-            total_spice_eq=round(float(row[6] or 0.0), 3),
-            latest_ts=float(row[7]) if row[7] is not None else None,
+            report_count=to_int(row[0], 0),
+            total_recyclers=to_int(row[1], 0),
+            total_pig_iron=to_int(row[2], 0),
+            total_metal=to_int(row[3], 0),
+            total_kryptonite=to_int(row[4], 0),
+            total_spice=to_int(row[5], 0),
+            total_spice_eq=round(to_float(row[6], 0.0), 3),
+            latest_ts=to_float(row[7], 0.0) if row[7] is not None else None,
         )
 
 

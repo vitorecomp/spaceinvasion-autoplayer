@@ -220,6 +220,10 @@ class ActionExecutor(ExecutorCompatMixin):
     def last_galaxy_slots(self) -> list[GalaxySlot]:
         return self._missions.last_galaxy_slots
 
+    @last_galaxy_slots.setter
+    def last_galaxy_slots(self, value: list[GalaxySlot]) -> None:
+        self._missions.last_galaxy_slots = list(value)
+
     @property
     def last_transmitter_info(self) -> dict[str, object] | None:
         return self._transmitter_ops.last_transmitter_info
@@ -297,7 +301,7 @@ class ActionExecutor(ExecutorCompatMixin):
 
     def execute_action(
         self,
-        client: BrowserClientLike,
+        client: BrowserClientLike | None,
         state: GameState,
         action: PlannedActionLike,
         *,
@@ -309,6 +313,8 @@ class ActionExecutor(ExecutorCompatMixin):
         guarded = self._check_pre_dispatch_guards(act)
         if guarded is not None:
             return guarded
+        if client is None:
+            raise RuntimeError("Live action execution requires an active GameBrowserClient.")
 
         kind = act.kind
         if kind == "CLAIM_TUTORIAL":

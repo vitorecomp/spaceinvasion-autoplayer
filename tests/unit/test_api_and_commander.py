@@ -434,7 +434,7 @@ class TestApiAndCommander(unittest.TestCase):
 
     def test_bridge_limiter_wait_defaults_and_dynamic_raid_stats_isolated_from_repo_file(self) -> None:
         from dataclasses import replace as dc_replace
-        from spaceinvasion.db.storage import GameDatabase
+        from tests.pg_harness import open_test_db as GameDatabase
 
         repo_hist = Path("data") / "attack_history.json"
         self.assertFalse(repo_hist.exists())
@@ -1555,12 +1555,14 @@ class TestApiAndCommander(unittest.TestCase):
                 ]
                 many_yellow.append(GalaxySlot("09:009:09", 9, "DeepBlue", "VacDeep", "blue"))
                 bridge._db.record_galaxy_slots(many_yellow, ts=2000.0)
-                bridge._db._conn.execute(
+                from tests.pg_harness import run_pg_exec
+
+                run_pg_exec(
+                    bridge._db,
                     "UPDATE spy_targets SET pig_iron=0, spice=100, "
                     'fleet_json=\'{"s1": "bad"}\', defense_json=\'{"d1": "bad"}\' '
-                    "WHERE coords='05:001:01'"
+                    "WHERE coords='05:001:01'",
                 )
-                bridge._db._conn.commit()
                 bridge.ctx.raid_targets = bridge.state_cache.enrich_raid_targets(bridge._db.get_spy_targets(limit=100))
                 self.assertFalse(any(r.get("coords") == "09:009:09" for r in bridge.ctx.raid_targets))
                 deep_blue_atk = bridge.handle_command({"command": "attack", "target_coords": "9:9:9", "dry_run": False})
@@ -2467,10 +2469,10 @@ class TestApiAndCommander(unittest.TestCase):
                 self.assertEqual(b_huge.debug_port, 65535)
                 self.assertLessEqual(b_huge.health()["remaining_hourly_actions"], 1_000_000)
 
-                b_zero._last_url = "https://uni/?sid=HEALTH_SECRET_1"
-                b_zero._bot_control["password"] = b"HEALTH_PW_2"
-                b_zero._scanned_systems["01:001"] = float("nan")
-                b_zero._throttle_timestamps[10**5000] = float("inf")
+                b_zero.ctx.last_url = "https://uni/?sid=HEALTH_SECRET_1"
+                b_zero.ctx.bot_control["password"] = b"HEALTH_PW_2"
+                b_zero.ctx.scanned_systems["01:001"] = float("nan")
+                b_zero.ctx.throttle_timestamps[10**5000] = float("inf")
                 h_sec = b_zero.health()
                 c_sec = b_zero.get_bot_control()
                 cmd_ctrl = b_zero.handle_command({"command": "bot_control"})
@@ -5046,16 +5048,18 @@ class TestApiAndCommander(unittest.TestCase):
                     ts=t0 - 120.0,
                 )
                 # Insert both raw unnormalized '2:381:7' and canonical '02:381:07' to verify non-destructive merged_into
-                with bridge._db._lock:
-                    bridge._db._conn.execute(
-                        "INSERT INTO spy_targets(coords, owner, status_color, is_inactive, last_scanned_ts) VALUES ('2:381:7', 'StarMiner', 'yellow', 1, ?)",
-                        (t0 - 95.0,),
-                    )
-                    bridge._db._conn.execute(
-                        "INSERT INTO spy_targets(coords, owner, status_color, is_inactive, last_scanned_ts) VALUES ('02:381:07', 'StarMiner', 'yellow', 1, ?)",
-                        (t0 - 90.0,),
-                    )
-                    bridge._db._conn.commit()
+                from tests.pg_harness import run_pg_exec, run_pg_query
+
+                run_pg_exec(
+                    bridge._db,
+                    "INSERT INTO spy_targets(coords, owner, status_color, is_inactive, last_scanned_ts) VALUES ('2:381:7', 'StarMiner', 'yellow', 1, ?)",
+                    (t0 - 95.0,),
+                )
+                run_pg_exec(
+                    bridge._db,
+                    "INSERT INTO spy_targets(coords, owner, status_color, is_inactive, last_scanned_ts) VALUES ('02:381:07', 'StarMiner', 'yellow', 1, ?)",
+                    (t0 - 90.0,),
+                )
                 bridge._db.record_galaxy_slots(
                     [
                         GalaxySlot("02:382:04", 4, "Warzone", "Defender", "yellow", has_debris=False),
@@ -5109,9 +5113,10 @@ class TestApiAndCommander(unittest.TestCase):
                 active_targets = {t["coords"] for t in bridge._db.get_spy_targets(limit=50)}
                 self.assertNotIn("02:380:12", active_targets)
                 self.assertIn("02:381:07", active_targets)
-                raw_spy_target_rows = bridge._db._conn.execute(
-                    "SELECT coords, merged_into, is_own_planet FROM spy_targets"
-                ).fetchall()
+                raw_spy_target_rows = run_pg_query(
+                    bridge._db,
+                    "SELECT coords, merged_into, is_own_planet FROM spy_targets",
+                )
                 by_raw = {r["coords"]: (r["merged_into"], r["is_own_planet"]) for r in raw_spy_target_rows}
                 self.assertEqual(by_raw["02:380:12"][1], 1)
                 self.assertEqual(by_raw["2:381:7"][0], "02:381:07")
@@ -5620,7 +5625,7 @@ class TestApiAndCommander(unittest.TestCase):
             GalaxySlot,
             SpyReport,
         )
-        from spaceinvasion.db.storage import GameDatabase
+        from tests.pg_harness import open_test_db as GameDatabase
 
         with tempfile.TemporaryDirectory(prefix="si_intel_backfill_") as td:
             td_path = Path(td)
@@ -5631,99 +5636,103 @@ class TestApiAndCommander(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            # Seed legacy un-backfilled game_messages rows directly before reopening GameDatabase
+            # Seed legacy un-backfilled game_messages rows directly before reopening gateway
+            from tests.pg_harness import run_pg_exec
+
             db_seed = GameDatabase(db_path)
-            with db_seed._lock:
-                db_seed._conn.execute("DELETE FROM meta WHERE key = 'reports_backfill_v2'")
-                db_seed._conn.execute(
-                    """
-                    INSERT INTO game_messages(
-                        ingested_ts, msg_uid, server_msg_id, folder_type, category, sender, subject, msg_date_text,
-                        coords, body_text, raw_html, parsed_json, deleted_in_game
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
-                    """,
-                    (
-                        1700000010.0,
-                        "uid:99001",
-                        "99001",
-                        "fleet",
-                        "recycle_report",
-                        "System",
-                        "Colony [02:380:12] fleet return",
-                        "11/16/2026 19:00:00",
-                        "02:380:12",
-                        "Pig iron 86.812 11% Message from System: A fleet returning from duty reaches Colony [02:380:12]. 17.036 Pig iron, 12.036 Metal, 14.310 Kryptonite and 18.098 Spice were unloaded. Fleet reports★",
-                        "",
-                        "{}",
-                    ),
-                )
-                db_seed._conn.execute(
-                    """
-                    INSERT INTO game_messages(
-                        ingested_ts, msg_uid, server_msg_id, folder_type, category, sender, subject, msg_date_text,
-                        coords, body_text, raw_html, parsed_json, deleted_in_game
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
-                    """,
-                    (
-                        1700000020.0,
-                        "uid:99002",
-                        "99002",
-                        "fleet",
-                        "general",
-                        "System",
-                        "Space rubble [02:380:05]",
-                        "11/16/2026 18:55:00",
-                        "02:380:05",
-                        "Pig iron 86.812 11% Message from System: 3 Recyclers with a total cargo capacity of 60000 reach their goal [02:380:05]. In space float 17036 Pig iron, 12036 Metal, 14310 Kryptonite, 18098 Spice pieces of rubble. You have processed 17036 Pig iron, 12036 Metal, 14310 Kryptonite, 18098 Spice pieces of rubble. Fleet reports★",
-                        "",
-                        "{}",
-                    ),
-                )
-                db_seed._conn.execute(
-                    """
-                    INSERT INTO game_messages(
-                        ingested_ts, msg_uid, server_msg_id, folder_type, category, sender, subject, msg_date_text,
-                        coords, body_text, raw_html, parsed_json, deleted_in_game
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
-                    """,
-                    (
-                        1700000030.0,
-                        "uid:99003",
-                        "99003",
-                        "battle",
-                        "battle_report",
-                        "System",
-                        "Battle report Spacia [02:383:02] (V:0,A:0)",
-                        "11/16/2026 18:40:00",
-                        "02:383:02",
-                        "Message from System: Battle report #16254211 Attacker ventkx86 vs Defender Spacia [02:383:02] Winner: Attacker",
-                        '<div data-battle-json=\'{"ok":true,"id":16254211,"winner":1,"rounds":1,"stolen":[{"r":1,"v":"3.075"},{"r":2,"v":"2.250"},{"r":3,"v":"5.565"},{"r":4,"v":"2.550"}],"rubble":[],"attacker":{"name":"ventkx86","lost":0},"defender":{"name":"Spacia","lost":0}}\'></div>',
-                        "{}",
-                    ),
-                )
-                db_seed._conn.execute(
-                    """
-                    INSERT INTO game_messages(
-                        ingested_ts, msg_uid, server_msg_id, folder_type, category, sender, subject, msg_date_text,
-                        coords, body_text, raw_html, parsed_json, deleted_in_game
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
-                    """,
-                    (
-                        1700000035.0,
-                        "uid:99004",
-                        "99004",
-                        "spio",
-                        "spy_report",
-                        "System",
-                        "Colony [02:378:15] spy report",
-                        "11/16/2026 17:09:42",
-                        "02:378:15",
-                        '2026-11-16 17:09:42 System Colony [02:378:15] spy report Spaceinvasion { "info": { "si": "classic", "v": 1, "type": "spy-report" }, "planet": { "id": 12447, "coords": "02:378:15", "type": "PLANET", "name": "Colony", "resources": [ 480817, 174581, 357879, 27926 ], "buildings": { "b1": { "name": "Pig iron mine", "level": 24 } }, "ships": false, "defense": false, "researches": false } }',
-                        "",
-                        "{}",
-                    ),
-                )
-                db_seed._conn.commit()
+            run_pg_exec(db_seed, "DELETE FROM meta WHERE key = 'reports_backfill_v2'")
+            run_pg_exec(
+                db_seed,
+                """
+                INSERT INTO game_messages(
+                    ingested_ts, msg_uid, server_msg_id, folder_type, category, sender, subject, msg_date_text,
+                    coords, body_text, raw_html, parsed_json, deleted_in_game
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+                """,
+                (
+                    1700000010.0,
+                    "uid:99001",
+                    "99001",
+                    "fleet",
+                    "recycle_report",
+                    "System",
+                    "Colony [02:380:12] fleet return",
+                    "11/16/2026 19:00:00",
+                    "02:380:12",
+                    "Pig iron 86.812 11% Message from System: A fleet returning from duty reaches Colony [02:380:12]. 17.036 Pig iron, 12.036 Metal, 14.310 Kryptonite and 18.098 Spice were unloaded. Fleet reports★",
+                    "",
+                    "{}",
+                ),
+            )
+            run_pg_exec(
+                db_seed,
+                """
+                INSERT INTO game_messages(
+                    ingested_ts, msg_uid, server_msg_id, folder_type, category, sender, subject, msg_date_text,
+                    coords, body_text, raw_html, parsed_json, deleted_in_game
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+                """,
+                (
+                    1700000020.0,
+                    "uid:99002",
+                    "99002",
+                    "fleet",
+                    "general",
+                    "System",
+                    "Space rubble [02:380:05]",
+                    "11/16/2026 18:55:00",
+                    "02:380:05",
+                    "Pig iron 86.812 11% Message from System: 3 Recyclers with a total cargo capacity of 60000 reach their goal [02:380:05]. In space float 17036 Pig iron, 12036 Metal, 14310 Kryptonite, 18098 Spice pieces of rubble. You have processed 17036 Pig iron, 12036 Metal, 14310 Kryptonite, 18098 Spice pieces of rubble. Fleet reports★",
+                    "",
+                    "{}",
+                ),
+            )
+            run_pg_exec(
+                db_seed,
+                """
+                INSERT INTO game_messages(
+                    ingested_ts, msg_uid, server_msg_id, folder_type, category, sender, subject, msg_date_text,
+                    coords, body_text, raw_html, parsed_json, deleted_in_game
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+                """,
+                (
+                    1700000030.0,
+                    "uid:99003",
+                    "99003",
+                    "battle",
+                    "battle_report",
+                    "System",
+                    "Battle report Spacia [02:383:02] (V:0,A:0)",
+                    "11/16/2026 18:40:00",
+                    "02:383:02",
+                    "Message from System: Battle report #16254211 Attacker ventkx86 vs Defender Spacia [02:383:02] Winner: Attacker",
+                    '<div data-battle-json=\'{"ok":true,"id":16254211,"winner":1,"rounds":1,"stolen":[{"r":1,"v":"3.075"},{"r":2,"v":"2.250"},{"r":3,"v":"5.565"},{"r":4,"v":"2.550"}],"rubble":[],"attacker":{"name":"ventkx86","lost":0},"defender":{"name":"Spacia","lost":0}}\'></div>',
+                    "{}",
+                ),
+            )
+            run_pg_exec(
+                db_seed,
+                """
+                INSERT INTO game_messages(
+                    ingested_ts, msg_uid, server_msg_id, folder_type, category, sender, subject, msg_date_text,
+                    coords, body_text, raw_html, parsed_json, deleted_in_game
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+                """,
+                (
+                    1700000035.0,
+                    "uid:99004",
+                    "99004",
+                    "spio",
+                    "spy_report",
+                    "System",
+                    "Colony [02:378:15] spy report",
+                    "11/16/2026 17:09:42",
+                    "02:378:15",
+                    '2026-11-16 17:09:42 System Colony [02:378:15] spy report Spaceinvasion { "info": { "si": "classic", "v": 1, "type": "spy-report" }, "planet": { "id": 12447, "coords": "02:378:15", "type": "PLANET", "name": "Colony", "resources": [ 480817, 174581, 357879, 27926 ], "buildings": { "b1": { "name": "Pig iron mine", "level": 24 } }, "ships": false, "defense": false, "researches": false } }',
+                    "",
+                    "{}",
+                ),
+            )
             db_seed.close()
 
             # Reopen via GameApiBridge so startup reports_backfill_v2 runs automatically (zero row deletions!)
@@ -7028,7 +7037,7 @@ class TestApiAndCommander(unittest.TestCase):
             Resources,
             UnitOffer,
         )
-        from spaceinvasion.db.storage import GameDatabase
+        from tests.pg_harness import open_test_db as GameDatabase
         from spaceinvasion.runtime.api.validation import ApiRequestError
 
         p1 = PlanetState(
@@ -7824,7 +7833,7 @@ class TestApiAndCommander(unittest.TestCase):
                     reason="test clean",
                     executable_now=True,
                 )
-                res_clean = bridge.execution.execute_and_summarize(fake_client, st, "step", act_clean, dry_run=False)
+                res_clean = bridge.execution.execute_and_summarize("step", fake_client, st, act_clean, dry_run=False)
                 self.assertTrue(res_clean["ok"])
                 self.assertFalse(res_clean["executed"])
                 self.assertIn("clean", res_clean["message"].lower())
@@ -7846,7 +7855,7 @@ class TestApiAndCommander(unittest.TestCase):
                     executable_now=True,
                 )
                 res_unver = bridge.execution.execute_and_summarize(
-                    fake_client, st, "step", act_unverified, dry_run=False
+                    "step", fake_client, st, act_unverified, dry_run=False
                 )
                 self.assertTrue(res_unver["ok"])
                 self.assertFalse(res_unver["executed"])
@@ -7865,7 +7874,7 @@ class TestApiAndCommander(unittest.TestCase):
                     reason="test live",
                     executable_now=True,
                 )
-                res_live = bridge.execution.execute_and_summarize(fake_client, st, "step", act_live, dry_run=False)
+                res_live = bridge.execution.execute_and_summarize("step", fake_client, st, act_live, dry_run=False)
                 self.assertTrue(res_live["ok"])
                 self.assertTrue(res_live["executed"])
                 self.assertIn((2, 379), fake_client.open_galaxy_calls)
@@ -8016,7 +8025,7 @@ class TestApiAndCommander(unittest.TestCase):
                     reason="Refresh Spacia spy intel",
                     executable_now=True,
                 )
-                res1 = bridge.execution.execute_and_summarize(fake_client, st, "step", act_despawn, dry_run=False)
+                res1 = bridge.execution.execute_and_summarize("step", fake_client, st, act_despawn, dry_run=False)
                 self.assertTrue(res1["ok"])
                 self.assertFalse(res1["executed"])
                 self.assertIn("spacia despawned", res1["message"].lower())
@@ -8040,7 +8049,7 @@ class TestApiAndCommander(unittest.TestCase):
                     reason="Farm Spacia",
                     executable_now=True,
                 )
-                res2 = bridge.execution.execute_and_summarize(fake_client, st, "step", act_settled, dry_run=False)
+                res2 = bridge.execution.execute_and_summarize("step", fake_client, st, act_settled, dry_run=False)
                 self.assertTrue(res2["ok"])
                 self.assertFalse(res2["executed"])
                 self.assertIn("no longer spacia", res2["message"].lower())
@@ -8063,7 +8072,7 @@ class TestApiAndCommander(unittest.TestCase):
                     reason="Probe Spacia",
                     executable_now=True,
                 )
-                res3 = bridge.execution.execute_and_summarize(fake_client, st, "step", act_empty, dry_run=False)
+                res3 = bridge.execution.execute_and_summarize("step", fake_client, st, act_empty, dry_run=False)
                 self.assertTrue(res3["ok"])
                 self.assertFalse(res3["executed"])
                 self.assertIn("could not confirm spacia", res3["message"].lower())
@@ -8081,7 +8090,7 @@ class TestApiAndCommander(unittest.TestCase):
                     reason="Farm Spacia",
                     executable_now=True,
                 )
-                res4 = bridge.execution.execute_and_summarize(fake_client, st, "step", act_ok, dry_run=False)
+                res4 = bridge.execution.execute_and_summarize("step", fake_client, st, act_ok, dry_run=False)
                 self.assertTrue(res4["ok"])
                 self.assertTrue(res4["executed"])
                 self.assertIn((2, 258), fake_client.open_galaxy_calls)
@@ -9893,7 +9902,9 @@ class TestApiAndCommander(unittest.TestCase):
                 self.assertTrue(held[1].executable_now)
 
                 # 3. Live _execute_and_summarize aborts SPY when spy_used >= spy_cap (0 executor calls)
-                exec_res = bridge.execution.execute_and_summarize(fake_client, st_3used, "execute_action", spy_a, False)
+                exec_res = bridge.execution.execute_and_summarize(
+                    "execute_action", fake_client, st_3used, spy_a, dry_run=False
+                )
                 self.assertTrue(exec_res["ok"])
                 self.assertFalse(exec_res["executed"])
                 self.assertIn("restricted to reserved", exec_res["message"].lower())

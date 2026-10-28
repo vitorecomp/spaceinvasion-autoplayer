@@ -26,10 +26,13 @@ from spaceinvasion.db.models import (
 from spaceinvasion.db.repos._helpers import (
     affected_rows,
     clamp_int64,
+    clamp_limit,
     dumps_json,
     loads_json_dict,
     round_ts,
     sanitize_text,
+    to_float,
+    to_int,
 )
 from spaceinvasion.db.repos._telemetry_rollups import (
     UniverseResearchMaxInput,
@@ -43,32 +46,32 @@ from spaceinvasion.db.repos._telemetry_rollups import (
 def _hourly_prod_to_dto(row: HourlyProductionHistory) -> HourlyProductionRecord:
     return HourlyProductionRecord(
         id=row.id,
-        minute_bucket=int(row.minute_bucket),
-        recorded_at=round(float(row.recorded_at), 3),
-        pig_iron_per_hour=round(float(row.pig_iron_per_hour), 1),
-        metal_per_hour=round(float(row.metal_per_hour), 1),
-        kryptonite_per_hour=round(float(row.kryptonite_per_hour), 1),
-        spice_per_hour=round(float(row.spice_per_hour), 1),
-        total_per_hour=round(float(row.total_per_hour), 1),
-        speq_per_hour=round(float(row.speq_per_hour), 1),
-        planet_count=max(0, int(row.planet_count)),
-        active_builders=max(0, int(row.active_builders)),
+        minute_bucket=to_int(row.minute_bucket, 0),
+        recorded_at=round(to_float(row.recorded_at, 0.0), 3),
+        pig_iron_per_hour=round(to_float(row.pig_iron_per_hour, 0.0), 1),
+        metal_per_hour=round(to_float(row.metal_per_hour, 0.0), 1),
+        kryptonite_per_hour=round(to_float(row.kryptonite_per_hour, 0.0), 1),
+        spice_per_hour=round(to_float(row.spice_per_hour, 0.0), 1),
+        total_per_hour=round(to_float(row.total_per_hour, 0.0), 1),
+        speq_per_hour=round(to_float(row.speq_per_hour, 0.0), 1),
+        planet_count=max(0, to_int(row.planet_count, 0)),
+        active_builders=max(0, to_int(row.active_builders, 0)),
     )
 
 
 def _action_to_dto(row: ActionHistory) -> ActionHistoryRecord:
     return ActionHistoryRecord(
         id=row.id,
-        ts=float(row.ts),
+        ts=to_float(row.ts, 0.0),
         source=row.source,
         command=row.command,
         priority=row.priority,
         kind=row.kind,
-        planet_id=int(row.planet_id) if row.planet_id is not None else None,
+        planet_id=to_int(row.planet_id, 0) if row.planet_id is not None else None,
         planet_coords=row.planet_coords,
-        target_id=int(row.target_id) if row.target_id is not None else None,
+        target_id=to_int(row.target_id, 0) if row.target_id is not None else None,
         target_name=row.target_name,
-        target_level=int(row.target_level) if row.target_level is not None else None,
+        target_level=to_int(row.target_level, 0) if row.target_level is not None else None,
         executed=bool(row.executed),
         dry_run=bool(row.dry_run),
         reason=row.reason,
@@ -123,7 +126,7 @@ class TelemetryRepository:
 
     def list_recent_actions(self, *, limit: int = 25) -> tuple[ActionHistoryRecord, ...]:
         """List recent commander actions ordered newest first (`id DESC`)."""
-        lim = max(1, int(limit))
+        lim = clamp_limit(limit, 25)
         rows = self._session.execute(select(ActionHistory).order_by(ActionHistory.id.desc()).limit(lim)).scalars().all()
         return tuple(_action_to_dto(r) for r in rows)
 
@@ -198,8 +201,10 @@ class TelemetryRepository:
             clean: dict[str, int] = {
                 k: int(v) for k, v in parsed.items() if isinstance(v, int) and not isinstance(v, bool)
             }
-            out[int(r.planet_id)] = EconomyRatesRecord(
-                planet_id=int(r.planet_id), coords=r.coords, rates=clean, updated_ts=float(r.updated_ts)
+            if not clean:
+                continue
+            out[to_int(r.planet_id, 0)] = EconomyRatesRecord(
+                planet_id=to_int(r.planet_id, 0), coords=r.coords, rates=clean, updated_ts=to_float(r.updated_ts, 0.0)
             )
         return out
 
@@ -219,13 +224,13 @@ class TelemetryRepository:
         """Insert at most one empire production sample per minute bucket (`ON CONFLICT DO NOTHING`)."""
         eff_now = round_ts(ts)
         minute_bucket = int(eff_now // 60) * 60
-        pig_v = round(float(pig_iron_per_hour), 1)
-        met_v = round(max(0.0, float(metal_per_hour)), 1)
-        kry_v = round(max(0.0, float(kryptonite_per_hour)), 1)
-        spi_v = round(max(0.0, float(spice_per_hour)), 1)
-        tot_v = round(max(0.0, float(total_per_hour)), 1)
-        speq_v = round(max(0.0, float(speq_per_hour)), 1)
-        p_cnt, b_cnt = max(0, int(planet_count)), max(0, int(active_builders))
+        pig_v = round(to_float(pig_iron_per_hour, 0.0), 1)
+        met_v = round(max(0.0, to_float(metal_per_hour, 0.0)), 1)
+        kry_v = round(max(0.0, to_float(kryptonite_per_hour, 0.0)), 1)
+        spi_v = round(max(0.0, to_float(spice_per_hour, 0.0)), 1)
+        tot_v = round(max(0.0, to_float(total_per_hour, 0.0)), 1)
+        speq_v = round(max(0.0, to_float(speq_per_hour, 0.0)), 1)
+        p_cnt, b_cnt = max(0, to_int(planet_count, 0)), max(0, to_int(active_builders, 0))
         ins = (
             pg_insert(HourlyProductionHistory)
             .values(
@@ -253,7 +258,7 @@ class TelemetryRepository:
 
     def list_hourly_production(self, *, limit: int = 120) -> tuple[HourlyProductionRecord, ...]:
         """Return chronological (oldest -> newest) snapshots from the newest `limit` minute buckets."""
-        lim = max(1, min(1440, int(limit)))
+        lim = clamp_limit(limit, 120, max_limit=1440)
         rows = (
             self._session.execute(
                 select(HourlyProductionHistory).order_by(HourlyProductionHistory.minute_bucket.desc()).limit(lim)
@@ -303,14 +308,14 @@ class TelemetryRepository:
         ).returning(TutorialProgress)
         row: TutorialProgress = self._session.execute(upsert_stmt).scalar_one()
         return TutorialProgressRecord(
-            step=int(row.step),
-            total_steps=int(row.total_steps),
+            step=to_int(row.step, 0),
+            total_steps=to_int(row.total_steps, 0),
             tasks_json=row.tasks_json,
             reward_text=row.reward_text,
             can_complete=bool(row.can_complete),
-            first_seen_ts=float(row.first_seen_ts),
-            last_seen_ts=float(row.last_seen_ts),
-            completed_ts=float(row.completed_ts) if row.completed_ts is not None else None,
+            first_seen_ts=to_float(row.first_seen_ts, 0.0),
+            last_seen_ts=to_float(row.last_seen_ts, 0.0),
+            completed_ts=to_float(row.completed_ts, 0.0) if row.completed_ts is not None else None,
         )
 
     def complete_open_tutorial_steps(self, *, ts: float | None = None) -> int:
@@ -328,14 +333,14 @@ class TelemetryRepository:
         rows = self._session.execute(select(TutorialProgress).order_by(TutorialProgress.step.asc())).scalars().all()
         return tuple(
             TutorialProgressRecord(
-                step=int(r.step),
-                total_steps=int(r.total_steps),
+                step=to_int(r.step, 0),
+                total_steps=to_int(r.total_steps, 0),
                 tasks_json=r.tasks_json,
                 reward_text=r.reward_text,
                 can_complete=bool(r.can_complete),
-                first_seen_ts=float(r.first_seen_ts),
-                last_seen_ts=float(r.last_seen_ts),
-                completed_ts=float(r.completed_ts) if r.completed_ts is not None else None,
+                first_seen_ts=to_float(r.first_seen_ts, 0.0),
+                last_seen_ts=to_float(r.last_seen_ts, 0.0),
+                completed_ts=to_float(r.completed_ts, 0.0) if r.completed_ts is not None else None,
             )
             for r in rows
         )

@@ -339,7 +339,7 @@ class GalaxyScanExclusivityTest(unittest.TestCase):
                     bridge.ctx.last_state = _make_state(hostile=False)
                     bridge.ctx.last_snapshot_at = time.monotonic()
 
-                    def _fake_exec_summary(client, state, cmd, planned, dry_run, **_kw):
+                    def _fake_exec_summary(cmd, client, state, planned, *, dry_run, **_kw):
                         escape_executed.append(f"{cmd}:{planned.kind}:{client is not None}")
                         return {
                             "ok": True,

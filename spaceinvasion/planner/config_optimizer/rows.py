@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from spaceinvasion.core import game_data
+from spaceinvasion.core import catalog as game_data
 from spaceinvasion.core.coercion import coerce_int
 from spaceinvasion.planner.config_optimizer._protocols import as_float_dict, as_int_dict, as_str_dict
 from spaceinvasion.planner.config_optimizer.catalog_math import (

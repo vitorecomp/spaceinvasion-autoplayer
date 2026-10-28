@@ -5,8 +5,8 @@ from __future__ import annotations
 from collections.abc import Mapping
 import math
 
-from spaceinvasion.combat.fleet import SHIP_SLUG_BY_KEY
-from spaceinvasion.core import game_data
+from spaceinvasion.core import catalog as game_data
+from spaceinvasion.core.catalog import SHIP_SLUG_BY_KEY
 from spaceinvasion.core.coercion import coerce_int
 from spaceinvasion.core.coords import normalize_coords
 from spaceinvasion.core.model import EnergyBalance, PlanetState, Resources

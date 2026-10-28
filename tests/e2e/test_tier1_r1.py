@@ -45,7 +45,7 @@ from spaceinvasion.core.model import (
     TutorialStatus,
     TutorialTask,
 )
-from spaceinvasion.db.storage import GameDatabase
+from tests.pg_harness import open_test_db as GameDatabase
 from spaceinvasion.core.model import PlannedAction
 from spaceinvasion.planner.heuristics import (
     BLAST_FURNACE,

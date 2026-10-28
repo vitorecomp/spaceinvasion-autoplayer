@@ -4,25 +4,30 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from datetime import datetime, timezone, tzinfo
+from decimal import Decimal
 import json
 import math
 import threading
 import time
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from spaceinvasion.core.redaction import redact_sensitive
+from spaceinvasion.core.catalog.json_sanitize import safe_key
+from spaceinvasion.core.redaction import redact_sensitive, redact_text
 from spaceinvasion.db.store import DatabaseStore
 
 
 def _safe_float(raw: object, default: float = 0.0) -> float:
-    if isinstance(raw, (int, float)) and not isinstance(raw, bool):
-        val = float(raw)
+    if isinstance(raw, (int, float, Decimal)) and not isinstance(raw, bool):
+        try:
+            val = float(raw)
+        except OverflowError:
+            return default
         return val if math.isfinite(val) else default
     if isinstance(raw, str):
         try:
             val = float(raw.strip())
             return val if math.isfinite(val) else default
-        except ValueError:
+        except (ValueError, OverflowError):
             return default
     return default
 
@@ -32,12 +37,17 @@ def _safe_int(raw: object, default: int = 0) -> int:
         return default
     if isinstance(raw, int):
         return raw
-    if isinstance(raw, float) and math.isfinite(raw):
-        return int(raw)
+    if isinstance(raw, (float, Decimal)):
+        try:
+            fval = float(raw)
+            return int(fval) if math.isfinite(fval) else default
+        except OverflowError:
+            return default
     if isinstance(raw, str):
         try:
-            return int(float(raw.strip()))
-        except ValueError:
+            fval = float(raw.strip())
+            return int(fval) if math.isfinite(fval) else default
+        except (ValueError, OverflowError):
             return default
     return default
 
@@ -45,7 +55,13 @@ def _safe_int(raw: object, default: int = 0) -> int:
 def _clean_str(raw: object, max_len: int | None = None) -> str:
     if raw is None:
         return ""
-    out = str(redact_sensitive(str(raw)))
+    if isinstance(raw, str):
+        out = redact_text(raw)
+    elif isinstance(raw, (bytes, bytearray)):
+        out = redact_text(bytes(raw).decode("utf-8", errors="replace"))
+    else:
+        red = redact_sensitive(raw)
+        out = red if isinstance(red, str) else redact_text(safe_key(red))
     return out[:max_len] if (max_len is not None and len(out) > max_len) else out
 
 
@@ -59,6 +75,16 @@ def _loads_dict(raw: str) -> dict[str, object]:
     if not isinstance(parsed, dict):
         return {}
     return {str(k): v for k, v in parsed.items()}
+
+
+def _loads_list(raw: str) -> list[object]:
+    if not raw or not raw.strip():
+        return []
+    try:
+        parsed: object = json.loads(raw)
+    except ValueError:
+        return []
+    return list(parsed) if isinstance(parsed, list) else []
 
 
 def server_day_key(ts: float | None = None) -> str:
@@ -120,6 +146,7 @@ __all__ = [
     "_GatewayCore",
     "_clean_str",
     "_loads_dict",
+    "_loads_list",
     "_safe_float",
     "_safe_int",
     "server_day_key",

@@ -25,11 +25,14 @@ from spaceinvasion.db.models import (
 )
 from spaceinvasion.db.repos._helpers import (
     clamp_int64,
+    clamp_limit,
     dumps_json,
     normalize_coords,
     parse_coords_gsp,
     round_ts,
     sanitize_text,
+    to_float,
+    to_int,
 )
 from spaceinvasion.db.repos._snapshot_inputs import (
     PlanetSnapshotInput,
@@ -66,8 +69,10 @@ class SnapshotsRepository:
                 .order_by(StateSnapshot.id.desc())
                 .limit(1)
             ).first()
-            if last is not None and abs(now_ts - float(last[1])) < float(min_interval_seconds):
-                return int(last[0])
+            if last is not None:
+                last_ts = to_float(last[1], -1.0)
+                if last_ts >= 0.0 and abs(now_ts - last_ts) < to_float(min_interval_seconds, 0.0):
+                    return to_int(last[0], 0)
 
         state_json_str = dumps_json(snapshot.state_payload)
         plan_json_str = dumps_json(list(snapshot.plan_payload))
@@ -150,22 +155,26 @@ class SnapshotsRepository:
             .limit(1)
         ).first()
         if last is not None:
-            elapsed = abs(now_ts - float(last[0]))
+            last_ts = to_float(last[0], -1.0)
+            last_est = to_float(last[3], float("-inf"))
+            min_iv = to_float(min_interval_seconds, 300.0)
+            elapsed = abs(now_ts - last_ts) if last_ts >= 0.0 else min_iv
             changed_server = (sp_opt is not None and sp_opt != last[1]) or (sr_opt is not None and sr_opt != last[2])
-            changed_est = int(round(float(sample.estimated_points))) != int(round(float(last[3])))
-            if not (changed_server or changed_est or elapsed >= float(min_interval_seconds)):
+            cur_est = to_float(sample.estimated_points, 0.0)
+            changed_est = last_ts < 0.0 or last_est == float("-inf") or int(round(cur_est)) != int(round(last_est))
+            if not (changed_server or changed_est or elapsed >= min_iv):
                 return None
 
         row = RankSnapshot(
             ts=now_ts,
-            universe_id=clamp_int64(int(sample.universe_id)),
+            universe_id=clamp_int64(to_int(sample.universe_id, 0)),
             nickname=sanitize_text(sample.nickname),
             server_points=sp_opt,
             server_rank=sr_opt,
-            estimated_points=float(sample.estimated_points),
-            pts_per_hr=float(sample.pts_per_hr),
-            spice_value=float(sample.spice_value),
-            planets=max(0, clamp_int64(int(sample.planets))),
+            estimated_points=to_float(sample.estimated_points, 0.0),
+            pts_per_hr=to_float(sample.pts_per_hr, 0.0),
+            spice_value=to_float(sample.spice_value, 0.0),
+            planets=max(0, clamp_int64(to_int(sample.planets, 0))),
         )
         self._session.add(row)
         self._session.flush()
@@ -201,13 +210,14 @@ class SnapshotsRepository:
                 PlanetSnapshot.economy_rates_json,
             ).where(PlanetSnapshot.id.in_(latest_ids))
         ).all()
-        prev_by_pid = {int(r[0]): (float(r[1]), str(r[2]), str(r[3]), str(r[4])) for r in prev_rows}
+        prev_by_pid = {to_int(r[0], 0): (to_float(r[1], -1.0), str(r[2]), str(r[3]), str(r[4])) for r in prev_rows}
 
         rate_payload: dict[int, dict[str, object]] = {}
         snap_payload: list[dict[str, object]] = []
-        uid_sql = clamp_int64(int(universe_id))
+        uid_sql = clamp_int64(to_int(universe_id, 0))
+        min_iv_p = to_float(planet_min_interval_seconds, 120.0)
         for p in planets:
-            pid = clamp_int64(int(p.planet_id))
+            pid = clamp_int64(to_int(p.planet_id, 0))
             bld_j, shp_j, def_j, rates_j = (
                 dumps_json(p.buildings),
                 dumps_json(p.ships),
@@ -220,7 +230,8 @@ class SnapshotsRepository:
             prev = prev_by_pid.get(pid)
             if (
                 prev is None
-                or abs(now_ts - prev[0]) >= float(planet_min_interval_seconds)
+                or prev[0] < 0.0
+                or abs(now_ts - prev[0]) >= min_iv_p
                 or prev[1] != bld_j
                 or prev[2] != shp_j
                 or prev[3] != rates_j
@@ -344,7 +355,7 @@ class SnapshotsRepository:
         """List recent `state_snapshots` newest first."""
         rows = (
             self._session.execute(
-                select(StateSnapshot).order_by(StateSnapshot.id.desc()).limit(max(1, min(200, int(limit))))
+                select(StateSnapshot).order_by(StateSnapshot.id.desc()).limit(clamp_limit(limit, 20, max_limit=200))
             )
             .scalars()
             .all()
@@ -364,9 +375,9 @@ class SnapshotsRepository:
         rows = (
             self._session.execute(
                 select(PlanetSnapshot)
-                .where(PlanetSnapshot.planet_id == clamp_int64(int(planet_id)))
+                .where(PlanetSnapshot.planet_id == clamp_int64(to_int(planet_id, 0)))
                 .order_by(PlanetSnapshot.id.desc())
-                .limit(max(1, int(limit)))
+                .limit(clamp_limit(limit, 50))
             )
             .scalars()
             .all()
@@ -375,7 +386,7 @@ class SnapshotsRepository:
 
     def list_rank_history(self, *, limit: int = 240) -> tuple[RankSnapshotRecord, ...]:
         """Return the latest `limit` rank samples ordered chronologically in 1 SQL statement."""
-        sub = select(RankSnapshot).order_by(RankSnapshot.id.desc()).limit(max(1, int(limit))).subquery()
+        sub = select(RankSnapshot).order_by(RankSnapshot.id.desc()).limit(clamp_limit(limit, 240)).subquery()
         rows = (
             self._session.execute(
                 select(RankSnapshot).join(sub, RankSnapshot.id == sub.c.id).order_by(RankSnapshot.id.asc())

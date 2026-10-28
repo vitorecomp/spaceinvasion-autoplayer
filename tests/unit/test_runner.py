@@ -89,7 +89,7 @@ class TestRunnerDebugPortLifecycle(unittest.TestCase):
         import tempfile
         import game_api
         import run_stack
-        from spaceinvasion.runtime.api_server import GameApiBridge
+        from spaceinvasion.runtime.bridge import GameApiBridge
 
         before_sig = signal.getsignal(signal.SIGTERM)
         with patch("sys.stdout", new_callable=io.StringIO):
@@ -163,8 +163,8 @@ class TestRunnerDebugPortLifecycle(unittest.TestCase):
 
             real_create_api_server = game_api.create_api_server
 
-            def _interrupt_after_bind(bridge_obj, *, host: str, port: int):
-                srv = real_create_api_server(bridge_obj, host=host, port=port)
+            def _interrupt_after_bind(bridge_obj, *, host: str, port: int, ui_dir=None):
+                srv = real_create_api_server(bridge_obj, host=host, port=port, ui_dir=ui_dir)
                 srv.serve_forever = MagicMock(side_effect=KeyboardInterrupt)  # type: ignore[method-assign]
                 return srv
 
@@ -180,8 +180,7 @@ class TestRunnerDebugPortLifecycle(unittest.TestCase):
             self.assertEqual(rc_srv, 0)
             self.assertEqual(len(created_bridges), 1)
             assert created_bridges[0]._db is not None
-            with self.assertRaises(Exception):
-                created_bridges[0]._db._conn.execute("SELECT 1")
+            self.assertTrue(created_bridges[0].ctx.db_closed)
             self.assertEqual(signal.getsignal(signal.SIGTERM), before_sig)
 
     def test_r7_run_stack_and_logging_redaction_and_bounds(self) -> None:

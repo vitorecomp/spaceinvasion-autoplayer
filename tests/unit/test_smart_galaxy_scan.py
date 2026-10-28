@@ -32,7 +32,7 @@ from spaceinvasion.core.model import (
     PlanetState,
     Resources,
 )
-from spaceinvasion.db.storage import GameDatabase
+from tests.pg_harness import open_test_db as GameDatabase
 
 
 class TestSmartGalaxyScanConfig(unittest.TestCase):

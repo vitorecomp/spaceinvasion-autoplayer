@@ -169,7 +169,11 @@ def build_universe_research_max(
 
 def merge_economy_rates_for_ctx(ctx: BridgeContext, state: GameState) -> GameState:
     """Merge cached and executor-observed economy rates and raid targets onto `state`."""
-    for pid, rates in ctx.live_executor.last_economy_rates.items():
+    try:
+        exec_rates = ctx.live_executor.last_economy_rates
+    except AttributeError:
+        exec_rates = {}
+    for pid, rates in exec_rates.items():
         if rates:
             ctx.economy_rates[int(pid)] = dict(rates)
     changed = False

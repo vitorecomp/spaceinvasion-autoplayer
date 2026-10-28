@@ -8,6 +8,8 @@ from pathlib import Path
 import secrets
 import time
 
+from selenium.common.exceptions import WebDriverException
+
 from spaceinvasion.core import catalog as game_data
 from spaceinvasion.core.catalog.json_sanitize import sanitize_json_tree
 from spaceinvasion.core.redaction import format_clean_error, redact_text
@@ -24,7 +26,10 @@ from spaceinvasion.session.browser import (
 )
 from spaceinvasion.session.client import GameBrowserClient, RateLimitError
 
+format_api_exception = format_clean_error
+
 BRIDGE_RUNTIME_ERRORS: tuple[type[Exception], ...] = (
+    WebDriverException,
     OSError,
     RuntimeError,
     ValueError,

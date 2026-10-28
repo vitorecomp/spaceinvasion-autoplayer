@@ -26,7 +26,7 @@ maybe_reexec_venv(_REPO_ROOT, skip=os.environ.get("SPACEINVASION_NO_REEXEC") == 
 from spaceinvasion.core.redaction import redact_sensitive  # noqa: E402
 from spaceinvasion.runtime.api.http_server import create_api_server  # noqa: E402
 from spaceinvasion.runtime.bridge import GameApiBridge, ensure_debug_browser_ready  # noqa: E402
-from spaceinvasion.runtime.postgres_ctl import is_container_runtime  # noqa: E402
+from spaceinvasion.runtime.postgres_ctl import get_process_env, is_container_runtime  # noqa: E402
 from spaceinvasion.runtime.reloader import (  # noqa: E402
     current_python_cmd,
     discover_watch_paths,
@@ -101,7 +101,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--ui-dir",
         type=Path,
-        default=Path(os.environ["SPACEINVASION_UI_DIR"]) if os.environ.get("SPACEINVASION_UI_DIR") else None,
+        default=Path(ui_dir_env) if (ui_dir_env := get_process_env().get("SPACEINVASION_UI_DIR")) else None,
         help="Optional directory serving the compiled Web Operator Console bundle (defaults to SPACEINVASION_UI_DIR or spaceinvasion/ui).",
     )
     parser.add_argument(

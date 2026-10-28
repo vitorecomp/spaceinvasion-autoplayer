@@ -21,7 +21,7 @@ from spaceinvasion.core.model import (
     TutorialStatus,
     TutorialTask,
 )
-from spaceinvasion.db.storage import GameDatabase
+from tests.pg_harness import open_test_db as GameDatabase, run_pg_exec, run_pg_query
 from spaceinvasion.core.model import PlannedAction
 
 
@@ -418,7 +418,7 @@ class TestGameDatabase(unittest.TestCase):
                 for mem_uri in (":memory:", "file::memory:?cache=shared"):
                     db = GameDatabase(mem_uri)
                     try:
-                        self.assertTrue(db._is_postgres)
+                        self.assertEqual(db.backend_name, "postgres")
                         db.record_raid(
                             "2:380:4",
                             attacked_ts=float("inf"),
@@ -444,25 +444,28 @@ class TestGameDatabase(unittest.TestCase):
             # Corrupt cells & null JSON values in tables degrade safely
             db_c = GameDatabase(tmp_root / "corrupt.db")
             try:
-                db_c._conn.execute(
-                    "INSERT INTO economy_rates_cache(planet_id, coords, rates_json, updated_ts) VALUES(1, '01:001:01', 'null', 10.0)"
+                run_pg_exec(
+                    db_c,
+                    "INSERT INTO economy_rates_cache(planet_id, coords, rates_json, updated_ts) VALUES(1, '01:001:01', 'null', 10.0)",
                 )
-                db_c._conn.execute(
-                    "INSERT INTO spy_targets(coords, owner, fleet_json, defense_json, last_scanned_ts) VALUES('01:001:02', 'X', '{bad', 'null', 10.0)"
+                run_pg_exec(
+                    db_c,
+                    "INSERT INTO spy_targets(coords, owner, fleet_json, defense_json, last_scanned_ts) VALUES('01:001:02', 'X', '{bad', 'null', 10.0)",
                 )
-                db_c._conn.execute(
+                run_pg_exec(
+                    db_c,
                     "INSERT INTO planet_snapshots(ts, universe_id, planet_id, coords, name, planet_type, "
                     "temperature, fields_used, fields_max, pig_iron, metal, kryptonite, spice, "
                     "energy_produced, energy_used, buildings_json, ships_json, defense_json, "
                     "economy_rates_json, researches_json) "
                     "VALUES(10.0, 31, 1, '01:001:01', 'P', 'normal', 20, 10, 200, 0, 0, 0, 0, 0, 0, "
-                    "'[]', '{bad', 'null', 'null', '{bad')"
+                    "'[]', '{bad', 'null', 'null', '{bad')",
                 )
-                db_c._conn.execute(
+                run_pg_exec(
+                    db_c,
                     "INSERT INTO tutorial_progress(step, total_steps, tasks_json, reward_text, can_complete, first_seen_ts, last_seen_ts) "
-                    "VALUES(1, 5, '{bad', 'Reward', 0, 10.0, 10.0)"
+                    "VALUES(1, 5, '{bad', 'Reward', 0, 10.0, 10.0)",
                 )
-                db_c._conn.commit()
                 self.assertEqual(db_c.get_all_economy_rates(), {})
                 self.assertEqual(len(db_c.get_spy_targets()), 1)
                 self.assertEqual(len(db_c.get_tutorial_history()), 1)
@@ -470,52 +473,51 @@ class TestGameDatabase(unittest.TestCase):
             finally:
                 db_c.close()
 
-            # DDL error after connect closes PG pool backend without leaking connections
-            from spaceinvasion.db.postgres import PostgresPoolBackend
+            # Migration error after connect disposes SQLAlchemy engine cleanly without leaking connections
+            from spaceinvasion.db.store import DatabaseStore
+            from tests.pg_harness import get_shared_pg_harness
 
-            closed_flags: list[bool] = []
-            orig_close = PostgresPoolBackend.close
-
-            def _tracked_close(self_pg: PostgresPoolBackend) -> None:
-                closed_flags.append(True)
-                orig_close(self_pg)
-
-            with patch.object(PostgresPoolBackend, "close", _tracked_close):
+            err_dsn = get_shared_pg_harness().create_database(prefix="broken_ddl", from_template=False)
+            with DatabaseStore.from_dsn(err_dsn, pool_size=1, max_overflow=0) as err_store:
                 with patch(
-                    "spaceinvasion.db.storage.DEFAULT_GAME_MIGRATION_RUNNER.migrate",
-                    side_effect=_SqliteOperationalError("boom"),
+                    "spaceinvasion.db.store.upgrade_database",
+                    side_effect=RuntimeError("boom"),
                 ):
-                    with self.assertRaises(_SqliteOperationalError):
-                        GameDatabase(tmp_root / "broken_ddl.db")
-            self.assertEqual(closed_flags, [True])
+                    with self.assertRaises(RuntimeError):
+                        err_store.ensure_ready(backup_fn=None)
 
     def test_corrupt_numeric_cells_in_readers_and_spy_report_coord_normalization(self) -> None:
         with tempfile.TemporaryDirectory(prefix="si_stor_adv_") as tmp:
             db = GameDatabase(Path(tmp) / "adv.db")
             try:
                 # 1. Corrupt non-finite / out-of-range numeric cells in rank_snapshots, galaxy_scans, action_history, planet_snapshots
-                db._conn.execute(
+                run_pg_exec(
+                    db,
                     "INSERT INTO rank_snapshots(ts, universe_id, nickname, server_points, server_rank, "
                     "estimated_points, pts_per_hr, spice_value, planets) "
                     "VALUES(?, 31, 'u', NULL, NULL, ?, ?, ?, -1)",
                     (float("nan"), float("nan"), float("inf"), float("-inf")),
                 )
-                db._conn.execute("INSERT INTO galaxy_scans(galaxy, system, last_scanned_ts) VALUES(0, 10, 100.0)")
-                db._conn.execute(
+                run_pg_exec(db, "INSERT INTO galaxy_scans(galaxy, system, last_scanned_ts) VALUES(0, 10, 100.0)")
+                run_pg_exec(
+                    db,
                     "INSERT INTO galaxy_scans(galaxy, system, last_scanned_ts) VALUES(2, 380, ?)",
                     (float("nan"),),
                 )
-                db._conn.execute(
+                run_pg_exec(
+                    db,
                     "INSERT INTO action_history(ts, source, command, kind, planet_id, target_id, executed, dry_run) "
                     "VALUES(?, 'api', 'throttle', 'THROTTLE_BUILDING', 0, 2, 1, 0)",
                     (float("nan"),),
                 )
-                db._conn.execute(
+                run_pg_exec(
+                    db,
                     "INSERT INTO action_history(ts, source, command, kind, planet_id, target_id, executed, dry_run) "
                     "VALUES(?, 'api', 'throttle', 'THROTTLE_BUILDING', 101, 2, 1, 0)",
                     (float("nan"),),
                 )
-                db._conn.execute(
+                run_pg_exec(
+                    db,
                     "INSERT INTO planet_snapshots(ts, universe_id, planet_id, coords, name, planet_type, "
                     "temperature, fields_used, fields_max, pig_iron, metal, kryptonite, spice, "
                     "energy_produced, energy_used, buildings_json, ships_json, defense_json, "
@@ -524,7 +526,6 @@ class TestGameDatabase(unittest.TestCase):
                     "'{}', '{}', '{}', '{}', '{}')",
                     (float("nan"),),
                 )
-                db._conn.commit()
 
                 rk = db.get_rank_samples()
                 self.assertEqual(len(rk), 1)
@@ -544,11 +545,11 @@ class TestGameDatabase(unittest.TestCase):
                 self.assertEqual(full_sum["planet_snapshots"]["latest_ts"], 0.0)
 
                 # 2. record_spy_report normalizes coords and merges legacy unnormalized row
-                db._conn.execute(
+                run_pg_exec(
+                    db,
                     "INSERT INTO spy_targets(coords, owner, status_color, is_inactive, last_scanned_ts) "
-                    "VALUES('2:380:4', 'LegacyYellow', 'yellow', 1, 500.0)"
+                    "VALUES('2:380:4', 'LegacyYellow', 'yellow', 1, 500.0)",
                 )
-                db._conn.commit()
                 db.record_spy_report(
                     SpyReport(
                         target_coords="2:380:4",
@@ -562,8 +563,8 @@ class TestGameDatabase(unittest.TestCase):
                 self.assertEqual(len(matching), 1)
                 self.assertEqual(matching[0]["owner"], "LegacyYellow")
                 self.assertEqual(matching[0]["resources"]["pig_iron"], 12000)
-                raw_rows = db._conn.execute("SELECT coords FROM spy_targets").fetchall()
-                self.assertEqual([r[0] for r in raw_rows], ["02:380:04"])
+                raw_rows = run_pg_query(db, "SELECT coords FROM spy_targets")
+                self.assertEqual([r["coords"] for r in raw_rows], ["02:380:04"])
             finally:
                 db.close()
 
@@ -572,12 +573,12 @@ class TestGameDatabase(unittest.TestCase):
             db = GameDatabase(Path(tmp) / "gap01_04.db")
             try:
                 # Pre-existing legacy unnormalized row with detailed spy intel
-                db._conn.execute(
+                run_pg_exec(
+                    db,
                     "INSERT INTO spy_targets("
                     "coords, owner, status_color, is_inactive, pig_iron, metal, kryptonite, spice, last_spied_ts, last_scanned_ts"
-                    ") VALUES('2:380:4', 'LegacyOwner', 'white', 0, 9999, 111, 0, 0, 800.0, 500.0)"
+                    ") VALUES('2:380:4', 'LegacyOwner', 'white', 0, 9999, 111, 0, 0, 800.0, 500.0)",
                 )
-                db._conn.commit()
 
                 direct_unnorm = db.get_spy_target_by_coords("2:380:4")
                 self.assertIsNotNone(direct_unnorm)
@@ -590,8 +591,8 @@ class TestGameDatabase(unittest.TestCase):
                     [GalaxySlot("02:380:04", 4, "IdlePlanet", "NewOwner", "yellow")],
                     ts=1000.0,
                 )
-                raw_rows = db._conn.execute("SELECT coords FROM spy_targets").fetchall()
-                self.assertEqual([r[0] for r in raw_rows], ["02:380:04"])
+                raw_rows = run_pg_query(db, "SELECT coords FROM spy_targets")
+                self.assertEqual([r["coords"] for r in raw_rows], ["02:380:04"])
                 merged = db.get_spy_target_by_coords("2:380:4")
                 self.assertIsNotNone(merged)
                 self.assertEqual(merged["status_color"], "yellow")
@@ -601,12 +602,14 @@ class TestGameDatabase(unittest.TestCase):
                 self.assertEqual(merged["last_spied_ts"], 800.0)
 
                 # Caveat: pre-existing non-finite snapshot timestamps/points do not crash record_state_snapshot
-                db._conn.execute(
+                run_pg_exec(
+                    db,
                     "INSERT INTO rank_snapshots(ts, universe_id, estimated_points, pts_per_hr, spice_value, planets) "
                     "VALUES(?, 31, ?, 0.0, 0.0, 1)",
                     (float("nan"), float("nan")),
                 )
-                db._conn.execute(
+                run_pg_exec(
+                    db,
                     "INSERT INTO planet_snapshots(ts, universe_id, planet_id, coords, name, planet_type, "
                     "temperature, fields_used, fields_max, pig_iron, metal, kryptonite, spice, "
                     "energy_produced, energy_used, buildings_json, ships_json, defense_json, "
@@ -615,7 +618,6 @@ class TestGameDatabase(unittest.TestCase):
                     "'{}', '{}', '{}', '{}', '{}')",
                     (float("nan"),),
                 )
-                db._conn.commit()
                 db.record_state_snapshot(_sample_db_state(ts=2000.0))
             finally:
                 db.close()
@@ -688,7 +690,7 @@ class TestGameDatabase(unittest.TestCase):
                 db.close()
 
     def test_r9_coord_candidates_arabic_indic_and_direct_summary_sid_redaction(self) -> None:
-        from spaceinvasion.db.storage import _coord_query_candidates
+        from spaceinvasion.core.coords import coord_query_variants as _coord_query_candidates
 
         ar = "\u0660\u0662:\u0663\u0668\u0660:\u0660\u0664"
         norm, cands, like_pat = _coord_query_candidates(ar)
@@ -700,21 +702,23 @@ class TestGameDatabase(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             db = GameDatabase(Path(tmp) / "r9_redact.db")
             try:
-                db._conn.execute(
+                run_pg_exec(
+                    db,
                     "INSERT INTO action_history(ts, source, command, priority, kind, planet_coords, target_name, executed, dry_run, message) "
                     "VALUES(1000.0, 'api', 'build', 'P2', 'BUILD', '01:001:01', ?, 1, 0, ?)",
                     (f"Mine ?sid={secret}", f"Done ?sid={secret}"),
                 )
-                db._conn.execute(
+                run_pg_exec(
+                    db,
                     "INSERT INTO spy_targets(coords, owner, planet_name, status_color, last_scanned_ts) VALUES('02:380:04', ?, ?, 'yellow', 1000.0)",
                     (f"Owner ?sid={secret}", f"Planet ?sid={secret}"),
                 )
-                db._conn.execute(
+                run_pg_exec(
+                    db,
                     "INSERT INTO tutorial_progress(step, total_steps, tasks_json, reward_text, can_complete, first_seen_ts, last_seen_ts) "
                     "VALUES(1, 5, ?, ?, 0, 1000.0, 1000.0)",
                     (json.dumps([{"description": f"Step ?sid={secret}"}], allow_nan=False), f"Reward ?sid={secret}"),
                 )
-                db._conn.commit()
 
                 recent = db.get_recent_actions()
                 self.assertEqual(len(recent), 1)
@@ -730,18 +734,21 @@ class TestGameDatabase(unittest.TestCase):
                 db.close()
 
     def test_r10_blob_sid_redaction_literal_sid_json_and_planet_history(self) -> None:
-        from spaceinvasion.db.storage import _sanitize_obj
+        from spaceinvasion.core.coercion import sanitize_json_tree
+        from spaceinvasion.core.redaction import redact_sensitive
 
         s1 = "BLOB_SECRET_11"
         s2 = "JSON_SID_22"
         pw = "PW_SECRET_33"
-        san_obj = _sanitize_obj(
-            {
-                (10**5000, "x"): frozenset({b"?sid=" + s1.encode("utf-8")}),
-                "sid": s2,
-                "password": b"PW_SECRET_33",
-                "path": Path(f"https://x/?sid={s1}"),
-            }
+        san_obj = sanitize_json_tree(
+            redact_sensitive(
+                {
+                    (10**5000, "x"): frozenset({b"?sid=" + s1.encode("utf-8")}),
+                    "sid": s2,
+                    "password": b"PW_SECRET_33",
+                    "path": Path(f"https://x/?sid={s1}"),
+                }
+            )
         )
         san_dumped = json.dumps(san_obj, allow_nan=False)
         for sec in (s1, s2, pw):
@@ -753,7 +760,8 @@ class TestGameDatabase(unittest.TestCase):
                 sid_url = f"https://x/?sid={s1}"
                 fleet_json = json.dumps({"sid": s2, "password": pw, "s4": 3}, allow_nan=False)
                 huge_num = 10**12
-                db._conn.execute(
+                run_pg_exec(
+                    db,
                     "INSERT INTO planet_snapshots(ts, universe_id, planet_id, coords, name, planet_type, temperature, fields_used, fields_max, pig_iron, metal, kryptonite, spice, energy_produced, energy_used, buildings_json, ships_json, defense_json, economy_rates_json, researches_json) "
                     "VALUES(?, 31, 42, ?, ?, 'normal', 20, 10, 200, ?, 1, 1, 1, 50, 10, ?, ?, '{}', ?, '{}')",
                     (
@@ -766,25 +774,28 @@ class TestGameDatabase(unittest.TestCase):
                         json.dumps({"sid": s2, "resource1": 100}, allow_nan=False),
                     ),
                 )
-                db._conn.execute(
+                run_pg_exec(
+                    db,
                     "INSERT INTO spy_targets(coords, owner, planet_name, status_color, points, pig_iron, fleet_json, defense_json, last_scanned_ts) "
                     "VALUES(?, ?, ?, 'yellow', ?, 0, ?, ?, 1000.0)",
                     ("02:380:04", sid_url, sid_url, huge_num, fleet_json, fleet_json),
                 )
-                db._conn.execute(
+                run_pg_exec(
+                    db,
                     "INSERT INTO rank_snapshots(ts, server_points, server_rank, estimated_points, pts_per_hr, spice_value, planets) "
                     "VALUES(1000.0, ?, 10, ?, 1.0, 2.0, ?)",
                     (huge_num, float("nan"), 12),
                 )
-                db._conn.execute(
+                run_pg_exec(
+                    db,
                     "INSERT INTO economy_rates_cache(planet_id, coords, rates_json, updated_ts) VALUES(?, '01:001:01', ?, 1000.0)",
                     (42, json.dumps({f"?sid={s1}": 80, "resource1": 90}, allow_nan=False)),
                 )
-                db._conn.execute(
+                run_pg_exec(
+                    db,
                     "INSERT INTO raid_history(target_coords, attacked_ts, is_exempt, outcome, loot_json) VALUES(?, 1000.0, 0, ?, ?)",
                     ("02:380:04", sid_url, fleet_json),
                 )
-                db._conn.commit()
 
                 rs = db.get_rank_samples()
                 er = db.get_all_economy_rates()
@@ -812,11 +823,9 @@ class TestGameDatabase(unittest.TestCase):
 
     def test_r11_normalized_planet_type_plannedaction_class_mapping_path_and_complex(self) -> None:
         from types import MappingProxyType
-        from spaceinvasion.db.storage import (
-            _is_win_outcome,
-            _json_dumps,
-            _sanitize_obj,
-        )
+        from spaceinvasion.db.repos._helpers import is_win_outcome as _is_win_outcome
+        from spaceinvasion.db.repos._helpers import json_dumps as _json_dumps
+        from spaceinvasion.db.repos._helpers import sanitize_obj as _sanitize_obj
 
         class _BytesPath:
             def __fspath__(self) -> bytes:
@@ -859,9 +868,10 @@ class TestGameDatabase(unittest.TestCase):
                     active_planet_id=77,
                 )
                 db.record_state_snapshot(st_ast)
-                row = db._conn.execute(
-                    "SELECT planet_type FROM planet_snapshots WHERE planet_id = 77 ORDER BY id DESC LIMIT 1"
-                ).fetchone()
+                row = run_pg_query(
+                    db,
+                    "SELECT planet_type FROM planet_snapshots WHERE planet_id = 77 ORDER BY id DESC LIMIT 1",
+                )[0]
                 self.assertEqual(row["planet_type"], "asteroid")
                 full_sum = db.get_raid_stats()["telemetry_summary"]
                 self.assertEqual(
@@ -905,7 +915,7 @@ class TestGameDatabase(unittest.TestCase):
 
     def test_r12_storage_redacts_authorization_json_pw_exceptions_and_broken_pathlike(self) -> None:
         from types import MappingProxyType
-        from spaceinvasion.db.storage import _json_dumps
+        from spaceinvasion.db.repos._helpers import json_dumps as _json_dumps
 
         class _RaiseFspath:
             def __fspath__(self) -> str:
@@ -971,11 +981,9 @@ class TestGameDatabase(unittest.TestCase):
                 db.close()
 
     def test_r13_storage_redacts_compound_secrets_unicode_fastpath_and_quoted_bearer(self) -> None:
-        from spaceinvasion.db.storage import (
-            _json_dumps,
-            _raw_text,
-            _sanitize_text,
-        )
+        from spaceinvasion.core.redaction import redact_sensitive as _raw_text
+        from spaceinvasion.db.repos._helpers import json_dumps as _json_dumps
+        from spaceinvasion.db.repos._helpers import sanitize_text as _sanitize_text
 
         cyc = RuntimeError("cyc")
         cyc.args = (10**5000, cyc)
@@ -1036,7 +1044,9 @@ class TestGameDatabase(unittest.TestCase):
 
     def test_r14_storage_sid_delim_url_json_cycle_and_dag20_safety(self) -> None:
         import time
-        from spaceinvasion.db import storage as st_mod
+        from spaceinvasion.core.catalog.json_sanitize import safe_key, sanitize_json_tree
+        from spaceinvasion.core.redaction import redact_sensitive
+        from spaceinvasion.db.repos._helpers import sanitize_text
 
         vectors = (
             "%22password%22%3A%22ST_UE_PW%22",
@@ -1050,7 +1060,7 @@ class TestGameDatabase(unittest.TestCase):
             "?s\u0130d=ST_TR_I1&?sid=ST_REG_SID",
         )
         for v in vectors:
-            red = st_mod._sanitize_text(v)
+            red = sanitize_text(v)
             for marker in (
                 "ST_UE_PW",
                 "ST_UE_BR",
@@ -1067,20 +1077,20 @@ class TestGameDatabase(unittest.TestCase):
 
         redos_s = "password=" + ("\\" * 5000) + '"'
         t0 = time.perf_counter()
-        _ = st_mod._sanitize_text(redos_s)
+        _ = sanitize_text(redos_s)
         self.assertLess((time.perf_counter() - t0) * 1000.0, 250.0)
 
         cyc: list[object] = []
         cyc.append(cyc)
-        self.assertEqual(st_mod._sanitize_obj(cyc), ["[Cycle]"])
-        self.assertIsInstance(st_mod._raw_text(cyc), str)
+        self.assertEqual(sanitize_json_tree(cyc), ["[Cycle]"])
+        self.assertIsInstance(sanitize_text(cyc), str)
 
         dag_exc: BaseException = RuntimeError("Bearer ST_DAG_SEC")
         for _ in range(20):
             dag_exc = RuntimeError(dag_exc, dag_exc, dag_exc, dag_exc)
         t1 = time.perf_counter()
-        s_dag = st_mod._sanitize_text(st_mod._raw_text(dag_exc))
-        _ = st_mod._stringify_keys({dag_exc: "ok"})
+        s_dag = sanitize_text(redact_sensitive(dag_exc))
+        _ = {safe_key(k): v for k, v in {dag_exc: "ok"}.items()}
         self.assertNotIn("ST_DAG_SEC", s_dag)
         self.assertLess((time.perf_counter() - t1) * 1000.0, 50.0)
 
@@ -1229,7 +1239,8 @@ class TestGameDatabase(unittest.TestCase):
                 self.assertFalse(t_clean["has_spy_intel"])
 
                 # 3. Simulate legacy poisoned DB state directly in SQLite (as occurred before the parser fix)
-                db._conn.execute(
+                run_pg_exec(
+                    db,
                     """
                     UPDATE spy_targets
                     SET owner = 'Spacia', planet_name = 'Colony', status_color = 'yellow',
@@ -1239,9 +1250,10 @@ class TestGameDatabase(unittest.TestCase):
                         blocked_until_ts = 9999.0,
                         block_reason = 'Target cannot be attacked on internalSendFleet (ATTACK mission unavailable)'
                     WHERE coords = '02:379:02'
-                    """
+                    """,
                 )
-                db._conn.execute(
+                run_pg_exec(
+                    db,
                     """
                     INSERT INTO spy_reports(
                         ts, target_coords, owner, planet_name, is_spacia,
@@ -1254,7 +1266,6 @@ class TestGameDatabase(unittest.TestCase):
                     """,
                     (poison_raw,),
                 )
-                db._conn.commit()
             finally:
                 db.close()
 
@@ -1576,8 +1587,8 @@ class TestGameDatabase(unittest.TestCase):
                 db.record_game_messages([station_legacy, genuine_rec], ts=1050.0)
                 rec_rows = db.get_recycle_reports(limit=20)
                 self.assertEqual([r["msg_uid"] for r in rec_rows], ["id:real_rec_1"])
-                # Append-only guarantee: raw row remains in SQLite table untouched
-                raw_cnt = db._conn.execute("SELECT COUNT(*) FROM recycle_reports").fetchone()[0]
+                # Append-only guarantee: raw row remains in PostgreSQL table untouched
+                raw_cnt = int(run_pg_query(db, "SELECT COUNT(*) AS cnt FROM recycle_reports")[0]["cnt"])
                 self.assertEqual(raw_cnt, 2)
             finally:
                 db.close()
@@ -1594,14 +1605,16 @@ class TestGameDatabase(unittest.TestCase):
             db = GameDatabase(Path(tmp) / "store_v14.db")
             try:
                 # 1. Custom planet names: sanitization, 48-char cap, sid redaction, clear & batch
+                from spaceinvasion.runtime.bridge._db_gateway import RuntimeDatabaseGateway
+
                 self.assertEqual(
-                    GameDatabase.sanitize_custom_planet_name("  Capital\x07  Prime  "),
+                    RuntimeDatabaseGateway.sanitize_custom_planet_name("  Capital\x07  Prime  "),
                     "Capital Prime",
                 )
-                self.assertEqual(len(GameDatabase.sanitize_custom_planet_name("A" * 80)), 48)
+                self.assertEqual(len(RuntimeDatabaseGateway.sanitize_custom_planet_name("A" * 80)), 48)
                 self.assertNotIn(
                     "supersecret",
-                    GameDatabase.sanitize_custom_planet_name("Home sid=supersecret123"),
+                    RuntimeDatabaseGateway.sanitize_custom_planet_name("Home sid=supersecret123"),
                 )
 
                 names1 = db.set_custom_planet_name(101, "Forge World")
@@ -1883,13 +1896,11 @@ class TestGameDatabase(unittest.TestCase):
                 is_bash=True,
                 ts=now - 1.5,
             )
-            with patch("spaceinvasion.db.storage.time.time", return_value=now):
-                rs_before = db.get_raid_stats(include_telemetry_summary=False)
-                self.assertIn("02:380:10", rs_before["blocked_targets"])
-            with patch("spaceinvasion.db.storage.time.time", return_value=now + 10.0):
-                rs_after = db.get_raid_stats(include_telemetry_summary=False)
-                self.assertNotIn("02:380:10", rs_after["blocked_targets"])
-                self.assertIn("02:380:09", rs_after["blocked_targets"])
+            rs_before = db.get_raid_stats(now=now, include_telemetry_summary=False)
+            self.assertIn("02:380:10", rs_before["blocked_targets"])
+            rs_after = db.get_raid_stats(now=now + 10.0, include_telemetry_summary=False)
+            self.assertNotIn("02:380:10", rs_after["blocked_targets"])
+            self.assertIn("02:380:09", rs_after["blocked_targets"])
         finally:
             db.close()
 

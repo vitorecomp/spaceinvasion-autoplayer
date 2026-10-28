@@ -297,7 +297,7 @@ class TestFleetSlotAndGalaxyDiag(unittest.TestCase):
         # Even if `recycle` command is called directly, `_execute_and_summarize` aborts BEFORE `open_galaxy`!
         fake_client = MagicMock()
         fake_client.open_galaxy = MagicMock(side_effect=AssertionError("open_galaxy should not be called!"))
-        res = bridge.execution.execute_and_summarize(fake_client, state, "recycle", rec_act, dry_run=False)
+        res = bridge.execution.execute_and_summarize("recycle", fake_client, state, rec_act, dry_run=False)
         self.assertFalse(res["executed"])
         self.assertIn("5/5", res["message"])
         fake_client.open_galaxy.assert_not_called()

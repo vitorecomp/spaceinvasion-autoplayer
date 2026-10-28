@@ -103,7 +103,7 @@ def save_strategy_config(
         return save_strategy_config_to_postgres(cfg, path)
     if not isinstance(path, Path):
         ok_fsp, fsp_val = _safe_fspath(path)
-        if not ok_fsp:
+        if not ok_fsp or not isinstance(fsp_val, (str, bytes)):
             raise TypeError("Expected Path, str, or os.PathLike for config path.")
         path = Path(os.fsdecode(fsp_val))
     return save_strategy_config_json(cfg, path)

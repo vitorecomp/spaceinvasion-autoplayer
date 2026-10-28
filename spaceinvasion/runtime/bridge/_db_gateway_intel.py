@@ -18,6 +18,7 @@ from spaceinvasion.db.queries import (
     query_galaxy_sector_intel_detailed,
     query_recycle_debris_candidates,
     query_spy_targets,
+    rebuild_hot_tables_sql,
 )
 from spaceinvasion.db.repos import GalaxySlotInput, SpyReportInput
 from spaceinvasion.parsing.inbox import is_non_recycle_fleet_notice_text
@@ -28,7 +29,7 @@ from spaceinvasion.runtime.bridge._db_gateway_common import _GatewayCore, _safe_
 
 def _parse_gsp(coords: str) -> tuple[int, int, int] | None:
     parts = normalize_coords(coords).split(":")
-    if len(parts) != 3 or not all(p.isascii() and p.isdigit() for p in parts):
+    if len(parts) != 3 or not all(p.isascii() and p.isdigit() and len(p) <= 9 for p in parts):
         return None
     return (int(parts[0]), int(parts[1]), int(parts[2]))
 
@@ -239,10 +240,15 @@ class _IntelGatewayMixin(_GatewayCore):
                 }
         return out
 
-    def get_galaxy_scans(self, *, max_age_seconds: float | None = None) -> dict[str, float]:
+    def get_galaxy_scans(
+        self,
+        *,
+        max_age_seconds: float | None = None,
+        now: float | None = None,
+    ) -> dict[str, float]:
         """Return `{sector_key: last_scanned_ts}` for scanned galaxy systems."""
         with self._store.repositories() as repos:
-            rows = repos.galaxy.list_galaxy_scans(max_age_seconds=max_age_seconds)
+            rows = repos.galaxy.list_galaxy_scans(max_age_seconds=max_age_seconds, now_ts=now)
         scans: dict[str, float] = {}
         for r in rows:
             if r.galaxy > 0 and r.system > 0:
@@ -304,6 +310,13 @@ class _IntelGatewayMixin(_GatewayCore):
             return query_galaxy_sector_intel_detailed(
                 session, galaxies=galaxies, now_ts=now_ts, max_galaxies=max_galaxies
             )
+
+    def rebuild_hot_tables(self, *, ts: float | None = None) -> dict[str, int]:
+        """Rebuild hot/projection tables from append-only history tables."""
+        with self._store.session() as session:
+            counts = rebuild_hot_tables_sql(session, ts=ts)
+        self._bump_change()
+        return counts
 
 
 __all__ = ["_IntelGatewayMixin"]

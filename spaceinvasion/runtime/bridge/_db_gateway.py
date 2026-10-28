@@ -20,6 +20,7 @@ from spaceinvasion.runtime.bridge._db_gateway_common import server_day_key
 from spaceinvasion.runtime.bridge._db_gateway_intel import _IntelGatewayMixin
 from spaceinvasion.runtime.bridge._db_gateway_meta import _MetaGatewayMixin, _sanitize_custom_planet_name
 from spaceinvasion.runtime.bridge._db_gateway_ops import _OpsGatewayMixin
+from spaceinvasion.runtime.bridge._db_gateway_startup import run_gateway_startup_maintenance
 from spaceinvasion.runtime.bridge._db_gateway_state import _StateGatewayMixin
 from spaceinvasion.runtime.bridge._db_gateway_telemetry import _normalize_cargo_dict, _TelemetryGatewayMixin
 
@@ -34,12 +35,20 @@ class RuntimeDatabaseGateway(
 ):
     """ORM-backed runtime gateway exposing the 92-method persistence surface over `DatabaseStore`."""
 
-    def __init__(self, store: DatabaseStore, *, postgres_url: str = "") -> None:
+    def __init__(
+        self,
+        store: DatabaseStore,
+        *,
+        postgres_url: str = "",
+        run_startup_maintenance: bool = True,
+    ) -> None:
         self._store = store
         self._postgres_url = postgres_url.strip() or store.postgres_url
         self._change_lock = threading.Lock()
         self._change_counter = 0
         self._last_slot_history_sig: tuple[float, tuple[str, ...]] | None = None
+        if run_startup_maintenance:
+            run_gateway_startup_maintenance(self._store)
 
     @classmethod
     def from_dsn(
@@ -52,6 +61,7 @@ class RuntimeDatabaseGateway(
         ensure_ready: bool = True,
         backup_fn: BackupOption = NO_BACKUP,
         allow_stamp_existing: bool = True,
+        run_startup_maintenance: bool = True,
     ) -> RuntimeDatabaseGateway:
         """Construct a `RuntimeDatabaseGateway` from a PostgreSQL DSN, optionally migrating/stamping."""
         store = DatabaseStore.from_dsn(
@@ -62,7 +72,7 @@ class RuntimeDatabaseGateway(
         )
         if ensure_ready:
             store.ensure_ready(backup_fn=backup_fn, allow_stamp_existing=allow_stamp_existing)
-        return cls(store, postgres_url=dsn)
+        return cls(store, postgres_url=dsn, run_startup_maintenance=run_startup_maintenance)
 
     @staticmethod
     def sanitize_custom_planet_name(raw: object, *, max_len: int = 48) -> str:
@@ -110,10 +120,10 @@ class RuntimeDatabaseGateway(
         return self
 
     def change_token(self) -> tuple[int, int, int]:
-        """Return a monotonic change token `(writes, writes, 0)` for dashboard cache invalidation."""
+        """Return a monotonic change token `(gw_id, local_writes, pg_xmax)` for cache invalidation."""
         with self._change_lock:
             n = self._change_counter
-        return (n, n, 0)
+        return (id(self), n, self._store.snapshot_xid())
 
     def close(self) -> None:
         """Dispose the underlying `DatabaseStore` connection pool."""

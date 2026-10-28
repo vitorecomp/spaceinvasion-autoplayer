@@ -899,7 +899,7 @@ class TestActionEtaEngine(unittest.TestCase):
 
     def test_huge_ints_unicode_digits_and_corrupt_safety_margin_and_snapshot(self) -> None:
         import json
-        from spaceinvasion.db.storage import GameDatabase
+        from tests.pg_harness import open_test_db as GameDatabase
 
         base_st = _sample_ranking_state()
         p0 = base_st.planets[0]

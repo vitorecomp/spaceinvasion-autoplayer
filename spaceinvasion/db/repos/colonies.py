@@ -14,6 +14,7 @@ from spaceinvasion.db.models import ColonyAttempt, ColonyCandidateHot, MetaEntry
 from spaceinvasion.db.repos._helpers import (
     affected_rows,
     clamp_int64,
+    clamp_limit,
     coord_query_variants,
     dumps_json,
     loads_json_dict,
@@ -21,6 +22,8 @@ from spaceinvasion.db.repos._helpers import (
     parse_coords_gsp,
     round_ts,
     sanitize_text,
+    to_float,
+    to_int,
 )
 
 _DISCARDED_META_KEY = "discarded_colony_coords"
@@ -47,18 +50,18 @@ class ColonyCandidateHotInput:
 def _attempt_to_dto(row: ColonyAttempt) -> ColonyAttemptRecord:
     return ColonyAttemptRecord(
         id=row.id,
-        ts=float(row.ts),
+        ts=to_float(row.ts, 0.0),
         event_type=row.event_type.strip().lower(),
         target_coords=normalize_coords(row.target_coords) if row.target_coords else "",
         origin_coords=normalize_coords(row.origin_coords) if row.origin_coords else "",
-        planet_id=int(row.planet_id) if row.planet_id is not None else None,
-        fields_rolled=int(row.fields_rolled) if row.fields_rolled is not None else None,
-        min_fields_target=max(1, int(row.min_fields_target)),
-        expected_min_fields=int(row.expected_min_fields) if row.expected_min_fields is not None else None,
-        expected_max_fields=int(row.expected_max_fields) if row.expected_max_fields is not None else None,
-        temperature=int(row.temperature) if row.temperature is not None else None,
+        planet_id=to_int(row.planet_id, 0) if row.planet_id is not None else None,
+        fields_rolled=to_int(row.fields_rolled, 0) if row.fields_rolled is not None else None,
+        min_fields_target=max(1, to_int(row.min_fields_target, 300)),
+        expected_min_fields=to_int(row.expected_min_fields, 0) if row.expected_min_fields is not None else None,
+        expected_max_fields=to_int(row.expected_max_fields, 0) if row.expected_max_fields is not None else None,
+        temperature=to_int(row.temperature, 0) if row.temperature is not None else None,
         grade=row.grade.strip(),
-        score=int(row.score) if row.score is not None else None,
+        score=to_int(row.score, 0) if row.score is not None else None,
         status_message=row.status_message,
         details_json=row.details_json,
     )
@@ -156,7 +159,7 @@ class ColoniesRepository:
         target_coords: str | None = None,
     ) -> tuple[ColonyAttemptRecord, ...]:
         """List colonization attempts ordered newest first (`ts DESC, id DESC`)."""
-        lim = max(1, min(2000, int(limit)))
+        lim = clamp_limit(limit, 100, max_limit=2000)
         stmt = select(ColonyAttempt)
         if target_coords is not None and target_coords.strip():
             variants = coord_query_variants(target_coords)

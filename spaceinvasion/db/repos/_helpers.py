@@ -2,13 +2,19 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
+from decimal import Decimal
 import json
 import math
+import os
 import re
 import time
 
 from sqlalchemy.engine import CursorResult
+
+from spaceinvasion.core.catalog.json_sanitize import safe_key, sanitize_json_tree
+from spaceinvasion.core.redaction import redact_sensitive
+from spaceinvasion.core.redaction import redact_text as _core_redact_text
 
 PROTECTED_META_KEYS: frozenset[str] = frozenset(
     {
@@ -19,27 +25,38 @@ PROTECTED_META_KEYS: frozenset[str] = frozenset(
 )
 
 _COORDS_RE = re.compile(r"^\s*(\d{1,3})\s*[:\-/]\s*(\d{1,4})\s*[:\-/]\s*(\d{1,3})\s*$", re.ASCII)
-_SID_RE = re.compile(r"(?i)\b(sid|session_id|phpsessid|token)\s*([=:])\s*([A-Za-z0-9._~+/=-]{4,})")
 _INT64_MIN = -(1 << 63)
 _INT64_MAX = (1 << 63) - 1
 
 
 def round_ts(ts: float | None = None) -> float:
     """Return a finite epoch timestamp rounded to milliseconds."""
-    val = float(ts) if (ts is not None and math.isfinite(float(ts))) else time.time()
-    return round(val, 3)
+    if ts is not None and isinstance(ts, (int, float)) and not isinstance(ts, bool):
+        val = float(ts)
+        if math.isfinite(val):
+            return round(val, 3)
+    return round(time.time(), 3)
 
 
 def redact_text(text: str) -> str:
-    """Redact session-id/token query fragments from persisted strings."""
-    return _SID_RE.sub(r"\1\2<redacted>", text)
+    """Redact session-id/token/credential fragments from persisted strings."""
+    return _core_redact_text(text) if text else text
 
 
 def sanitize_text(raw: object, max_len: int | None = None) -> str:
-    """Convert `raw` to clean redacted text and optionally truncate."""
+    """Convert `raw` to clean redacted text safely (resisting cycles, broken PathLike, huge ints)."""
     if raw is None:
         return ""
-    out = redact_text(str(raw))
+    if isinstance(raw, str):
+        out = _core_redact_text(raw)
+    elif isinstance(raw, (bytes, bytearray)):
+        out = _core_redact_text(bytes(raw).decode("utf-8", errors="replace"))
+    elif isinstance(raw, os.PathLike):
+        red = redact_sensitive(raw)
+        out = red if isinstance(red, str) else _core_redact_text(safe_key(red))
+    else:
+        red = redact_sensitive(raw)
+        out = red if isinstance(red, str) else _core_redact_text(safe_key(red))
     if max_len is not None and len(out) > max_len:
         return out[:max_len]
     return out
@@ -52,6 +69,16 @@ def clamp_int64(value: int) -> int:
     if value > _INT64_MAX:
         return _INT64_MAX
     return value
+
+
+def clamp_limit(limit: object, default: int = 200, *, max_limit: int = 100_000) -> int:
+    """Clamp a SQL `LIMIT` argument into `[1, max_limit]` safely (resisting >int64 ints/NaN)."""
+    val = to_int(limit, default)
+    if val < 1:
+        return 1
+    if val > max_limit:
+        return max_limit
+    return val
 
 
 def normalize_coords(raw: str) -> str:
@@ -114,23 +141,19 @@ def normalize_building_key(raw: str) -> str:
 
 
 def _sanitize_json_value(value: object) -> object:
-    if value is None or isinstance(value, (bool, int)):
-        return value
-    if isinstance(value, float):
-        return value if math.isfinite(value) else None
-    if isinstance(value, str):
-        return redact_text(value)
-    if isinstance(value, Mapping):
-        return {redact_text(str(k)): _sanitize_json_value(v) for k, v in value.items()}
-    if isinstance(value, Sequence) and not isinstance(value, (bytes, bytearray)):
-        return [_sanitize_json_value(item) for item in value]
-    return redact_text(str(value))
+    return redact_sensitive(sanitize_json_tree(redact_sensitive(value), nonfinite_float=None))
+
+
+sanitize_obj = _sanitize_json_value
 
 
 def dumps_json(payload: object) -> str:
     """Serialize `payload` to canonical compact redacted JSON matching `storage.py`."""
     clean = _sanitize_json_value(payload)
     return json.dumps(clean, sort_keys=True, separators=(",", ":"), allow_nan=False)
+
+
+json_dumps = dumps_json
 
 
 def loads_json_dict(raw: str) -> dict[str, object]:
@@ -165,29 +188,40 @@ def as_str_dict(raw: object) -> dict[str, object]:
 
 
 def to_float(raw: object, default: float = 0.0) -> float:
-    """Parse a float value safely with a fallback default."""
-    if isinstance(raw, (int, float)) and not isinstance(raw, bool):
-        return float(raw)
+    """Parse a finite float value safely with a fallback default."""
+    if isinstance(raw, (int, float, Decimal)) and not isinstance(raw, bool):
+        try:
+            val = float(raw)
+        except (ValueError, OverflowError):
+            return default
+        return val if math.isfinite(val) else default
     if isinstance(raw, str):
         try:
-            return float(raw.strip())
-        except ValueError:
+            val = float(raw.strip())
+            return val if math.isfinite(val) else default
+        except (ValueError, OverflowError):
             return default
     return default
 
 
 def to_int(raw: object, default: int = 0) -> int:
-    """Parse an integer value safely with a fallback default."""
+    """Parse an integer value safely with a fallback default (guarding NaN/Inf)."""
     if isinstance(raw, bool):
         return default
     if isinstance(raw, int):
         return raw
+    if isinstance(raw, Decimal):
+        return int(raw) if raw.is_finite() else default
     if isinstance(raw, float):
-        return int(raw)
+        return int(raw) if math.isfinite(raw) else default
     if isinstance(raw, str):
+        txt = raw.strip()
+        if not txt:
+            return default
         try:
-            return int(float(raw.strip()))
-        except ValueError:
+            fval = float(txt)
+            return int(fval) if math.isfinite(fval) else default
+        except (ValueError, OverflowError):
             return default
     return default
 
@@ -241,9 +275,9 @@ def normalize_loot_dict(raw: Mapping[str, object] | str | None) -> dict[str, int
     return {rk: clamp_int64(max(0, to_int(parsed.get(rk, 0), 0))) for rk in RESOURCE_KEYS}
 
 
-def is_win_outcome(outcome: str, loot_spice_eq: float) -> bool:
+def is_win_outcome(outcome: object, loot_spice_eq: float) -> bool:
     """Classify whether a raid outcome counts as a win matching `storage.py`."""
-    low = outcome.strip().lower()
+    low = sanitize_text(outcome).strip().lower()
     if low and any(tok in low for tok in _LOSS_TOKENS):
         return False
     if float(loot_spice_eq) > 0.0:
@@ -285,16 +319,65 @@ def to_opt_int(raw: object) -> int | None:
     return None
 
 
+_RECYCLE_EXPLICIT_TOKENS: tuple[str, ...] = (
+    "recycling report",
+    "trümmerfeldbericht",
+    "truemmerfeldbericht",
+    "space rubble",
+    "trümmerfeld abgebaut",
+    "couldn't find any more resources",
+    "could not find any more resources",
+    "pieces of rubble",
+)
+_NON_RECYCLE_NOTICE_TOKENS: tuple[str, ...] = (
+    "was re-stationed",
+    "re-stationed",
+    "restationed",
+    "has been stationed",
+    "wurde stationiert",
+    "umstationiert",
+    "stationiert",
+    "it delivers",
+    "has delivered",
+    "delivered resources",
+    "fleet return",
+    "flottenrückkehr",
+    "flottenrueckkehr",
+    "returning from duty",
+    "were unloaded",
+    "wurden ausgeladen",
+    "espionage report",
+    "spionagebericht",
+    "spy report",
+)
+_STATION_SUBJ_RE = re.compile(r"\]\s*station\b", re.IGNORECASE)
+_STATION_END_RE = re.compile(r"\bstation\s*$", re.IGNORECASE)
+
+
+def is_non_recycle_notice_text(text: str, subject: str = "") -> bool:
+    """Return True for stationing/transport/return/spy notices mistakenly tagged as recycle reports."""
+    combined = f"{(subject or '').strip().lower()} {(text or '').strip().lower()}".strip()
+    if not combined or any(tok in combined for tok in _RECYCLE_EXPLICIT_TOKENS):
+        return False
+    if any(tok in combined for tok in _NON_RECYCLE_NOTICE_TOKENS):
+        return True
+    subj_low = (subject or "").strip().lower()
+    return bool(_STATION_SUBJ_RE.search(combined) or _STATION_END_RE.search(subj_low))
+
+
 __all__ = [
     "PROTECTED_META_KEYS",
     "RESOURCE_KEYS",
     "affected_rows",
     "as_str_dict",
     "clamp_int64",
+    "clamp_limit",
     "coord_query_variants",
     "dumps_json",
     "dumps_json_unsorted",
+    "is_non_recycle_notice_text",
     "is_win_outcome",
+    "json_dumps",
     "loads_json_dict",
     "loads_json_list",
     "normalize_building_key",
@@ -303,6 +386,7 @@ __all__ = [
     "parse_coords_gsp",
     "redact_text",
     "round_ts",
+    "sanitize_obj",
     "sanitize_text",
     "spice_equivalent_from_counts",
     "to_float",

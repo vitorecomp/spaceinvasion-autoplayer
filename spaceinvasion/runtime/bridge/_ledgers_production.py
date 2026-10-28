@@ -293,9 +293,9 @@ def get_realized_loot_hourly(ctx: BridgeContext) -> dict[str, object] | None:
 def overlay_realized_loot(ctx: BridgeContext, atk_tel: Mapping[str, object] | None) -> dict[str, object]:
     """Overlay realized 24h loot onto an attack telemetry dict, preserving modelled hourly loot."""
     realized = get_realized_loot_hourly(ctx)
-    out: dict[str, object] = dict(atk_tel) if isinstance(atk_tel, Mapping) else {}
     if realized is None:
-        return out
+        return atk_tel if isinstance(atk_tel, dict) else (dict(atk_tel) if isinstance(atk_tel, Mapping) else {})
+    out: dict[str, object] = dict(atk_tel) if isinstance(atk_tel, Mapping) else {}
     raw_hl = out.get("hourly_loot")
     if str(out.get("income_basis") or "") != BridgeConstants.REALIZED_INCOME_BASIS and isinstance(raw_hl, Mapping):
         out["modelled_hourly_loot"] = dict(raw_hl)

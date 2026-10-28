@@ -34,6 +34,16 @@ from spaceinvasion.db.queries.gateway_reads import (
 )
 from spaceinvasion.db.queries.intel import query_active_debris_targets, query_spy_targets
 from spaceinvasion.db.queries.raids import query_bash_window, query_raid_stats
+from spaceinvasion.db.queries.startup_repair import (
+    GameMessageBackfillRow,
+    GameMessageBackfillUpdate,
+    SpyBackfillUpdate,
+    apply_game_message_backfill,
+    format_backfill_json,
+    load_game_messages_for_backfill,
+    rebuild_hot_tables_sql,
+    repair_spy_targets_sql,
+)
 from spaceinvasion.db.queries.telemetry_summary import (
     query_full_history_summary,
     query_raid_stats_detailed,
@@ -43,9 +53,15 @@ __all__ = [
     "ColonyAttemptCoordSummary",
     "ColonyAttemptsSummary",
     "GAME_REQUIRED_TABLES",
+    "GameMessageBackfillRow",
+    "GameMessageBackfillUpdate",
     "HISTORY_TABLES",
     "HOT_TABLES",
+    "SpyBackfillUpdate",
     "TABLE_TIER_BY_NAME",
+    "apply_game_message_backfill",
+    "format_backfill_json",
+    "load_game_messages_for_backfill",
     "query_active_blocked_targets",
     "query_active_debris_targets",
     "query_active_debris_targets_raw",
@@ -71,4 +87,6 @@ __all__ = [
     "query_recycle_debris_candidates",
     "query_spy_research_observations",
     "query_spy_targets",
+    "rebuild_hot_tables_sql",
+    "repair_spy_targets_sql",
 ]

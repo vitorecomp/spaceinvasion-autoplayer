@@ -149,6 +149,8 @@ def wait_for_api_reconnect(
             health_payload = api.health()
             if isinstance(health_payload, Mapping):
                 return True
+        except StopIteration:
+            return False
         except LOOP_BOUNDARY_ERRORS:
             health_payload = {}
         if monotonic_fn() >= deadline:

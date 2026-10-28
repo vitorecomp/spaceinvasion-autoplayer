@@ -15,14 +15,15 @@ from spaceinvasion.planner.heuristics import plan_actions, plan_fleet_and_attack
 from spaceinvasion.runtime.bridge._context import BridgeContext
 from spaceinvasion.runtime.bridge._helpers import sanitize_finite_json, sanitize_json_dict
 from spaceinvasion.runtime.bridge._helpers_sig import (
+    dashboard_state_sig,
     freeze_sig_tree,
     redact_action_graph_strings,
     safe_sig_eq,
     summary_without_elapsed,
     supports_kwarg,
 )
-from spaceinvasion.runtime.bridge._views_health import ViewHooks
-from spaceinvasion.runtime.bridge._views_telemetry import compute_current_hourly_production
+from spaceinvasion.runtime.bridge._views_health import ViewHooks, build_dashboard_embedded_health
+from spaceinvasion.runtime.bridge._views_telemetry import compute_current_hourly_production, count_active_builders
 from spaceinvasion.runtime.bridge.planet_names import PlanetNameService
 
 
@@ -114,7 +115,9 @@ def resolve_cached_plan_for_dashboard(
 
     if hooks.on_plan_with_summary is not None:
         fn = hooks.on_plan_with_summary
-        if supports_kwarg(fn, "_already_enriched"):
+        if supports_kwarg(fn, "already_enriched"):
+            actions, opt_summary = fn(plan_state_in, already_enriched=True)
+        elif supports_kwarg(fn, "_already_enriched"):
             actions, opt_summary = fn(plan_state_in, _already_enriched=True)
         else:
             actions, opt_summary = fn(plan_state_in)
@@ -277,3 +280,69 @@ def resolve_cached_action_graph_for_dashboard(
         ctx.dash_ag_cache_json = json.dumps(ag_clean, allow_nan=False)
     loaded = json.loads(ctx.dash_ag_cache_json)
     return dict(loaded) if isinstance(loaded, Mapping) else {}
+
+
+def build_fast_dashboard_cache_key(
+    ctx: BridgeContext,
+    names: PlanetNameService,
+    *,
+    port_open: bool,
+    in_game: bool,
+    rate_limited: bool,
+) -> tuple[object, ...]:
+    """Build a lightweight memoization key for repeated `dashboard(refresh=False)` reads."""
+    with ctx.planner_jobs_lock:
+        jobs_sig = (
+            ctx.ai_planner_job.get("status"),
+            ctx.ai_planner_job.get("run_id"),
+            ctx.config_opt_job.get("status"),
+            ctx.config_opt_job.get("run_id"),
+        )
+    now_mono = time.monotonic()
+    now_wall = time.time()
+    custom_names = names.get_custom_planet_names_locked()
+    return (
+        ctx.db_total_changes_token(),
+        dashboard_state_sig(ctx.last_state, ctx.last_state, ctx.rank_samples),
+        freeze_sig_tree(asdict(ctx.strategy_config)),
+        tuple(sorted(custom_names.items())),
+        freeze_sig_tree(dict(ctx.bot_control)),
+        bool(ctx.sweep_in_progress),
+        port_open,
+        in_game,
+        rate_limited,
+        ctx.last_url,
+        ctx.dash_cache_state_ref is not None,
+        int(now_wall // 3600),
+        jobs_sig,
+        len(ctx.scanned_systems),
+        sum(1 for ts in ctx.fleet_slot_cooldown_until.values() if ts > now_mono),
+        sum(1 for u, _ in ctx.target_blocks.values() if u > now_wall),
+        len(ctx.metal_overflow_paused_planets),
+    )
+
+
+def refresh_cached_dashboard_envelope(
+    ctx: BridgeContext,
+    cached_json: str,
+    *,
+    port_open: bool,
+    in_game: bool,
+) -> dict[str, object]:
+    """Return a fresh mutation-isolated copy of a memoized dashboard payload with live health/clock fields."""
+    loaded = json.loads(cached_json)
+    out: dict[str, object] = dict(loaded) if isinstance(loaded, Mapping) else {}
+    out["health"] = sanitize_json_dict(
+        build_dashboard_embedded_health(ctx, port_open=port_open, in_game=in_game, current_url=ctx.last_url)
+    )
+    out["bot_control"] = sanitize_finite_json(dict(ctx.bot_control))
+    raw_prod = out.get("current_hourly_production")
+    if isinstance(raw_prod, Mapping):
+        now_ts = time.time()
+        prod = dict(raw_prod)
+        prod["minute_bucket"] = int(now_ts // 60) * 60
+        prod["recorded_at"] = round(now_ts, 3)
+        prod["active_builders"] = count_active_builders(ctx.last_state, now_ts=now_ts)
+        out["current_hourly_production"] = prod
+    ctx.last_dashboard_payload = out
+    return out

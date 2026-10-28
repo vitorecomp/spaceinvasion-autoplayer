@@ -58,6 +58,9 @@ def is_real_client_method(client: GameBrowserClient | None, attr_name: str) -> b
     if "unittest.mock" in type(client).__module__:
         if attr_name in inst_dict:
             return callable(inst_dict[attr_name])
+        children = inst_dict.get("_mock_children")
+        if isinstance(children, Mapping) and attr_name in children:
+            return callable(children[attr_name])
         wraps = inst_dict.get("_mock_wraps")
         if wraps is not None:
             return _has_defined_callable(wraps, attr_name)

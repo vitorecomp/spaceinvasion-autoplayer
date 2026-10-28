@@ -20,37 +20,45 @@ from spaceinvasion.db.repos._galaxy_sync import (
     batch_upsert_slots_and_history,
     sync_slots_to_spy_targets_and_debris,
 )
-from spaceinvasion.db.repos._helpers import clamp_int64, normalize_coords, round_ts, sanitize_text
+from spaceinvasion.db.repos._helpers import (
+    clamp_int64,
+    clamp_limit,
+    normalize_coords,
+    round_ts,
+    sanitize_text,
+    to_float,
+    to_int,
+)
 from spaceinvasion.db.repos._hot_refresh import refresh_colony_candidates_hot, refresh_galaxy_sectors_hot
 
 
 def _slot_to_dto(row: GalaxySlot) -> GalaxySlotRecord:
     return GalaxySlotRecord(
         coords=normalize_coords(row.coords),
-        galaxy=int(row.galaxy),
-        system=int(row.system),
-        position=int(row.position),
+        galaxy=to_int(row.galaxy, 0),
+        system=to_int(row.system, 0),
+        position=to_int(row.position, 0),
         planet_name=row.planet_name,
         owner=row.owner,
         status_color=row.status_color,
         is_inactive=bool(row.is_inactive),
         is_spacia=bool(row.is_spacia),
         has_debris=bool(row.has_debris),
-        last_scanned_ts=float(row.last_scanned_ts),
-        colonize_min_fields=int(row.colonize_min_fields) if row.colonize_min_fields is not None else None,
-        colonize_max_fields=int(row.colonize_max_fields) if row.colonize_max_fields is not None else None,
-        temperature=int(row.temperature) if row.temperature is not None else None,
+        last_scanned_ts=to_float(row.last_scanned_ts, 0.0),
+        colonize_min_fields=to_int(row.colonize_min_fields, 0) if row.colonize_min_fields is not None else None,
+        colonize_max_fields=to_int(row.colonize_max_fields, 0) if row.colonize_max_fields is not None else None,
+        temperature=to_int(row.temperature, 0) if row.temperature is not None else None,
     )
 
 
 def _slot_hist_to_dto(row: GalaxySlotHistory) -> GalaxySlotHistoryRecord:
     return GalaxySlotHistoryRecord(
-        id=int(row.id),
-        ts=float(row.ts),
+        id=to_int(row.id, 0),
+        ts=to_float(row.ts, 0.0),
         coords=normalize_coords(row.coords),
-        galaxy=int(row.galaxy),
-        system=int(row.system),
-        position=int(row.position),
+        galaxy=to_int(row.galaxy, 0),
+        system=to_int(row.system, 0),
+        position=to_int(row.position, 0),
         planet_name=row.planet_name,
         owner=row.owner,
         status_color=row.status_color,
@@ -58,36 +66,36 @@ def _slot_hist_to_dto(row: GalaxySlotHistory) -> GalaxySlotHistoryRecord:
         is_spacia=bool(row.is_spacia),
         has_debris=bool(row.has_debris),
         has_asteroid=bool(row.has_asteroid),
-        colonize_min_fields=int(row.colonize_min_fields) if row.colonize_min_fields is not None else None,
-        colonize_max_fields=int(row.colonize_max_fields) if row.colonize_max_fields is not None else None,
-        temperature=int(row.temperature) if row.temperature is not None else None,
+        colonize_min_fields=to_int(row.colonize_min_fields, 0) if row.colonize_min_fields is not None else None,
+        colonize_max_fields=to_int(row.colonize_max_fields, 0) if row.colonize_max_fields is not None else None,
+        temperature=to_int(row.temperature, 0) if row.temperature is not None else None,
     )
 
 
 def _scan_to_dto(row: GalaxyScan) -> GalaxyScanRecord:
-    g, s = int(row.galaxy), int(row.system)
+    g, s = to_int(row.galaxy, 0), to_int(row.system, 0)
     return GalaxyScanRecord(
         galaxy=g,
         system=s,
         sector_key=f"{g:02d}:{s:03d}",
-        last_scanned_ts=float(row.last_scanned_ts),
-        occupied_count=int(row.occupied_count),
-        target_count=int(row.target_count),
-        free_count=int(row.free_count),
+        last_scanned_ts=to_float(row.last_scanned_ts, 0.0),
+        occupied_count=to_int(row.occupied_count, 0),
+        target_count=to_int(row.target_count, 0),
+        free_count=to_int(row.free_count, 0),
     )
 
 
 def _scan_hist_to_dto(row: GalaxyScanHistory) -> GalaxyScanHistoryRecord:
     return GalaxyScanHistoryRecord(
-        id=int(row.id),
-        ts=float(row.ts),
-        galaxy=int(row.galaxy),
-        system=int(row.system),
-        occupied_count=int(row.occupied_count),
-        target_count=int(row.target_count),
-        free_count=int(row.free_count),
-        debris_count=int(row.debris_count),
-        asteroid_count=int(row.asteroid_count),
+        id=to_int(row.id, 0),
+        ts=to_float(row.ts, 0.0),
+        galaxy=to_int(row.galaxy, 0),
+        system=to_int(row.system, 0),
+        occupied_count=to_int(row.occupied_count, 0),
+        target_count=to_int(row.target_count, 0),
+        free_count=to_int(row.free_count, 0),
+        debris_count=to_int(row.debris_count, 0),
+        asteroid_count=to_int(row.asteroid_count, 0),
     )
 
 
@@ -205,15 +213,15 @@ class GalaxyRepository:
         """List current scanned slots ordered by `(galaxy, system, position)`."""
         stmt = select(GalaxySlot)
         if galaxy is not None:
-            stmt = stmt.where(GalaxySlot.galaxy == clamp_int64(int(galaxy)))
+            stmt = stmt.where(GalaxySlot.galaxy == clamp_int64(to_int(galaxy, 0)))
         if system is not None:
-            stmt = stmt.where(GalaxySlot.system == clamp_int64(int(system)))
+            stmt = stmt.where(GalaxySlot.system == clamp_int64(to_int(system, 0)))
         if status_color is not None:
             stmt = stmt.where(GalaxySlot.status_color == sanitize_text(status_color).strip())
         rows = (
             self._session.execute(
                 stmt.order_by(GalaxySlot.galaxy.asc(), GalaxySlot.system.asc(), GalaxySlot.position.asc()).limit(
-                    max(1, int(limit))
+                    clamp_limit(limit, 500)
                 )
             )
             .scalars()
@@ -229,8 +237,9 @@ class GalaxyRepository:
     ) -> tuple[GalaxyScanRecord, ...]:
         """List scanned systems ordered most recently scanned first."""
         stmt = select(GalaxyScan)
-        if max_age_seconds is not None:
-            cutoff = round_ts(now_ts) - max(0.0, float(max_age_seconds))
+        age_f = to_float(max_age_seconds, -1.0) if max_age_seconds is not None else -1.0
+        if age_f >= 0.0:
+            cutoff = round_ts(now_ts) - age_f
             stmt = stmt.where(GalaxyScan.last_scanned_ts >= cutoff)
         rows = (
             self._session.execute(
@@ -254,12 +263,12 @@ class GalaxyRepository:
         if coords is not None:
             stmt = stmt.where(GalaxySlotHistory.coords == normalize_coords(coords))
         if galaxy is not None:
-            stmt = stmt.where(GalaxySlotHistory.galaxy == clamp_int64(int(galaxy)))
+            stmt = stmt.where(GalaxySlotHistory.galaxy == clamp_int64(to_int(galaxy, 0)))
         if system is not None:
-            stmt = stmt.where(GalaxySlotHistory.system == clamp_int64(int(system)))
+            stmt = stmt.where(GalaxySlotHistory.system == clamp_int64(to_int(system, 0)))
         rows = (
             self._session.execute(
-                stmt.order_by(GalaxySlotHistory.ts.desc(), GalaxySlotHistory.id.desc()).limit(max(1, int(limit)))
+                stmt.order_by(GalaxySlotHistory.ts.desc(), GalaxySlotHistory.id.desc()).limit(clamp_limit(limit, 500))
             )
             .scalars()
             .all()
@@ -276,12 +285,12 @@ class GalaxyRepository:
         """List append-only galaxy scan observations newest first."""
         stmt = select(GalaxyScanHistory)
         if galaxy is not None:
-            stmt = stmt.where(GalaxyScanHistory.galaxy == clamp_int64(int(galaxy)))
+            stmt = stmt.where(GalaxyScanHistory.galaxy == clamp_int64(to_int(galaxy, 0)))
         if system is not None:
-            stmt = stmt.where(GalaxyScanHistory.system == clamp_int64(int(system)))
+            stmt = stmt.where(GalaxyScanHistory.system == clamp_int64(to_int(system, 0)))
         rows = (
             self._session.execute(
-                stmt.order_by(GalaxyScanHistory.ts.desc(), GalaxyScanHistory.id.desc()).limit(max(1, int(limit)))
+                stmt.order_by(GalaxyScanHistory.ts.desc(), GalaxyScanHistory.id.desc()).limit(clamp_limit(limit, 200))
             )
             .scalars()
             .all()

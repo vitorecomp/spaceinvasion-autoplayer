@@ -40,8 +40,8 @@
     "raid_history": 0,
     "rank_snapshots": 2,
     "recycle_reports": 0,
-    "schema_migration_events": 14,
-    "schema_migrations": 14,
+    "schema_migration_events": 1,
+    "schema_migrations": 0,
     "spy_reports": 1,
     "spy_targets": 9,
     "state_snapshots": 1,
@@ -61,9 +61,6 @@
     "discarded_colony_coords",
     "galaxy_sweep_state",
     "latest_game_state",
-    "schema_checksum",
-    "schema_version",
-    "schema_version_tag",
     "strategy_config"
    ],
    "recent_actions": [
@@ -469,12 +466,12 @@
      "raid_history": 0,
      "rank_snapshots": 2,
      "recycle_reports": 0,
-     "schema_migration_events": 14,
+     "schema_migration_events": 1,
      "spy_reports": 1,
      "state_snapshots": 1,
      "universe_research_max_history": 0
     },
-    "history_total_rows": 117,
+    "history_total_rows": 104,
     "hot": [
      "meta",
      "latest_state_hot",
@@ -509,15 +506,15 @@
      "latest_state_hot": 1,
      "loot_recycle_hourly": 0,
      "manual_queue": 2,
-     "meta": 9,
-     "schema_migrations": 14,
+     "meta": 6,
+     "schema_migrations": 0,
      "spy_targets": 9,
      "strategy_config_store": 1,
      "tutorial_progress": 1,
      "ui_notifications": 0,
      "universe_research_max": 16
     },
-    "hot_total_rows": 152
+    "hot_total_rows": 135
    },
    "tutorial_history": [
     {

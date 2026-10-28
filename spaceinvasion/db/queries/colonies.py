@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from spaceinvasion.db.dto import ColonyCandidateRecord
 from spaceinvasion.db.models import ColonyAttempt, ColonyCandidateHot
-from spaceinvasion.db.repos._helpers import normalize_coords, parse_coords_gsp
+from spaceinvasion.db.repos._helpers import clamp_limit, normalize_coords, parse_coords_gsp, to_float, to_int
 
 _DELETED_EVENTS: frozenset[str] = frozenset({"deleted_undersized", "deleted", "abandoned", "undersized"})
 _KEPT_EVENTS: frozenset[str] = frozenset({"kept", "settled_kept"})
@@ -97,8 +97,8 @@ def query_colony_candidates(
     limit: int = 200,
 ) -> tuple[ColonyCandidateRecord, ...]:
     """Rank active colony candidates in a single set-based PostgreSQL `SELECT` statement."""
-    min_tgt = max(50, min(600, int(min_fields_target)))
-    eff_limit = max(1, int(limit))
+    min_tgt = max(50, min(600, to_int(min_fields_target, 300)))
+    eff_limit = clamp_limit(limit, 200)
     excl = sorted({nc for raw in exclude_coords if (nc := normalize_coords(raw))})
 
     dist_col: ColumnElement[float] = _distance_expr(origin_coords)
@@ -151,28 +151,32 @@ def query_colony_candidates(
             continue
         dist_raw = raw_row[1]
         tier_raw = raw_row[3]
-        dist_f = float(dist_raw) if isinstance(dist_raw, (int, float)) else 0.0
-        tier_i = int(tier_raw) if isinstance(tier_raw, int) else 3
+        dist_f = to_float(dist_raw, 0.0)
+        tier_i = to_int(tier_raw, 3)
         out.append(
             ColonyCandidateRecord(
                 coords=cand.coords,
-                galaxy=int(cand.galaxy),
-                system=int(cand.system),
-                position=int(cand.position),
-                uninhabited_fields=int(cand.uninhabited_fields) if cand.uninhabited_fields is not None else None,
-                colonize_min_fields=int(cand.colonize_min_fields) if cand.colonize_min_fields is not None else None,
-                colonize_max_fields=int(cand.colonize_max_fields) if cand.colonize_max_fields is not None else None,
-                max_fields_est=int(cand.max_fields_est),
-                temperature=int(cand.temperature) if cand.temperature is not None else None,
+                galaxy=to_int(cand.galaxy, 0),
+                system=to_int(cand.system, 0),
+                position=to_int(cand.position, 0),
+                uninhabited_fields=to_int(cand.uninhabited_fields, 0) if cand.uninhabited_fields is not None else None,
+                colonize_min_fields=to_int(cand.colonize_min_fields, 0)
+                if cand.colonize_min_fields is not None
+                else None,
+                colonize_max_fields=to_int(cand.colonize_max_fields, 0)
+                if cand.colonize_max_fields is not None
+                else None,
+                max_fields_est=to_int(cand.max_fields_est, 0),
+                temperature=to_int(cand.temperature, 0) if cand.temperature is not None else None,
                 is_probed=bool(cand.is_probed),
-                last_spied_ts=float(cand.last_spied_ts),
-                last_scanned_ts=float(cand.last_scanned_ts),
-                spy_count=int(cand.spy_count),
-                blocked_until_ts=float(cand.blocked_until_ts),
+                last_spied_ts=to_float(cand.last_spied_ts, 0.0),
+                last_scanned_ts=to_float(cand.last_scanned_ts, 0.0),
+                spy_count=to_int(cand.spy_count, 0),
+                blocked_until_ts=to_float(cand.blocked_until_ts, 0.0),
                 block_reason=cand.block_reason,
                 is_discarded=bool(cand.is_discarded),
                 is_active=bool(cand.is_active),
-                updated_ts=float(cand.updated_ts),
+                updated_ts=to_float(cand.updated_ts, 0.0),
                 distance=round(dist_f, 1),
                 meets_target=bool(raw_row[2]),
                 tier=tier_i,
@@ -231,7 +235,7 @@ def query_colony_attempts_summary(session: Session) -> ColonyAttemptsSummary:
             acc.last_origin = normalize_coords(r.origin_coords)
         if r.status_message:
             acc.last_msg = r.status_message
-        acc.last_ts = max(acc.last_ts, float(r.ts))
+        acc.last_ts = max(acc.last_ts, to_float(r.ts, 0.0))
 
     by_coords = {
         nc: ColonyAttemptCoordSummary(

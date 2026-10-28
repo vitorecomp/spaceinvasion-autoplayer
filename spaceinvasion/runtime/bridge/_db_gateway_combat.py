@@ -218,6 +218,14 @@ class _CombatGatewayMixin(_GatewayCore):
             "discarded_count": cnt,
         }
 
+    def restore_colony_candidate(self, coords: str, *, ts: float | None = None) -> bool:
+        """Restore a previously discarded colony candidate coordinate."""
+        with self._store.repositories() as repos:
+            restored = repos.colonies.restore_candidate(coords, ts=ts)
+        if restored:
+            self._bump_change()
+        return restored
+
     def get_colony_candidates(
         self,
         *,

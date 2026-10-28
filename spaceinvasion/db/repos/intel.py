@@ -13,6 +13,7 @@ from spaceinvasion.db.models import GalaxySlot, SpyReportRecord, SpyTarget
 from spaceinvasion.db.repos._helpers import (
     affected_rows,
     clamp_int64,
+    clamp_limit,
     coord_query_variants,
     dumps_json,
     normalize_coords,
@@ -259,7 +260,7 @@ class IntelRepository:
             stmt = stmt.where(SpyReportRecord.target_coords == normalize_coords(target_coords))
         rows = (
             self._session.execute(
-                stmt.order_by(SpyReportRecord.ts.desc(), SpyReportRecord.id.desc()).limit(max(1, int(limit)))
+                stmt.order_by(SpyReportRecord.ts.desc(), SpyReportRecord.id.desc()).limit(clamp_limit(limit, 200))
             )
             .scalars()
             .all()

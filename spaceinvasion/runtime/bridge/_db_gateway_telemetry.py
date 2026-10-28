@@ -8,6 +8,7 @@ import time
 
 from spaceinvasion.core import catalog as game_data
 from spaceinvasion.core.coords import normalize_coords
+from spaceinvasion.core.model import Resources
 from spaceinvasion.db.dto.serializers import research_max_to_dict
 from spaceinvasion.db.queries import (
     query_executed_transport_actions,
@@ -25,6 +26,7 @@ from spaceinvasion.runtime.bridge._db_gateway_common import (
 
 _ANY_GSP_RE = re.compile(r"\b\d{1,2}:\d{1,3}:\d{1,2}\b")
 _CARGO_SHORT_RE = re.compile(r"\b([PMKS])\s*[:=]\s*([0-9][0-9.,']*)\b", re.IGNORECASE)
+_CARGO_SUFFIX_RE = re.compile(r"\b([0-9][0-9.,']*)\s*([PMKS])\b", re.IGNORECASE)
 _CARGO_LONG_RE = re.compile(
     r"(?:(pig[\s_]+iron|metal|kryptonite|spice)\s*[:=]\s*([0-9][0-9.,']*)"
     r"|([0-9][0-9.,']*)\s*(pig[\s_]+iron|metal|kryptonite|spice))",
@@ -35,6 +37,13 @@ _RECENT_TRANSPORT_RING_MAX = 120
 
 
 def _normalize_cargo_dict(cargo: object) -> dict[str, int]:
+    if isinstance(cargo, Resources):
+        return {
+            "pig_iron": game_data.cap_json_int(max(0, _safe_int(cargo.pig_iron, 0))),
+            "metal": game_data.cap_json_int(max(0, _safe_int(cargo.metal, 0))),
+            "kryptonite": game_data.cap_json_int(max(0, _safe_int(cargo.kryptonite, 0))),
+            "spice": game_data.cap_json_int(max(0, _safe_int(cargo.spice, 0))),
+        }
     src = cargo if isinstance(cargo, Mapping) else {}
     return {
         rk: game_data.cap_json_int(max(0, _safe_int(src.get(rk), 0)))
@@ -72,17 +81,18 @@ def _parse_transport_cargo_from_text(text: str) -> dict[str, int] | None:
         return None
     totals = {"pig_iron": 0, "metal": 0, "kryptonite": 0, "spice": 0}
     found = False
-    for match in _CARGO_SHORT_RE.finditer(text):
-        digits = re.sub(r"[^\d]", "", match.group(2), flags=re.ASCII)
-        if not digits:
-            continue
-        val = game_data.cap_json_int(int(digits))
-        key = _SHORT_TO_RES[match.group(1).lower()]
-        if val > 0 and totals[key] == 0:
-            totals[key] = val
-            found = True
-    if found:
-        return totals
+    for pattern, key_grp, val_grp in ((_CARGO_SHORT_RE, 1, 2), (_CARGO_SUFFIX_RE, 2, 1)):
+        for match in pattern.finditer(text):
+            digits = re.sub(r"[^\d]", "", match.group(val_grp), flags=re.ASCII)
+            if not digits:
+                continue
+            val = game_data.cap_json_int(int(digits))
+            key = _SHORT_TO_RES[match.group(key_grp).lower()]
+            if val > 0 and totals[key] == 0:
+                totals[key] = val
+                found = True
+        if found:
+            return totals
     for match in _CARGO_LONG_RE.finditer(text):
         lbl = (match.group(1) or match.group(4) or "").lower().replace(" ", "_")
         digits = re.sub(r"[^\d]", "", match.group(2) or match.group(3) or "", flags=re.ASCII)

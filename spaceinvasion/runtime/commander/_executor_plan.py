@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 import time
+from typing import cast
 
 import requests
 
@@ -58,9 +59,7 @@ def decode_matching_state(raw_state: Mapping[str, object], reference: object) ->
 
 
 def _to_legacy_state(state: GameStateCmdLike) -> ModelGameState:
-    if isinstance(state, ModelGameState):
-        return state
-    return model_game_state_from_dict({"universe_id": state.universe_id})
+    return cast(ModelGameState, state)
 
 
 def to_canonical_action(act: PlannedActionCmdLike) -> PlannedAction:

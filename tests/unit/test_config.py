@@ -714,7 +714,7 @@ class TestStrategyConfig(unittest.TestCase):
         self.assertLess((time.perf_counter() - t1) * 1000.0, 50.0)
 
     def test_galaxy_scan_delay_jitter_and_spy_config_fields_clamping_and_roundtrip(self) -> None:
-        from spaceinvasion.db.storage import GameDatabase
+        from tests.pg_harness import open_test_db as GameDatabase
 
         defaults = StrategyConfig()
         self.assertAlmostEqual(defaults.galaxy_scan_click_delay_seconds, 1.5)
@@ -778,7 +778,7 @@ class TestStrategyConfig(unittest.TestCase):
             self.assertEqual(loaded_db.spy_dispatch_planet_id, 12476)
 
     def test_ai_planner_mode_and_spare_pct_roundtrip_and_clamping(self) -> None:
-        from spaceinvasion.db.storage import GameDatabase
+        from tests.pg_harness import open_test_db as GameDatabase
 
         default_cfg = StrategyConfig()
         self.assertAlmostEqual(default_cfg.ai_resource_spare_pct, 10.0)
@@ -812,7 +812,7 @@ class TestStrategyConfig(unittest.TestCase):
             self.assertAlmostEqual(loaded_db.ai_resource_spare_pct, 17.5)
 
     def test_fleet_research_targets_and_allow_fleet_research_roundtrip(self) -> None:
-        from spaceinvasion.db.storage import GameDatabase
+        from tests.pg_harness import open_test_db as GameDatabase
 
         default_cfg = StrategyConfig()
         self.assertTrue(default_cfg.allow_fleet_research)
@@ -863,7 +863,7 @@ class TestStrategyConfig(unittest.TestCase):
             self.assertEqual(loaded_db.fleet_research_targets, {"r6": 6, "r9": 8, "r11": 5})
 
     def test_spy_reserved_slots_only_default_and_roundtrip(self) -> None:
-        from spaceinvasion.db.storage import GameDatabase
+        from tests.pg_harness import open_test_db as GameDatabase
 
         default_cfg = StrategyConfig()
         self.assertFalse(default_cfg.spy_reserved_slots_only)
@@ -895,7 +895,7 @@ class TestStrategyConfig(unittest.TestCase):
             self.assertEqual(loaded_db.reserved_spy_slots, 2)
 
     def test_attack_and_recycle_min_res_per_hour_defaults_clamping_and_roundtrip(self) -> None:
-        from spaceinvasion.db.storage import GameDatabase
+        from tests.pg_harness import open_test_db as GameDatabase
 
         default_cfg = StrategyConfig()
         self.assertAlmostEqual(default_cfg.attack_min_res_per_hour, 0.0)
@@ -939,7 +939,7 @@ class TestStrategyConfig(unittest.TestCase):
             self.assertAlmostEqual(loaded_db.recycle_min_res_per_hour, 8400.5)
 
     def test_ai_adaptive_execution_default_bool_parsing_and_roundtrip(self) -> None:
-        from spaceinvasion.db.storage import GameDatabase
+        from tests.pg_harness import open_test_db as GameDatabase
         from spaceinvasion.planner.graph import merge_strategy_config_overrides
 
         default_cfg = StrategyConfig()

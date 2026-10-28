@@ -13,6 +13,7 @@ from spaceinvasion.db.dto import (
     StateSnapshotRecord,
 )
 from spaceinvasion.db.models import EmpirePlanetHot, LatestStateHot, PlanetSnapshot, RankSnapshot, StateSnapshot
+from spaceinvasion.db.repos._helpers import to_float, to_int
 
 
 @dataclass(frozen=True)
@@ -71,15 +72,15 @@ class RankSnapshotInput:
 def state_to_dto(row: StateSnapshot, *, include_payload: bool) -> StateSnapshotRecord:
     """Convert a `StateSnapshot` ORM row into a frozen `StateSnapshotRecord` DTO."""
     return StateSnapshotRecord(
-        id=int(row.id),
-        ts=float(row.ts),
+        id=to_int(row.id, 0),
+        ts=to_float(row.ts, 0.0),
         source=row.source,
-        universe_id=int(row.universe_id),
-        user_id=int(row.user_id),
+        universe_id=to_int(row.universe_id, 0),
+        user_id=to_int(row.user_id, 0),
         nickname=row.nickname,
-        active_planet_id=int(row.active_planet_id),
-        planet_count=int(row.planet_count),
-        planned_action_count=int(row.planned_action_count),
+        active_planet_id=to_int(row.active_planet_id, 0),
+        planet_count=to_int(row.planet_count, 0),
+        planned_action_count=to_int(row.planned_action_count, 0),
         state_json=row.state_json if include_payload else None,
         plan_json=row.plan_json if include_payload else None,
     )
@@ -88,40 +89,40 @@ def state_to_dto(row: StateSnapshot, *, include_payload: bool) -> StateSnapshotR
 def hot_state_to_dto(row: LatestStateHot, *, include_payload: bool) -> LatestStateHotRecord:
     """Convert a `LatestStateHot` ORM row into a frozen `LatestStateHotRecord` DTO."""
     return LatestStateHotRecord(
-        source_snapshot_id=int(row.source_snapshot_id),
-        ts=float(row.ts),
+        source_snapshot_id=to_int(row.source_snapshot_id, 0),
+        ts=to_float(row.ts, 0.0),
         source=row.source,
-        universe_id=int(row.universe_id),
-        user_id=int(row.user_id),
+        universe_id=to_int(row.universe_id, 0),
+        user_id=to_int(row.user_id, 0),
         nickname=row.nickname,
-        active_planet_id=int(row.active_planet_id),
-        planet_count=int(row.planet_count),
-        planned_action_count=int(row.planned_action_count),
+        active_planet_id=to_int(row.active_planet_id, 0),
+        planet_count=to_int(row.planet_count, 0),
+        planned_action_count=to_int(row.planned_action_count, 0),
         state_json=row.state_json if include_payload else None,
         plan_json=row.plan_json if include_payload else None,
-        updated_ts=float(row.updated_ts),
+        updated_ts=to_float(row.updated_ts, 0.0),
     )
 
 
 def planet_snap_to_dto(row: PlanetSnapshot) -> PlanetSnapshotRecord:
     """Convert a `PlanetSnapshot` ORM row into a frozen `PlanetSnapshotRecord` DTO."""
     return PlanetSnapshotRecord(
-        id=int(row.id),
-        ts=float(row.ts),
-        universe_id=int(row.universe_id),
-        planet_id=int(row.planet_id),
+        id=to_int(row.id, 0),
+        ts=to_float(row.ts, 0.0),
+        universe_id=to_int(row.universe_id, 0),
+        planet_id=to_int(row.planet_id, 0),
         coords=row.coords,
         name=row.name,
         planet_type=row.planet_type,
-        temperature=int(row.temperature),
-        fields_used=int(row.fields_used),
-        fields_max=int(row.fields_max),
-        pig_iron=int(row.pig_iron),
-        metal=int(row.metal),
-        kryptonite=int(row.kryptonite),
-        spice=int(row.spice),
-        energy_produced=int(row.energy_produced),
-        energy_used=int(row.energy_used),
+        temperature=to_int(row.temperature, 0),
+        fields_used=to_int(row.fields_used, 0),
+        fields_max=to_int(row.fields_max, 0),
+        pig_iron=to_int(row.pig_iron, 0),
+        metal=to_int(row.metal, 0),
+        kryptonite=to_int(row.kryptonite, 0),
+        spice=to_int(row.spice, 0),
+        energy_produced=to_int(row.energy_produced, 0),
+        energy_used=to_int(row.energy_used, 0),
         buildings_json=row.buildings_json,
         ships_json=row.ships_json,
         defense_json=row.defense_json,
@@ -133,56 +134,57 @@ def planet_snap_to_dto(row: PlanetSnapshot) -> PlanetSnapshotRecord:
 def empire_hot_to_dto(row: EmpirePlanetHot) -> EmpirePlanetHotRecord:
     """Convert an `EmpirePlanetHot` ORM row into a frozen `EmpirePlanetHotRecord` DTO."""
     return EmpirePlanetHotRecord(
-        planet_id=int(row.planet_id),
-        universe_id=int(row.universe_id),
+        planet_id=to_int(row.planet_id, 0),
+        universe_id=to_int(row.universe_id, 0),
         coords=row.coords,
         name=row.name,
         planet_type=row.planet_type,
-        temperature=int(row.temperature),
-        fields_used=int(row.fields_used),
-        fields_max=int(row.fields_max),
-        pig_iron=int(row.pig_iron),
-        metal=int(row.metal),
-        kryptonite=int(row.kryptonite),
-        spice=int(row.spice),
-        energy_produced=int(row.energy_produced),
-        energy_used=int(row.energy_used),
+        temperature=to_int(row.temperature, 0),
+        fields_used=to_int(row.fields_used, 0),
+        fields_max=to_int(row.fields_max, 0),
+        pig_iron=to_int(row.pig_iron, 0),
+        metal=to_int(row.metal, 0),
+        kryptonite=to_int(row.kryptonite, 0),
+        spice=to_int(row.spice, 0),
+        energy_produced=to_int(row.energy_produced, 0),
+        energy_used=to_int(row.energy_used, 0),
         is_active=bool(row.is_active),
-        updated_ts=float(row.updated_ts),
+        updated_ts=to_float(row.updated_ts, 0.0),
     )
 
 
 def rank_to_dto(row: RankSnapshot) -> RankSnapshotRecord:
     """Convert a `RankSnapshot` ORM row into a frozen `RankSnapshotRecord` DTO."""
     return RankSnapshotRecord(
-        id=int(row.id),
-        ts=float(row.ts),
-        universe_id=int(row.universe_id),
+        id=to_int(row.id, 0),
+        ts=to_float(row.ts, 0.0),
+        universe_id=to_int(row.universe_id, 0),
         nickname=row.nickname,
-        server_points=int(row.server_points) if row.server_points is not None else None,
-        server_rank=int(row.server_rank) if row.server_rank is not None else None,
-        estimated_points=float(row.estimated_points),
-        pts_per_hr=float(row.pts_per_hr),
-        spice_value=float(row.spice_value),
-        planets=int(row.planets),
+        server_points=to_int(row.server_points, 0) if row.server_points is not None else None,
+        server_rank=to_int(row.server_rank, 0) if row.server_rank is not None else None,
+        estimated_points=to_float(row.estimated_points, 0.0),
+        pts_per_hr=to_float(row.pts_per_hr, 0.0),
+        spice_value=to_float(row.spice_value, 0.0),
+        planets=to_int(row.planets, 0),
     )
 
 
 def snap_to_latest_hot_dto(row: StateSnapshot, *, include_payload: bool) -> LatestStateHotRecord:
     """Convert a `StateSnapshot` fallback row into a frozen `LatestStateHotRecord` DTO."""
+    ts_val = to_float(row.ts, 0.0)
     return LatestStateHotRecord(
-        source_snapshot_id=int(row.id),
-        ts=float(row.ts),
+        source_snapshot_id=to_int(row.id, 0),
+        ts=ts_val,
         source=row.source,
-        universe_id=int(row.universe_id),
-        user_id=int(row.user_id),
+        universe_id=to_int(row.universe_id, 0),
+        user_id=to_int(row.user_id, 0),
         nickname=row.nickname,
-        active_planet_id=int(row.active_planet_id),
-        planet_count=int(row.planet_count),
-        planned_action_count=int(row.planned_action_count),
+        active_planet_id=to_int(row.active_planet_id, 0),
+        planet_count=to_int(row.planet_count, 0),
+        planned_action_count=to_int(row.planned_action_count, 0),
         state_json=row.state_json if include_payload else None,
         plan_json=row.plan_json if include_payload else None,
-        updated_ts=float(row.ts),
+        updated_ts=ts_val,
     )
 
 

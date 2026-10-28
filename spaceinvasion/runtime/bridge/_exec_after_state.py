@@ -141,7 +141,10 @@ def _reread_snapshot_after_exec(
         return_home=False,
         priority="interactive",
     )
-    obs_active = bool(client.last_snapshot_observed_active_planet)
+    try:
+        obs_active = bool(client.last_snapshot_observed_active_planet)
+    except AttributeError:
+        obs_active = False
     if obs_conf_bool is True:
         obs_active = True
         if (

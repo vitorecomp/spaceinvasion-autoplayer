@@ -21,7 +21,16 @@ from spaceinvasion.db.models import (
     UniverseResearchMax,
     UniverseResearchMaxHistory,
 )
-from spaceinvasion.db.repos._helpers import clamp_int64, dumps_json, normalize_coords, round_ts, sanitize_text
+from spaceinvasion.db.repos._helpers import (
+    clamp_int64,
+    dumps_json,
+    is_non_recycle_notice_text,
+    normalize_coords,
+    round_ts,
+    sanitize_text,
+    to_float,
+    to_int,
+)
 
 
 @dataclass(frozen=True)
@@ -42,22 +51,22 @@ class UniverseResearchMaxInput:
 
 
 def _research_to_dto(row: UniverseResearchMax) -> UniverseResearchMaxRecord:
-    own_l = max(0, int(row.own_level))
-    univ_l = max(own_l, int(row.universe_max_level))
+    own_l = max(0, to_int(row.own_level, 0))
+    univ_l = max(own_l, to_int(row.universe_max_level, 0))
     return UniverseResearchMaxRecord(
         research_key=row.research_key,
-        research_id=int(row.research_id),
+        research_id=to_int(row.research_id, 0),
         slug=row.slug,
         name=row.name,
         own_level=own_l,
-        spied_max_level=max(0, int(row.spied_max_level)),
-        server_record_level=int(row.server_record_level) if row.server_record_level is not None else None,
+        spied_max_level=max(0, to_int(row.spied_max_level, 0)),
+        server_record_level=to_int(row.server_record_level, 0) if row.server_record_level is not None else None,
         universe_max_level=univ_l,
-        catalog_max_level=int(row.catalog_max_level) if row.catalog_max_level is not None else None,
+        catalog_max_level=to_int(row.catalog_max_level, 0) if row.catalog_max_level is not None else None,
         gap_to_max=max(0, univ_l - own_l),
         holder=row.holder,
         holder_coords=row.holder_coords,
-        updated_ts=float(row.updated_ts),
+        updated_ts=to_float(row.updated_ts, 0.0),
     )
 
 
@@ -66,19 +75,19 @@ def _loot_bucket_dto(hb: int, row: LootRecycleHourly | None) -> LootRecycleHourl
         return LootRecycleHourlyRecord(hb, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0, 0, 0.0)
     return LootRecycleHourlyRecord(
         hour_bucket=hb,
-        stolen_pig_iron=round(max(0.0, float(row.stolen_pig_iron)), 1),
-        stolen_metal=round(max(0.0, float(row.stolen_metal)), 1),
-        stolen_kryptonite=round(max(0.0, float(row.stolen_kryptonite)), 1),
-        stolen_spice=round(max(0.0, float(row.stolen_spice)), 1),
-        stolen_total=round(max(0.0, float(row.stolen_total)), 1),
-        recycled_pig_iron=round(max(0.0, float(row.recycled_pig_iron)), 1),
-        recycled_metal=round(max(0.0, float(row.recycled_metal)), 1),
-        recycled_kryptonite=round(max(0.0, float(row.recycled_kryptonite)), 1),
-        recycled_spice=round(max(0.0, float(row.recycled_spice)), 1),
-        recycled_total=round(max(0.0, float(row.recycled_total)), 1),
-        attack_count=max(0, int(row.attack_count)),
-        recycle_count=max(0, int(row.recycle_count)),
-        updated_at=round(float(row.updated_at), 3),
+        stolen_pig_iron=round(max(0.0, to_float(row.stolen_pig_iron, 0.0)), 1),
+        stolen_metal=round(max(0.0, to_float(row.stolen_metal, 0.0)), 1),
+        stolen_kryptonite=round(max(0.0, to_float(row.stolen_kryptonite, 0.0)), 1),
+        stolen_spice=round(max(0.0, to_float(row.stolen_spice, 0.0)), 1),
+        stolen_total=round(max(0.0, to_float(row.stolen_total, 0.0)), 1),
+        recycled_pig_iron=round(max(0.0, to_float(row.recycled_pig_iron, 0.0)), 1),
+        recycled_metal=round(max(0.0, to_float(row.recycled_metal, 0.0)), 1),
+        recycled_kryptonite=round(max(0.0, to_float(row.recycled_kryptonite, 0.0)), 1),
+        recycled_spice=round(max(0.0, to_float(row.recycled_spice, 0.0)), 1),
+        recycled_total=round(max(0.0, to_float(row.recycled_total, 0.0)), 1),
+        attack_count=max(0, to_int(row.attack_count, 0)),
+        recycle_count=max(0, to_int(row.recycle_count, 0)),
+        updated_at=round(to_float(row.updated_at, 0.0), 3),
     )
 
 
@@ -99,46 +108,37 @@ def refresh_loot_recycle(session: Session, *, ts: float | None = None) -> int:
         .group_by(b_hb)
     ).all()
 
-    r_hb = cast(func.floor(RecycleReport.ts / 3600.0), BigInteger) * 3600
     r_rows = session.execute(
         select(
-            r_hb,
-            func.coalesce(
-                func.sum(case((RecycleReport.harvested_pig_iron > 0, RecycleReport.harvested_pig_iron), else_=0)), 0
-            ),
-            func.coalesce(
-                func.sum(case((RecycleReport.harvested_metal > 0, RecycleReport.harvested_metal), else_=0)), 0
-            ),
-            func.coalesce(
-                func.sum(case((RecycleReport.harvested_kryptonite > 0, RecycleReport.harvested_kryptonite), else_=0)),
-                0,
-            ),
-            func.coalesce(
-                func.sum(case((RecycleReport.harvested_spice > 0, RecycleReport.harvested_spice), else_=0)), 0
-            ),
-            func.count(),
-        )
-        .where(RecycleReport.ts > 0)
-        .group_by(r_hb)
+            RecycleReport.ts,
+            RecycleReport.harvested_pig_iron,
+            RecycleReport.harvested_metal,
+            RecycleReport.harvested_kryptonite,
+            RecycleReport.harvested_spice,
+            RecycleReport.raw_text,
+        ).where(RecycleReport.ts > 0)
     ).all()
 
     buckets: dict[int, list[float]] = {}
     for row in b_rows:
-        hb = int(row[0] or 0)
+        hb = to_int(row[0], 0)
         if hb <= 0:
             continue
         acc = buckets.setdefault(hb, [0.0] * 10)
         for idx in range(4):
-            acc[idx] += float(row[idx + 1] or 0.0)
-        acc[8] += float(row[5] or 0)
+            acc[idx] += max(0.0, to_float(row[idx + 1], 0.0))
+        acc[8] += float(max(0, to_int(row[5], 0)))
     for row in r_rows:
-        hb = int(row[0] or 0)
+        r_ts = to_float(row[0], 0.0)
+        if r_ts <= 0.0 or is_non_recycle_notice_text(str(row[5] or "")):
+            continue
+        hb = int(r_ts // 3600.0) * 3600
         if hb <= 0:
             continue
         acc = buckets.setdefault(hb, [0.0] * 10)
         for idx in range(4):
-            acc[4 + idx] += float(row[idx + 1] or 0.0)
-        acc[9] += float(row[5] or 0)
+            acc[4 + idx] += max(0.0, to_float(row[idx + 1], 0.0))
+        acc[9] += 1.0
 
     if not buckets:
         return 0

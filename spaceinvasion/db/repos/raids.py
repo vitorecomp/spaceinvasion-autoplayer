@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+import math
 
 from sqlalchemy import case, func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -12,6 +13,7 @@ from spaceinvasion.db.dto import BashBlockRecord, BattleReportRecord, RaidHistor
 from spaceinvasion.db.models import BashBlock, BattleReport, GalaxySlot, RaidHistory, SpyTarget
 from spaceinvasion.db.repos._helpers import (
     affected_rows,
+    clamp_limit,
     dumps_json,
     normalize_coords,
     normalize_loot_dict,
@@ -233,11 +235,11 @@ class RaidsRepository:
         stmt = select(RaidHistory)
         if target_coords is not None:
             stmt = stmt.where(RaidHistory.target_coords == normalize_coords(target_coords))
-        if since_ts is not None:
+        if since_ts is not None and isinstance(since_ts, (int, float)) and math.isfinite(float(since_ts)):
             stmt = stmt.where(RaidHistory.attacked_ts >= float(since_ts))
         rows = (
             self._session.execute(
-                stmt.order_by(RaidHistory.attacked_ts.desc(), RaidHistory.id.desc()).limit(max(1, int(limit)))
+                stmt.order_by(RaidHistory.attacked_ts.desc(), RaidHistory.id.desc()).limit(clamp_limit(limit, 500))
             )
             .scalars()
             .all()
@@ -256,7 +258,7 @@ class RaidsRepository:
             stmt = stmt.where(BattleReport.target_coords == normalize_coords(target_coords))
         rows = (
             self._session.execute(
-                stmt.order_by(BattleReport.ts.desc(), BattleReport.id.desc()).limit(max(1, int(limit)))
+                stmt.order_by(BattleReport.ts.desc(), BattleReport.id.desc()).limit(clamp_limit(limit, 200))
             )
             .scalars()
             .all()
@@ -274,11 +276,15 @@ class RaidsRepository:
         stmt = select(BashBlock)
         if target_coords is not None:
             stmt = stmt.where(BashBlock.target_coords == normalize_coords(target_coords))
-        if active_after_ts is not None:
+        if (
+            active_after_ts is not None
+            and isinstance(active_after_ts, (int, float))
+            and math.isfinite(float(active_after_ts))
+        ):
             stmt = stmt.where(BashBlock.blocked_until_ts > float(active_after_ts))
         rows = (
             self._session.execute(
-                stmt.order_by(BashBlock.blocked_ts.asc(), BashBlock.id.asc()).limit(max(1, int(limit)))
+                stmt.order_by(BashBlock.blocked_ts.asc(), BashBlock.id.asc()).limit(clamp_limit(limit, 200))
             )
             .scalars()
             .all()

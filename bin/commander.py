@@ -14,12 +14,14 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
+from spaceinvasion.core.model import PlannedAction  # noqa: E402, F401
 from spaceinvasion.planner.heuristics import plan_actions as _DEFAULT_PLAN_ACTIONS  # noqa: E402
 from spaceinvasion.runtime import commander as _cmd  # noqa: E402
 from spaceinvasion.runtime.commander import _executor_plan  # noqa: E402
 from spaceinvasion.runtime.commander_client import GameApiClient  # noqa: E402
 from spaceinvasion.runtime.reloader import should_spawn_reloader  # noqa: E402
 
+WATCH_PATHS: tuple[Path, ...] = _cmd.discover_commander_watch_paths(_REPO_ROOT, Path(__file__))
 plan_actions = _DEFAULT_PLAN_ACTIONS
 _action_to_command_payload, _hold_busy_fleet_slots = _cmd.action_to_command_payload, _cmd.hold_busy_fleet_slots
 _parse_queue_timer_seconds, _planned_action_from_dict = _cmd.parse_queue_timer_seconds, _cmd.planned_action_from_dict

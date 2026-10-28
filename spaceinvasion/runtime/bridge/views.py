@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+import json
 
 from spaceinvasion.core.model import GameState, PlannedAction
 from spaceinvasion.runtime.bridge._context import BridgeContext
@@ -12,11 +13,16 @@ from spaceinvasion.runtime.bridge._views_assembly import (
     build_dashboard_payload_from_state,
     extract_snapshot_sections,
 )
+from spaceinvasion.runtime.bridge._views_cache import (
+    build_fast_dashboard_cache_key,
+    refresh_cached_dashboard_envelope,
+)
 from spaceinvasion.runtime.bridge._views_health import (
     ViewHooks,
     build_bot_control_busy_fallback,
     build_bot_control_payload_locked,
     build_health_payload_lock_free,
+    probe_health_with_client_locked,
 )
 from spaceinvasion.runtime.bridge.lifecycle import BridgeLifecycleService
 from spaceinvasion.runtime.bridge.planet_names import PlanetNameService
@@ -67,7 +73,7 @@ class DashboardViewService:
         on_attach_raid_stats: Callable[[GameState], GameState] | None = None,
         on_get_raid_stats_cached: Callable[..., dict[str, object]] | None = None,
         on_record_hourly_production: Callable[[GameState], dict[str, object]] | None = None,
-        on_maybe_trigger_ai_drift_replan: Callable[[], bool] | None = None,
+        on_maybe_trigger_ai_drift_replan: Callable[[], str | None] | None = None,
     ) -> None:
         """Bind explicit collaborator callbacks for planning, ledgers, sweeps, and telemetry."""
         if on_plan_with_summary is not None:
@@ -152,7 +158,7 @@ class DashboardViewService:
             raw_state = dash_dict.get("state")
             state_dict: Mapping[str, object] = raw_state if isinstance(raw_state, Mapping) else {}
             sections, prod_rows, loot_rows = extract_snapshot_sections(dash_dict)
-            return ctx.snapshot_publisher.publish(
+            snap = ctx.snapshot_publisher.publish(
                 health=health_dict,
                 bot_control=bot_ctrl_dict,
                 state=state_dict,
@@ -160,10 +166,26 @@ class DashboardViewService:
                 hourly_production_history=prod_rows,
                 loot_recycle_hourly=loot_rows,
             )
+            ctx.snapshot_dirty = False
+            return snap
+
+    def build_db_backend_status(self, *, include_ping: bool = False) -> dict[str, object]:
+        """Build the `db_backend` diagnostic mapping for health and DB endpoints."""
+        return self._ctx.build_db_backend_status(include_ping=include_ping)
 
     def health(self) -> dict[str, object]:
-        """Serve `/health` completely lock-free (never acquiring `ctx.lock`)."""
-        return build_health_payload_lock_free(self._ctx, include_busy_if_locked=True)
+        """Serve `/health` lock-free when busy, probing Chrome `ensure_in_game()` when idle."""
+        ctx = self._ctx
+        if not ctx.lock.acquire(blocking=False):
+            return build_health_payload_lock_free(ctx, include_busy_if_locked=True)
+        antibot_hit = False
+        try:
+            payload, antibot_hit = probe_health_with_client_locked(ctx, self._lifecycle)
+        finally:
+            ctx.lock.release()
+        if antibot_hit:
+            self.publish_snapshot()
+        return payload
 
     def get_bot_control(self) -> dict[str, object]:
         """Serve `/bot_status` lock-free when busy and under `ctx.state_lock` when idle."""
@@ -196,7 +218,10 @@ class DashboardViewService:
                         return_home=False,
                         priority="normal",
                     )
-                    obs_active = bool(client.last_snapshot_observed_active_planet)
+                    try:
+                        obs_active = bool(client.last_snapshot_observed_active_planet)
+                    except AttributeError:
+                        obs_active = False
                     self._state_cache.record_state(
                         snap,
                         fetched_buildings=True,
@@ -261,6 +286,13 @@ class DashboardViewService:
                     and not cap_blocked
                     and (ctx.last_state is not None or rate_rem > 0.0 or bool(ctx.sweep_in_progress))
                 )
+                fast_key = build_fast_dashboard_cache_key(
+                    ctx, self._names, port_open=port_open, in_game=in_game, rate_limited=rate_rem > 0.0
+                )
+                if ctx.dash_full_cache_json is not None and ctx.dash_full_cache_key == fast_key:
+                    return refresh_cached_dashboard_envelope(
+                        ctx, ctx.dash_full_cache_json, port_open=port_open, in_game=in_game
+                    )
                 result = build_dashboard_payload_from_state(
                     ctx,
                     self._state_cache,
@@ -272,6 +304,11 @@ class DashboardViewService:
                     in_game=in_game,
                     current_url=ctx.last_url,
                 )
+                post_key = build_fast_dashboard_cache_key(
+                    ctx, self._names, port_open=port_open, in_game=in_game, rate_limited=rate_rem > 0.0
+                )
+                ctx.dash_full_cache_key = post_key
+                ctx.dash_full_cache_json = json.dumps(result, allow_nan=False)
             self.publish_snapshot(dashboard_payload=result)
             if self._hooks.on_maybe_trigger_ai_drift_replan is not None:
                 self._hooks.on_maybe_trigger_ai_drift_replan()
@@ -315,7 +352,7 @@ class DashboardViewService:
     ) -> dict[str, object]:
         """Serve Phase 4.3 versioned dashboard delta lock-free from `ctx.snapshot_publisher`."""
         snap = self._ctx.snapshot_publisher.current()
-        if snap is None:
+        if snap is None or self._ctx.snapshot_dirty:
             snap = self.publish_snapshot()
         return build_dashboard_delta_response(
             snap,

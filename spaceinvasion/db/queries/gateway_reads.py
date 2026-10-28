@@ -20,13 +20,20 @@ from spaceinvasion.db.models import (
     SpyReportRecord,
     SpyTarget,
 )
-from spaceinvasion.db.repos._helpers import clamp_int64, normalize_coords, sanitize_text
+from spaceinvasion.db.repos._helpers import (
+    clamp_int64,
+    clamp_limit,
+    normalize_coords,
+    sanitize_text,
+    to_float,
+    to_int,
+)
 from spaceinvasion.db.repos.intel import spy_target_to_dto
 
 
 def query_last_throttle_timestamps(session: Session, *, building_id: int = 2) -> dict[int, float]:
     """Return `{planet_id: max_ts}` for executed live `THROTTLE_BUILDING` actions."""
-    bid = clamp_int64(int(building_id))
+    bid = clamp_int64(to_int(building_id, 2))
     rows = session.execute(
         select(ActionHistory.planet_id, func.max(ActionHistory.ts))
         .where(
@@ -40,9 +47,9 @@ def query_last_throttle_timestamps(session: Session, *, building_id: int = 2) ->
     ).all()
     out: dict[int, float] = {}
     for row in rows:
-        pid = cap_json_int(int(row[0] or 0))
+        pid = cap_json_int(to_int(row[0], 0))
         if pid > 0:
-            out[pid] = float(row[1] or 0.0)
+            out[pid] = to_float(row[1], 0.0)
     return out
 
 
@@ -53,7 +60,7 @@ def query_executed_transport_actions(
     limit: int = 60,
 ) -> tuple[ActionHistoryRecord, ...]:
     """List recent executed live `TRANSPORT` actions chronologically for fallback cargo intel."""
-    lim = max(1, min(200, int(limit)))
+    lim = clamp_limit(limit, 60, max_limit=200)
     rows = (
         session.execute(
             select(ActionHistory)
@@ -61,7 +68,7 @@ def query_executed_transport_actions(
                 ActionHistory.kind == "TRANSPORT",
                 ActionHistory.executed == 1,
                 ActionHistory.dry_run == 0,
-                ActionHistory.ts >= float(since_ts),
+                ActionHistory.ts >= to_float(since_ts, 0.0),
             )
             .order_by(ActionHistory.ts.asc(), ActionHistory.id.asc())
             .limit(lim)
@@ -71,17 +78,17 @@ def query_executed_transport_actions(
     )
     return tuple(
         ActionHistoryRecord(
-            id=int(r.id),
-            ts=float(r.ts),
+            id=to_int(r.id, 0),
+            ts=to_float(r.ts, 0.0),
             source=r.source,
             command=r.command,
             priority=r.priority,
             kind=r.kind,
-            planet_id=int(r.planet_id) if r.planet_id is not None else None,
+            planet_id=to_int(r.planet_id, 0) if r.planet_id is not None else None,
             planet_coords=r.planet_coords,
-            target_id=int(r.target_id) if r.target_id is not None else None,
+            target_id=to_int(r.target_id, 0) if r.target_id is not None else None,
             target_name=r.target_name,
-            target_level=int(r.target_level) if r.target_level is not None else None,
+            target_level=to_int(r.target_level, 0) if r.target_level is not None else None,
             executed=bool(r.executed),
             dry_run=bool(r.dry_run),
             reason=r.reason,
@@ -199,10 +206,10 @@ def query_active_blocked_targets(
     return tuple(
         (
             normalize_coords(str(r[0] or "")),
-            float(r[1] or 0.0),
+            to_float(r[1], 0.0),
             sanitize_text(r[2] or ""),
-            cap_json_int(max(0, int(r[3] or 0))),
-            float(r[4] or 0.0),
+            cap_json_int(max(0, to_int(r[3], 0))),
+            to_float(r[4], 0.0),
         )
         for r in rows
     )
@@ -216,10 +223,10 @@ def query_recent_raids_for_bash(
     """Return chronological `(target_coords, attacked_ts, is_exempt)` rows since `cutoff_ts`."""
     rows = session.execute(
         select(RaidHistory.target_coords, RaidHistory.attacked_ts, RaidHistory.is_exempt)
-        .where(RaidHistory.attacked_ts >= float(cutoff_ts))
+        .where(RaidHistory.attacked_ts >= to_float(cutoff_ts, 0.0))
         .order_by(RaidHistory.attacked_ts.asc(), RaidHistory.id.asc())
     ).all()
-    return tuple((normalize_coords(str(r[0] or "")), float(r[1] or 0.0), bool(r[2])) for r in rows)
+    return tuple((normalize_coords(str(r[0] or "")), to_float(r[1], 0.0), bool(r[2])) for r in rows)
 
 
 def query_needs_loot_recycle_backfill(session: Session) -> bool:
@@ -243,7 +250,9 @@ def query_active_debris_targets_raw(
     stmt = select(SpyTarget).where(SpyTarget.merged_into == "", SpyTarget.has_debris == 1)
     if not include_own:
         stmt = stmt.where(SpyTarget.is_own_planet == 0)
-    rows = session.execute(stmt.order_by(SpyTarget.last_scanned_ts.desc()).limit(max(1, int(limit)))).scalars().all()
+    rows = (
+        session.execute(stmt.order_by(SpyTarget.last_scanned_ts.desc()).limit(clamp_limit(limit, 2000))).scalars().all()
+    )
     return tuple(spy_target_to_dto(r) for r in rows)
 
 

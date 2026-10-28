@@ -69,8 +69,8 @@ class RecycleReportInput:
 def msg_to_dto(row: GameMessage) -> GameMessageRecord:
     """Convert a `GameMessage` ORM row into a frozen `GameMessageRecord` DTO."""
     return GameMessageRecord(
-        id=int(row.id),
-        ingested_ts=float(row.ingested_ts),
+        id=to_int(row.id, 0),
+        ingested_ts=to_float(row.ingested_ts, 0.0),
         msg_uid=row.msg_uid,
         server_msg_id=row.server_msg_id,
         folder_type=row.folder_type,
@@ -83,28 +83,28 @@ def msg_to_dto(row: GameMessage) -> GameMessageRecord:
         raw_html=row.raw_html,
         parsed_json=row.parsed_json,
         deleted_in_game=bool(row.deleted_in_game),
-        deleted_ts=float(row.deleted_ts) if row.deleted_ts is not None else None,
+        deleted_ts=to_float(row.deleted_ts, 0.0) if row.deleted_ts is not None else None,
     )
 
 
 def recycle_to_dto(row: RecycleReport) -> RecycleReportRecord:
     """Convert a `RecycleReport` ORM row into a frozen `RecycleReportRecord` DTO."""
     return RecycleReportRecord(
-        id=int(row.id),
-        ts=float(row.ts),
+        id=to_int(row.id, 0),
+        ts=to_float(row.ts, 0.0),
         msg_uid=row.msg_uid,
         server_msg_id=row.server_msg_id,
         msg_date_text=row.msg_date_text,
         coords=normalize_coords(row.coords) if row.coords else "",
-        recycler_count=int(row.recycler_count),
-        cargo_capacity=int(row.cargo_capacity),
-        debris_avail_pig=int(row.debris_avail_pig),
-        debris_avail_metal=int(row.debris_avail_metal),
-        harvested_pig_iron=int(row.harvested_pig_iron),
-        harvested_metal=int(row.harvested_metal),
-        harvested_kryptonite=int(row.harvested_kryptonite),
-        harvested_spice=int(row.harvested_spice),
-        harvested_spice_eq=float(row.harvested_spice_eq),
+        recycler_count=to_int(row.recycler_count, 0),
+        cargo_capacity=to_int(row.cargo_capacity, 0),
+        debris_avail_pig=to_int(row.debris_avail_pig, 0),
+        debris_avail_metal=to_int(row.debris_avail_metal, 0),
+        harvested_pig_iron=to_int(row.harvested_pig_iron, 0),
+        harvested_metal=to_int(row.harvested_metal, 0),
+        harvested_kryptonite=to_int(row.harvested_kryptonite, 0),
+        harvested_spice=to_int(row.harvested_spice, 0),
+        harvested_spice_eq=to_float(row.harvested_spice_eq, 0.0),
         raw_text=row.raw_text,
     )
 

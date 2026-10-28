@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from spaceinvasion.core.config import StrategyConfig, load_strategy_config
-from spaceinvasion.db.config_store import load_strategy_config as load_db_strategy_config
+from spaceinvasion.db import config_store as _config_store
 from spaceinvasion.db.dsn import (
     ResolvedDatabaseConfig,
     build_default_postgres_url,
@@ -226,7 +226,7 @@ def resolve_initial_strategy_config(
     if config_path is not None:
         return load_strategy_config(config_path)
     if log_dir is not None or db_backend is not None or db_url is not None or is_container_runtime():
-        return load_db_strategy_config(None)
+        return _config_store.load_strategy_config(None)
     return StrategyConfig()
 
 

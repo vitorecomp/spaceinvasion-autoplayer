@@ -23,11 +23,16 @@ def persist_config_optimizer_result(
         if ctx.planner_closed:
             return 0
         if ctx.db is not None:
+            norm_floors: dict[str, dict[str, int]] = {
+                str(k): {str(bk): int(bv) for bk, bv in v.items() if isinstance(bv, int) and not isinstance(bv, bool)}
+                for k, v in reserved_floors.items()
+                if isinstance(v, Mapping)
+            }
             run_id = int(
                 ctx.db.record_config_optimizer_run(
                     result,
                     params=params,
-                    reserved_floors=reserved_floors,
+                    reserved_floors=norm_floors,
                     trigger_source=trigger_source,
                     elapsed_ms=elapsed_ms,
                     set_active=True,

@@ -7,7 +7,8 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from types import TracebackType
 
-from sqlalchemy import Engine, inspect
+from sqlalchemy import Engine, inspect, text
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from spaceinvasion.db.dsn import redact_db_url
@@ -253,6 +254,16 @@ class DatabaseStore:
         """Execute `query_db_verify` inside a dedicated read transaction."""
         with self.session() as active_session:
             return query_db_verify(active_session, self._db_engine)
+
+    def snapshot_xid(self) -> int:
+        """Return PostgreSQL `pg_snapshot_xmax(pg_current_snapshot())` for cross-process cache invalidation."""
+        try:
+            with self._db_engine.engine.connect() as conn:
+                raw = conn.execute(text("SELECT pg_snapshot_xmax(pg_current_snapshot())::text")).scalar()
+                conn.rollback()
+            return int(str(raw)) if raw is not None else 0
+        except (SQLAlchemyError, ValueError, TypeError):
+            return 0
 
     def close(self) -> None:
         """Dispose pooled SQLAlchemy connections."""

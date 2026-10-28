@@ -54,6 +54,19 @@ class BridgeApiFacade(Protocol):
         start_system: int | None = None,
     ) -> dict[str, object]: ...
 
+    def run_galaxy_sweep(
+        self,
+        *,
+        pages: int | None = None,
+        galaxy: int | None = None,
+        start_system: int | None = None,
+        delay_range: tuple[float, float] | None = None,
+        dry_run: bool = False,
+        priority: str = "normal",
+        automatic: bool = False,
+        manual: bool | None = None,
+    ) -> dict[str, object]: ...
+
     def stop_galaxy_sweep_now(self) -> dict[str, object]: ...
 
     def get_galaxy_sweep_state_locked(self) -> dict[str, object]: ...
@@ -159,7 +172,7 @@ class BridgeApiFacade(Protocol):
 
     def fleet_planner_get(self, payload: Mapping[str, object]) -> dict[str, object]: ...
 
-    def maybe_trigger_ai_drift_replan(self) -> bool: ...
+    def maybe_trigger_ai_drift_replan(self) -> str | None: ...
 
     def sync_spio_if_unread(
         self,

@@ -169,6 +169,9 @@ class BridgeContext:
         self.active_ai_cache: dict[str, object] | None = None
         self.last_bot_control_payload: dict[str, object] | None = None
         self.last_dashboard_payload: dict[str, object] | None = None
+        self.dash_full_cache_key: object = None
+        self.dash_full_cache_json: str | None = None
+        self.snapshot_dirty: bool = True
         self.rank_history_path: Path | None = None
         self.rank_samples: list[dict[str, object]] = []
         self.raid_targets: tuple[dict[str, object], ...] = ()
@@ -350,6 +353,9 @@ class BridgeContext:
         self.co_goals_cache = None
         self.active_ai_cache_key = None
         self.active_ai_cache = None
+        self.dash_full_cache_key = None
+        self.dash_full_cache_json = None
+        self.snapshot_dirty = True
 
     def db_total_changes_token(self) -> tuple[int, int, int] | None:
         """Return the database change token used to memoize read-only DB projections."""

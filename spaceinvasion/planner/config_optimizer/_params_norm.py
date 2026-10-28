@@ -8,7 +8,7 @@ import math
 
 import numpy as np
 
-from spaceinvasion.core import game_data
+from spaceinvasion.core import catalog as game_data
 from spaceinvasion.core.coercion import coerce_finite_float, coerce_int, coerce_optional_int
 from spaceinvasion.core.coords import normalize_coords
 from spaceinvasion.core.model import is_building_allowed_on_planet_type

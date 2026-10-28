@@ -11,7 +11,7 @@ from typing import NamedTuple
 
 import numpy as np
 
-from spaceinvasion.core import game_data
+from spaceinvasion.core import catalog as game_data
 from spaceinvasion.planner.config_optimizer._protocols import PlanetLike, as_int_dict, map_float, map_int, map_str
 from spaceinvasion.planner.config_optimizer._search_reserve import GAHistoryRow, RoundRow
 from spaceinvasion.planner.config_optimizer.catalog_math import full_cost, ship_info, spice_eq

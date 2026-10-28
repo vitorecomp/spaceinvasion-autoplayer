@@ -488,9 +488,10 @@ def run_api_session(*, timeout: float = 600.0) -> dict[str, Any]:
     proxy = _ClockTimeProxy(clock)
     with ExitStack() as stack:
         stack.callback(http.close)
-        # The harness patches `time` in the runtime modules; these also read the clock.
-        for module in (overview_mod, queues_mod, config_store_mod):
-            stack.enter_context(mock.patch.object(module, "time", proxy))
+        # The harness patches `time` in the runtime/db/session modules; these parsing modules also read the clock.
+        for module in (overview_mod, queues_mod):
+            if "time" in getattr(module, "__dict__", {}):
+                stack.enter_context(mock.patch.object(module, "time", proxy))
         h = stack.enter_context(harness)
         for step in API_STEPS:
             out[step.case] = _send(http, h.base_url, step, server, clock, timeout)

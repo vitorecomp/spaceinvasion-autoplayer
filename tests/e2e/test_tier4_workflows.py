@@ -29,7 +29,7 @@ from spaceinvasion.core.model import (
     EnergyBalance,
     Resources,
 )
-from spaceinvasion.db.storage import GameDatabase
+from tests.pg_harness import open_test_db as GameDatabase
 from spaceinvasion.core.model import PlannedAction
 from spaceinvasion.planner.heuristics import (
     BLAST_FURNACE,
@@ -840,9 +840,9 @@ class TestTier4Workflows(unittest.TestCase):
             db2 = h.api.send_command({"command": "db_summary"})["db"]
             self.assertTrue(any(t["coords"] == "02:380:04" for t in db2["spy_targets"]))
             assert h.bridge._db is not None
-            with h.bridge._db._lock:
-                raids2 = h.bridge._db._conn.execute("SELECT COUNT(*) FROM raid_history").fetchone()[0]
-                snaps2 = h.bridge._db._conn.execute("SELECT COUNT(*) FROM rank_snapshots").fetchone()[0]
+            counts2 = h.bridge._db.summary()["counts"]
+            raids2 = counts2["raid_history"]
+            snaps2 = counts2["rank_snapshots"]
             self.assertGreaterEqual(raids2, 1)
             self.assertGreaterEqual(snaps2, 1)
 

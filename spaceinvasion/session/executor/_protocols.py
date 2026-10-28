@@ -194,8 +194,6 @@ class ExecutorContext:
             self.executed_timestamps.popleft()
 
     def remaining_hourly_budget(self) -> int:
-        if not self.enforce_hourly_cap:
-            return 999_999
         self.prune_hour_window()
         return max(0, self.max_actions_per_hour - len(self.executed_timestamps))
 

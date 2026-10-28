@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from spaceinvasion.db.models import GalaxySlot, GalaxySlotHistory, SpyTarget
 from spaceinvasion.db.repos._helpers import clamp_int64, normalize_coords, parse_coords_gsp, sanitize_text, to_int
+from spaceinvasion.db.repos._intel_helpers import coalesce_legacy_spy_target_coords
 from spaceinvasion.db.repos.settings import SettingsRepository
 
 
@@ -324,6 +325,9 @@ def sync_slots_to_spy_targets_and_debris(
         }
         saved_occupied += 1
 
+    all_sync_coords = list(probed_free.keys()) + reset_free_coords + list(occupied_rows.keys())
+    if all_sync_coords:
+        coalesce_legacy_spy_target_coords(session, all_sync_coords)
     if probed_free:
         _upsert_probed_free_targets(session, list(probed_free.values()))
     if reset_free_coords:

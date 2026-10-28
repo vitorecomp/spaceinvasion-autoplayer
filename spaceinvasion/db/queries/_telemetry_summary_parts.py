@@ -12,6 +12,7 @@ from spaceinvasion.db.repos._helpers import (
     loads_json_dict,
     sanitize_text,
     spice_equivalent_from_counts,
+    to_float,
     to_int,
 )
 
@@ -44,7 +45,7 @@ def summarize_spy_targets(session: Session) -> tuple[int, dict[str, object]]:
     spied_cnt = 0
     known_sp = 0.0
     for r in res_rows:
-        if float(r[0] or 0.0) > 0.0:
+        if to_float(r[0], 0.0) > 0.0:
             spied_cnt += 1
         known_sp += spice_equivalent_from_counts(
             cap_json_int(int(r[1] or 0)),
@@ -78,8 +79,8 @@ def summarize_planet_snapshots(session: Session) -> tuple[int, dict[str, object]
         latest_ts_raw = session.execute(
             select(PlanetSnapshot.ts).order_by(PlanetSnapshot.ts.desc(), PlanetSnapshot.id.desc()).limit(1)
         ).scalar_one_or_none()
-        first_ts = float(first_ts_raw) if first_ts_raw is not None else None
-        latest_ts = float(latest_ts_raw) if latest_ts_raw is not None else None
+        first_ts = to_float(first_ts_raw, 0.0) if first_ts_raw is not None else None
+        latest_ts = to_float(latest_ts_raw, 0.0) if latest_ts_raw is not None else None
 
         rn_first = func.row_number().over(
             partition_by=PlanetSnapshot.planet_id, order_by=(PlanetSnapshot.ts.asc(), PlanetSnapshot.id.asc())
@@ -158,11 +159,11 @@ def summarize_rank_snapshots(session: Session) -> tuple[int, int, float, float, 
     """Summarize rank progression and return `(count, srv_delta, est_delta, latest_pph, pph_delta, payload)`."""
     rows = session.execute(select(RankSnapshot).order_by(RankSnapshot.ts.asc(), RankSnapshot.id.asc())).scalars().all()
     rk_count = len(rows)
-    est_vals = [float(r.estimated_points or 0.0) for r in rows]
-    sp_vals = [cap_json_int(int(r.server_points)) for r in rows if r.server_points is not None]
-    sr_vals = [cap_json_int(int(r.server_rank)) for r in rows if r.server_rank is not None]
-    pph_vals = [float(r.pts_per_hr or 0.0) for r in rows]
-    spice_vals = [float(r.spice_value or 0.0) for r in rows]
+    est_vals = [to_float(r.estimated_points, 0.0) for r in rows]
+    sp_vals = [cap_json_int(to_int(r.server_points, 0)) for r in rows if r.server_points is not None]
+    sr_vals = [cap_json_int(to_int(r.server_rank, 0)) for r in rows if r.server_rank is not None]
+    pph_vals = [to_float(r.pts_per_hr, 0.0) for r in rows]
+    spice_vals = [to_float(r.spice_value, 0.0) for r in rows]
 
     est_delta = round(est_vals[-1] - est_vals[0], 3) if rk_count >= 1 else 0.0
     srv_pts_delta = (sp_vals[-1] - sp_vals[0]) if sp_vals else 0
@@ -171,13 +172,13 @@ def summarize_rank_snapshots(session: Session) -> tuple[int, int, float, float, 
     latest_pph = round(pph_vals[-1], 3) if rk_count >= 1 else 0.0
     trajectory = [
         {
-            "ts": float(r.ts or 0.0),
-            "estimated_points": float(r.estimated_points or 0.0),
-            "server_points": cap_json_int(int(r.server_points)) if r.server_points is not None else None,
-            "server_rank": cap_json_int(int(r.server_rank)) if r.server_rank is not None else None,
-            "pts_per_hr": float(r.pts_per_hr or 0.0),
-            "spice_value": float(r.spice_value or 0.0),
-            "planets": cap_json_int(max(1, int(r.planets or 1))),
+            "ts": to_float(r.ts, 0.0),
+            "estimated_points": to_float(r.estimated_points, 0.0),
+            "server_points": cap_json_int(to_int(r.server_points, 0)) if r.server_points is not None else None,
+            "server_rank": cap_json_int(to_int(r.server_rank, 0)) if r.server_rank is not None else None,
+            "pts_per_hr": to_float(r.pts_per_hr, 0.0),
+            "spice_value": to_float(r.spice_value, 0.0),
+            "planets": cap_json_int(max(1, to_int(r.planets, 1))),
         }
         for r in rows[-240:]
     ]
@@ -189,8 +190,8 @@ def summarize_rank_snapshots(session: Session) -> tuple[int, int, float, float, 
         pph_delta,
         {
             "count": rk_count,
-            "first_ts": float(rows[0].ts) if rows else None,
-            "latest_ts": float(rows[-1].ts) if rows else None,
+            "first_ts": to_float(rows[0].ts, 0.0) if rows else None,
+            "latest_ts": to_float(rows[-1].ts, 0.0) if rows else None,
             "first_estimated_points": round(est_vals[0], 3) if est_vals else 0.0,
             "latest_estimated_points": round(est_vals[-1], 3) if est_vals else 0.0,
             "min_estimated_points": round(min(est_vals), 3) if est_vals else 0.0,

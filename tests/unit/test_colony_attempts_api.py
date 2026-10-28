@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from spaceinvasion.parsing.models import GalaxySlot
 from spaceinvasion.core.model import (
@@ -89,7 +89,7 @@ class TestColonyAttemptsApi(unittest.TestCase):
             )
 
         with patch.object(self.bridge._live_executor, "execute_action", side_effect=_fake_exec):
-            return self.bridge.execution.execute_and_summarize(None, state, cmd, planned, False)
+            return self.bridge.execution.execute_and_summarize(cmd, MagicMock(), state, planned, dry_run=False)
 
     @staticmethod
     def _colonize_action(origin: PlanetState, target: str) -> PlannedAction:

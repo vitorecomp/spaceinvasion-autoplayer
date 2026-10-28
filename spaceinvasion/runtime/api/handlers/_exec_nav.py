@@ -147,8 +147,12 @@ def _cmd_sync_planet_names(bridge: BrowserBridgeFacade, params: SyncPlanetNamesP
                 fetched_home=False,
                 observed_active_planet=False,
             )
+        raw_synced = sync_out.get("synced")
+        synced_rows: list[object] = list(raw_synced) if isinstance(raw_synced, (list, tuple)) else []
+        raw_skipped = sync_out.get("skipped")
+        skipped_rows: list[object] = list(raw_skipped) if isinstance(raw_skipped, (list, tuple)) else []
         reconcile_batch: dict[int, str] = {}
-        for s_row in sync_out.get("synced") or ():
+        for s_row in synced_rows:
             if isinstance(s_row, Mapping):
                 s_pid = safe_api_int(s_row.get("planet_id"), 0)
                 obs_gname = str(s_row.get("game_name") or "").strip()
@@ -162,9 +166,9 @@ def _cmd_sync_planet_names(bridge: BrowserBridgeFacade, params: SyncPlanetNamesP
             {
                 "ok": bool(sync_out.get("ok", True)),
                 "command": "sync_planet_names",
-                "synced_count": int(sync_out.get("synced_count", 0) or 0),
-                "synced": list(sync_out.get("synced") or []),
-                "skipped": list(sync_out.get("skipped") or []),
+                "synced_count": safe_api_int(sync_out.get("synced_count"), 0),
+                "synced": synced_rows,
+                "skipped": skipped_rows,
                 "custom_planet_names": bridge.names.get_custom_planet_names_locked(),
                 "message": str(sync_out.get("message") or "Synced planet names in-game."),
             }
@@ -191,9 +195,11 @@ def _cmd_scan_galaxy(bridge: BrowserBridgeFacade, params: ScanGalaxyParams) -> d
                 include_home=False,
                 priority="interactive",
             )
-            state = bridge.state_cache.record_state(
-                snap, fetched_home=False, observed_active_planet=bool(live_client.last_snapshot_observed_active_planet)
-            )
+            try:
+                obs_active = bool(live_client.last_snapshot_observed_active_planet)
+            except AttributeError:
+                obs_active = False
+            state = bridge.state_cache.record_state(snap, fetched_home=False, observed_active_planet=obs_active)
         planet = ctx.resolve_planet(state, pid)
         gal_arg = parse_command_int("galaxy", params.galaxy, allow_none=True, min_val=1, max_val=1000)
         sys_arg = parse_command_int("system", params.system, allow_none=True, min_val=1, max_val=1000)
@@ -247,9 +253,11 @@ def _cmd_activate_transmitter(bridge: BrowserBridgeFacade, params: ActivateTrans
                 include_home=False,
                 priority="interactive",
             )
-            state = bridge.state_cache.record_state(
-                snap, fetched_home=False, observed_active_planet=bool(live_client.last_snapshot_observed_active_planet)
-            )
+            try:
+                obs_active = bool(live_client.last_snapshot_observed_active_planet)
+            except AttributeError:
+                obs_active = False
+            state = bridge.state_cache.record_state(snap, fetched_home=False, observed_active_planet=obs_active)
         hw_pid = homeworld_planet_id(state)
         planet = ctx.resolve_planet(state, hw_pid if hw_pid is not None else pid)
         planned = PlannedAction(

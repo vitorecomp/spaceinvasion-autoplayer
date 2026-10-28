@@ -20,6 +20,7 @@ Provides:
 from __future__ import annotations
 
 import atexit
+from collections.abc import Sequence
 import contextlib
 import os
 from pathlib import Path
@@ -855,7 +856,7 @@ class PostgresTestRedirector:
                     redirector._open_dbs.append(weakref.ref(gw))
                 return gw
 
-            def _wrapped_load_cfg(path: Any = None) -> Any:
+            def _wrapped_load_cfg(path: Any = None, *, env: Any = None) -> Any:
                 if redirector._enabled and path is None:
                     env_url = str(os.environ.get("SPACEINVASION_DB_URL") or "").strip().lower()
                     if not env_url.startswith(("postgresql://", "postgres://")):
@@ -863,15 +864,15 @@ class PostgresTestRedirector:
                 if redirector._enabled and path is not None:
                     mapped = redirector.lookup_mapped_dsn(path)
                     if mapped is not None:
-                        return redirector._orig_load_cfg(mapped)
-                return redirector._orig_load_cfg(path)
+                        return redirector._orig_load_cfg(mapped, env=env)
+                return redirector._orig_load_cfg(path, env=env)
 
-            def _wrapped_save_cfg(cfg: Any, path: Any = None) -> Any:
+            def _wrapped_save_cfg(cfg: Any, path: Any = None, *, env: Any = None) -> Any:
                 if redirector._enabled and path is not None:
                     mapped = redirector.lookup_mapped_dsn(path)
                     if mapped is not None:
-                        return redirector._orig_save_cfg(cfg, mapped)
-                return redirector._orig_save_cfg(cfg, path)
+                        return redirector._orig_save_cfg(cfg, mapped, env=env)
+                return redirector._orig_save_cfg(cfg, path, env=env)
 
             def _wrapped_load_rank_history(history_path: Any = None) -> list[dict[str, Any]]:
                 if redirector._enabled and history_path is not None:
@@ -904,11 +905,11 @@ class PostgresTestRedirector:
                 return redirector._orig_save_cfg_json(cfg, path)
 
             ctx_init_mod.open_runtime_gateway = _wrapped_open_gateway  # type: ignore[assignment]
-            config_store_mod.load_strategy_config = _wrapped_load_cfg
-            config_store_mod.save_strategy_config = _wrapped_save_cfg
-            config_mod.load_strategy_config = _wrapped_load_cfg_json
-            config_mod.save_strategy_config = _wrapped_save_cfg_json
-            points_mod.load_rank_history = _wrapped_load_rank_history
+            config_store_mod.load_strategy_config = _wrapped_load_cfg  # type: ignore[assignment]
+            config_store_mod.save_strategy_config = _wrapped_save_cfg  # type: ignore[assignment]
+            config_mod.load_strategy_config = _wrapped_load_cfg_json  # type: ignore[assignment]
+            config_mod.save_strategy_config = _wrapped_save_cfg_json  # type: ignore[assignment]
+            points_mod.load_rank_history = _wrapped_load_rank_history  # type: ignore[assignment]
             _ = dsn_mod.is_unix_socket_dsn
             self._installed = True
 
@@ -937,3 +938,66 @@ _REDIRECTOR = PostgresTestRedirector()
 
 def get_pg_redirector() -> PostgresTestRedirector:
     return _REDIRECTOR
+
+
+def open_test_db(
+    db_path: Any = None,
+    *,
+    backend: Optional[str] = None,
+    postgres_url: Optional[str] = None,
+    pool_size: int = 1,
+    max_overflow: int = 4,
+    ensure_ready: bool = True,
+) -> Any:
+    """Open an isolated PostgreSQL `RuntimeDatabaseGateway` for unit and E2E tests."""
+    from spaceinvasion.db.dsn import is_postgres_dsn, normalize_backend_name
+    from spaceinvasion.runtime.bridge import _context_init as ctx_init_mod
+    from spaceinvasion.runtime.bridge._db_gateway import RuntimeDatabaseGateway
+
+    if backend is not None and str(backend).strip().lower() not in ("", "auto"):
+        normalize_backend_name(backend)
+    target = postgres_url if postgres_url is not None else db_path
+    if target is not None and is_postgres_dsn(str(target)):
+        gw = RuntimeDatabaseGateway.from_dsn(
+            str(target).strip(),
+            pool_size=pool_size,
+            max_overflow=max_overflow,
+            ensure_ready=ensure_ready,
+        )
+        with _REDIRECTOR._lock:
+            _REDIRECTOR._open_dbs.append(weakref.ref(gw))
+        return gw
+    return ctx_init_mod.open_runtime_gateway(
+        target if target is not None else ":memory:",
+        db_backend=backend,
+        pool_size=pool_size,
+        max_overflow=max_overflow,
+    )
+
+
+def run_pg_query(db: Any, sql: str, params: Sequence[Any] = ()) -> list[dict[str, Any]]:
+    """Run a read-only PostgreSQL query against a test gateway and return dict rows."""
+    from psycopg.rows import dict_row
+
+    dsn = str(getattr(db, "postgres_url", "") or "").strip()
+    if not dsn:
+        raise RuntimeError("run_pg_query requires a PostgreSQL-backed gateway with postgres_url")
+    with psycopg.connect(dsn, row_factory=dict_row) as conn:
+        if params:
+            pg_sql = sql.replace("?", "%s")
+            return list(conn.execute(pg_sql, tuple(params)).fetchall())
+        return list(conn.execute(sql).fetchall())
+
+
+def run_pg_exec(db: Any, sql: str, params: Sequence[Any] = ()) -> None:
+    """Execute a raw PostgreSQL statement against a test gateway and commit."""
+    dsn = str(getattr(db, "postgres_url", "") or "").strip()
+    if not dsn:
+        raise RuntimeError("run_pg_exec requires a PostgreSQL-backed gateway with postgres_url")
+    with psycopg.connect(dsn) as conn:
+        if params:
+            pg_sql = sql.replace("?", "%s")
+            conn.execute(pg_sql, tuple(params))
+        else:
+            conn.execute(sql)
+        conn.commit()

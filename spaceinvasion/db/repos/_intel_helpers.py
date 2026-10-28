@@ -2,16 +2,16 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 
-from sqlalchemy import case, func
+from sqlalchemy import case, func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from spaceinvasion.db.dto import SpyReportDTO, SpyTargetRecord
 from spaceinvasion.db.models import SpyReportRecord, SpyTarget
-from spaceinvasion.db.repos._helpers import normalize_coords
+from spaceinvasion.db.repos._helpers import coord_query_variants, normalize_coords, to_float, to_int
 
 
 @dataclass(frozen=True)
@@ -74,54 +74,90 @@ def spy_target_to_dto(row: SpyTarget) -> SpyTargetRecord:
         is_inactive=bool(row.is_inactive),
         is_spacia=bool(row.is_spacia),
         has_debris=bool(row.has_debris),
-        points=int(row.points) if row.points is not None else None,
-        pig_iron=int(row.pig_iron),
-        metal=int(row.metal),
-        kryptonite=int(row.kryptonite),
-        spice=int(row.spice),
+        points=to_int(row.points, 0) if row.points is not None else None,
+        pig_iron=to_int(row.pig_iron, 0),
+        metal=to_int(row.metal, 0),
+        kryptonite=to_int(row.kryptonite, 0),
+        spice=to_int(row.spice, 0),
         fleet_json=row.fleet_json,
         defense_json=row.defense_json,
         dug_in=bool(row.dug_in),
-        last_scanned_ts=float(row.last_scanned_ts),
-        last_spied_ts=float(row.last_spied_ts),
-        blocked_until_ts=float(row.blocked_until_ts),
+        last_scanned_ts=to_float(row.last_scanned_ts, 0.0),
+        last_spied_ts=to_float(row.last_spied_ts, 0.0),
+        blocked_until_ts=to_float(row.blocked_until_ts, 0.0),
         block_reason=row.block_reason,
-        bash_hits=int(row.bash_hits),
-        last_blocked_ts=float(row.last_blocked_ts),
-        uninhabited_fields=int(row.uninhabited_fields) if row.uninhabited_fields is not None else None,
-        spy_count=int(row.spy_count),
+        bash_hits=to_int(row.bash_hits, 0),
+        last_blocked_ts=to_float(row.last_blocked_ts, 0.0),
+        uninhabited_fields=to_int(row.uninhabited_fields, 0) if row.uninhabited_fields is not None else None,
+        spy_count=to_int(row.spy_count, 0),
         is_own_planet=bool(row.is_own_planet),
         merged_into=row.merged_into,
-        colonize_min_fields=int(row.colonize_min_fields) if row.colonize_min_fields is not None else None,
-        colonize_max_fields=int(row.colonize_max_fields) if row.colonize_max_fields is not None else None,
-        temperature=int(row.temperature) if row.temperature is not None else None,
+        colonize_min_fields=to_int(row.colonize_min_fields, 0) if row.colonize_min_fields is not None else None,
+        colonize_max_fields=to_int(row.colonize_max_fields, 0) if row.colonize_max_fields is not None else None,
+        temperature=to_int(row.temperature, 0) if row.temperature is not None else None,
     )
 
 
 def spy_report_to_dto(row: SpyReportRecord) -> SpyReportDTO:
     """Convert a `SpyReportRecord` ORM row into a frozen `SpyReportDTO`."""
     return SpyReportDTO(
-        id=int(row.id),
-        ts=float(row.ts),
+        id=to_int(row.id, 0),
+        ts=to_float(row.ts, 0.0),
         target_coords=normalize_coords(row.target_coords),
         owner=row.owner,
         planet_name=row.planet_name,
         is_spacia=bool(row.is_spacia),
-        pig_iron=int(row.pig_iron),
-        metal=int(row.metal),
-        kryptonite=int(row.kryptonite),
-        spice=int(row.spice),
-        loot_spice_eq=float(row.loot_spice_eq),
+        pig_iron=to_int(row.pig_iron, 0),
+        metal=to_int(row.metal, 0),
+        kryptonite=to_int(row.kryptonite, 0),
+        spice=to_int(row.spice, 0),
+        loot_spice_eq=to_float(row.loot_spice_eq, 0.0),
         buildings_json=row.buildings_json,
         fleet_json=row.fleet_json,
         defense_json=row.defense_json,
         researches_json=row.researches_json,
         dug_in=bool(row.dug_in) if row.dug_in is not None else None,
-        uninhabited_fields=int(row.uninhabited_fields) if row.uninhabited_fields is not None else None,
+        uninhabited_fields=to_int(row.uninhabited_fields, 0) if row.uninhabited_fields is not None else None,
         server_msg_id=row.server_msg_id,
         msg_date_text=row.msg_date_text,
         raw_text=row.raw_text,
     )
+
+
+def coalesce_legacy_spy_target_coords(session: Session, norm_coords_list: Sequence[str]) -> None:
+    """Promote legacy unpadded `spy_targets` keys (e.g. `'2:380:4'`) to canonical `'02:380:04'` non-destructively."""
+    alt_to_canon: dict[str, str] = {}
+    for raw_c in norm_coords_list:
+        nc = normalize_coords(raw_c)
+        if not nc:
+            continue
+        for variant in coord_query_variants(nc):
+            if variant != nc:
+                alt_to_canon[variant] = nc
+    if not alt_to_canon:
+        return
+    legacy_rows = (
+        session.execute(
+            select(SpyTarget).where(SpyTarget.coords.in_(sorted(alt_to_canon)), SpyTarget.merged_into == "")
+        )
+        .scalars()
+        .all()
+    )
+    if not legacy_rows:
+        return
+    canon_needed = sorted({alt_to_canon[r.coords] for r in legacy_rows if r.coords in alt_to_canon})
+    existing_canon = set(
+        session.execute(select(SpyTarget.coords).where(SpyTarget.coords.in_(canon_needed))).scalars().all()
+    )
+    for leg in legacy_rows:
+        canon = alt_to_canon.get(leg.coords)
+        if not canon:
+            continue
+        if canon not in existing_canon:
+            session.execute(update(SpyTarget).where(SpyTarget.coords == leg.coords).values(coords=canon))
+            existing_canon.add(canon)
+        else:
+            session.execute(update(SpyTarget).where(SpyTarget.coords == leg.coords).values(merged_into=canon))
 
 
 def upsert_spy_target_from_report(
@@ -143,6 +179,7 @@ def upsert_spy_target_from_report(
     now_ts: float,
 ) -> None:
     """Upsert `spy_targets` from a newly ingested spy report without overwriting protection flags."""
+    coalesce_legacy_spy_target_coords(session, (norm_c,))
     pig_i, met_i, kry_i, spi_i = resources
     stmt = pg_insert(SpyTarget).values(
         coords=norm_c,
@@ -197,6 +234,7 @@ def upsert_spy_target_from_report(
 __all__ = [
     "SpyReportInput",
     "SpyTargetUpsertInput",
+    "coalesce_legacy_spy_target_coords",
     "spy_report_to_dto",
     "spy_target_to_dto",
     "upsert_spy_target_from_report",

@@ -157,8 +157,10 @@ def enrich_raid_target_rows(
             if supports_kwarg(get_stats, "include_telemetry_summary")
             else get_stats()
         )
-        if isinstance(stats, Mapping) and isinstance(stats.get("per_target"), Mapping):
-            per_target = stats["per_target"]
+        if isinstance(stats, Mapping):
+            raw_pt = stats.get("per_target")
+            if isinstance(raw_pt, Mapping):
+                per_target = raw_pt
 
     enriched: list[dict[str, object]] = []
     for raw in rows:
@@ -190,7 +192,7 @@ def enrich_raid_target_rows(
                     "avg_attack_loot": sanitize_finite_json(dict(avg_loot)) if isinstance(avg_loot, Mapping) else {},
                     "avg_attack_loot_spice_eq": safe_api_float(pt.get("avg_loot_spice_eq", 0.0)),
                     "total_attack_loot": sanitize_finite_json(dict(tot_loot)) if isinstance(tot_loot, Mapping) else {},
-                    "total_attack_loot_spice_eq": safe_api_float(pt.get("total_attack_loot_spice_eq", 0.0)),
+                    "total_attack_loot_spice_eq": safe_api_float(pt.get("total_loot_spice_eq", 0.0)),
                     "recency_weighted_loot_spice_eq": safe_api_float(pt.get("recency_weighted_loot_spice_eq", 0.0)),
                     "last_attack_outcome": bounded_api_str(pt.get("last_outcome") or "", default=""),
                     "last_attack_loot": sanitize_finite_json(dict(last_loot)) if isinstance(last_loot, Mapping) else {},

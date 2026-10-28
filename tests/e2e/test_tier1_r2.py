@@ -525,11 +525,13 @@ class TestTier1R2(unittest.TestCase):
             self.assertEqual(last["ships"], {"s4": 20, "s1": 5})
 
             # Raid history recorded with is_exempt=1 for yellow inactive
+            from tests.pg_harness import run_pg_query
+
             assert h.bridge._db is not None
-            with h.bridge._db._lock:
-                rows = h.bridge._db._conn.execute(
-                    "SELECT target_coords, is_exempt FROM raid_history ORDER BY id DESC LIMIT 1"
-                ).fetchall()
+            rows = run_pg_query(
+                h.bridge._db,
+                "SELECT target_coords, is_exempt FROM raid_history ORDER BY id DESC LIMIT 1",
+            )
             self.assertEqual(len(rows), 1)
             self.assertEqual(rows[0]["target_coords"], "02:380:04")
             self.assertEqual(rows[0]["is_exempt"], 1)

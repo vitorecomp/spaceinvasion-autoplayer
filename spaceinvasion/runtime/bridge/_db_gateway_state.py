@@ -15,6 +15,8 @@ from spaceinvasion.db.dto.serializers import (
     hourly_production_to_dict,
     loot_recycle_window_to_dict,
     rank_sample_to_dict,
+    recent_action_to_dict,
+    tutorial_progress_to_dict,
 )
 from spaceinvasion.db.queries import query_last_throttle_timestamps, query_needs_loot_recycle_backfill
 from spaceinvasion.db.repos import (
@@ -27,6 +29,8 @@ from spaceinvasion.db.repos import (
 from spaceinvasion.runtime.bridge._db_gateway_common import (
     _clean_str,
     _GatewayCore,
+    _loads_dict,
+    _loads_list,
     _safe_float,
     _safe_int,
 )
@@ -171,6 +175,63 @@ class _StateGatewayMixin(_GatewayCore):
         self._bump_change()
         return row_id
 
+    def get_latest_state_hot(self, *, include_payload: bool = True) -> dict[str, object] | None:
+        """Read latest operational state snapshot from `latest_state_hot` (fallback `state_snapshots`)."""
+        with self._store.repositories() as repos:
+            rec = repos.snapshots.get_latest_state_hot(include_payload=include_payload)
+        if rec is None:
+            return None
+        out: dict[str, object] = {
+            "id": game_data.cap_json_int(rec.source_snapshot_id),
+            "ts": rec.ts,
+            "source": rec.source,
+            "universe_id": game_data.cap_json_int(rec.universe_id),
+            "user_id": game_data.cap_json_int(rec.user_id),
+            "nickname": rec.nickname,
+            "active_planet_id": game_data.cap_json_int(rec.active_planet_id),
+            "planet_count": game_data.cap_json_int(rec.planet_count),
+            "planned_action_count": game_data.cap_json_int(rec.planned_action_count),
+        }
+        if include_payload:
+            out["state"] = _loads_dict(rec.state_json or "{}")
+            out["plan"] = _loads_list(rec.plan_json or "[]")
+        return out
+
+    def get_state_snapshots(self, *, limit: int = 20, include_payload: bool = False) -> list[dict[str, object]]:
+        """List recent full state/plan snapshots newest first."""
+        with self._store.repositories() as repos:
+            rows = repos.snapshots.list_state_snapshots(limit=limit, include_payload=include_payload)
+        out: list[dict[str, object]] = []
+        for rec in rows:
+            item: dict[str, object] = {
+                "id": game_data.cap_json_int(rec.id),
+                "ts": rec.ts,
+                "source": rec.source,
+                "universe_id": game_data.cap_json_int(rec.universe_id),
+                "user_id": game_data.cap_json_int(rec.user_id),
+                "nickname": rec.nickname,
+                "active_planet_id": game_data.cap_json_int(rec.active_planet_id),
+                "planet_count": game_data.cap_json_int(rec.planet_count),
+                "planned_action_count": game_data.cap_json_int(rec.planned_action_count),
+            }
+            if include_payload:
+                item["state"] = _loads_dict(rec.state_json or "{}")
+                item["plan"] = _loads_list(rec.plan_json or "[]")
+            out.append(item)
+        return out
+
+    def get_recent_actions(self, limit: int = 25) -> list[dict[str, object]]:
+        """Return recent commander action audit records ordered newest first."""
+        with self._store.repositories() as repos:
+            rows = repos.telemetry.list_recent_actions(limit=limit)
+        return [recent_action_to_dict(r) for r in rows]
+
+    def get_tutorial_history(self) -> list[dict[str, object]]:
+        """Return persisted tutorial milestone progression ordered by step."""
+        with self._store.repositories() as repos:
+            rows = repos.telemetry.list_tutorial_progress()
+        return [tutorial_progress_to_dict(r) for r in rows]
+
     def load_latest_game_state(self) -> GameState | None:
         """Load the latest persisted `GameState` from `meta['latest_game_state']`."""
         raw = self.load_meta_json("latest_game_state")
@@ -211,7 +272,6 @@ class _StateGatewayMixin(_GatewayCore):
 
     def record_hourly_production(
         self,
-        *,
         pig_iron_per_hour: float = 0.0,
         metal_per_hour: float = 0.0,
         kryptonite_per_hour: float = 0.0,
@@ -246,7 +306,12 @@ class _StateGatewayMixin(_GatewayCore):
         """Return chronological per-minute empire production snapshots."""
         with self._store.repositories() as repos:
             rows = repos.telemetry.list_hourly_production(limit=limit)
-        return [hourly_production_to_dict(r) for r in rows]
+        out: list[dict[str, object]] = []
+        for rec in rows:
+            item = hourly_production_to_dict(rec)
+            item.pop("id", None)
+            out.append(item)
+        return out
 
     def get_loot_recycle_hourly(self, *, hours: int = 24, now_ts: float | None = None) -> dict[str, object]:
         """Return continuous chronological hourly loot + recycle series and KPI summary."""

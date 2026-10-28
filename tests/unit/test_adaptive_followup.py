@@ -558,8 +558,9 @@ class TestBridgeLedgersAndRealizedLoot(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             bridge = self._bridge(tmp, adaptive=True)
             try:
-                with patch.object(
-                    bridge, "_get_loot_recycle_telemetry_locked", return_value={"history": [], "summary": summary}
+                with patch(
+                    "spaceinvasion.runtime.bridge._ledgers_production.get_loot_recycle_hourly",
+                    return_value={"history": [], "summary": summary},
                 ):
                     realized = bridge.ledgers.get_realized_loot_hourly_locked()
                     self.assertEqual(
@@ -590,9 +591,8 @@ class TestBridgeLedgersAndRealizedLoot(unittest.TestCase):
                     self.assertNotIn("income_basis", live_off)
 
                 # A loot summary without per-resource totals (query failed) keeps the model in use.
-                with patch.object(
-                    bridge,
-                    "_get_loot_recycle_telemetry_locked",
+                with patch(
+                    "spaceinvasion.runtime.bridge._ledgers_production.get_loot_recycle_hourly",
                     return_value={"history": [], "summary": {"total_stolen": 0.0, "window_hours": 24}},
                 ):
                     self.assertIsNone(bridge.ledgers.get_realized_loot_hourly_locked())

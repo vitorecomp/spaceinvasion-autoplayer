@@ -19,7 +19,7 @@ from spaceinvasion.parsing.account_pages import (
     parse_daily_login_bonus,
     parse_transmitter_page,
 )
-from spaceinvasion.db.storage import GameDatabase
+from tests.pg_harness import open_test_db as GameDatabase
 from spaceinvasion.core.model import PlannedAction
 from spaceinvasion.planner.heuristics import plan_actions
 from spaceinvasion.runtime.bridge import GameApiBridge
@@ -1918,7 +1918,7 @@ class TestSweepAndTransmitter(unittest.TestCase):
                         visited_batch1.append((galaxy, system))
                         # Snapshot live in-progress summary AFTER page 1 has been persisted
                         if len(visited_batch1) == 2:
-                            sm = self._br._smart_sweep_summary or {}
+                            sm = self._br.ctx.smart_sweep_summary or {}
                             mid_sweep_snapshots.append(
                                 (
                                     int(sm.get("explored_systems", 0)),
@@ -1928,7 +1928,7 @@ class TestSweepAndTransmitter(unittest.TestCase):
                             )
                         # Simulate interruption right after page 3 (e.g. reload/pause)
                         if len(visited_batch1) == 3:
-                            self._br._bot_control["paused"] = True
+                            self._br.ctx.bot_control["paused"] = True
                     else:
                         visited_batch2.append((galaxy, system))
                     return _make_galaxy_html(galaxy, system, include_debris=False), galaxy, system

@@ -34,7 +34,7 @@ from spaceinvasion.core.model import (
     GameState,
     Resources,
 )
-from spaceinvasion.db.storage import GameDatabase
+from tests.pg_harness import open_test_db as GameDatabase
 from spaceinvasion.planner.heuristics import (
     BLAST_FURNACE,
     FUSION_PLANT,

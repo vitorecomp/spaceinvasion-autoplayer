@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
 import time
 
 from spaceinvasion.core.coords import normalize_coords
@@ -15,79 +14,27 @@ from spaceinvasion.runtime.api.handlers._galaxy_intel_helpers import (
     parse_origin_gsp,
     summarize_attack_results,
 )
+from spaceinvasion.runtime.api.handlers._galaxy_intel_params import (
+    AttackResultsParams,
+    EspionageIntelParams,
+    GalaxySweepParams,
+    RecyclerResultsParams,
+    ScannedSectorsParams,
+    UniverseResearchMaxParams,
+)
 from spaceinvasion.runtime.api.handlers._galaxy_intel_sectors import build_scanned_sectors_response
 from spaceinvasion.runtime.api.handlers._galaxy_intel_sweep import (
     run_dry_galaxy_sweep,
     try_sync_live_research_records,
 )
 from spaceinvasion.runtime.api.registry import CommandRegistry
-from spaceinvasion.runtime.api.validation import ApiRequestError, FieldBounds
+from spaceinvasion.runtime.api.validation import ApiRequestError
 from spaceinvasion.runtime.bridge._helpers import (
     GalaxyScanInProgressError,
     safe_api_float,
     safe_api_int,
     sanitize_json_dict,
 )
-
-
-@dataclass(frozen=True)
-class EspionageIntelParams:
-    """Parameters for querying enriched espionage targets and reports."""
-
-    limit: int = field(default=150, metadata={"bounds": FieldBounds(min_val=1, max_val=1000)})
-    coords: object = None
-
-
-@dataclass(frozen=True)
-class ScannedSectorsParams:
-    """Parameters for querying longitudinal scanned sector coverage and smart scan queue."""
-
-    galaxy: int | None = field(default=None, metadata={"bounds": FieldBounds(min_val=0, max_val=14)})
-    include_unscanned: object = None
-    limit: int = field(default=5600, metadata={"bounds": FieldBounds(min_val=1, max_val=5600)})
-    planet_id: int | None = field(default=None, metadata={"bounds": FieldBounds(min_val=1, max_val=2**63 - 1)})
-    preview_refresh_pct: int | None = field(default=None, metadata={"bounds": FieldBounds(min_val=0, max_val=100)})
-    preview_sweep_pages: int | None = field(default=None, metadata={"bounds": FieldBounds(min_val=1, max_val=400)})
-    preview_all_galaxies: object = None
-
-
-@dataclass(frozen=True)
-class UniverseResearchMaxParams:
-    """Parameters for reading or refreshing universe-wide max research records."""
-
-    sync: bool = False
-    dry_run: bool = False
-
-
-@dataclass(frozen=True)
-class AttackResultsParams:
-    """Parameters for querying battle reports, raid telemetry, and active bash/target blocks."""
-
-    limit: int = field(default=150, metadata={"bounds": FieldBounds(min_val=1, max_val=1000)})
-    coords: object = None
-
-
-@dataclass(frozen=True)
-class RecyclerResultsParams:
-    """Parameters for querying recycle reports, active debris targets, and inbox emails."""
-
-    limit: int = field(default=150, metadata={"bounds": FieldBounds(min_val=1, max_val=1000)})
-    category: object = None
-
-
-@dataclass(frozen=True)
-class GalaxySweepParams:
-    """Parameters for starting, stopping, resetting, inspecting, or dry-running a galaxy sweep."""
-
-    action: str | None = field(default=None, metadata={"bounds": FieldBounds(strip=True)})
-    pages: int | None = field(default=None, metadata={"bounds": FieldBounds(min_val=1, max_val=400)})
-    galaxy: int | None = field(default=None, metadata={"bounds": FieldBounds(min_val=1, max_val=14)})
-    start_galaxy: int | None = field(default=None, metadata={"bounds": FieldBounds(min_val=1, max_val=14)})
-    start_system: int | None = field(default=None, metadata={"bounds": FieldBounds(min_val=1, max_val=400)})
-    system: int | None = field(default=None, metadata={"bounds": FieldBounds(min_val=1, max_val=400)})
-    delay_min_ms: int | None = field(default=None, metadata={"bounds": FieldBounds(min_val=0, max_val=60_000)})
-    delay_max_ms: int | None = field(default=None, metadata={"bounds": FieldBounds(min_val=0, max_val=60_000)})
-    dry_run: bool = False
 
 
 def _handle_espionage_intel(bridge: BridgeApiFacade, params: EspionageIntelParams) -> dict[str, object]:
@@ -336,15 +283,32 @@ def _handle_galaxy_sweep(bridge: BridgeApiFacade, params: GalaxySweepParams) -> 
             state = bridge.reset_galaxy_sweep_cursor_locked(galaxy=eff_gal or 1, system=eff_sys or 1)
         bridge.publish_snapshot()
         return sanitize_json_dict({"ok": True, "command": "galaxy_sweep", "galaxy_sweep": state})
-    if params.dry_run:
-        return run_dry_galaxy_sweep(
-            bridge, pages=params.pages, galaxy=eff_gal, start_system=eff_sys, now_ts=time.time()
+    if action == "start":
+        if params.dry_run:
+            return run_dry_galaxy_sweep(
+                bridge, pages=params.pages, galaxy=eff_gal, start_system=eff_sys, now_ts=time.time()
+            )
+        started = bridge.start_galaxy_sweep_background(
+            manual=True, pages=params.pages, start_galaxy=eff_gal, start_system=eff_sys
         )
-    started = bridge.start_galaxy_sweep_background(
-        manual=True, pages=params.pages, start_galaxy=eff_gal, start_system=eff_sys
+        bridge.publish_snapshot()
+        return sanitize_json_dict({"ok": True, "command": "galaxy_sweep", **started})
+    delay_range: tuple[float, float] | None = None
+    if params.delay_min_ms is not None or params.delay_max_ms is not None:
+        lo_ms = max(0, params.delay_min_ms if params.delay_min_ms is not None else 0)
+        hi_ms = max(lo_ms, params.delay_max_ms if params.delay_max_ms is not None else lo_ms)
+        delay_range = (lo_ms / 1000.0, hi_ms / 1000.0)
+    return sanitize_json_dict(
+        bridge.run_galaxy_sweep(
+            pages=params.pages,
+            galaxy=eff_gal,
+            start_system=eff_sys,
+            delay_range=delay_range,
+            dry_run=bool(params.dry_run),
+            priority="interactive",
+            manual=True,
+        )
     )
-    bridge.publish_snapshot()
-    return sanitize_json_dict({"ok": True, "command": "galaxy_sweep", **started})
 
 
 def register_galaxy_intel_handlers(registry: CommandRegistry[BridgeApiFacade]) -> None:

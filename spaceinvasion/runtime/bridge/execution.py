@@ -6,7 +6,7 @@ from collections.abc import Callable
 from dataclasses import asdict
 
 from spaceinvasion.core.model import GameState, PlanetState, PlannedAction
-from spaceinvasion.planner.eta import attach_action_etas
+from spaceinvasion.planner.heuristics import attach_action_etas
 from spaceinvasion.runtime.bridge._context import BridgeContext
 from spaceinvasion.runtime.bridge._exec_after_state import (
     build_execution_summary,
@@ -138,12 +138,10 @@ class ActionExecutionService:
     ) -> dict[str, object]:
         """Run preflight checks, execute `action`, persist side-effects, refresh state, and summarize."""
         ctx = self._ctx
-        if client is None and not dry_run:
-            raise RuntimeError("Live action execution requires an active GameBrowserClient.")
         planned_list = attach_action_etas(state, [action])
         planned: PlannedAction = planned_list[0] if planned_list else action
 
-        if not dry_run:
+        if not dry_run and planned.executable_now:
             planned, abort_resp = self._run_preflight_guards(cmd, client, state, planned)
             if abort_resp is not None:
                 return abort_resp
@@ -154,14 +152,14 @@ class ActionExecutionService:
         try:
             if supports_kwarg(executor.execute_action, "active_planet_confirmed"):
                 res = executor.execute_action(
-                    client,  # type: ignore[arg-type]
+                    client,
                     state,
                     planned,
                     active_planet_confirmed=eff_confirmed,
                 )
             else:
                 res = executor.execute_action(
-                    client,  # type: ignore[arg-type]
+                    client,
                     state,
                     planned,
                 )

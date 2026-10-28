@@ -273,7 +273,9 @@ def run_galaxy_sweep_workflow(
             }
         )
     sweep_started_ts = round(time.time(), 3)
-    is_manual = bool(manual) if manual is not None else (not automatic and priority == "interactive")
+    started_with_scans_allowed = bool(ctx.strategy_config.allow_galaxy_scan)
+    enforce_scan_toggle = (automatic or started_with_scans_allowed) and priority != "interactive"
+    is_manual = bool(manual) if manual is not None else (not enforce_scan_toggle)
     try:
         batch = _init_sweep_batch_locked(
             ctx,

@@ -200,8 +200,16 @@ def build_transport_fleet_summary(
     if isinstance(transport_demand, Mapping):
         planned_cph = round(max(0.0, safe_api_float(transport_demand.get("cargo_per_hour_24h", 0.0), 0.0)), 2)
         rt_per_h = max(0.25, safe_api_float(transport_demand.get("round_trips_per_hour", 2.5), 2.5))
-    util = recompute_transport_utilization(ctx, rt_per_hour=rt_per_h, fallback_fleet_cargo=total_fleet_cargo)
-    deliv_stats = compute_delivered_transport_stats(ctx)
+    max_ev_ts = max(
+        (safe_api_float(e.get("ts"), 0.0) for e in ctx.delivered_transport_events if isinstance(e, Mapping)),
+        default=0.0,
+    )
+    st_ts = safe_api_float(state.timestamp, 0.0)
+    eff_now: float | None = st_ts if (st_ts > 0.0 and st_ts >= max_ev_ts) else None
+    util = recompute_transport_utilization(
+        ctx, now_ts=eff_now, rt_per_hour=rt_per_h, fallback_fleet_cargo=total_fleet_cargo
+    )
+    deliv_stats = compute_delivered_transport_stats(ctx, now_ts=eff_now)
     sizing_util = max(BridgeConstants.TRANSPORT_UTIL_DEFAULT, util)
     target_cargo = int(math.ceil(planned_cph / rt_per_h / sizing_util)) if planned_cph > 0.0 else 0
     deliv_cph = safe_api_float(deliv_stats["delivered_cargo_per_hour"], 0.0)

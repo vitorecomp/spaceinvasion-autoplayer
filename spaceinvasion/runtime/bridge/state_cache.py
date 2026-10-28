@@ -53,7 +53,7 @@ class StateCacheService:
         self._on_attach_raid_stats: Callable[[GameState], GameState] | None = None
         self._on_is_galaxy_scan_blocking: Callable[[], bool] | None = None
         self._on_galaxy_scan_busy_msg: Callable[[], str] | None = None
-        self._on_maybe_trigger_ai_drift_replan: Callable[[], bool] | None = None
+        self._on_maybe_trigger_ai_drift_replan: Callable[[], str | None] | None = None
         self._on_publish_snapshot: Callable[[], None] | None = None
 
     def bind_hooks(
@@ -68,7 +68,7 @@ class StateCacheService:
         on_attach_raid_stats: Callable[[GameState], GameState] | None = None,
         on_is_galaxy_scan_blocking: Callable[[], bool] | None = None,
         on_galaxy_scan_busy_msg: Callable[[], str] | None = None,
-        on_maybe_trigger_ai_drift_replan: Callable[[], bool] | None = None,
+        on_maybe_trigger_ai_drift_replan: Callable[[], str | None] | None = None,
         on_publish_snapshot: Callable[[], None] | None = None,
     ) -> None:
         """Wire post-record and read-time collaborator hooks explicitly."""
@@ -122,11 +122,18 @@ class StateCacheService:
         )
         if not isinstance(raw_snap, GameState):
             raise TypeError(f"Expected GameState from read_full_snapshot, got {type(raw_snap).__name__}")
-        if client.driver is not None:
-            cur_u = str(client.driver.current_url or "")
+        try:
+            drv = client.driver
+        except AttributeError:
+            drv = None
+        if drv is not None:
+            cur_u = str(drv.current_url or "")
             if cur_u:
                 self._ctx.last_url = cur_u
-        bonus_seen = client.last_home_daily_bonus_present
+        try:
+            bonus_seen: object = client.last_home_daily_bonus_present
+        except AttributeError:
+            bonus_seen = None
         if isinstance(bonus_seen, bool) and self._on_note_daily_bonus is not None:
             self._on_note_daily_bonus(bonus_seen)
         return raw_snap
@@ -254,8 +261,7 @@ class StateCacheService:
             update_snapshot_ts=update_snapshot_ts,
             persist_runtime_fn=self._lifecycle.persist_runtime_state,
         )
-        if self._on_publish_snapshot is not None:
-            self._on_publish_snapshot()
+        ctx.snapshot_dirty = True
         return merged
 
     def _serialize_enriched_state(self, state: GameState, *, sweep_in_progress: bool = False) -> dict[str, object]:
@@ -329,7 +335,10 @@ class StateCacheService:
                 )
                 if not include_buildings:
                     ctx.last_buildings_fetched = False
-                obs_active = bool(client.last_snapshot_observed_active_planet)
+                try:
+                    obs_active = bool(client.last_snapshot_observed_active_planet)
+                except AttributeError:
+                    obs_active = False
                 merged = self.record_state(
                     state,
                     fetched_buildings=include_buildings,

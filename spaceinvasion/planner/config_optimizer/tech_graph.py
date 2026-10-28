@@ -5,8 +5,8 @@ from __future__ import annotations
 from collections import deque
 from collections.abc import Iterable, Mapping
 
-from spaceinvasion.combat.fleet import DEFENSE_SLUG_BY_KEY, SHIP_SLUG_BY_KEY
-from spaceinvasion.core import game_data
+from spaceinvasion.core import catalog as game_data
+from spaceinvasion.core.catalog import DEFENSE_SLUG_BY_KEY, SHIP_SLUG_BY_KEY
 from spaceinvasion.core.coercion import coerce_finite_float, coerce_int
 from spaceinvasion.planner.config_optimizer.catalog_math import (
     build_monotonic_base_times,

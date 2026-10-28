@@ -9,7 +9,7 @@ from typing import Protocol, runtime_checkable
 
 import numpy as np
 
-from spaceinvasion.core import game_data
+from spaceinvasion.core import catalog as game_data
 from spaceinvasion.core.coercion import coerce_finite_float, coerce_int, coerce_optional_int
 from spaceinvasion.core.model import normalize_planet_type
 from spaceinvasion.planner.config_optimizer._model_plans import build_planet_plans, plan_research_levels

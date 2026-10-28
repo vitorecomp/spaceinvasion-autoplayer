@@ -15,7 +15,7 @@ import commander
 from tests.e2e.fixtures import make_midgame_state
 from tests.e2e.harness import E2ETestHarness, FakeClock, FakeSpaceInvasionServer
 from spaceinvasion.core.config import StrategyConfig
-from spaceinvasion.db.storage import GameDatabase
+from tests.pg_harness import open_test_db as GameDatabase
 
 
 def _make_two_planet_fleet_server(**kwargs) -> FakeSpaceInvasionServer:

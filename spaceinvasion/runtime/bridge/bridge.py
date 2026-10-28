@@ -129,6 +129,10 @@ class ModularGameApiBridge:
         self.views.publish_snapshot()
 
     @property
+    def debug_port(self) -> int:
+        return self.ctx.debug_port
+
+    @property
     def log_dir(self) -> Path | None:
         return self.ctx.log_dir
 
@@ -255,6 +259,29 @@ class ModularGameApiBridge:
 
     def stop_galaxy_sweep_worker(self) -> None:
         self.galaxy_sweep.stop_galaxy_sweep_worker()
+
+    def run_galaxy_sweep(
+        self,
+        *,
+        pages: int | None = None,
+        galaxy: int | None = None,
+        start_system: int | None = None,
+        delay_range: tuple[float, float] | None = None,
+        dry_run: bool = False,
+        priority: str = "normal",
+        automatic: bool = False,
+        manual: bool | None = None,
+    ) -> dict[str, object]:
+        return self.galaxy_sweep.run_galaxy_sweep(
+            pages=pages,
+            galaxy=galaxy,
+            start_system=start_system,
+            delay_range=delay_range,
+            dry_run=dry_run,
+            priority=priority,
+            automatic=automatic,
+            manual=manual,
+        )
 
 
 GameApiBridge = ModularGameApiBridge

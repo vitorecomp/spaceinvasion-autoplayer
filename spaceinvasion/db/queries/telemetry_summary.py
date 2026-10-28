@@ -25,6 +25,8 @@ from spaceinvasion.db.repos._helpers import (
     normalize_loot_dict,
     sanitize_text,
     spice_equivalent_from_counts,
+    to_float,
+    to_int,
 )
 
 
@@ -66,9 +68,12 @@ def _load_norm_raid_rows(
         RaidHistory.outcome,
         RaidHistory.loot_json,
     )
-    if window_seconds is not None and math.isfinite(float(window_seconds)):
-        ref = float(now) if (now is not None and math.isfinite(float(now))) else time.time()
-        stmt = stmt.where(RaidHistory.attacked_ts >= ref - max(0.0, float(window_seconds)))
+    win_f = to_float(window_seconds, -1.0) if window_seconds is not None else -1.0
+    if win_f >= 0.0:
+        ref = to_float(now, -1.0) if now is not None else -1.0
+        if ref < 0.0:
+            ref = time.time()
+        stmt = stmt.where(RaidHistory.attacked_ts >= ref - win_f)
     rows = session.execute(stmt.order_by(RaidHistory.attacked_ts.asc(), RaidHistory.id.asc())).all()
     out: list[_NormRaidRow] = []
     for r in rows:
@@ -77,9 +82,9 @@ def _load_norm_raid_rows(
         outcome = sanitize_text(r[4] or "")
         out.append(
             _NormRaidRow(
-                row_id=cap_json_int(int(r[0] or 0)),
+                row_id=cap_json_int(to_int(r[0], 0)),
                 target_coords=normalize_coords(str(r[1] or "")),
-                attacked_ts=float(r[2] or 0.0),
+                attacked_ts=to_float(r[2], 0.0),
                 is_exempt=bool(r[3]),
                 outcome=outcome,
                 loot=loot,
@@ -199,10 +204,11 @@ def query_raid_stats_detailed(
     include_telemetry_summary: bool = True,
 ) -> dict[str, object]:
     """Compute the full `get_raid_stats` payload matching the API golden contract."""
-    active_now = float(now) if (now is not None and math.isfinite(float(now))) else time.time()
+    now_f = to_float(now, -1.0) if now is not None else -1.0
+    active_now = now_f if now_f >= 0.0 else time.time()
     norm_rows = _load_norm_raid_rows(session, window_seconds=window_seconds, now=now)
     max_row_ts = max((r.attacked_ts for r in norm_rows), default=0.0)
-    ref_ts = float(now) if (now is not None and math.isfinite(float(now)) and float(now) > 0.0) else max_row_ts
+    ref_ts = now_f if now_f > 0.0 else max_row_ts
 
     overall = _aggregate_raid_rows(norm_rows, ref_ts=ref_ts)
     if norm_rows:
@@ -237,11 +243,11 @@ def query_raid_stats_detailed(
     )
     bash_blocks = [
         {
-            "id": cap_json_int(int(br.id)),
+            "id": cap_json_int(to_int(br.id, 0)),
             "target_coords": normalize_coords(br.target_coords),
-            "blocked_ts": float(br.blocked_ts),
-            "blocked_until_ts": float(br.blocked_until_ts),
-            "cooldown_seconds": float(br.cooldown_seconds),
+            "blocked_ts": to_float(br.blocked_ts, 0.0),
+            "blocked_until_ts": to_float(br.blocked_until_ts, 0.0),
+            "cooldown_seconds": to_float(br.cooldown_seconds, 0.0),
             "is_bash": bool(br.is_bash),
             "reason": sanitize_text(br.reason),
         }
@@ -263,13 +269,13 @@ def query_raid_stats_detailed(
         bc = normalize_coords(str(sr[0] or ""))
         if not bc:
             continue
-        b_until = float(sr[1] or 0.0)
+        b_until = to_float(sr[1], 0.0)
         blocked_targets[bc] = {
             "blocked_until_ts": b_until,
             "remaining_seconds": round(max(0.0, b_until - active_now), 1),
             "reason": sanitize_text(sr[2] or ""),
-            "bash_hits": cap_json_int(max(0, int(sr[3] or 0))),
-            "last_blocked_ts": float(sr[4] or 0.0),
+            "bash_hits": cap_json_int(max(0, to_int(sr[3], 0))),
+            "last_blocked_ts": to_float(sr[4], 0.0),
         }
 
     return {

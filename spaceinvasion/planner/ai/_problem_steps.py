@@ -122,6 +122,9 @@ def _add_research_and_colonize_steps(
                 raise ValueError(
                     f"{info['name']} {level} is planned, but no planet in target_config has a Research lab (b8)"
                 )
+            raw_levels = info.get("levels")
+            lvl_info = raw_levels.get(level) if isinstance(raw_levels, Mapping) else None
+            lvl_cost = lvl_info.get("cost") if isinstance(lvl_info, Mapping) else None
             _append_step(
                 steps,
                 {
@@ -137,7 +140,7 @@ def _add_research_and_colonize_steps(
                     "requires": _path_requirements(str(key), lab_planet),
                     "chain": ("research", -1, str(key)),
                 },
-                _cost_tuple(((info.get("levels") or {}).get(level) or {}).get("cost")),
+                _cost_tuple(lvl_cost),
             )
     colony_ship = game_data.SHIPS[SHIP_SLUG_BY_KEY["s8"]]
     for planet in problem_planets:

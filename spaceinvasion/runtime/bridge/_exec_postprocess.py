@@ -54,14 +54,22 @@ def apply_live_economy_and_galaxy_effects(
     res: ExecutionResult,
 ) -> None:
     """Persist observed economy rates and galaxy slots/scans after a live execution."""
-    for pid, rates in (executor.last_economy_rates or {}).items():
+    try:
+        raw_rates = executor.last_economy_rates
+    except AttributeError:
+        raw_rates = {}
+    for pid, rates in (raw_rates or {}).items():
         if rates:
             ctx.economy_rates[int(pid)] = dict(rates)
             ctx.economy_sync_timestamps[int(pid)] = time.time()
             if ctx.db is not None:
                 coords = next((p.coords for p in state.planets if p.planet_id == int(pid)), "")
                 ctx.db.save_economy_rates(int(pid), coords, dict(rates))
-    gal_slots = list(executor.last_galaxy_slots or ())
+    try:
+        raw_slots = executor.last_galaxy_slots
+    except AttributeError:
+        raw_slots = []
+    gal_slots = list(raw_slots or ())
     if gal_slots:
         intel_sync.persist_galaxy_slots(gal_slots)
         executor.last_galaxy_slots = []
@@ -82,7 +90,10 @@ def apply_transmitter_and_throttle_effects(
 ) -> None:
     """Record transmitter activations and blast-furnace throttle/overflow pause timestamps."""
     if res.action.kind == "ACTIVATE_TRANSMITTER" and hooks.on_note_transmitter_activation is not None:
-        tm_info = executor.last_transmitter_info
+        try:
+            tm_info: object = executor.last_transmitter_info
+        except AttributeError:
+            tm_info = None
         tm_map: Mapping[str, object] | None = tm_info if isinstance(tm_info, Mapping) else None
         free_rem_val = (
             safe_api_int(tm_map.get("free_spins"), 0)

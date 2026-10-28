@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 
 from spaceinvasion.core.catalog import cap_json_int
+from spaceinvasion.core.redaction import redact_sensitive, redact_text
 from spaceinvasion.db.dto.combat import (
     BattleReportRecord,
     GameMessageRecord,
@@ -27,6 +28,14 @@ from spaceinvasion.db.dto.world import (
 )
 
 
+def _rs(val: str | None) -> str:
+    return redact_text(val) if val else ""
+
+
+def _rs_opt(val: str | None) -> str | None:
+    return redact_text(val) if val is not None else None
+
+
 def _loads_dict(raw: str) -> dict[str, object]:
     if not raw or not raw.strip():
         return {}
@@ -36,7 +45,8 @@ def _loads_dict(raw: str) -> dict[str, object]:
         return {}
     if not isinstance(parsed, dict):
         return {}
-    return {str(k): v for k, v in parsed.items()}
+    clean = redact_sensitive(parsed)
+    return {redact_text(str(k)): v for k, v in clean.items()} if isinstance(clean, dict) else {}
 
 
 def _loads_list(raw: str) -> list[object]:
@@ -46,7 +56,10 @@ def _loads_list(raw: str) -> list[object]:
         parsed: object = json.loads(raw)
     except ValueError:
         return []
-    return list(parsed) if isinstance(parsed, list) else []
+    if not isinstance(parsed, list):
+        return []
+    clean = redact_sensitive(parsed)
+    return list(clean) if isinstance(clean, list) else []
 
 
 def rank_sample_to_dict(rec: RankSnapshotRecord) -> dict[str, object]:
@@ -67,16 +80,16 @@ def recent_action_to_dict(rec: ActionHistoryRecord) -> dict[str, object]:
     return {
         "id": cap_json_int(rec.id),
         "ts": rec.ts,
-        "source": rec.source,
-        "command": rec.command,
-        "priority": rec.priority,
-        "kind": rec.kind,
-        "planet_coords": rec.planet_coords,
-        "target_name": rec.target_name,
+        "source": _rs(rec.source),
+        "command": _rs(rec.command),
+        "priority": _rs_opt(rec.priority),
+        "kind": _rs(rec.kind),
+        "planet_coords": _rs_opt(rec.planet_coords),
+        "target_name": _rs_opt(rec.target_name),
         "target_level": cap_json_int(rec.target_level) if rec.target_level is not None else None,
         "executed": 1 if rec.executed else 0,
         "dry_run": 1 if rec.dry_run else 0,
-        "message": rec.message,
+        "message": _rs_opt(rec.message),
     }
 
 
@@ -86,7 +99,7 @@ def tutorial_progress_to_dict(rec: TutorialProgressRecord) -> dict[str, object]:
         "step": cap_json_int(rec.step),
         "total_steps": cap_json_int(rec.total_steps),
         "tasks": _loads_list(rec.tasks_json),
-        "reward_text": rec.reward_text,
+        "reward_text": _rs(rec.reward_text),
         "can_complete": bool(rec.can_complete),
         "first_seen_ts": rec.first_seen_ts,
         "last_seen_ts": rec.last_seen_ts,
@@ -178,10 +191,10 @@ def research_max_to_dict(rec: UniverseResearchMaxRecord) -> dict[str, object]:
 def spy_target_to_dict(rec: SpyTargetRecord) -> dict[str, object]:
     """Serialize `SpyTargetRecord` to the exact 23-key espionage target API shape."""
     return {
-        "coords": rec.coords,
-        "owner": rec.owner,
-        "planet_name": rec.planet_name,
-        "status_color": rec.status_color,
+        "coords": _rs(rec.coords),
+        "owner": _rs(rec.owner),
+        "planet_name": _rs(rec.planet_name),
+        "status_color": _rs(rec.status_color),
         "is_inactive": bool(rec.is_inactive),
         "is_spacia": bool(rec.is_spacia),
         "has_debris": bool(rec.has_debris),
@@ -199,7 +212,7 @@ def spy_target_to_dict(rec: SpyTargetRecord) -> dict[str, object]:
         "last_spied_ts": rec.last_spied_ts,
         "has_spy_intel": rec.last_spied_ts > 0.0,
         "blocked_until_ts": rec.blocked_until_ts,
-        "block_reason": rec.block_reason if rec.blocked_until_ts > 0.0 else "",
+        "block_reason": _rs(rec.block_reason) if rec.blocked_until_ts > 0.0 else "",
         "bash_hits": cap_json_int(max(0, rec.bash_hits)),
         "last_blocked_ts": rec.last_blocked_ts,
         "uninhabited_fields": cap_json_int(rec.uninhabited_fields) if rec.uninhabited_fields is not None else None,
@@ -212,13 +225,14 @@ def spy_target_to_dict(rec: SpyTargetRecord) -> dict[str, object]:
 
 def spy_report_to_dict(rec: SpyReportDTO) -> dict[str, object]:
     """Serialize `SpyReportDTO` with both `coords` and `target_coords` alias keys."""
+    tc = _rs(rec.target_coords)
     return {
         "id": cap_json_int(rec.id),
         "ts": rec.ts,
-        "coords": rec.target_coords,
-        "target_coords": rec.target_coords,
-        "owner": rec.owner,
-        "planet_name": rec.planet_name,
+        "coords": tc,
+        "target_coords": tc,
+        "owner": _rs(rec.owner),
+        "planet_name": _rs(rec.planet_name),
         "is_spacia": bool(rec.is_spacia),
         "resources": {
             "pig_iron": cap_json_int(max(0, rec.pig_iron)),
@@ -233,9 +247,9 @@ def spy_report_to_dict(rec: SpyReportDTO) -> dict[str, object]:
         "researches": _loads_dict(rec.researches_json),
         "dug_in": rec.dug_in,
         "uninhabited_fields": cap_json_int(rec.uninhabited_fields) if rec.uninhabited_fields is not None else None,
-        "server_msg_id": rec.server_msg_id,
-        "msg_date_text": rec.msg_date_text,
-        "raw_text": rec.raw_text,
+        "server_msg_id": _rs(rec.server_msg_id),
+        "msg_date_text": _rs(rec.msg_date_text),
+        "raw_text": _rs(rec.raw_text),
     }
 
 
@@ -243,20 +257,23 @@ def battle_report_to_dict(rec: BattleReportRecord) -> dict[str, object]:
     """Serialize `BattleReportRecord` with legacy compatibility alias keys."""
     att_lost = cap_json_int(max(0, rec.attacker_lost_spice))
     def_lost = cap_json_int(max(0, rec.defender_lost_spice))
+    tc = _rs(rec.target_coords)
+    att = _rs(rec.attacker)
+    dfn = _rs(rec.defender)
     return {
         "id": cap_json_int(rec.id),
         "ts": rec.ts,
-        "msg_uid": rec.msg_uid,
-        "server_msg_id": rec.server_msg_id,
-        "battle_id": rec.battle_id,
-        "msg_date_text": rec.msg_date_text,
-        "target_coords": rec.target_coords,
-        "coords": rec.target_coords,
-        "attacker": rec.attacker,
-        "attacker_name": rec.attacker,
-        "defender": rec.defender,
-        "defender_name": rec.defender,
-        "outcome": rec.outcome,
+        "msg_uid": _rs(rec.msg_uid),
+        "server_msg_id": _rs(rec.server_msg_id),
+        "battle_id": _rs(rec.battle_id),
+        "msg_date_text": _rs(rec.msg_date_text),
+        "target_coords": tc,
+        "coords": tc,
+        "attacker": att,
+        "attacker_name": att,
+        "defender": dfn,
+        "defender_name": dfn,
+        "outcome": _rs(rec.outcome),
         "rounds": cap_json_int(rec.rounds),
         "loot": {
             "pig_iron": cap_json_int(max(0, rec.pig_iron)),
@@ -275,7 +292,7 @@ def battle_report_to_dict(rec: BattleReportRecord) -> dict[str, object]:
             "metal": cap_json_int(max(0, rec.debris_metal)),
         },
         "debris_spice_eq": rec.debris_spice_eq,
-        "raw_text": rec.raw_text,
+        "raw_text": _rs(rec.raw_text),
     }
 
 
@@ -287,10 +304,10 @@ def recycle_report_to_dict(rec: RecycleReportRecord) -> dict[str, object]:
     return {
         "id": cap_json_int(rec.id),
         "ts": rec.ts,
-        "msg_uid": rec.msg_uid,
-        "server_msg_id": rec.server_msg_id,
-        "msg_date_text": rec.msg_date_text,
-        "coords": rec.coords,
+        "msg_uid": _rs(rec.msg_uid),
+        "server_msg_id": _rs(rec.server_msg_id),
+        "msg_date_text": _rs(rec.msg_date_text),
+        "coords": _rs(rec.coords),
         "recycler_count": cap_json_int(max(0, rec.recycler_count)),
         "cargo_capacity": cap_json_int(max(0, rec.cargo_capacity)),
         "field_pig_iron": fpig,
@@ -303,7 +320,7 @@ def recycle_report_to_dict(rec: RecycleReportRecord) -> dict[str, object]:
         "harvested": {"pig_iron": hpig, "metal": hmet, "kryptonite": hkry, "spice": hspi},
         "harvested_spice_eq": rec.harvested_spice_eq,
         "spice_eq": rec.harvested_spice_eq,
-        "raw_text": rec.raw_text,
+        "raw_text": _rs(rec.raw_text),
     }
 
 
@@ -312,16 +329,16 @@ def game_message_to_dict(rec: GameMessageRecord) -> dict[str, object]:
     return {
         "id": cap_json_int(rec.id),
         "ingested_ts": rec.ingested_ts,
-        "msg_uid": rec.msg_uid,
-        "server_msg_id": rec.server_msg_id,
-        "folder_type": rec.folder_type,
-        "category": rec.category,
-        "msg_date_text": rec.msg_date_text,
-        "sender": rec.sender,
-        "subject": rec.subject,
-        "coords": rec.coords,
-        "body_text": rec.body_text,
-        "raw_html": rec.raw_html,
+        "msg_uid": _rs(rec.msg_uid),
+        "server_msg_id": _rs(rec.server_msg_id),
+        "folder_type": _rs(rec.folder_type),
+        "category": _rs(rec.category),
+        "msg_date_text": _rs(rec.msg_date_text),
+        "sender": _rs(rec.sender),
+        "subject": _rs(rec.subject),
+        "coords": _rs(rec.coords),
+        "body_text": _rs(rec.body_text),
+        "raw_html": _rs(rec.raw_html),
         "parsed": _loads_dict(rec.parsed_json),
         "deleted_in_game": bool(rec.deleted_in_game),
         "deleted_ts": rec.deleted_ts,
@@ -331,13 +348,13 @@ def game_message_to_dict(rec: GameMessageRecord) -> dict[str, object]:
 def galaxy_slot_to_dict(rec: GalaxySlotRecord) -> dict[str, object]:
     """Serialize `GalaxySlotRecord` to the exact galaxy catalog API shape."""
     return {
-        "coords": rec.coords,
+        "coords": _rs(rec.coords),
         "galaxy": cap_json_int(rec.galaxy),
         "system": cap_json_int(rec.system),
         "position": cap_json_int(rec.position),
-        "planet_name": rec.planet_name,
-        "owner": rec.owner,
-        "status_color": rec.status_color,
+        "planet_name": _rs(rec.planet_name),
+        "owner": _rs(rec.owner),
+        "status_color": _rs(rec.status_color),
         "is_inactive": bool(rec.is_inactive),
         "is_spacia": bool(rec.is_spacia),
         "has_debris": bool(rec.has_debris),
@@ -353,18 +370,18 @@ def colony_attempt_to_dict(rec: ColonyAttemptRecord) -> dict[str, object]:
     return {
         "id": cap_json_int(rec.id),
         "ts": rec.ts,
-        "event_type": rec.event_type,
-        "target_coords": rec.target_coords,
-        "origin_coords": rec.origin_coords,
+        "event_type": _rs(rec.event_type),
+        "target_coords": _rs(rec.target_coords),
+        "origin_coords": _rs(rec.origin_coords),
         "planet_id": cap_json_int(rec.planet_id) if rec.planet_id is not None else None,
         "fields_rolled": cap_json_int(rec.fields_rolled) if rec.fields_rolled is not None else None,
         "min_fields_target": cap_json_int(rec.min_fields_target),
         "expected_min_fields": cap_json_int(rec.expected_min_fields) if rec.expected_min_fields is not None else None,
         "expected_max_fields": cap_json_int(rec.expected_max_fields) if rec.expected_max_fields is not None else None,
         "temperature": cap_json_int(rec.temperature) if rec.temperature is not None else None,
-        "grade": rec.grade,
+        "grade": _rs(rec.grade),
         "score": cap_json_int(rec.score) if rec.score is not None else None,
-        "status_message": rec.status_message,
+        "status_message": _rs(rec.status_message),
         "details": _loads_dict(rec.details_json),
     }
 

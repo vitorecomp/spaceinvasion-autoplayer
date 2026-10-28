@@ -176,9 +176,7 @@ def _execute_tick_batch(
         if isinstance(raw_st, Mapping):
             state = decode_matching_state(raw_st, state)
         elif need_refresh:
-            fetched = api.get_state(include_buildings=False)
-            if isinstance(fetched, GameStateCmdLike):
-                state = fetched
+            state = api.get_state(include_buildings=False)
         actions = recompute(state, cur_mq)
 
     return state, actions, actual_action, actual_result, outcomes, after_live
@@ -208,8 +206,6 @@ def run_commander_tick(
     """Fetch state via HTTP, compute planned actions, and dispatch ready commands."""
     cfg = config or StrategyConfig()
     fetched = api.get_state(include_buildings=include_buildings)
-    if not isinstance(fetched, GameStateCmdLike):
-        raise GameApiError(f"Expected GameState from api.get_state, got {type(fetched).__name__}")
     state: GameStateCmdLike = sync_active_planet_economy(
         api,
         fetched,
