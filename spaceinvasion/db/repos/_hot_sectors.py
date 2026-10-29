@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from sqlalchemy import func, select, tuple_, union
+from sqlalchemy import func, literal, select, tuple_, union
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
@@ -27,12 +27,12 @@ from spaceinvasion.db.repos._helpers import (
 
 
 def _load_own_coords(session: Session) -> set[str]:
-    ep_stmt = select(EmpirePlanetHot.coords).where(EmpirePlanetHot.coords != "")
-    own_spy_stmt = select(SpyTarget.coords).where(SpyTarget.is_own_planet == 1)
-    rows = list(session.execute(union(ep_stmt, own_spy_stmt)).scalars().all())
-    if not rows:
-        snap_rows = session.execute(select(PlanetSnapshot.coords).where(PlanetSnapshot.coords != "").distinct()).all()
-        rows = [str(sr[0]) for sr in snap_rows]
+    ep_stmt = select(EmpirePlanetHot.coords, literal(1).label("prio")).where(EmpirePlanetHot.coords != "")
+    own_spy_stmt = select(SpyTarget.coords, literal(1).label("prio")).where(SpyTarget.is_own_planet == 1)
+    snap_stmt = select(PlanetSnapshot.coords, literal(2).label("prio")).where(PlanetSnapshot.coords != "").distinct()
+    raw_rows = session.execute(union(ep_stmt, own_spy_stmt, snap_stmt)).all()
+    primary = [str(r[0]) for r in raw_rows if int(r[1]) == 1]
+    rows = primary if primary else [str(r[0]) for r in raw_rows]
     out: set[str] = set()
     for raw in rows:
         nc = normalize_coords(str(raw or ""))

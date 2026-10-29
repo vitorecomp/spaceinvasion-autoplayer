@@ -36,29 +36,22 @@ def _rs_opt(val: str | None) -> str | None:
     return redact_text(val) if val is not None else None
 
 
-def _loads_dict(raw: str) -> dict[str, object]:
+def _loads_json(raw: str) -> object:
     if not raw or not raw.strip():
-        return {}
+        return None
     try:
-        parsed: object = json.loads(raw)
+        return redact_sensitive(json.loads(raw))
     except ValueError:
-        return {}
-    if not isinstance(parsed, dict):
-        return {}
-    clean = redact_sensitive(parsed)
+        return None
+
+
+def _loads_dict(raw: str) -> dict[str, object]:
+    clean = _loads_json(raw)
     return {redact_text(str(k)): v for k, v in clean.items()} if isinstance(clean, dict) else {}
 
 
 def _loads_list(raw: str) -> list[object]:
-    if not raw or not raw.strip():
-        return []
-    try:
-        parsed: object = json.loads(raw)
-    except ValueError:
-        return []
-    if not isinstance(parsed, list):
-        return []
-    clean = redact_sensitive(parsed)
+    clean = _loads_json(raw)
     return list(clean) if isinstance(clean, list) else []
 
 

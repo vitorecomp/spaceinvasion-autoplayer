@@ -167,6 +167,69 @@ def safe_key(key: object, *, max_int: int = MAX_JSON_SAFE_INT) -> str:
     return _safe_json_key(key, max_int)
 
 
+def _walk_slow(
+    val: object,
+    d: int,
+    *,
+    max_int: int,
+    nonfinite_float: object,
+    seen: set[int],
+    budget: list[int],
+    walk_fn: Any,
+) -> Any:
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, str):
+        return str(val)
+    if isinstance(val, int):
+        return cap_json_int(int(val), limit=max_int)
+    if isinstance(val, float):
+        fval = float(val)
+        return fval if math.isfinite(fval) else nonfinite_float
+    if isinstance(val, (bytes, bytearray)):
+        return bytes(val).decode("utf-8", errors="replace")
+    if isinstance(val, (Mapping, list, tuple, set, frozenset, os.PathLike)):
+        vid = id(val)
+        if vid in seen:
+            return "[Cycle]"
+        if d >= _MAX_TREE_DEPTH or budget[0] <= 0:
+            return "[Truncated]"
+        budget[0] -= 1
+        seen.add(vid)
+        try:
+            if isinstance(val, Mapping):
+                out_m: dict[str, Any] = {}
+                for k, v in val.items():
+                    if budget[0] <= 0:
+                        out_m["[Truncated]"] = "[Truncated]"
+                        break
+                    sk = k if type(k) is str else _safe_json_key(k, max_int)
+                    out_m[sk] = walk_fn(v, d + 1)
+                return out_m
+            if isinstance(val, (list, tuple, set, frozenset)):
+                out_l: list[Any] = []
+                for v in val:
+                    if budget[0] <= 0:
+                        out_l.append("[Truncated]")
+                        break
+                    out_l.append(walk_fn(v, d + 1))
+                return out_l
+            try:
+                fsp: object = os.fspath(val)
+            except (TypeError, ValueError, RuntimeError, OSError):
+                return safe_key(val, max_int=max_int)
+            if isinstance(fsp, (bytes, bytearray)):
+                return bytes(fsp).decode("utf-8", errors="replace")
+            if isinstance(fsp, str):
+                return fsp
+            if isinstance(fsp, os.PathLike):
+                return safe_key(fsp, max_int=max_int)
+            return walk_fn(fsp, d + 1)
+        finally:
+            seen.discard(vid)
+    return safe_key(val, max_int=max_int)
+
+
 def sanitize_json_tree(
     obj: object,
     *,
@@ -181,22 +244,14 @@ def sanitize_json_tree(
     budget = _budget if _budget is not None else [_MAX_TREE_NODES]
 
     def _walk(val: object, d: int) -> Any:
-        if val is None or isinstance(val, bool) or type(val) is str:
+        tv = type(val)
+        if val is None or tv is bool or tv is str:
             return val
-        if type(val) is int and isinstance(val, int):
+        if tv is int and isinstance(val, int):
             return val if -max_int <= val <= max_int else cap_json_int(val, limit=max_int)
-        if type(val) is float and isinstance(val, float):
+        if tv is float and isinstance(val, float):
             return val if math.isfinite(val) else nonfinite_float
-        if isinstance(val, str):
-            return str(val)
-        if isinstance(val, int):
-            return cap_json_int(int(val), limit=max_int)
-        if isinstance(val, float):
-            fval = float(val)
-            return fval if math.isfinite(fval) else nonfinite_float
-        if isinstance(val, (bytes, bytearray)):
-            return bytes(val).decode("utf-8", errors="replace")
-        if isinstance(val, (Mapping, list, tuple, set, frozenset, os.PathLike)):
+        if tv is list or tv is tuple or tv is dict or tv is set or tv is frozenset:
             vid = id(val)
             if vid in seen:
                 return "[Cycle]"
@@ -205,7 +260,7 @@ def sanitize_json_tree(
             budget[0] -= 1
             seen.add(vid)
             try:
-                if isinstance(val, Mapping):
+                if tv is dict and isinstance(val, dict):
                     out: dict[str, Any] = {}
                     for k, v in val.items():
                         if budget[0] <= 0:
@@ -222,19 +277,16 @@ def sanitize_json_tree(
                             break
                         out_list.append(_walk(v, d + 1))
                     return out_list
-                try:
-                    fsp: object = os.fspath(val)
-                except (TypeError, ValueError, RuntimeError, OSError):
-                    return safe_key(val, max_int=max_int)
-                if isinstance(fsp, (bytes, bytearray)):
-                    return bytes(fsp).decode("utf-8", errors="replace")
-                if isinstance(fsp, str):
-                    return fsp
-                if isinstance(fsp, os.PathLike):
-                    return safe_key(fsp, max_int=max_int)
-                return _walk(fsp, d + 1)
             finally:
                 seen.discard(vid)
-        return safe_key(val, max_int=max_int)
+        return _walk_slow(
+            val,
+            d,
+            max_int=max_int,
+            nonfinite_float=nonfinite_float,
+            seen=seen,
+            budget=budget,
+            walk_fn=_walk,
+        )
 
     return _walk(obj, _depth)

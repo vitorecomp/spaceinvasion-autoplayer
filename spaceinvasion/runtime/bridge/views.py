@@ -243,39 +243,50 @@ class DashboardViewService:
                 in_game = False
         return port_open, in_game, current_url, sweep_blocking
 
+    def _dashboard_busy_fallback(self) -> dict[str, object]:
+        ctx = self._ctx
+        cached_dash = ctx.last_dashboard_payload
+        if isinstance(cached_dash, Mapping):
+            fallback: dict[str, object] = dict(cached_dash)
+            fallback["bot_control"] = sanitize_finite_json(dict(ctx.bot_control))
+            fallback["busy"] = True
+            return fallback
+        with ctx.state_lock:
+            port_open = ctx.is_browser_port_open()
+            rate_rem = ctx.page_limiter.rate_limit_remaining()
+            cap_blocked = bool(ctx.bot_control.get("captcha_blocked"))
+            in_game = (
+                port_open
+                and not cap_blocked
+                and (ctx.last_state is not None or rate_rem > 0.0 or bool(ctx.sweep_in_progress))
+            )
+            cold_res = build_dashboard_payload_from_state(
+                ctx,
+                self._state_cache,
+                self._names,
+                self._lifecycle,
+                self._hooks,
+                refresh=False,
+                port_open=port_open,
+                in_game=in_game,
+                current_url=ctx.last_url,
+            )
+        cold_res["busy"] = True
+        return cold_res
+
     def dashboard(self, *, refresh: bool = False) -> dict[str, object]:
         """Return full legacy dashboard payload (lock-free on `refresh=False`, browser fetch on `refresh=True`)."""
         ctx = self._ctx
         if not refresh:
             if ctx.lock.locked():
-                cached_dash = ctx.last_dashboard_payload
-                if isinstance(cached_dash, Mapping):
-                    fallback: dict[str, object] = dict(cached_dash)
-                    fallback["bot_control"] = sanitize_finite_json(dict(ctx.bot_control))
-                    fallback["busy"] = True
-                    return fallback
-                with ctx.state_lock:
-                    port_open = ctx.is_browser_port_open()
-                    rate_rem = ctx.page_limiter.rate_limit_remaining()
-                    cap_blocked = bool(ctx.bot_control.get("captcha_blocked"))
-                    in_game = (
-                        port_open
-                        and not cap_blocked
-                        and (ctx.last_state is not None or rate_rem > 0.0 or bool(ctx.sweep_in_progress))
-                    )
-                    cold_res = build_dashboard_payload_from_state(
-                        ctx,
-                        self._state_cache,
-                        self._names,
-                        self._lifecycle,
-                        self._hooks,
-                        refresh=False,
-                        port_open=port_open,
-                        in_game=in_game,
-                        current_url=ctx.last_url,
-                    )
-                cold_res["busy"] = True
-                return cold_res
+                return self._dashboard_busy_fallback()
+
+            if (ctx.last_state is None or ctx.last_snapshot_at < 0.0) and ctx.lock.acquire(blocking=False):
+                try:
+                    if ctx.last_state is None or ctx.last_snapshot_at < 0.0:
+                        self._fetch_live_dashboard_snapshot_locked()
+                finally:
+                    ctx.lock.release()
 
             with ctx.state_lock:
                 port_open = ctx.is_browser_port_open()
