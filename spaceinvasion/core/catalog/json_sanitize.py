@@ -174,6 +174,7 @@ def _walk_slow(
     max_int: int,
     nonfinite_float: object,
     seen: set[int],
+    expanded: set[int],
     budget: list[int],
     walk_fn: Any,
 ) -> Any:
@@ -194,7 +195,7 @@ def _walk_slow(
             return "[Cycle]"
         if d >= _MAX_TREE_DEPTH or budget[0] <= 0:
             return "[Truncated]"
-        budget[0] -= 1
+        budget[0] -= 64 if vid in expanded else 1
         seen.add(vid)
         try:
             if isinstance(val, Mapping):
@@ -227,6 +228,7 @@ def _walk_slow(
             return walk_fn(fsp, d + 1)
         finally:
             seen.discard(vid)
+            expanded.add(vid)
     return safe_key(val, max_int=max_int)
 
 
@@ -241,6 +243,7 @@ def sanitize_json_tree(
 ) -> Any:
     """Walk an arbitrary object tree into cycle-safe, finite, JSON-serializable primitives."""
     seen = _seen if _seen is not None else set()
+    expanded: set[int] = set()
     budget = _budget if _budget is not None else [_MAX_TREE_NODES]
 
     def _walk(val: object, d: int) -> Any:
@@ -257,7 +260,7 @@ def sanitize_json_tree(
                 return "[Cycle]"
             if d >= _MAX_TREE_DEPTH or budget[0] <= 0:
                 return "[Truncated]"
-            budget[0] -= 1
+            budget[0] -= 64 if vid in expanded else 1
             seen.add(vid)
             try:
                 if tv is dict and isinstance(val, dict):
@@ -279,12 +282,14 @@ def sanitize_json_tree(
                     return out_list
             finally:
                 seen.discard(vid)
+                expanded.add(vid)
         return _walk_slow(
             val,
             d,
             max_int=max_int,
             nonfinite_float=nonfinite_float,
             seen=seen,
+            expanded=expanded,
             budget=budget,
             walk_fn=_walk,
         )
