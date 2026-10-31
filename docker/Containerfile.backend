@@ -35,6 +35,7 @@ COPY requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt
 
 COPY --from=ui-builder /app/spaceinvasion/ui /opt/spaceinvasion-ui
+COPY spaceinvasion/ui/bell.svg spaceinvasion/ui/favicon.svg spaceinvasion/ui/favicon.ico /opt/spaceinvasion-ui/
 COPY bin /app/bin
 COPY spaceinvasion /app/spaceinvasion
 COPY scripts /app/scripts

@@ -118,12 +118,15 @@ def test_core_docs_have_zero_stale_tokens_and_cover_all_40_tables() -> None:
 
 
 def test_docker_backend_builds_ui_into_opt_and_compose_preserves_pg_stats() -> None:
-    """Docker backend builds frontend into `/opt/spaceinvasion-ui` and compose keeps PG stats intact."""
+    """Docker backend builds frontend + static icons into `/opt/spaceinvasion-ui` and compose keeps PG stats intact."""
     containerfile = (REPO_ROOT / "docker" / "Containerfile.backend").read_text(encoding="utf-8")
     assert "AS ui-builder" in containerfile
     assert "npm run build" in containerfile
     assert "/opt/spaceinvasion-ui" in containerfile
     assert "SPACEINVASION_UI_DIR=/opt/spaceinvasion-ui" in containerfile
+    for icon in ("bell.svg", "favicon.svg", "favicon.ico"):
+        assert f"spaceinvasion/ui/{icon}" in containerfile
+        assert (REPO_ROOT / "spaceinvasion" / "ui" / icon).is_file()
 
     compose = (REPO_ROOT / "docker-compose.yml").read_text(encoding="utf-8")
     assert "./data/postgres:/var/lib/postgresql/data" in compose
@@ -165,18 +168,24 @@ def test_starter_sh_ui_staleness_rebuilds_when_missing_or_stale_and_skips_when_f
     """`starter.sh` rebuilds UI when `app.js` is missing or older than frontend sources, and skips when fresh."""
     frontend_dir = tmp_path / "frontend"
     (frontend_dir / "src").mkdir(parents=True)
+    (frontend_dir / "scripts").mkdir(parents=True)
     ui_dir = tmp_path / "ui"
     ui_dir.mkdir(parents=True)
 
     pkg_json = frontend_dir / "package.json"
     index_html = frontend_dir / "index.html"
+    tsconfig_json = frontend_dir / "tsconfig.json"
     vite_cfg = frontend_dir / "vite.config.ts"
     src_file = frontend_dir / "src" / "App.tsx"
+    prerender_script = frontend_dir / "scripts" / "prerender.mjs"
+    all_inputs = (pkg_json, index_html, tsconfig_json, vite_cfg, src_file, prerender_script)
     for fpath, body in (
         (pkg_json, '{"name":"test"}\n'),
         (index_html, "<html></html>\n"),
+        (tsconfig_json, "{}\n"),
         (vite_cfg, "export default {};\n"),
         (src_file, "export const App = () => null;\n"),
+        (prerender_script, "// prerender\n"),
     ):
         fpath.write_text(body, encoding="utf-8")
 
@@ -199,7 +208,7 @@ def test_starter_sh_ui_staleness_rebuilds_when_missing_or_stale_and_skips_when_f
 
     # 2. app.js newer than all frontend sources -> MUST skip.
     now = time.time()
-    for fpath in (pkg_json, index_html, vite_cfg, src_file):
+    for fpath in all_inputs:
         os.utime(fpath, (now - 20.0, now - 20.0))
     os.utime(ui_dir / "app.js", (now - 5.0, now - 5.0))
     res2 = _run_starter_ui_check(tmp_path, frontend_dir, ui_dir, npm_stub)
@@ -211,6 +220,20 @@ def test_starter_sh_ui_staleness_rebuilds_when_missing_or_stale_and_skips_when_f
     res3 = _run_starter_ui_check(tmp_path, frontend_dir, ui_dir, npm_stub)
     assert res3.returncode == 0, res3.stderr
     assert len(build_log.read_text(encoding="utf-8").splitlines()) == 2
+
+    # 4. frontend/scripts/prerender.mjs newer than app.js -> MUST rebuild.
+    os.utime(ui_dir / "app.js", (now + 10.0, now + 10.0))
+    os.utime(prerender_script, (now + 15.0, now + 15.0))
+    res4 = _run_starter_ui_check(tmp_path, frontend_dir, ui_dir, npm_stub)
+    assert res4.returncode == 0, res4.stderr
+    assert len(build_log.read_text(encoding="utf-8").splitlines()) == 3
+
+    # 5. frontend/tsconfig.json newer than app.js -> MUST rebuild.
+    os.utime(ui_dir / "app.js", (now + 20.0, now + 20.0))
+    os.utime(tsconfig_json, (now + 25.0, now + 25.0))
+    res5 = _run_starter_ui_check(tmp_path, frontend_dir, ui_dir, npm_stub)
+    assert res5.returncode == 0, res5.stderr
+    assert len(build_log.read_text(encoding="utf-8").splitlines()) == 4
 
 
 def test_generate_docs_script_obeys_section4_standards() -> None:

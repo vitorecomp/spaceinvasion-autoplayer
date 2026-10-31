@@ -203,14 +203,21 @@ frontend_bundle_needs_build() {
     return 0
   fi
   local watch_file
-  for watch_file in "$frontend_dir/index.html" "$frontend_dir/package.json" "$frontend_dir/vite.config.ts"; do
+  for watch_file in \
+    "$frontend_dir/index.html" \
+    "$frontend_dir/package.json" \
+    "$frontend_dir/tsconfig.json" \
+    "$frontend_dir/vite.config.ts"; do
     if [[ -f "$watch_file" ]] && [[ "$watch_file" -nt "$bundle" ]]; then
       return 0
     fi
   done
-  if [[ -d "$frontend_dir/src" ]] && [[ -n "$(find "$frontend_dir/src" -type f -newer "$bundle" -print -quit 2>/dev/null)" ]]; then
-    return 0
-  fi
+  local watch_dir
+  for watch_dir in "$frontend_dir/src" "$frontend_dir/scripts"; do
+    if [[ -d "$watch_dir" ]] && [[ -n "$(find "$watch_dir" -type f -newer "$bundle" -print -quit 2>/dev/null)" ]]; then
+      return 0
+    fi
+  done
   return 1
 }
 
