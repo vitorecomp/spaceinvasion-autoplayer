@@ -382,6 +382,69 @@ def _sector_distance(
     return best_d if best_d < 10**9 else 0
 
 
+def _compute_owner_affinity_signal(
+    sec: Mapping[str, Any],
+    owner_stats: Mapping[str, Mapping[str, Any]],
+) -> tuple[float, int, list[str]]:
+    if not sec["owner_planet_counts"]:
+        return 0.0, 0, []
+    entries = sorted(
+        (
+            (
+                int(os_i["raid_count"]),
+                float(os_i["loot_spice_eq"]),
+                str(os_i["owner"] or sec["owner_display"].get(ok, ok)),
+                int(pcnt),
+            )
+            for ok, pcnt in sec["owner_planet_counts"].items()
+            if (os_i := owner_stats.get(ok)) is not None and int(os_i["raid_count"]) > 0
+        ),
+        key=lambda t: (-t[0], -t[1], t[2]),
+    )
+    affinity_sig, owner_aff_raids, freq_owners = 0.0, 0, []
+    for o_raids, o_loot, o_disp, pcnt in entries:
+        owner_aff_raids += o_raids
+        affinity_sig += (math.log1p(float(o_raids)) + 0.25 * math.log1p(max(0.0, o_loot) / 10000.0)) * (
+            1.0 + 0.35 * max(0, pcnt - 1)
+        )
+        freq_owners.append(f"{o_disp}({o_raids})")
+    return affinity_sig, owner_aff_raids, freq_owners
+
+
+def _format_sector_scan_reason(
+    phase: str,
+    dist: int,
+    same_gal: bool,
+    eff_near_w: float,
+    direct_raids: int,
+    freq_owners: Sequence[str],
+    debris_cnt: int,
+    target_cnt: int,
+    collect_colonies: bool,
+    prime_free: int,
+    age_s: Optional[float],
+) -> str:
+    if phase == "exploratory":
+        return f"unscanned sector (dist {dist})"
+    tags = [
+        "near d=" + str(dist)
+        if (same_gal and dist <= 25 and eff_near_w > 0.0)
+        else (f"d={dist}" if same_gal else f"cross-gal d={dist}")
+    ]
+    if direct_raids > 0:
+        tags.append(f"raided {direct_raids}x")
+    if freq_owners:
+        tags.append("freq-target " + ",".join(freq_owners[:2]))
+    if debris_cnt > 0:
+        tags.append(f"debris x{debris_cnt}")
+    elif target_cnt > 0:
+        tags.append(f"targets x{target_cnt}")
+    elif collect_colonies and prime_free > 0:
+        tags.append(f"colony-slots x{prime_free}")
+    tags.append(f"age {format_age_short(age_s)}")
+    return ", ".join(tags)
+
+
 def _score_scanned_sector(
     skey: str,
     gal: int,
@@ -414,27 +477,7 @@ def _score_scanned_sector(
         int(sec["free_count"]),
         int(sec["prime_colony_free_count"]),
     )
-    affinity_sig, owner_aff_raids, freq_owners = 0.0, 0, []
-    if sec["owner_planet_counts"]:
-        entries = sorted(
-            (
-                (
-                    int(os_i["raid_count"]),
-                    float(os_i["loot_spice_eq"]),
-                    str(os_i["owner"] or sec["owner_display"].get(ok, ok)),
-                    int(pcnt),
-                )
-                for ok, pcnt in sec["owner_planet_counts"].items()
-                if (os_i := owner_stats.get(ok)) is not None and int(os_i["raid_count"]) > 0
-            ),
-            key=lambda t: (-t[0], -t[1], t[2]),
-        )
-        for o_raids, o_loot, o_disp, pcnt in entries:
-            owner_aff_raids += o_raids
-            affinity_sig += (math.log1p(float(o_raids)) + 0.25 * math.log1p(max(0.0, o_loot) / 10000.0)) * (
-                1.0 + 0.35 * max(0, pcnt - 1)
-            )
-            freq_owners.append(f"{o_disp}({o_raids})")
+    affinity_sig, owner_aff_raids, freq_owners = _compute_owner_affinity_signal(sec, owner_stats)
     attack_score = eff_attack_w * (
         1.6 * math.log1p(max(0.0, max(direct_recency, 0.6 * direct_raids)))
         + 0.35 * math.log1p(max(0.0, direct_loot) / 5000.0)
@@ -448,26 +491,19 @@ def _score_scanned_sector(
     importance = 1.0 + near_score + attack_score + secondary_score
     staleness_factor = max(60.0, age_s if (scanned and age_s is not None) else (7.0 * 86400.0)) / 1800.0
     phase = "exploratory" if (explore_first and not scanned) else "targeted_refresh"
-    if phase == "exploratory":
-        reason = f"unscanned sector (dist {dist})"
-    else:
-        tags = [
-            "near d=" + str(dist)
-            if (same_gal and dist <= 25 and eff_near_w > 0.0)
-            else (f"d={dist}" if same_gal else f"cross-gal d={dist}")
-        ]
-        if direct_raids > 0:
-            tags.append(f"raided {direct_raids}x")
-        if freq_owners:
-            tags.append("freq-target " + ",".join(freq_owners[:2]))
-        if debris_cnt > 0:
-            tags.append(f"debris x{debris_cnt}")
-        elif target_cnt > 0:
-            tags.append(f"targets x{target_cnt}")
-        elif collect_colonies and prime_free > 0:
-            tags.append(f"colony-slots x{prime_free}")
-        tags.append(f"age {format_age_short(age_s)}")
-        reason = ", ".join(tags)
+    reason = _format_sector_scan_reason(
+        phase,
+        dist,
+        same_gal,
+        eff_near_w,
+        direct_raids,
+        freq_owners,
+        debris_cnt,
+        target_cnt,
+        collect_colonies,
+        prime_free,
+        age_s,
+    )
     return {
         "sector": skey,
         "galaxy": gal,

@@ -12,12 +12,11 @@ from spaceinvasion.combat._points_helpers import (
     MAX_JSON_SAFE,
     cap_eta_float,
     estimate_hourly_economy,
-    safe_finite_float,
     safe_nonneg_int,
     safe_optional_finite_float,
     safe_optional_finite_int,
 )
-from spaceinvasion.core.catalog import sanitize_json_tree
+from spaceinvasion.core.catalog import safe_finite_float, sanitize_json_tree
 from spaceinvasion.core.model import GameState
 
 

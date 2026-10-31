@@ -48,7 +48,6 @@
       "bin/run_stack.py:main": 104,
       "scripts/validate_adaptive_execution.py:main": 508,
       "spaceinvasion/combat/_scanner_batch.py:select_smart_galaxy_scan_batch": 147,
-      "spaceinvasion/combat/_scanner_sectors.py:_score_scanned_sector": 113,
       "spaceinvasion/combat/_scanner_sectors.py:score_galaxy_scan_sectors": 157,
       "spaceinvasion/core/config.py:strategy_config_from_dict": 108,
       "spaceinvasion/db/backend.py:ensure_postgres_container_ready": 109,
@@ -271,9 +270,6 @@
       "BLE001": 1,
       "S110": 1,
       "T201": 3
-    },
-    "spaceinvasion/session/auth.py": {
-      "I001": 1
     },
     "spaceinvasion/session/browser.py": {
       "BLE001": 26,

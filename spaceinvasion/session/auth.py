@@ -18,7 +18,11 @@ import requests
 from spaceinvasion.core import catalog as game_data
 from spaceinvasion.session.http_pools import (
     close_http_response as _close_http_response,
+)
+from spaceinvasion.session.http_pools import (
     close_http_session as _close_http_session,
+)
+from spaceinvasion.session.http_pools import (
     configure_http_session_pools as _configure_http_session_pools,
 )
 
