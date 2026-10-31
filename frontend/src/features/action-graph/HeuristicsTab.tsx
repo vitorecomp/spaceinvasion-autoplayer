@@ -1,6 +1,16 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { feedbackKindForError, safeFiniteNumber } from "../../api/httpClient";
-import { buildClientFallbackActionGraph, useConsole } from "../../context/ConsoleContext";
+import {
+  feedbackKindForError,
+  safeFiniteNumber } from "../../api/httpClient";
+import { buildClientFallbackActionGraph,
+  useActionGraphData,
+  useAgSimState,
+  useApiOnline,
+  useConsoleActions,
+  useDashboard,
+  usePlannerJobsStatus,
+  useUiPrefs,
+} from "../../store";
 import { ActionGraphTabKey, StrategyConfigData } from "../../types/api";
 import { ActionGraphParamRow } from "./ActionGraphParamRow";
 import { DagCanvas } from "./DagCanvas";
@@ -73,28 +83,31 @@ export interface HeuristicsTabProps {
 }
 
 export const HeuristicsTab: React.FC<HeuristicsTabProps> = ({ hidden = false, onSwitchTab }) => {
+  const apiOnline = useApiOnline();
+  const dashboard = useDashboard();
+  const actionGraphData = useActionGraphData();
+  const plannerJobsStatus = usePlannerJobsStatus();
+  const uiPrefs = useUiPrefs();
+  const { agSimDirty, agHydrationTick } = useAgSimState();
   const {
-    dashboard,
     setDashboard,
-    apiOnline,
-    actionGraphData,
     setActionGraphData,
-    plannerJobsStatus,
-    agSimDirty,
     setAgSimDirty,
     setAgSimRunning,
-    agHydrationTick,
     setConfigDirty,
     setConfigSaving,
     bumpDashboardSeq,
     beginGaCalc,
     endGaCalc,
-    uiPrefs,
     setUiPref,
     apiCommand,
     loadDashboard,
     showFeedback,
-  } = useConsole();
+    getSnapshot,
+    getRuntime,
+    bumpAgSimSeq,
+    bumpConfigHydration,
+  } = useConsoleActions();
 
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [draftValues, setDraftValues] = useState<Record<string, any>>(() =>
@@ -122,16 +135,11 @@ export const HeuristicsTab: React.FC<HeuristicsTabProps> = ({ hidden = false, on
   }, []);
 
   useEffect(() => {
-    const gState = (globalThis as any).state;
-    if (
-      !gState?.agSimDirty &&
-      !(gState?.agSimRunning > 0) &&
-      !(gState?.configSaving > 0) &&
-      dashboard?.config
-    ) {
+    const rt = getRuntime();
+    if (!rt.agSimDirty && !(rt.agSimRunning > 0) && !(rt.configSaving > 0) && dashboard?.config) {
       populateControls(dashboard.config);
     }
-  }, [agHydrationTick, dashboard?.config, populateControls]);
+  }, [agHydrationTick, dashboard?.config, getRuntime, populateControls]);
 
   const syncDraftValuesFromDom = useCallback(
     (modeOverride?: "priority" | "ai_planner") => {
@@ -211,33 +219,40 @@ export const HeuristicsTab: React.FC<HeuristicsTabProps> = ({ hidden = false, on
 
   const refreshActiveActionGraph = useCallback(
     async (forceRefresh = false): Promise<boolean> => {
-      const gState = (globalThis as any).state;
-      const reqSeq = gState ? ++gState.agSimSeq : 1;
+      const reqSeq = bumpAgSimSeq();
       try {
         const res = await apiCommand({
           command: "action_graph",
           simulated: false,
           refresh: Boolean(forceRefresh),
         });
-        if (gState && (reqSeq !== gState.agSimSeq || gState.agSimDirty)) return false;
+        const rt = getRuntime();
+        if (reqSeq !== rt.agSimSeq || rt.agSimDirty) return false;
         if (res.action_graph && typeof res.action_graph === "object") {
           setActionGraphData(res.action_graph);
-          const curDash = gState?.dashboard || dashboard;
+          const curDash = getSnapshot().dashboard || dashboard;
           if (curDash) {
-            const nextDash = { ...curDash, action_graph: res.action_graph };
-            if (gState) gState.dashboard = nextDash;
-            setDashboard(nextDash);
+            setDashboard({ ...curDash, action_graph: res.action_graph });
           }
           return true;
         }
       } catch (err: any) {
-        if (!gState || reqSeq === gState.agSimSeq) {
+        if (reqSeq === getRuntime().agSimSeq) {
           showFeedback(`Action graph load failed: ${err.message}`, feedbackKindForError(err));
         }
       }
       return false;
     },
-    [apiCommand, dashboard, setActionGraphData, setDashboard, showFeedback]
+    [
+      apiCommand,
+      bumpAgSimSeq,
+      dashboard,
+      getRuntime,
+      getSnapshot,
+      setActionGraphData,
+      setDashboard,
+      showFeedback,
+    ]
   );
 
   const runAgSimulation = useCallback(
@@ -257,9 +272,7 @@ export const HeuristicsTab: React.FC<HeuristicsTabProps> = ({ hidden = false, on
       syncDraftValuesFromDom(simMode);
       setAgSimDirty(true);
 
-      const gState = (globalThis as any).state;
-      const reqSeq = gState ? ++gState.agSimSeq : 1;
-      if (gState) gState.agSimRunning = (gState.agSimRunning || 0) + 1;
+      const reqSeq = bumpAgSimSeq();
       setAgSimRunning((c) => c + 1);
 
       const useHud = simMode === "ai_planner";
@@ -273,15 +286,13 @@ export const HeuristicsTab: React.FC<HeuristicsTabProps> = ({ hidden = false, on
           simulated: true,
           refresh: false,
         });
-        if (gState && reqSeq !== gState.agSimSeq) return false;
+        if (reqSeq !== getRuntime().agSimSeq) return false;
         if (res.action_graph && typeof res.action_graph === "object") {
           const isDirty = Boolean(res.action_graph.is_dirty);
           setActionGraphData(res.action_graph);
-          const curDash = gState?.dashboard || dashboard;
+          const curDash = getSnapshot().dashboard || dashboard;
           if (!isDirty && curDash) {
-            const nextDash = { ...curDash, action_graph: res.action_graph };
-            if (gState) gState.dashboard = nextDash;
-            setDashboard(nextDash);
+            setDashboard({ ...curDash, action_graph: res.action_graph });
           }
           setAgSimDirty(isDirty);
           if (explicit) {
@@ -297,12 +308,11 @@ export const HeuristicsTab: React.FC<HeuristicsTabProps> = ({ hidden = false, on
         }
         return false;
       } catch (err: any) {
-        if (!gState || reqSeq === gState.agSimSeq) {
+        if (reqSeq === getRuntime().agSimSeq) {
           showFeedback(`Simulation preview error: ${err.message}`, feedbackKindForError(err));
         }
         return false;
       } finally {
-        if (gState) gState.agSimRunning = Math.max(0, (gState.agSimRunning || 0) - 1);
         setAgSimRunning((c) => Math.max(0, c - 1));
         if (useHud) endGaCalc();
       }
@@ -310,9 +320,12 @@ export const HeuristicsTab: React.FC<HeuristicsTabProps> = ({ hidden = false, on
     [
       apiCommand,
       beginGaCalc,
+      bumpAgSimSeq,
       collectDraftPayload,
       dashboard,
       endGaCalc,
+      getRuntime,
+      getSnapshot,
       setActionGraphData,
       setAgSimDirty,
       setAgSimRunning,
@@ -322,23 +335,17 @@ export const HeuristicsTab: React.FC<HeuristicsTabProps> = ({ hidden = false, on
     ]
   );
 
-  useClientSyncEffect(() => {
-    (globalThis as any).runAgSimulation = runAgSimulation;
-    (globalThis as any).populateAgParamControls = populateControls;
-  }, [populateControls, runAgSimulation]);
-
   const scheduleDebouncedSim = useCallback(() => {
-    const gState = (globalThis as any).state;
-    if (gState) gState.agSimSeq = (gState.agSimSeq || 0) + 1;
+    bumpAgSimSeq();
     setAgSimDirty(true);
     if (debounceRef.current) {
       clearTimeout(debounceRef.current);
     }
     debounceRef.current = setTimeout(() => {
       debounceRef.current = null;
-      runAgSimulation({ explicit: false });
+      void runAgSimulation({ explicit: false });
     }, 180);
-  }, [runAgSimulation, setAgSimDirty]);
+  }, [bumpAgSimSeq, runAgSimulation, setAgSimDirty]);
 
   const onModeSwitchClick = (targetMode: "priority" | "ai_planner") => {
     const modeSel =
@@ -357,14 +364,13 @@ export const HeuristicsTab: React.FC<HeuristicsTabProps> = ({ hidden = false, on
       clearTimeout(debounceRef.current);
       debounceRef.current = null;
     }
-    const gState = (globalThis as any).state;
-    if (gState) gState.agSimSeq = (gState.agSimSeq || 0) + 1;
+    bumpAgSimSeq();
     setAgSimDirty(false);
-    const activeCfg = (gState?.dashboard || dashboard)?.config || null;
+    const curDash = getSnapshot().dashboard || dashboard;
+    const activeCfg = curDash?.config || null;
     if (activeCfg) {
       populateControls(activeCfg);
     }
-    const curDash = gState?.dashboard || dashboard;
     if (curDash?.action_graph) {
       setActionGraphData(curDash.action_graph);
     } else if (curDash) {
@@ -386,11 +392,7 @@ export const HeuristicsTab: React.FC<HeuristicsTabProps> = ({ hidden = false, on
     const isAi = normalizeUiPlannerMode(payload.planner_mode) === "ai_planner";
     if (isAi) beginGaCalc();
 
-    const gState = (globalThis as any).state;
-    if (gState) {
-      gState.agSimSeq = (gState.agSimSeq || 0) + 1;
-      gState.configSaving = (gState.configSaving || 0) + 1;
-    }
+    bumpAgSimSeq();
     bumpDashboardSeq();
     setConfigSaving((c) => c + 1);
 
@@ -405,8 +407,7 @@ export const HeuristicsTab: React.FC<HeuristicsTabProps> = ({ hidden = false, on
       setAgSimDirty(false);
       if (res.config && typeof res.config === "object") {
         populateControls(res.config);
-        (globalThis as any).renderConfigForm?.(res.config);
-        const curDash = gState?.dashboard || dashboard;
+        const curDash = getSnapshot().dashboard || dashboard;
         const nextDash = curDash
           ? {
               ...curDash,
@@ -429,8 +430,8 @@ export const HeuristicsTab: React.FC<HeuristicsTabProps> = ({ hidden = false, on
               live_ai_unlocked: res.live_ai_unlocked,
               action_graph: res.action_graph || null,
             };
-        if (gState) gState.dashboard = nextDash;
         setDashboard(nextDash);
+        bumpConfigHydration();
       }
       if (res.action_graph && typeof res.action_graph === "object") {
         setActionGraphData(res.action_graph);
@@ -440,7 +441,6 @@ export const HeuristicsTab: React.FC<HeuristicsTabProps> = ({ hidden = false, on
     } catch (err: any) {
       showFeedback(`Failed applying parameters: ${err.message}`, feedbackKindForError(err));
     } finally {
-      if (gState) gState.configSaving = Math.max(0, (gState.configSaving || 0) - 1);
       setConfigSaving((c) => Math.max(0, c - 1));
       if (isAi) endGaCalc();
     }

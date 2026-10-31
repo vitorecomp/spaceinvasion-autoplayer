@@ -2,7 +2,7 @@ import React from "react";
 import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AppHeader } from "../../components/layout/AppHeader";
-import { ConsoleProvider } from "../../context/ConsoleContext";
+import { ConsoleProvider } from "../../store";
 import { HelpAlertModal } from "./HelpAlertModal";
 import { NotificationCenterModal } from "./NotificationCenterModal";
 import {

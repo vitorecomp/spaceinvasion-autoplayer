@@ -1,7 +1,7 @@
 import React, { useMemo, useState } from "react";
 import { feedbackKindForError } from "../../api/httpClient";
 import { SortableTh } from "../../components/SortableTh";
-import { useConsole } from "../../context/ConsoleContext";
+import { useConsoleActions } from "../../store";
 import {
   durationToSeconds,
   resourcesTotal,
@@ -55,7 +55,7 @@ export const BuildingInspector: React.FC<BuildingInspectorProps> = ({
     showFeedback,
     enqueueManualCommand,
     toggleBlastFurnaceRate,
-  } = useConsole();
+  } = useConsoleActions();
 
   const isResearchMode = mode === "research";
   const ids = useMemo(

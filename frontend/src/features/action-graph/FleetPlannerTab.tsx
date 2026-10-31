@@ -1,7 +1,13 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { feedbackKindForError, safeFiniteNumber } from "../../api/httpClient";
+import {
+  feedbackKindForError,
+  safeFiniteNumber } from "../../api/httpClient";
 import { SortableTh } from "../../components/SortableTh";
-import { useConsole } from "../../context/ConsoleContext";
+import { useActivePage,
+  useApiOnline,
+  useConsoleActions,
+  useDashboard,
+} from "../../store";
 import { coordsSortKey, useTableSort, type SortColumnMap } from "../../hooks/useTableSort";
 import type {
   FleetPlannerGetPayload,
@@ -496,18 +502,19 @@ export interface FleetPlannerTabProps {
 }
 
 export const FleetPlannerTab: React.FC<FleetPlannerTabProps> = ({ hidden = false }) => {
+  const apiOnline = useApiOnline();
+  const dashboard = useDashboard();
+  const activePage = useActivePage();
   const {
-    dashboard,
     setDashboard,
-    activePage,
-    apiOnline,
     setConfigDirty,
     setConfigSaving,
     bumpDashboardSeq,
     apiCommand,
     loadDashboard,
     showFeedback,
-  } = useConsole();
+    bumpConfigHydration,
+  } = useConsoleActions();
 
   const [fleetData, setFleetData] = useState<FleetPlannerGetPayload | null>(null);
   const [draft, setDraft] = useState<FleetDraftState>(() =>
@@ -920,10 +927,6 @@ export const FleetPlannerTab: React.FC<FleetPlannerTabProps> = ({ hidden = false
 
   const handleApplyToConfig = async () => {
     if (isApplying) return;
-    const gState = (globalThis as any).state;
-    if (gState) {
-      gState.configSaving = (gState.configSaving || 0) + 1;
-    }
     setIsApplying(true);
     setConfigSaving((c) => c + 1);
     setStatusMessage("Applying fleet & logistics settings to active Config...");
@@ -931,9 +934,6 @@ export const FleetPlannerTab: React.FC<FleetPlannerTabProps> = ({ hidden = false
     try {
       const res = await apiCommand({ command: "update_config", config: patch });
       const updatedCfg = res?.config || { ...(dashboard?.config || {}), ...patch };
-      if (gState?.dashboard) {
-        gState.dashboard = { ...gState.dashboard, config: updatedCfg };
-      }
       setDashboard((prev) => ({
         ...(prev || {}),
         config: updatedCfg,
@@ -942,9 +942,7 @@ export const FleetPlannerTab: React.FC<FleetPlannerTabProps> = ({ hidden = false
       setDraftDirty(false);
       setConfigDirty(false);
       bumpDashboardSeq();
-      if (typeof (globalThis as any).renderConfigForm === "function") {
-        (globalThis as any).renderConfigForm(updatedCfg);
-      }
+      bumpConfigHydration();
       setStatusMessage("Saved to Config and synced bidirectionally.");
       showFeedback("Fleet planner settings applied to Config.", "ok");
       await Promise.all([
@@ -958,7 +956,6 @@ export const FleetPlannerTab: React.FC<FleetPlannerTabProps> = ({ hidden = false
         feedbackKindForError(err)
       );
     } finally {
-      if (gState) gState.configSaving = Math.max(0, (gState.configSaving || 0) - 1);
       setConfigSaving((c) => Math.max(0, c - 1));
       setIsApplying(false);
     }

@@ -1,6 +1,6 @@
 import React from "react";
 import "./utils/formatters";
-import { ConsoleProvider } from "./context/ConsoleContext";
+import { ConsoleProvider } from "./store";
 import { AppHeader } from "./components/layout/AppHeader";
 import { AppSidebar } from "./components/layout/AppSidebar";
 import { HelpAlertModal } from "./components/modals/HelpAlertModal";

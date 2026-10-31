@@ -1,8 +1,15 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { feedbackKindForError } from "../../api/httpClient";
+import {
+  feedbackKindForError } from "../../api/httpClient";
 import { SortableTh } from "../../components/SortableTh";
 import { TablePagination } from "../../components/TablePagination";
-import { useConsole } from "../../context/ConsoleContext";
+import { useActivePage,
+  useActivePlanet,
+  useColonyData,
+  useConsoleActions,
+  useDashboard,
+  useUiPrefs,
+} from "../../store";
 import {
   coordsSortKey,
   gradeSortKey,
@@ -64,19 +71,19 @@ function attemptShortTag(stats: ColonyAttemptCoordStats, minFields: number): str
 }
 
 export const ColoniesView: React.FC<ColoniesViewProps> = ({ hidden }) => {
+  const dashboard = useDashboard();
+  const activePage = useActivePage();
+  const activePlanet = useActivePlanet();
+  const colonyData = useColonyData();
+  const uiPrefs = useUiPrefs();
   const {
-    dashboard,
-    activePage,
-    activePlanet,
-    colonyData,
     refreshColoniesView,
     syncAllInboxFolders,
     showFeedback,
     apiCommand,
     loadDashboard,
-    uiPrefs,
     setUiPref,
-  } = useConsole();
+  } = useConsoleActions();
 
   const isHidden = hidden ?? activePage !== "colonies";
   const colFilter = uiPrefs.colonyFilter || "all";

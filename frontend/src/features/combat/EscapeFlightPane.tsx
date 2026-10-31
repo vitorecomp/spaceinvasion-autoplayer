@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { useConsole } from "../../context/ConsoleContext";
+import { useActivePlanet, useConsoleActions } from "../../store";
 
 export interface EscapeFlightPaneProps {
   hidden?: boolean;
@@ -9,7 +9,8 @@ export interface EscapeFlightPaneProps {
 const DEFAULT_OUTPUT = 'Click "Pack Escape Flight" to calculate optimal cargo distribution.';
 
 export const EscapeFlightPane: React.FC<EscapeFlightPaneProps> = ({ hidden = false, cmb }) => {
-  const { activePlanet, apiCommand } = useConsole();
+  const activePlanet = useActivePlanet();
+  const { apiCommand } = useConsoleActions();
   const [targetCoords, setTargetCoords] = useState<string>("");
   const [customOutput, setCustomOutput] = useState<string | null>(null);
 

@@ -3,7 +3,14 @@ import { feedbackKindForError } from "../../api/httpClient";
 import { LoadingIndicator } from "../../components/LoadingIndicator";
 import { SortableTh } from "../../components/SortableTh";
 import { TablePagination, useTablePagination } from "../../components/TablePagination";
-import { useConsole } from "../../context/ConsoleContext";
+import {
+  useActivePage,
+  useActivePlanet,
+  useApiStatus,
+  useAtkData,
+  useConsoleActions,
+  useUiPrefs,
+} from "../../store";
 import {
   coordsSortKey,
   timestampSortKey,
@@ -40,19 +47,18 @@ const BLOCK_STATUS_FILTERS: ReadonlyArray<{ key: BlockStatusFilter; label: strin
 ];
 
 export const AttacksView: React.FC<AttacksViewProps> = ({ hidden }) => {
+  const activePage = useActivePage();
+  const activePlanet = useActivePlanet();
+  const atkData = useAtkData();
+  const uiPrefs = useUiPrefs();
+  const { apiOnline, reconnectAttempts } = useApiStatus();
   const {
-    apiOnline,
-    reconnectAttempts,
-    activePage,
-    activePlanet,
-    atkData,
     refreshAttacksView,
     syncAllInboxFolders,
     showFeedback,
     apiCommand,
-    uiPrefs,
     setUiPref,
-  } = useConsole();
+  } = useConsoleActions();
 
   const isHidden = hidden ?? activePage !== "attacks";
   const atkTab = uiPrefs.atkTab === "blocks" ? "blocks" : "battles";

@@ -1,7 +1,12 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { feedbackKindForError } from "../../api/httpClient";
+import {
+  feedbackKindForError } from "../../api/httpClient";
 import { SortableTh } from "../../components/SortableTh";
-import { useConsole } from "../../context/ConsoleContext";
+import { useActivePage,
+  useApiOnline,
+  useConsoleActions,
+  useDashboard,
+} from "../../store";
 import {
   durationToSeconds,
   useTableSort,
@@ -22,8 +27,10 @@ function fmtSignedDeltaInt(val: number): string {
 }
 
 export const RankingView: React.FC<RankingViewProps> = ({ hidden }) => {
-  const { dashboard, activePage, apiOnline, apiCommand, loadDashboard, showFeedback } =
-    useConsole();
+  const apiOnline = useApiOnline();
+  const dashboard = useDashboard();
+  const activePage = useActivePage();
+  const { apiCommand, loadDashboard, showFeedback } = useConsoleActions();
 
   const [localUniRows, setLocalUniRows] = useState<UniverseResearchMaxRow[] | null>(null);
   const [syncingUniRes, setSyncingUniRes] = useState<boolean>(false);

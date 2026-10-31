@@ -1,7 +1,7 @@
 import React, { useEffect } from "react";
 import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ConsoleProvider, useConsole } from "../context/ConsoleContext";
+import { ConsoleProvider, useConsoleActions } from "../store";
 import { DashboardPayload, QueueJobData } from "../types/api";
 import { DashboardView } from "../features/dashboard";
 import { OperationsView } from "../features/operations";
@@ -135,7 +135,7 @@ const SeedProvider: React.FC<{ page: string; children: React.ReactNode }> = ({
   children,
 }) => {
   const Inner: React.FC = () => {
-    const { setDashboard, setBuildingsEtaData, setActionGraphData, setActivePage } = useConsole();
+    const { setDashboard, setBuildingsEtaData, setActionGraphData, setActivePage } = useConsoleActions();
     useEffect(() => {
       setDashboard(MOCK_DASHBOARD);
       if (MOCK_DASHBOARD.buildings_eta) setBuildingsEtaData(MOCK_DASHBOARD.buildings_eta);
@@ -443,7 +443,7 @@ describe("Dashboard, Operations, Buildings, Logs, Config & ActionGraph React Vie
     );
 
     const TriggerOpen: React.FC = () => {
-      const { loadDashboard, openNotificationCenter } = useConsole();
+      const { loadDashboard, openNotificationCenter } = useConsoleActions();
       useEffect(() => {
         void loadDashboard({ force: true }).then(() => openNotificationCenter());
       }, [loadDashboard, openNotificationCenter]);
@@ -554,7 +554,7 @@ describe("Dashboard, Operations, Buildings, Logs, Config & ActionGraph React Vie
       children,
     }) => {
       const Inner: React.FC = () => {
-        const { setDashboard, setActivePage } = useConsole();
+        const { setDashboard, setActivePage } = useConsoleActions();
         useEffect(() => {
           setDashboard(multiPlanetDash as any);
           setActivePage(page);
@@ -696,7 +696,7 @@ describe("Dashboard, Operations, Buildings, Logs, Config & ActionGraph React Vie
 
     const ScanSeed: React.FC<{ children: React.ReactNode }> = ({ children }) => {
       const Inner: React.FC = () => {
-        const { setDashboard, setActivePage } = useConsole();
+        const { setDashboard, setActivePage } = useConsoleActions();
         useEffect(() => {
           setDashboard({
             ...MOCK_DASHBOARD,
@@ -818,7 +818,7 @@ describe("Dashboard, Operations, Buildings, Logs, Config & ActionGraph React Vie
 
     const ElevenSeed: React.FC<{ children: React.ReactNode }> = ({ children }) => {
       const Inner: React.FC = () => {
-        const { setDashboard, setActivePage } = useConsole();
+        const { setDashboard, setActivePage } = useConsoleActions();
         useEffect(() => {
           setDashboard(multiFleetDash as any);
           setActivePage("dashboard");
@@ -965,7 +965,7 @@ describe("Dashboard, Operations, Buildings, Logs, Config & ActionGraph React Vie
 
     const Seed: React.FC<{ children: React.ReactNode }> = ({ children }) => {
       const Inner: React.FC = () => {
-        const { setDashboard, setActivePage } = useConsole();
+        const { setDashboard, setActivePage } = useConsoleActions();
         useEffect(() => {
           setDashboard(dash);
           setActivePage("dashboard");
@@ -1135,7 +1135,7 @@ describe("Dashboard, Operations, Buildings, Logs, Config & ActionGraph React Vie
 
     const Seed: React.FC<{ children: React.ReactNode }> = ({ children }) => {
       const Inner: React.FC = () => {
-        const { setDashboard, setActivePage } = useConsole();
+        const { setDashboard, setActivePage } = useConsoleActions();
         useEffect(() => {
           setDashboard(dash);
           setActivePage("dashboard");
@@ -1294,7 +1294,7 @@ describe("Dashboard, Operations, Buildings, Logs, Config & ActionGraph React Vie
 
     const ShellSeed: React.FC<{ children: React.ReactNode }> = ({ children }) => {
       const Inner: React.FC = () => {
-        const { setDashboard, setActivePage } = useConsole();
+        const { setDashboard, setActivePage } = useConsoleActions();
         useEffect(() => {
           setDashboard(customDash);
           setActivePage("dashboard");
@@ -1554,7 +1554,7 @@ describe("Dashboard, Operations, Buildings, Logs, Config & ActionGraph React Vie
 
       let pushUpdate!: (dash: DashboardPayload) => void;
       const Harness: React.FC = () => {
-        const { setDashboard, setActivePage } = useConsole();
+        const { setDashboard, setActivePage } = useConsoleActions();
         pushUpdate = setDashboard;
         useEffect(() => {
           setDashboard(makeDash(12401, [jobP1, jobP2, jobP3, jobP4, expiredStaleJob, duplicateSlotJob]));

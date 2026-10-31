@@ -3,7 +3,14 @@ import { feedbackKindForError } from "../../api/httpClient";
 import { LoadingIndicator } from "../../components/LoadingIndicator";
 import { SortableTh } from "../../components/SortableTh";
 import { TablePagination, useTablePagination } from "../../components/TablePagination";
-import { useConsole } from "../../context/ConsoleContext";
+import {
+  useActivePage,
+  useActivePlanet,
+  useApiStatus,
+  useConsoleActions,
+  useRecData,
+  useUiPrefs,
+} from "../../store";
 import {
   coordsSortKey,
   timestampSortKey,
@@ -27,19 +34,18 @@ const EMAIL_CATS: Array<{ key: string; label: string }> = [
 ];
 
 export const RecyclersView: React.FC<RecyclersViewProps> = ({ hidden }) => {
+  const activePage = useActivePage();
+  const activePlanet = useActivePlanet();
+  const recData = useRecData();
+  const uiPrefs = useUiPrefs();
+  const { apiOnline, reconnectAttempts } = useApiStatus();
   const {
-    apiOnline,
-    reconnectAttempts,
-    activePage,
-    activePlanet,
-    recData,
     refreshRecyclersView,
     syncAllInboxFolders,
     showFeedback,
     apiCommand,
-    uiPrefs,
     setUiPref,
-  } = useConsole();
+  } = useConsoleActions();
 
   const isHidden = hidden ?? activePage !== "recyclers";
   const recTab =

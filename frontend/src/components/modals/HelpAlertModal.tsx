@@ -1,6 +1,11 @@
 import React from "react";
-import { feedbackKindForError, safeFiniteNumber } from "../../api/httpClient";
-import { useConsole } from "../../context/ConsoleContext";
+import {
+  feedbackKindForError,
+  safeFiniteNumber } from "../../api/httpClient";
+import { useActiveHelpNotif,
+  useConsoleActions,
+  useDashboard,
+} from "../../store";
 import { copyNotificationCode, formatNotificationCode } from "./notificationId";
 
 function formatNotifAge(tsVal: unknown): string {
@@ -14,16 +19,16 @@ function formatNotifAge(tsVal: unknown): string {
 }
 
 export const HelpAlertModal: React.FC = () => {
+  const dashboard = useDashboard();
+  const activeHelpNotif = useActiveHelpNotif();
   const {
-    dashboard,
-    activeHelpNotif,
     ackActiveHelpPopup,
     closeHelpPopupOnly,
     openNotificationCenter,
     apiCommand,
     loadDashboard,
     showFeedback,
-  } = useConsole();
+  } = useConsoleActions();
 
   const n = activeHelpNotif;
   const notifCode = formatNotificationCode(n);

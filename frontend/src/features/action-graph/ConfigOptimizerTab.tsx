@@ -1,8 +1,15 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { feedbackKindForError, safeFiniteNumber } from "../../api/httpClient";
+import {
+  feedbackKindForError,
+  safeFiniteNumber } from "../../api/httpClient";
 import { SortableTh } from "../../components/SortableTh";
 import { TablePagination } from "../../components/TablePagination";
-import { useConsole } from "../../context/ConsoleContext";
+import { useActivePage,
+  useApiOnline,
+  useConsoleActions,
+  useDashboard,
+  usePlannerJobsStatus,
+} from "../../store";
 import { useTableSort, type SortColumnMap } from "../../hooks/useTableSort";
 import type {
   ConfigOptimizerGetPayload,
@@ -620,17 +627,17 @@ export interface ConfigOptimizerTabProps {
 }
 
 export const ConfigOptimizerTab: React.FC<ConfigOptimizerTabProps> = ({ hidden = false }) => {
+  const apiOnline = useApiOnline();
+  const dashboard = useDashboard();
+  const activePage = useActivePage();
+  const plannerJobsStatus = usePlannerJobsStatus();
   const {
-    dashboard,
     setDashboard,
-    activePage,
-    apiOnline,
-    plannerJobsStatus,
     setPlannerJobsStatus,
     apiCommand,
     loadDashboard,
     showFeedback,
-  } = useConsole();
+  } = useConsoleActions();
 
   const [optData, setOptData] = useState<ConfigOptimizerGetPayload | null>(null);
   const [draft, setDraft] = useState<ConfigOptimizerDraft>(() =>
@@ -1163,10 +1170,6 @@ export const ConfigOptimizerTab: React.FC<ConfigOptimizerTabProps> = ({ hidden =
       };
 
       setDashboard((prev) => patchDashboardObj(prev));
-      const gState = (globalThis as any).state;
-      if (gState?.dashboard) {
-        gState.dashboard = patchDashboardObj(gState.dashboard);
-      }
 
       setEditingPlanetId(null);
       setRenameDraft("");

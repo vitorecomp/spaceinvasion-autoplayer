@@ -1,7 +1,16 @@
 import React, { useCallback, useMemo } from "react";
-import { feedbackKindForError } from "../../api/httpClient";
+import {
+  feedbackKindForError } from "../../api/httpClient";
 import { SortableTh } from "../../components/SortableTh";
-import { useConsole } from "../../context/ConsoleContext";
+import { useActivePage,
+  useActivePlanet,
+  useBuildingsEtaData,
+  useCombatData,
+  useConsoleActions,
+  useDashboard,
+  useSelectedPlanetId,
+  useUiPrefs,
+} from "../../store";
 import {
   durationToSeconds,
   resourcesTotal,
@@ -47,22 +56,22 @@ function formatSpecializationLabel(raw?: string | null): string {
 }
 
 export const BuildingsView: React.FC = () => {
+  const dashboard = useDashboard();
+  const activePage = useActivePage();
+  const selectedPlanetId = useSelectedPlanetId();
+  const activePlanet = useActivePlanet();
+  const uiPrefs = useUiPrefs();
+  const buildingsEtaData = useBuildingsEtaData();
+  const combatData = useCombatData();
   const {
-    dashboard,
-    activePage,
-    selectedPlanetId,
-    activePlanet,
     showFeedback,
     apiCommand,
     loadDashboard,
-    uiPrefs,
     setUiPref,
-    buildingsEtaData,
     refreshBuildingsEtaForSelectedPlanet,
-    combatData,
     toggleBlastFurnaceRate,
     enqueueManualCommand,
-  } = useConsole();
+  } = useConsoleActions();
 
   const etaData = useMemo(() => {
     if (

@@ -1,6 +1,11 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { flushSync } from "react-dom";
-import { useConsole } from "../../context/ConsoleContext";
+import {
+  flushSync } from "react-dom";
+import { useActivePlanet,
+  useConsoleActions,
+  useDashboard,
+  useUiPrefs,
+} from "../../store";
 import type { PlanetData } from "../../types/api";
 import { finiteNum } from "../../utils/formatters";
 import {
@@ -69,7 +74,10 @@ function computeDefaultLevelValue(
 }
 
 export const ManualQueueComposer: React.FC = () => {
-  const { dashboard, activePlanet, showFeedback, enqueueManualCommand, uiPrefs } = useConsole();
+  const dashboard = useDashboard();
+  const activePlanet = useActivePlanet();
+  const uiPrefs = useUiPrefs();
+  const { showFeedback, enqueueManualCommand } = useConsoleActions();
 
   const planets = useMemo(() => dashboard?.state?.planets || [], [dashboard?.state?.planets]);
   const researches = useMemo(

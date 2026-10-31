@@ -5,22 +5,27 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../App";
 import { EspionageView } from "../features/espionage";
 import {
-  ConsoleProvider,
-  flushConsoleStore,
-  rehydrateConsoleStore,
-  resetConsoleStore,
-  useConsole,
-} from "../context/ConsoleContext";
-import {
   CONSOLE_STORE_STORAGE_KEY,
+  ConsoleProvider,
   LEGACY_SESSION_STATE_KEY,
   buildPersistedPayload,
   consoleStore,
   createConsoleStore,
+  flushConsoleStore,
   persistConsoleStateToStorage,
   readPersistedConsoleState,
+  rehydrateConsoleStore,
+  resetConsoleStore,
   setConsoleStorePersistenceForTests,
-} from "../store/consoleStore";
+  useActivePage,
+  useApiOnline,
+  useConsoleActions,
+  useDashboard,
+  useEspData,
+  useHydrationMeta,
+  useSelectedPlanetId,
+  useUiPrefs,
+} from "../store";
 import { DashboardPayload } from "../types/api";
 
 const SAMPLE_DASHBOARD: DashboardPayload = {
@@ -146,11 +151,16 @@ describe("Persistent Console Store (useSyncExternalStore + localStorage)", () =>
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    let ctxRef: ReturnType<typeof useConsole> | null = null;
+    let actionsRef: ReturnType<typeof useConsoleActions> | null = null;
+    let dashRef: ReturnType<typeof useDashboard> = null;
+    let espRef: ReturnType<typeof useEspData> = null;
     const SessionDriver: React.FC = () => {
-      const ctx = useConsole();
-      ctxRef = ctx;
-      return <div data-testid="active-page">{ctx.activePage}</div>;
+      const actions = useConsoleActions();
+      const activePage = useActivePage();
+      dashRef = useDashboard();
+      espRef = useEspData();
+      actionsRef = actions;
+      return <div data-testid="active-page">{activePage}</div>;
     };
 
     // 1. Initial live session: load dashboard, navigate to espionage, adjust planet & prefs
@@ -161,20 +171,20 @@ describe("Persistent Console Store (useSyncExternalStore + localStorage)", () =>
     );
 
     await waitFor(() => {
-      expect(ctxRef?.dashboard?.state?.nickname).toBe("ventkx86");
+      expect(dashRef?.state?.nickname).toBe("ventkx86");
     });
 
     await act(async () => {
-      ctxRef!.setActivePage("espionage");
-      ctxRef!.setSelectedPlanetId(12499);
-      ctxRef!.setUiPref("espTab", "reports");
-      ctxRef!.setUiPref("resTab", "drive");
-      ctxRef!.setUiPref("selectedResearchKey", "r7");
-      ctxRef!.setUiPref("dashQueuePlanetScope", "12499");
+      actionsRef!.setActivePage("espionage");
+      actionsRef!.setSelectedPlanetId(12499);
+      actionsRef!.setUiPref("espTab", "reports");
+      actionsRef!.setUiPref("resTab", "drive");
+      actionsRef!.setUiPref("selectedResearchKey", "r7");
+      actionsRef!.setUiPref("dashQueuePlanetScope", "12499");
     });
 
     await waitFor(() => {
-      expect(ctxRef?.espData?.targets?.[0]?.coords).toBe("02:380:04");
+      expect(espRef?.targets?.[0]?.coords).toBe("02:380:04");
     });
 
     // Trigger beforeunload (as browser F5 does) -> flushes immediately to localStorage
@@ -209,21 +219,27 @@ describe("Persistent Console Store (useSyncExternalStore + localStorage)", () =>
     }> = [];
 
     const FirstFrameProbe: React.FC = () => {
-      const ctx = useConsole();
+      const activePage = useActivePage();
+      const selectedPlanetId = useSelectedPlanetId();
+      const dashboard = useDashboard();
+      const espData = useEspData();
+      const uiPrefs = useUiPrefs();
+      const apiOnline = useApiOnline();
+      const { isHydratedFromCache } = useHydrationMeta();
       frameLog.push({
-        activePage: ctx.activePage,
-        selectedPlanetId: ctx.selectedPlanetId,
-        hasDashboard: ctx.dashboard !== null,
-        nickname: ctx.dashboard?.state?.nickname ?? null,
-        espCount: ctx.espData?.targets?.length ?? 0,
-        espTab: ctx.uiPrefs.espTab,
-        resTab: ctx.uiPrefs.resTab,
-        selectedResearchKey: ctx.uiPrefs.selectedResearchKey,
-        dashScope: ctx.uiPrefs.dashQueuePlanetScope,
-        apiOnline: ctx.apiOnline,
-        isHydratedFromCache: ctx.isHydratedFromCache,
+        activePage,
+        selectedPlanetId,
+        hasDashboard: dashboard !== null,
+        nickname: dashboard?.state?.nickname ?? null,
+        espCount: espData?.targets?.length ?? 0,
+        espTab: uiPrefs.espTab,
+        resTab: uiPrefs.resTab,
+        selectedResearchKey: uiPrefs.selectedResearchKey,
+        dashScope: uiPrefs.dashQueuePlanetScope,
+        apiOnline,
+        isHydratedFromCache,
       });
-      return <div data-testid="hydrated-nick">{ctx.dashboard?.state?.nickname || "empty"}</div>;
+      return <div data-testid="hydrated-nick">{dashboard?.state?.nickname || "empty"}</div>;
     };
 
     const secondMount = render(
@@ -249,14 +265,13 @@ describe("Persistent Console Store (useSyncExternalStore + localStorage)", () =>
     });
     expect(secondMount.getByTestId("hydrated-nick").textContent).toBe("ventkx86");
 
-    // Legacy window bridges (window.state & window.__SI_STATE__) stay 100% synchronized
-    const w = window as any;
-    expect(w.state.activePage).toBe("espionage");
-    expect(w.state.dashboard?.state?.nickname).toBe("ventkx86");
-    expect(w.state.resTab).toBe("drive");
-    expect(w.state.selectedResearchKey).toBe("r7");
-    expect(w.__SI_STATE__).toBe(w.state);
-    expect(w.__SI_STATE__.isHydratedFromCache).toBe(true);
+    // Store snapshot stays synchronized cleanly without legacy window.state globals
+    const snap = consoleStore.getSnapshot();
+    expect(snap.activePage).toBe("espionage");
+    expect(snap.dashboard?.state?.nickname).toBe("ventkx86");
+    expect(snap.uiPrefs.resTab).toBe("drive");
+    expect(snap.uiPrefs.selectedResearchKey).toBe("r7");
+    expect(snap.isHydratedFromCache).toBe(true);
   });
 
   it("stale-while-revalidate keeps cached dashboard & tab data intact during offline/failed polls and patches in-place when fresh data arrives", async () => {
@@ -301,9 +316,15 @@ describe("Persistent Console Store (useSyncExternalStore + localStorage)", () =>
       })
     );
 
-    let ctxRef: ReturnType<typeof useConsole> | null = null;
+    let actionsRef: ReturnType<typeof useConsoleActions> | null = null;
+    let apiOnlineRef = true;
+    let dashRef: ReturnType<typeof useDashboard> = null;
+    let espRef: ReturnType<typeof useEspData> = null;
     const Probe: React.FC = () => {
-      ctxRef = useConsole();
+      actionsRef = useConsoleActions();
+      apiOnlineRef = useApiOnline();
+      dashRef = useDashboard();
+      espRef = useEspData();
       return null;
     };
 
@@ -315,21 +336,21 @@ describe("Persistent Console Store (useSyncExternalStore + localStorage)", () =>
 
     // Offline failure marks apiOnline false but MUST NOT clear cached dashboard or espData
     await waitFor(() => {
-      expect(ctxRef?.apiOnline).toBe(false);
+      expect(apiOnlineRef).toBe(false);
     });
-    expect(ctxRef?.dashboard?.state?.nickname).toBe("ventkx86");
-    expect(ctxRef?.espData?.targets?.[0]?.coords).toBe("02:380:04");
+    expect(dashRef?.state?.nickname).toBe("ventkx86");
+    expect(espRef?.targets?.[0]?.coords).toBe("02:380:04");
 
     // Once API recovers, fresh data patches smoothly in-place
     shouldFail = false;
     await act(async () => {
-      await ctxRef!.loadDashboard({ refresh: false, force: true });
+      await actionsRef!.loadDashboard({ refresh: false, force: true });
     });
 
     await waitFor(() => {
-      expect(ctxRef?.dashboard?.state?.nickname).toBe("updated-commander");
-      expect(ctxRef?.espData?.targets?.[0]?.coords).toBe("02:380:09");
-      expect(ctxRef?.apiOnline).toBe(true);
+      expect(dashRef?.state?.nickname).toBe("updated-commander");
+      expect(espRef?.targets?.[0]?.coords).toBe("02:380:09");
+      expect(apiOnlineRef).toBe(true);
     });
   });
 
@@ -494,7 +515,7 @@ describe("Persistent Console Store (useSyncExternalStore + localStorage)", () =>
     expect(hydrated.isHydratedFromCache).toBe(false);
   });
 
-  it("supports research and fleet-control pages in ConsoleContext and isolates disableInitialFetch tests from localStorage", async () => {
+  it("supports research and fleet-control pages in ConsoleProvider and isolates disableInitialFetch tests from localStorage", async () => {
     // Seed localStorage before mounting a disableInitialFetch provider
     localStorage.setItem(
       CONSOLE_STORE_STORAGE_KEY,
@@ -525,9 +546,18 @@ describe("Persistent Console Store (useSyncExternalStore + localStorage)", () =>
       })
     );
 
-    let isolatedCtx: ReturnType<typeof useConsole> | null = null;
+    let isolatedActions: ReturnType<typeof useConsoleActions> | null = null;
+    let isolatedState: {
+      activePage: string;
+      dashboard: ReturnType<typeof useDashboard>;
+      isHydratedFromCache: boolean;
+    } | null = null;
     const IsolatedProbe: React.FC = () => {
-      isolatedCtx = useConsole();
+      isolatedActions = useConsoleActions();
+      const activePage = useActivePage();
+      const dashboard = useDashboard();
+      const { isHydratedFromCache } = useHydrationMeta();
+      isolatedState = { activePage, dashboard, isHydratedFromCache };
       return null;
     };
 
@@ -538,26 +568,28 @@ describe("Persistent Console Store (useSyncExternalStore + localStorage)", () =>
     );
 
     // disableInitialFetch={true} MUST ignore localStorage by default and stay completely clean
-    expect(isolatedCtx?.activePage).toBe("dashboard");
-    expect(isolatedCtx?.dashboard).toBeNull();
-    expect(isolatedCtx?.isHydratedFromCache).toBe(false);
+    expect(isolatedState?.activePage).toBe("dashboard");
+    expect(isolatedState?.dashboard).toBeNull();
+    expect(isolatedState?.isHydratedFromCache).toBe(false);
 
-    // Seed dashboard via legacy renderResearchView global hook and switch to research + fleet-control
-    (globalThis as any).renderResearchView(SAMPLE_DASHBOARD);
-    expect(isolatedCtx?.dashboard?.state?.nickname).toBe("ventkx86");
+    // Seed dashboard via store action and switch to research + fleet-control
+    act(() => {
+      isolatedActions!.setDashboard(SAMPLE_DASHBOARD);
+    });
+    expect(isolatedState?.dashboard?.state?.nickname).toBe("ventkx86");
 
     await act(async () => {
-      isolatedCtx!.setActivePage("research");
+      isolatedActions!.setActivePage("research");
     });
-    expect(isolatedCtx?.activePage).toBe("research");
+    expect(isolatedState?.activePage).toBe("research");
     await waitFor(() => {
       expect(commandCalls.some((c) => c.command === "buildings_eta")).toBe(true);
     });
 
     await act(async () => {
-      isolatedCtx!.setActivePage("fleet-control");
+      isolatedActions!.setActivePage("fleet-control");
     });
-    expect(isolatedCtx?.activePage).toBe("fleet-control");
+    expect(isolatedState?.activePage).toBe("fleet-control");
 
     isoMount.unmount();
 
@@ -568,9 +600,16 @@ describe("Persistent Console Store (useSyncExternalStore + localStorage)", () =>
 
     // Explicitly enabling persistence via store flag or enablePersistence prop hydrates even with disableInitialFetch
     resetConsoleStore({ clearStorage: false });
-    let optInCtx: ReturnType<typeof useConsole> | null = null;
+    let optInState: {
+      activePage: string;
+      selectedPlanetId: number | null;
+      isHydratedFromCache: boolean;
+    } | null = null;
     const OptInProbe: React.FC = () => {
-      optInCtx = useConsole();
+      const activePage = useActivePage();
+      const selectedPlanetId = useSelectedPlanetId();
+      const { isHydratedFromCache } = useHydrationMeta();
+      optInState = { activePage, selectedPlanetId, isHydratedFromCache };
       return null;
     };
     render(
@@ -578,18 +617,17 @@ describe("Persistent Console Store (useSyncExternalStore + localStorage)", () =>
         <OptInProbe />
       </ConsoleProvider>
     );
-    expect(optInCtx?.activePage).toBe("sectors");
-    expect(optInCtx?.selectedPlanetId).toBe(777);
-    expect(optInCtx?.isHydratedFromCache).toBe(true);
+    expect(optInState?.activePage).toBe("sectors");
+    expect(optInState?.selectedPlanetId).toBe(777);
+    expect(optInState?.isHydratedFromCache).toBe(true);
 
-    // resetConsoleStore({ clearStorage: true }) wipes memory, window.state, and localStorage
+    // resetConsoleStore({ clearStorage: true }) wipes memory and localStorage
     act(() => {
       resetConsoleStore({ clearStorage: true });
     });
     expect(localStorage.getItem(CONSOLE_STORE_STORAGE_KEY)).toBeNull();
     expect(consoleStore.getSnapshot().dashboard).toBeNull();
-    expect((window as any).state.dashboard).toBeNull();
-    expect((window as any).__SI_STATE__.activePage).toBe("dashboard");
+    expect(consoleStore.getSnapshot().activePage).toBe("dashboard");
   });
 
   it("keeps SSR renderToString clean with strict 2-SVG invariant and zero literal '>' in HTML attributes", () => {
@@ -667,5 +705,42 @@ describe("Persistent Console Store (useSyncExternalStore + localStorage)", () =>
     expect(viewEl?.hidden).toBe(false);
     expect(container.querySelector("#esp-targets-tbody")?.textContent).toContain("02:380:04");
     expect(container.querySelector("#esp-targets-tbody")?.textContent).toContain("IdleTarget");
+  });
+
+  it("isolates granular slice selectors so unrelated runtime ticks and uiPref changes do not re-render dashboard consumers", () => {
+    let dashRenders = 0;
+    let actionsRef: ReturnType<typeof useConsoleActions> | null = null;
+
+    const DashboardOnlyConsumer: React.FC = () => {
+      const dash = useDashboard();
+      actionsRef = useConsoleActions();
+      dashRenders += 1;
+      return <div data-testid="dash-nick">{dash?.state?.nickname || "none"}</div>;
+    };
+
+    render(
+      <ConsoleProvider disableInitialFetch>
+        <DashboardOnlyConsumer />
+      </ConsoleProvider>
+    );
+
+    expect(dashRenders).toBe(1);
+
+    // Unrelated runtime & UI-pref updates MUST NOT re-render DashboardOnlyConsumer
+    act(() => {
+      actionsRef!.setNowEpochSec(1700000001);
+      actionsRef!.setNowEpochSec(1700000002);
+      actionsRef!.showFeedback("Transient notice", "ok");
+      actionsRef!.setUiPref("espTab", "reports");
+      actionsRef!.beginGaCalc();
+      actionsRef!.endGaCalc();
+    });
+    expect(dashRenders).toBe(1);
+
+    // Updating dashboard itself triggers exactly one re-render
+    act(() => {
+      actionsRef!.setDashboard(SAMPLE_DASHBOARD);
+    });
+    expect(dashRenders).toBe(2);
   });
 });

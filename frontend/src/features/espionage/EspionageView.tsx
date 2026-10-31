@@ -3,7 +3,15 @@ import { feedbackKindForError } from "../../api/httpClient";
 import { LoadingIndicator } from "../../components/LoadingIndicator";
 import { SortableTh } from "../../components/SortableTh";
 import { TablePagination, useTablePagination } from "../../components/TablePagination";
-import { useConsole } from "../../context/ConsoleContext";
+import {
+  useActivePage,
+  useActivePlanet,
+  useApiStatus,
+  useConsoleActions,
+  useDashboard,
+  useEspData,
+  useUiPrefs,
+} from "../../store";
 import {
   coordsSortKey,
   resourcesTotal,
@@ -141,22 +149,21 @@ const TARGET_FILTERS: ReadonlyArray<{ key: TargetFilterKey; label: string }> = [
 ];
 
 export const EspionageView: React.FC<EspionageViewProps> = ({ hidden }) => {
+  const dashboard = useDashboard();
+  const activePage = useActivePage();
+  const activePlanet = useActivePlanet();
+  const espData = useEspData();
+  const uiPrefs = useUiPrefs();
+  const { apiOnline, reconnectAttempts } = useApiStatus();
   const {
-    dashboard,
-    apiOnline,
-    reconnectAttempts,
-    activePage,
     setActivePage,
-    activePlanet,
-    espData,
     refreshEspionageView,
     syncAllInboxFolders,
     showFeedback,
     apiCommand,
     loadDashboard,
-    uiPrefs,
     setUiPref,
-  } = useConsole();
+  } = useConsoleActions();
 
   const isHidden = hidden ?? activePage !== "espionage";
   const espTab = uiPrefs.espTab === "reports" ? "reports" : "targets";

@@ -1,6 +1,13 @@
 import React, { useEffect, useMemo, useRef } from "react";
-import { feedbackKindForError, safeFiniteNumber } from "../../api/httpClient";
-import { useConsole } from "../../context/ConsoleContext";
+import {
+  feedbackKindForError,
+  safeFiniteNumber } from "../../api/httpClient";
+import { useConsoleActions,
+  useDashboard,
+  useGaCalc,
+  useLastOptimizerSummary,
+  usePlannerJobsStatus,
+} from "../../store";
 import { computeColonyGateInfo } from "../../features/action-graph/plannerHelpers";
 import type { PlanetData, QueueJobData } from "../../types/api";
 
@@ -426,22 +433,23 @@ function drawLootRecycleBarChart(
   ctx.restore();
 }
 
-export const GaNnScannerHud: React.FC = () => {
+export const ScannerHud: React.FC = () => {
+  const dashboard = useDashboard();
+  const lastOptimizerSummary = useLastOptimizerSummary();
+  const plannerJobsStatus = usePlannerJobsStatus();
+  const { gaCalculating } = useGaCalc();
   const {
-    dashboard,
     setDashboard,
-    gaCalculating,
     beginGaCalc,
     endGaCalc,
     bumpDashboardSeq,
-    lastOptimizerSummary,
     setLastOptimizerSummary,
-    plannerJobsStatus,
     refreshPlannerJobsStatus,
     apiCommand,
     loadDashboard,
     showFeedback,
-  } = useConsole();
+    getSnapshot,
+  } = useConsoleActions();
 
   const cfgMode = String(
     dashboard?.config?.planner_mode ||
@@ -880,16 +888,13 @@ export const GaNnScannerHud: React.FC = () => {
         if (res.optimizer_summary) {
           setLastOptimizerSummary(res.optimizer_summary);
         }
-        const curDash = (globalThis as any).state?.dashboard || dashboard;
+        const curDash = getSnapshot().dashboard || dashboard;
         if (curDash) {
           const updated = {
             ...curDash,
             plan: Array.isArray(res.actions) ? res.actions : curDash.plan,
             optimizer_summary: res.optimizer_summary ?? curDash.optimizer_summary,
           };
-          if ((globalThis as any).state) {
-            (globalThis as any).state.dashboard = updated;
-          }
           setDashboard(updated);
         } else {
           await loadDashboard({ refresh: false, preserveConfig: true, force: true });
@@ -1229,4 +1234,4 @@ export const GaNnScannerHud: React.FC = () => {
   );
 };
 
-export default GaNnScannerHud;
+export default ScannerHud;

@@ -1,7 +1,15 @@
 import React, { useCallback, useMemo, useState } from "react";
-import { feedbackKindForError } from "../../api/httpClient";
+import {
+  feedbackKindForError } from "../../api/httpClient";
 import { SortableTh } from "../../components/SortableTh";
-import { useConsole } from "../../context/ConsoleContext";
+import { useActivePage,
+  useActivePlanet,
+  useBuildingsEtaData,
+  useConsoleActions,
+  useDashboard,
+  useSelectedPlanetId,
+  useUiPrefs,
+} from "../../store";
 import {
   durationToSeconds,
   resourcesTotal,
@@ -31,20 +39,20 @@ const VALID_RESEARCH_TABS = new Set<string>([
 ]);
 
 export const ResearchView: React.FC<ResearchViewProps> = ({ hidden }) => {
+  const dashboard = useDashboard();
+  const activePage = useActivePage();
+  const selectedPlanetId = useSelectedPlanetId();
+  const activePlanet = useActivePlanet();
+  const uiPrefs = useUiPrefs();
+  const buildingsEtaData = useBuildingsEtaData();
   const {
-    dashboard,
-    activePage,
-    selectedPlanetId,
-    activePlanet,
     showFeedback,
     apiCommand,
     loadDashboard,
-    uiPrefs,
     setUiPref,
-    buildingsEtaData,
     refreshBuildingsEtaForSelectedPlanet,
     enqueueManualCommand,
-  } = useConsole();
+  } = useConsoleActions();
 
   const [refreshingEta, setRefreshingEta] = useState(false);
   const [syncingUniverseMax, setSyncingUniverseMax] = useState(false);

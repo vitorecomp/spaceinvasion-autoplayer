@@ -1,8 +1,15 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { feedbackKindForError, safeFiniteNumber } from "../../api/httpClient";
+import {
+  feedbackKindForError,
+  safeFiniteNumber } from "../../api/httpClient";
 import { SortableTh } from "../../components/SortableTh";
 import { TablePagination } from "../../components/TablePagination";
-import { useConsole } from "../../context/ConsoleContext";
+import { useActivePage,
+  useApiOnline,
+  useConsoleActions,
+  useDashboard,
+  usePlannerJobsStatus,
+} from "../../store";
 import { useTableSort, type SortColumnMap } from "../../hooks/useTableSort";
 import type {
   AiPlannerAdaptiveStatus,
@@ -235,17 +242,19 @@ export interface AiPlannerTabProps {
 }
 
 export const AiPlannerTab: React.FC<AiPlannerTabProps> = ({ hidden = false }) => {
+  const apiOnline = useApiOnline();
+  const dashboard = useDashboard();
+  const activePage = useActivePage();
+  const plannerJobsStatus = usePlannerJobsStatus();
   const {
-    dashboard,
     setDashboard,
-    activePage,
-    apiOnline,
-    plannerJobsStatus,
     setPlannerJobsStatus,
     apiCommand,
     loadDashboard,
     showFeedback,
-  } = useConsole();
+    getSnapshot,
+    bumpConfigHydration,
+  } = useConsoleActions();
 
   const [aiData, setAiData] = useState<AiPlannerGetPayload | null>(null);
   const [draft, setDraft] = useState<AiPlannerDraft>(() =>
@@ -451,8 +460,7 @@ export const AiPlannerTab: React.FC<AiPlannerTabProps> = ({ hidden = false }) =>
         include_action_graph: true,
       });
       if (res.config && typeof res.config === "object") {
-        (globalThis as any).renderConfigForm?.(res.config);
-        const curDash = (globalThis as any).state?.dashboard || dashboard;
+        const curDash = getSnapshot().dashboard || dashboard;
         if (curDash) {
           const nextDash = {
             ...curDash,
@@ -463,9 +471,9 @@ export const AiPlannerTab: React.FC<AiPlannerTabProps> = ({ hidden = false }) =>
             fallback_reason: res.fallback_reason ?? null,
             live_ai_unlocked: res.live_ai_unlocked ?? curDash.live_ai_unlocked,
           };
-          if ((globalThis as any).state) (globalThis as any).state.dashboard = nextDash;
           setDashboard(nextDash);
         }
+        bumpConfigHydration();
       }
       await loadDashboard({ refresh: false, preserveConfig: false, force: true });
       showFeedback("Live AI-Planner mode activated (config.yaml saved).", "ok");
@@ -520,8 +528,7 @@ export const AiPlannerTab: React.FC<AiPlannerTabProps> = ({ hidden = false }) =>
         config: { ai_adaptive_execution: nextVal },
       });
       if (res.config && typeof res.config === "object") {
-        (globalThis as any).renderConfigForm?.(res.config);
-        const curDash = (globalThis as any).state?.dashboard || dashboard;
+        const curDash = getSnapshot().dashboard || dashboard;
         const nextDash = curDash
           ? {
               ...curDash,
@@ -530,8 +537,8 @@ export const AiPlannerTab: React.FC<AiPlannerTabProps> = ({ hidden = false }) =>
           : {
               config: res.config,
             };
-        if ((globalThis as any).state) (globalThis as any).state.dashboard = nextDash;
         setDashboard(nextDash);
+        bumpConfigHydration();
       }
       await loadDashboard({ refresh: false, preserveConfig: false, force: true });
       await fetchAiState({ silent: true });

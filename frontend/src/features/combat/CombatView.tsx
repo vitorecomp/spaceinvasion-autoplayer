@@ -1,7 +1,14 @@
 import React, { useMemo, useState } from "react";
-import { feedbackKindForError } from "../../api/httpClient";
+import {
+  feedbackKindForError } from "../../api/httpClient";
 import { SortableTh } from "../../components/SortableTh";
-import { useConsole } from "../../context/ConsoleContext";
+import { useActivePage,
+  useActivePlanet,
+  useCombatData,
+  useConsoleActions,
+  useDashboard,
+  useUiPrefs,
+} from "../../store";
 import {
   coordsSortKey,
   useTableSort,
@@ -17,19 +24,19 @@ export interface CombatViewProps {
 }
 
 export const CombatView: React.FC<CombatViewProps> = ({ hidden }) => {
+  const dashboard = useDashboard();
+  const activePage = useActivePage();
+  const activePlanet = useActivePlanet();
+  const combatData = useCombatData();
+  const uiPrefs = useUiPrefs();
   const {
-    dashboard,
-    activePage,
-    activePlanet,
-    combatData,
     refreshCombatForSelectedPlanet,
     enqueueManualCommand,
     showFeedback,
     apiCommand,
     loadDashboard,
-    uiPrefs,
     setUiPref,
-  } = useConsole();
+  } = useConsoleActions();
 
   const [shipQtys, setShipQtys] = useState<Record<number, string>>({});
 

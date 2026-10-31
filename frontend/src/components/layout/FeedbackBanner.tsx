@@ -1,8 +1,8 @@
 import React from "react";
-import { useConsole } from "../../context/ConsoleContext";
+import { useFeedback } from "../../store";
 
 export const FeedbackBanner: React.FC = () => {
-  const { feedback } = useConsole();
+  const feedback = useFeedback();
   const isHidden = !feedback || feedback.hidden;
   const cls =
     feedback?.kind === "error"

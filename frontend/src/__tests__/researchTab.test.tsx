@@ -2,7 +2,7 @@ import React, { useEffect } from "react";
 import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../App";
-import { ConsoleProvider, resetConsoleStore, useConsole } from "../context/ConsoleContext";
+import { ConsoleProvider, resetConsoleStore, useConsoleActions } from "../store";
 import { BuildingsView } from "../features/buildings";
 import { ResearchView } from "../features/research";
 import { PAGE_TITLES, type DashboardPayload } from "../types/api";
@@ -276,7 +276,7 @@ const RESEARCH_TAB_DASHBOARD: DashboardPayload = {
 };
 
 function ActivatePage({ page }: { page: string }) {
-  const { setActivePage } = useConsole();
+  const { setActivePage } = useConsoleActions();
   useEffect(() => {
     setActivePage(page as any);
   }, [page, setActivePage]);

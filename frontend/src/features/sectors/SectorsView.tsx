@@ -1,8 +1,15 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { feedbackKindForError } from "../../api/httpClient";
+import {
+  feedbackKindForError } from "../../api/httpClient";
 import { SortableTh } from "../../components/SortableTh";
 import { TablePagination } from "../../components/TablePagination";
-import { useConsole } from "../../context/ConsoleContext";
+import { useActivePage,
+  useActivePlanet,
+  useConsoleActions,
+  useDashboard,
+  useSectorsData,
+  useUiPrefs,
+} from "../../store";
 import { useTableSort, type SortColumnMap } from "../../hooks/useTableSort";
 import type {
   GalaxyStatsItem,
@@ -72,18 +79,18 @@ function isSectorRowScanned(sec: ScannedSectorItem): boolean {
 }
 
 export const SectorsView: React.FC<SectorsViewProps> = ({ hidden }) => {
+  const dashboard = useDashboard();
+  const activePage = useActivePage();
+  const activePlanet = useActivePlanet();
+  const sectorsData = useSectorsData();
+  const uiPrefs = useUiPrefs();
   const {
-    dashboard,
-    activePage,
-    activePlanet,
-    sectorsData,
     refreshSectorsView,
     showFeedback,
     apiCommand,
     loadDashboard,
-    uiPrefs,
     setUiPref,
-  } = useConsole();
+  } = useConsoleActions();
 
   const isHidden = hidden ?? activePage !== "sectors";
   const statusFilter = uiPrefs.sectorFilter || "all";

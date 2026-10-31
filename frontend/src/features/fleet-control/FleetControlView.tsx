@@ -1,7 +1,12 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { feedbackKindForError } from "../../api/httpClient";
+import {
+  feedbackKindForError } from "../../api/httpClient";
 import { SortableTh } from "../../components/SortableTh";
-import { useConsole } from "../../context/ConsoleContext";
+import { useActivePage,
+  useConsoleActions,
+  useDashboard,
+  useNowEpochSec,
+} from "../../store";
 import { useTableSort, type SortColumnMap } from "../../hooks/useTableSort";
 import {
   fmtCompact,
@@ -50,14 +55,10 @@ type FlightSortKey =
   | "eta";
 
 export const FleetControlView: React.FC<FleetControlViewProps> = ({ hidden }) => {
-  const {
-    dashboard,
-    activePage,
-    nowEpochSec,
-    loadDashboard,
-    apiCommand,
-    showFeedback,
-  } = useConsole();
+  const dashboard = useDashboard();
+  const activePage = useActivePage();
+  const nowEpochSec = useNowEpochSec();
+  const { loadDashboard, apiCommand, showFeedback } = useConsoleActions();
 
   const [missionFilter, setMissionFilter] = useState<FlightMissionFilter>("all");
   const [directionFilter, setDirectionFilter] = useState<FlightDirectionFilter>("all");

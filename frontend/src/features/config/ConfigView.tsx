@@ -1,10 +1,17 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useState } from "react";
-import { flushSync } from "react-dom";
+import {
+  flushSync } from "react-dom";
 
 const useClientSyncEffect = typeof window !== "undefined" ? useLayoutEffect : useEffect;
-import { feedbackKindForError, safeFiniteNumber } from "../../api/httpClient";
+import { feedbackKindForError,
+  safeFiniteNumber } from "../../api/httpClient";
 import { SortableTh } from "../../components/SortableTh";
-import { useConsole } from "../../context/ConsoleContext";
+import { useActivePage,
+  useConfigSyncState,
+  useConsoleActions,
+  useDashboard,
+  useUiPrefs,
+} from "../../store";
 import { normalizeUiPlannerMode } from "../action-graph/plannerHelpers";
 import {
   timestampSortKey,
@@ -51,13 +58,13 @@ function buildFormStateFromConfig(cfg: StrategyConfigData | null | undefined): R
 }
 
 export const ConfigView: React.FC = () => {
+  const dashboard = useDashboard();
+  const activePage = useActivePage();
+  const uiPrefs = useUiPrefs();
+  const { configHydrationTick } = useConfigSyncState();
   const {
-    dashboard,
     setDashboard,
-    activePage,
-    uiPrefs,
     setUiPref,
-    configHydrationTick,
     setConfigDirty,
     setConfigSaving,
     bumpDashboardSeq,
@@ -66,7 +73,9 @@ export const ConfigView: React.FC = () => {
     apiCommand,
     loadDashboard,
     showFeedback,
-  } = useConsole();
+    getSnapshot,
+    getRuntime,
+  } = useConsoleActions();
 
   const botCtrl = dashboard?.bot_control || {};
   const modeVal = uiPrefs.modeOverride || botCtrl.mode_override || "auto";
@@ -117,18 +126,11 @@ export const ConfigView: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    const gState = (globalThis as any).state;
-    if (!gState?.configDirty && !(gState?.configSaving > 0) && dashboard?.config) {
+    const rt = getRuntime();
+    if (!rt.configDirty && !(rt.configSaving > 0) && dashboard?.config) {
       hydrateFromConfig(dashboard.config);
     }
-  }, [configHydrationTick, dashboard?.config, hydrateFromConfig]);
-
-  // Expose legacy renderConfigForm onto globalThis for direct unit tests
-  useClientSyncEffect(() => {
-    (globalThis as any).renderConfigForm = (cfg: StrategyConfigData) => {
-      flushSync(() => hydrateFromConfig(cfg));
-    };
-  }, [hydrateFromConfig]);
+  }, [configHydrationTick, dashboard?.config, getRuntime, hydrateFromConfig]);
 
   const markFieldChanged = (key: string, val: any) => {
     setConfigDirty(true);
@@ -219,10 +221,6 @@ export const ConfigView: React.FC = () => {
     if (isAiMode) beginGaCalc();
 
     bumpDashboardSeq();
-    const gState = (globalThis as any).state;
-    if (gState) {
-      gState.configSaving = (gState.configSaving || 0) + 1;
-    }
     setConfigSaving((c) => c + 1);
 
     try {
@@ -230,7 +228,7 @@ export const ConfigView: React.FC = () => {
       bumpDashboardSeq();
       setConfigDirty(false);
       if (res.config && typeof res.config === "object") {
-        const curDash = gState?.dashboard || dashboard;
+        const curDash = getSnapshot().dashboard || dashboard;
         const nextDash = curDash
           ? {
               ...curDash,
@@ -251,9 +249,6 @@ export const ConfigView: React.FC = () => {
               fallback_reason: res.fallback_reason ?? null,
               live_ai_unlocked: res.live_ai_unlocked,
             };
-        if (gState) {
-          gState.dashboard = nextDash;
-        }
         setDashboard(nextDash);
         hydrateFromConfig(res.config);
       }
@@ -263,9 +258,6 @@ export const ConfigView: React.FC = () => {
       setConfigDirty(true);
       showFeedback(`Failed saving config: ${err.message}`, feedbackKindForError(err));
     } finally {
-      if (gState) {
-        gState.configSaving = Math.max(0, (gState.configSaving || 0) - 1);
-      }
       setConfigSaving((c) => Math.max(0, c - 1));
       if (isAiMode) endGaCalc();
     }

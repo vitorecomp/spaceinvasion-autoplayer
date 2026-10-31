@@ -1,9 +1,18 @@
 import React, { useCallback, useMemo } from "react";
-import { flushSync } from "react-dom";
+import {
+  flushSync } from "react-dom";
 import { feedbackKindForError } from "../../api/httpClient";
 import { SortableTh } from "../../components/SortableTh";
-import { GaNnScannerHud } from "../../components/layout/GaNnScannerHud";
-import { useConsole } from "../../context/ConsoleContext";
+import { ScannerHud } from "../../components/layout/ScannerHud";
+import { useActivePage,
+  useActivePlanet,
+  useBuildingsEtaData,
+  useConsoleActions,
+  useDashboard,
+  useNowEpochSec,
+  useSelectedPlanetId,
+  useUiPrefs,
+} from "../../store";
 import {
   coordsSortKey,
   useTableSort,
@@ -138,23 +147,23 @@ function sumOptionalFinite(values: unknown[]): number | null {
 }
 
 export const DashboardView: React.FC = () => {
+  const dashboard = useDashboard();
+  const activePage = useActivePage();
+  const selectedPlanetId = useSelectedPlanetId();
+  const activePlanet = useActivePlanet();
+  const nowEpochSec = useNowEpochSec();
+  const uiPrefs = useUiPrefs();
+  const buildingsEtaData = useBuildingsEtaData();
   const {
-    dashboard,
-    activePage,
     setActivePage,
-    selectedPlanetId,
     setSelectedPlanetId,
-    activePlanet,
-    nowEpochSec,
     showFeedback,
     apiCommand,
     loadDashboard,
-    uiPrefs,
     setUiPref,
-    buildingsEtaData,
     toggleBlastFurnaceRate,
     enqueueManualCommand,
-  } = useConsole();
+  } = useConsoleActions();
 
   const gs = dashboard?.state || null;
   const planets = useMemo(() => gs?.planets || [], [gs?.planets]);
@@ -1014,7 +1023,7 @@ export const DashboardView: React.FC = () => {
       </div>
 
       {/* GA + Neural Network Radial-Ring Calculation HUD */}
-      <GaNnScannerHud />
+      <ScannerHud />
 
       {/* Lower Row Toolbar */}
       <div className="dash-queues-toolbar" aria-label="Planned queues overview and planet scope">
