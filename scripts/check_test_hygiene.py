@@ -47,10 +47,12 @@ SPLIT_PACKAGE_PREFIXES: dict[str, tuple[str, ...]] = {
     "spaceinvasion/core/config.py": _g("core", "config.py,settings/", "db/config_store.py"),
     "spaceinvasion/core/game_data.py": _g("core", "game_data.py,catalog/"),
     "spaceinvasion/core/logging_utils.py": _g("core", "logging_utils.py,redaction.py", "runtime/logs/"),
-    "spaceinvasion/core/state.py": _g("core", "state.py,model.py,_model_,_inflight.py", "parsing/"),
+    "spaceinvasion/core/state.py": _g(
+        "core", "state.py,model.py,_model_,_inflight.py,coercion.py,coords.py", "parsing/"
+    ),
     "spaceinvasion/db/backend.py": _g("db", "backend.py,dsn.py,session.py", "runtime/postgres_ctl.py"),
     "spaceinvasion/db/migrations.py": _g("db", "migrations,alembic_migrations"),
-    "spaceinvasion/db/storage.py": _g("db", "storage.py,store.py,models/,repos/,queries/,session.py"),
+    "spaceinvasion/db/storage.py": _g("db", "storage.py,store.py,models/,repos/,queries/,dto/,session.py"),
     "spaceinvasion/planner/action_graph.py": ("spaceinvasion/planner/graph/",),
     "spaceinvasion/planner/ai_planner.py": ("spaceinvasion/planner/ai/",),
     "spaceinvasion/planner/config_optimizer.py": _g("planner", "config_optimizer,config_opt/"),
@@ -184,9 +186,7 @@ def scan_sleep_sites(tests_root: Path = DEFAULT_TESTS_ROOT, repo_root: Path = RE
             call_name = f"{ast.unparse(node.func.value)}.{attr}"
             if "mock" in call_name.lower() or "patch" in call_name.lower() or attr == "wait" and "proc" in call_name:
                 continue
-            arg_node = (
-                node.args[0] if node.args else next((kw.value for kw in node.keywords if kw.arg == "timeout"), None)
-            )
+            arg_node = node.args[0] if node.args else next((k.value for k in node.keywords if k.arg == "timeout"), None)
             secs = _numeric_const(arg_node) if arg_node is not None else None
             expr = ast.unparse(arg_node) if arg_node is not None else ""
             sites.append(SleepSite(rel, node.lineno, call_name, secs, expr))
@@ -198,7 +198,8 @@ def _sum_group_coverage(files_map: Mapping[str, Mapping[str, object]], prefixes:
     cov, stmts = 0, 0
     for fpath, info in files_map.items():
         if any(fpath == p or fpath.startswith(p) for p in prefixes):
-            raw_c, raw_s = info.get("covered_lines", 0), info.get("num_statements", 0)
+            stats = summary if isinstance(summary := info.get("summary"), Mapping) else info
+            raw_c, raw_s = stats.get("covered_lines", 0), stats.get("num_statements", 0)
             cov += int(raw_c) if isinstance(raw_c, (int, float)) else 0
             stmts += int(raw_s) if isinstance(raw_s, (int, float)) else 0
     return cov, stmts
@@ -218,10 +219,8 @@ def evaluate_coverage_baseline(
     failures: list[str] = []
     if cur_pct + tolerance_pct < base_pct:
         failures.append(f"Overall coverage {cur_pct:.2f}% < Phase 0 baseline {base_pct:.2f}%")
-
-    base_files = base.get("files") or {}
     cur_files = cur.get("files") or {}
-    for rel_path, info in sorted(base_files.items()):
+    for rel_path, info in sorted((base.get("files") or {}).items()):
         if rel_path in RETIRED_BASELINE_MODULES or int(info.get("num_statements", 0)) == 0:
             continue
         b_pct = float(info.get("percent_covered", 0.0))

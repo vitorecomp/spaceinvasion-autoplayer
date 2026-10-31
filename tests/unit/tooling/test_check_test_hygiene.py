@@ -81,8 +81,14 @@ def test_coverage_evaluator_handles_split_packages_and_regressions(tmp_path: Pat
             {
                 "totals": {"percent_covered": 83.1},
                 "files": {
-                    "spaceinvasion/planner/heuristics/assembly.py": {"covered_lines": 45, "num_statements": 50},
-                    "spaceinvasion/planner/heuristics/economy.py": {"covered_lines": 40, "num_statements": 50},
+                    "spaceinvasion/planner/heuristics/assembly.py": {
+                        "executed_lines": [1],
+                        "summary": {"covered_lines": 45, "num_statements": 50},
+                    },
+                    "spaceinvasion/planner/heuristics/economy.py": {
+                        "executed_lines": [1],
+                        "summary": {"covered_lines": 40, "num_statements": 50},
+                    },
                 },
             },
             allow_nan=False,
@@ -99,7 +105,10 @@ def test_coverage_evaluator_handles_split_packages_and_regressions(tmp_path: Pat
             {
                 "totals": {"percent_covered": 82.5},
                 "files": {
-                    "spaceinvasion/planner/heuristics/assembly.py": {"covered_lines": 30, "num_statements": 50},
+                    "spaceinvasion/planner/heuristics/assembly.py": {
+                        "executed_lines": [1],
+                        "summary": {"covered_lines": 30, "num_statements": 50},
+                    },
                 },
             },
             allow_nan=False,
