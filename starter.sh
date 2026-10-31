@@ -48,6 +48,7 @@ Supervises `bin/run_stack.py` and automatically restarts it if Python crashes or
 Defaults & Options:
   (no arguments)            Starts `bin/run_stack.py --live` using PostgreSQL (`SPACEINVASION_DB_URL` or Podman :5433)
   --dry-run                 Starts `bin/run_stack.py` in dry-run mode (without `--live`)
+  --check-ui-build          Rebuild frontend bundle if missing or stale, then exit 0
   -h, --help                Show this help message and `bin/run_stack.py --help`
 
 Note:
@@ -68,6 +69,7 @@ EOF
 
 STACK_ARGS=()
 API_PORT=8787
+CHECK_UI_BUILD_ONLY=0
 if [[ $# -eq 0 ]]; then
   STACK_ARGS=("--live")
 else
@@ -83,6 +85,9 @@ else
         echo ""
         "$PY_BIN" "$STACK_SCRIPT" --help
         exit 0
+        ;;
+      --check-ui-build)
+        CHECK_UI_BUILD_ONLY=1
         ;;
       --dry-run)
         # Strip wrapper-only `--dry-run` flag so `run_stack.py` runs without `--live`.
@@ -187,9 +192,49 @@ on_stop_signal() {
 trap on_stop_signal INT TERM
 trap cleanup_pid_file EXIT
 
-if [[ -f "$REPO_DIR/frontend/package.json" ]] && command -v npm >/dev/null 2>&1 && [[ ! -f "$REPO_DIR/spaceinvasion/ui/app.js" ]]; then
-  log_msg "Building frontend UI bundle into spaceinvasion/ui/..."
-  npm --prefix "$REPO_DIR/frontend" run build
+frontend_bundle_needs_build() {
+  local frontend_dir="${SPACEINVASION_FRONTEND_DIR:-$REPO_DIR/frontend}"
+  local ui_dir="${SPACEINVASION_UI_DIR:-$REPO_DIR/spaceinvasion/ui}"
+  local bundle="$ui_dir/app.js"
+  if [[ ! -f "$frontend_dir/package.json" ]]; then
+    return 1
+  fi
+  if [[ ! -f "$bundle" ]]; then
+    return 0
+  fi
+  local watch_file
+  for watch_file in "$frontend_dir/index.html" "$frontend_dir/package.json" "$frontend_dir/vite.config.ts"; do
+    if [[ -f "$watch_file" ]] && [[ "$watch_file" -nt "$bundle" ]]; then
+      return 0
+    fi
+  done
+  if [[ -d "$frontend_dir/src" ]] && [[ -n "$(find "$frontend_dir/src" -type f -newer "$bundle" -print -quit 2>/dev/null)" ]]; then
+    return 0
+  fi
+  return 1
+}
+
+ensure_frontend_bundle() {
+  local frontend_dir="${SPACEINVASION_FRONTEND_DIR:-$REPO_DIR/frontend}"
+  local npm_bin="${NPM_BIN:-npm}"
+  if ! frontend_bundle_needs_build; then
+    return 0
+  fi
+  if ! command -v "$npm_bin" >/dev/null 2>&1; then
+    log_msg "Warning: $npm_bin not found; skipping frontend UI bundle build."
+    return 0
+  fi
+  log_msg "Building frontend UI bundle into ${SPACEINVASION_UI_DIR:-spaceinvasion/ui/}..."
+  "$npm_bin" --prefix "$frontend_dir" run build
+}
+
+if [[ "$CHECK_UI_BUILD_ONLY" -eq 1 ]]; then
+  ensure_frontend_bundle
+  exit $?
+fi
+
+if [[ "$STACK_SCRIPT" == "$BIN_DIR/run_stack.py" ]] && [[ "${STARTER_SKIP_UI_BUILD:-0}" != "1" ]]; then
+  ensure_frontend_bundle
 fi
 
 # Ensure Podman PostgreSQL container is running when supervising the real stack in postgres mode.

@@ -87,6 +87,7 @@ services:
       SPACEINVASION_SESSIONS_DIR: "/app/data/sessions"
       SPACEINVASION_NOVNC_URL: "http://127.0.0.1:${SPACEINVASION_NOVNC_PORT:-7900}/vnc.html?autoconnect=true&resize=scale"
       SPACEINVASION_DISK_LOGS: "0"
+      SPACEINVASION_UI_DIR: "/opt/spaceinvasion-ui"
     ports:
       - "127.0.0.1:${SPACEINVASION_API_PORT:-8787}:8787"
     volumes:
