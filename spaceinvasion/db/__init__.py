@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from spaceinvasion.db import dsn, migrations
+import importlib
+from typing import TYPE_CHECKING
+
+from spaceinvasion.db import dsn
 from spaceinvasion.db.dsn import (
     DEFAULT_DB_BACKEND,
     DEFAULT_PG_DB,
@@ -20,15 +23,57 @@ from spaceinvasion.db.dsn import (
     redact_db_url,
     resolve_database_config,
 )
-from spaceinvasion.db.session import (
-    DatabaseEngine,
-    UnitOfWork,
-    count_statements,
-    db_uow,
-    normalize_sqlalchemy_dsn,
-    ping_postgres,
-)
-from spaceinvasion.db.store import DatabaseStore, StoreRepositories
+
+if TYPE_CHECKING:
+    from spaceinvasion.db import migrations as migrations
+    from spaceinvasion.db.session import (
+        DatabaseEngine as DatabaseEngine,
+    )
+    from spaceinvasion.db.session import (
+        UnitOfWork as UnitOfWork,
+    )
+    from spaceinvasion.db.session import (
+        count_statements as count_statements,
+    )
+    from spaceinvasion.db.session import (
+        db_uow as db_uow,
+    )
+    from spaceinvasion.db.session import (
+        normalize_sqlalchemy_dsn as normalize_sqlalchemy_dsn,
+    )
+    from spaceinvasion.db.session import (
+        ping_postgres as ping_postgres,
+    )
+    from spaceinvasion.db.store import (
+        DatabaseStore as DatabaseStore,
+    )
+    from spaceinvasion.db.store import (
+        StoreRepositories as StoreRepositories,
+    )
+
+_LAZY_SUBMODULES: frozenset[str] = frozenset({"migrations", "session", "store"})
+_LAZY_EXPORTS: dict[str, tuple[str, str]] = {
+    "DatabaseEngine": ("spaceinvasion.db.session", "DatabaseEngine"),
+    "DatabaseStore": ("spaceinvasion.db.store", "DatabaseStore"),
+    "StoreRepositories": ("spaceinvasion.db.store", "StoreRepositories"),
+    "UnitOfWork": ("spaceinvasion.db.session", "UnitOfWork"),
+    "count_statements": ("spaceinvasion.db.session", "count_statements"),
+    "db_uow": ("spaceinvasion.db.session", "db_uow"),
+    "normalize_sqlalchemy_dsn": ("spaceinvasion.db.session", "normalize_sqlalchemy_dsn"),
+    "ping_postgres": ("spaceinvasion.db.session", "ping_postgres"),
+}
+
+
+def __getattr__(name: str) -> object:
+    """Lazily load SQLAlchemy/Alembic DB exports so pure-Python notebook imports stay light."""
+    if name in _LAZY_SUBMODULES:
+        return importlib.import_module(f"spaceinvasion.db.{name}")
+    spec = _LAZY_EXPORTS.get(name)
+    if spec is not None:
+        mod = importlib.import_module(spec[0])
+        return mod.__dict__[spec[1]]
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 __all__ = [
     "DEFAULT_DB_BACKEND",

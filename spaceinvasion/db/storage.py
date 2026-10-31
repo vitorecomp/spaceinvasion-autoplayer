@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+# Legacy `storage.py` depended on HTML parsers (`bs4`), matching untouched `notebooks/*.ipynb` pip cells.
+from spaceinvasion.parsing import GalaxySlot as GalaxySlot
+
 
 class GameDatabase:
     """Minimal no-op shim kept solely for legacy `notebooks/*.ipynb` SQLite copy calls."""
@@ -13,4 +16,4 @@ class GameDatabase:
         """Close the compatibility shim (no-op)."""
 
 
-__all__ = ["GameDatabase"]
+__all__ = ["GalaxySlot", "GameDatabase"]
