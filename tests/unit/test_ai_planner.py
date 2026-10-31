@@ -206,7 +206,9 @@ class AiPlannerUnitTests(unittest.TestCase):
                 "target_coords": "02:380:15",
                 "attacked_ts": 1_700_002_000.0,
                 "outcome": "win",
-                "loot_json": json.dumps({"pig_iron": 6_000_000, "metal": 5_000_000, "kryptonite": 3_000_000, "spice": 1_000_000}),
+                "loot_json": json.dumps(
+                    {"pig_iron": 6_000_000, "metal": 5_000_000, "kryptonite": 3_000_000, "spice": 1_000_000}
+                ),
                 "round_trip_sec": 2400.0,
             },
         ]
@@ -281,7 +283,20 @@ class AiPlannerUnitTests(unittest.TestCase):
                     "02:380:12",
                     "Homeworld",
                     # Note: b6 omitted (target 0 < built 5) — AI-Planner must NEVER demolish b6!
-                    {"b1": 7, "b2": 4, "b3": 6, "b4": 4, "b5": 9, "b7": 3, "b8": 3, "b10": 2, "b11": 2, "b12": 2, "b13": 2, "b14": 2},
+                    {
+                        "b1": 7,
+                        "b2": 4,
+                        "b3": 6,
+                        "b4": 4,
+                        "b5": 9,
+                        "b7": 3,
+                        "b8": 3,
+                        "b10": 2,
+                        "b11": 2,
+                        "b12": 2,
+                        "b13": 2,
+                        "b14": 2,
+                    },
                     is_central=True,
                     pays_for_research=True,
                 )
@@ -310,9 +325,7 @@ class AiPlannerUnitTests(unittest.TestCase):
             self.assertLessEqual(step["week"], 4)
         # Rich starting stock starts first upgrade immediately at t=0 and finishes faster / yields >= reward.
         self.assertEqual(plan_rich["steps"][0]["start_sec"], 0.0)
-        self.assertGreaterEqual(
-            plan_rich["summary"]["discounted_reward"], plan_poor["summary"]["discounted_reward"]
-        )
+        self.assertGreaterEqual(plan_rich["summary"]["discounted_reward"], plan_poor["summary"]["discounted_reward"])
         self.assertEqual(len(plan_rich["weekly_breakdown"]), 4)
 
     def test_end_of_horizon_handled_cleanly(self) -> None:
@@ -321,7 +334,19 @@ class AiPlannerUnitTests(unittest.TestCase):
             101,
             "02:380:12",
             "Homeworld",
-            buildings={"b1": 10, "b2": 6, "b3": 8, "b4": 6, "b5": 12, "b7": 4, "b8": 4, "b11": 20, "b12": 20, "b13": 20, "b14": 20},
+            buildings={
+                "b1": 10,
+                "b2": 6,
+                "b3": 8,
+                "b4": 6,
+                "b5": 12,
+                "b7": 4,
+                "b8": 4,
+                "b11": 20,
+                "b12": 20,
+                "b13": 20,
+                "b14": 20,
+            },
             resources=Resources(100_000, 100_000, 100_000, 50_000),
         )
         state = GameState(
@@ -341,7 +366,19 @@ class AiPlannerUnitTests(unittest.TestCase):
                     101,
                     "02:380:12",
                     "Homeworld",
-                    {"b1": 45, "b2": 35, "b3": 40, "b4": 35, "b5": 45, "b7": 12, "b8": 12, "b11": 20, "b12": 20, "b13": 20, "b14": 20},
+                    {
+                        "b1": 45,
+                        "b2": 35,
+                        "b3": 40,
+                        "b4": 35,
+                        "b5": 45,
+                        "b7": 12,
+                        "b8": 12,
+                        "b11": 20,
+                        "b12": 20,
+                        "b13": 20,
+                        "b14": 20,
+                    },
                     is_central=True,
                     pays_for_research=True,
                 )
@@ -364,7 +401,20 @@ class AiPlannerUnitTests(unittest.TestCase):
             101,
             "02:380:12",
             "Homeworld",
-            buildings={"b1": 6, "b2": 3, "b3": 5, "b4": 3, "b5": 8, "b7": 4, "b8": 3, "b10": 1, "b11": 4, "b12": 4, "b13": 4, "b14": 4},
+            buildings={
+                "b1": 6,
+                "b2": 3,
+                "b3": 5,
+                "b4": 3,
+                "b5": 8,
+                "b7": 4,
+                "b8": 3,
+                "b10": 1,
+                "b11": 4,
+                "b12": 4,
+                "b13": 4,
+                "b14": 4,
+            },
             resources=Resources(40_000, 20_000, 20_000, 10_000),
         )
         state = GameState(
@@ -384,7 +434,20 @@ class AiPlannerUnitTests(unittest.TestCase):
                     101,
                     "02:380:12",
                     "Homeworld",
-                    {"b1": 10, "b2": 5, "b3": 8, "b4": 6, "b5": 12, "b7": 4, "b8": 3, "b10": 4, "b11": 4, "b12": 4, "b13": 4, "b14": 4},
+                    {
+                        "b1": 10,
+                        "b2": 5,
+                        "b3": 8,
+                        "b4": 6,
+                        "b5": 12,
+                        "b7": 4,
+                        "b8": 3,
+                        "b10": 4,
+                        "b11": 4,
+                        "b12": 4,
+                        "b13": 4,
+                        "b14": 4,
+                    },
                     is_central=True,
                     pays_for_research=True,
                 ),
@@ -417,7 +480,20 @@ class AiPlannerUnitTests(unittest.TestCase):
             101,
             "02:380:12",
             "Homeworld",
-            buildings={"b1": 6, "b2": 3, "b3": 5, "b4": 3, "b5": 8, "b7": 4, "b8": 3, "b10": 1, "b11": 8, "b12": 8, "b13": 8, "b14": 8},
+            buildings={
+                "b1": 6,
+                "b2": 3,
+                "b3": 5,
+                "b4": 3,
+                "b5": 8,
+                "b7": 4,
+                "b8": 3,
+                "b10": 1,
+                "b11": 8,
+                "b12": 8,
+                "b13": 8,
+                "b14": 8,
+            },
             resources=Resources(0, 0, 0, 0),
         )
         constrained_state = GameState(
@@ -437,7 +513,20 @@ class AiPlannerUnitTests(unittest.TestCase):
                     101,
                     "02:380:12",
                     "Homeworld",
-                    {"b1": 22, "b2": 16, "b3": 20, "b4": 16, "b5": 24, "b7": 8, "b8": 4, "b10": 4, "b11": 8, "b12": 8, "b13": 8, "b14": 8},
+                    {
+                        "b1": 22,
+                        "b2": 16,
+                        "b3": 20,
+                        "b4": 16,
+                        "b5": 24,
+                        "b7": 8,
+                        "b8": 4,
+                        "b10": 4,
+                        "b11": 8,
+                        "b12": 8,
+                        "b13": 8,
+                        "b14": 8,
+                    },
                     is_central=True,
                     pays_for_research=True,
                 ),
@@ -446,7 +535,13 @@ class AiPlannerUnitTests(unittest.TestCase):
         )
         rich_tel = {
             "sample_count": 20,
-            "median_loot": {"pig_iron": 30_000.0, "metal": 15_000.0, "kryptonite": 15_000.0, "spice": 5_000.0, "spice_eq": 21_000.0},
+            "median_loot": {
+                "pig_iron": 30_000.0,
+                "metal": 15_000.0,
+                "kryptonite": 15_000.0,
+                "spice": 5_000.0,
+                "spice_eq": 21_000.0,
+            },
             "median_round_trip_seconds": 1800.0,
         }
         plan_with_raids = ap.run_ai_planner(
@@ -570,25 +665,115 @@ class AiPlannerUnitTests(unittest.TestCase):
         plan_result = {
             "steps": [
                 # Already built on p1 (b1 is 5) -> skipped!
-                {"seq": 1, "kind": "BUILD", "planet_id": 101, "planet_coords": "02:380:12", "planet_name": "Homeworld", "entity_key": "b1", "entity_name": "Pig iron mine", "target_level": 5},
+                {
+                    "seq": 1,
+                    "kind": "BUILD",
+                    "planet_id": 101,
+                    "planet_coords": "02:380:12",
+                    "planet_name": "Homeworld",
+                    "entity_key": "b1",
+                    "entity_name": "Pig iron mine",
+                    "target_level": 5,
+                },
                 # Placeholder colonize preview -> skipped!
-                {"seq": 2, "kind": "COLONIZE_PREVIEW", "planet_id": -1, "planet_coords": "EMPTY:01", "planet_name": "Empty", "entity_key": "s8", "entity_name": "Colony ship", "target_level": 1},
+                {
+                    "seq": 2,
+                    "kind": "COLONIZE_PREVIEW",
+                    "planet_id": -1,
+                    "planet_coords": "EMPTY:01",
+                    "planet_name": "Empty",
+                    "entity_key": "s8",
+                    "entity_name": "Colony ship",
+                    "target_level": 1,
+                },
                 # Next causally unblocked on p1 -> emitted BUILD executable_now=True!
-                {"seq": 3, "kind": "BUILD", "planet_id": 101, "planet_coords": "02:380:12", "planet_name": "Homeworld", "entity_key": "b1", "entity_name": "Pig iron mine", "target_level": 6},
+                {
+                    "seq": 3,
+                    "kind": "BUILD",
+                    "planet_id": 101,
+                    "planet_coords": "02:380:12",
+                    "planet_name": "Homeworld",
+                    "entity_key": "b1",
+                    "entity_name": "Pig iron mine",
+                    "target_level": 6,
+                },
                 # Second step on p1 -> not emitted because p1 lane already has seq #3!
-                {"seq": 4, "kind": "BUILD", "planet_id": 101, "planet_coords": "02:380:12", "planet_name": "Homeworld", "entity_key": "b3", "entity_name": "Kryptonite mine", "target_level": 5},
+                {
+                    "seq": 4,
+                    "kind": "BUILD",
+                    "planet_id": 101,
+                    "planet_coords": "02:380:12",
+                    "planet_name": "Homeworld",
+                    "entity_key": "b3",
+                    "entity_name": "Kryptonite mine",
+                    "target_level": 5,
+                },
                 # In-flight on p2 -> skipped!
-                {"seq": 5, "kind": "BUILD", "planet_id": 102, "planet_coords": "02:381:04", "planet_name": "Colony 1", "entity_key": "b3", "entity_name": "Kryptonite mine", "target_level": 5},
+                {
+                    "seq": 5,
+                    "kind": "BUILD",
+                    "planet_id": 102,
+                    "planet_coords": "02:381:04",
+                    "planet_name": "Colony 1",
+                    "entity_key": "b3",
+                    "entity_name": "Kryptonite mine",
+                    "target_level": 5,
+                },
                 # Next causally unblocked on p2 (queue busy with 1 slot -> WAIT_RESOURCES, executable_now=False)
-                {"seq": 6, "kind": "BUILD", "planet_id": 102, "planet_coords": "02:381:04", "planet_name": "Colony 1", "entity_key": "b1", "entity_name": "Pig iron mine", "target_level": 5},
+                {
+                    "seq": 6,
+                    "kind": "BUILD",
+                    "planet_id": 102,
+                    "planet_coords": "02:381:04",
+                    "planet_name": "Colony 1",
+                    "entity_key": "b1",
+                    "entity_name": "Pig iron mine",
+                    "target_level": 5,
+                },
                 # Full planet p3 -> triggers structured field conflict, NOT demolition!
-                {"seq": 7, "kind": "BUILD", "planet_id": 103, "planet_coords": "02:382:09", "planet_name": "FullPlanet", "entity_key": "b1", "entity_name": "Pig iron mine", "target_level": 16},
+                {
+                    "seq": 7,
+                    "kind": "BUILD",
+                    "planet_id": 103,
+                    "planet_coords": "02:382:09",
+                    "planet_name": "FullPlanet",
+                    "entity_key": "b1",
+                    "entity_name": "Pig iron mine",
+                    "target_level": 16,
+                },
                 # Research r1 L2 already done -> skipped!
-                {"seq": 8, "kind": "RESEARCH", "planet_id": 0, "planet_coords": "account", "planet_name": "Account", "entity_key": "r1", "entity_name": "Mining technology", "target_level": 2},
+                {
+                    "seq": 8,
+                    "kind": "RESEARCH",
+                    "planet_id": 0,
+                    "planet_coords": "account",
+                    "planet_name": "Account",
+                    "entity_key": "r1",
+                    "entity_name": "Mining technology",
+                    "target_level": 2,
+                },
                 # Research r1 L3 -> emitted RESEARCH executable_now=True!
-                {"seq": 9, "kind": "RESEARCH", "planet_id": 0, "planet_coords": "account", "planet_name": "Account", "entity_key": "r1", "entity_name": "Mining technology", "target_level": 3},
+                {
+                    "seq": 9,
+                    "kind": "RESEARCH",
+                    "planet_id": 0,
+                    "planet_coords": "account",
+                    "planet_name": "Account",
+                    "entity_key": "r1",
+                    "entity_name": "Mining technology",
+                    "target_level": 3,
+                },
                 # Research r2 L5 -> skipped because global research lane already has r1 L3!
-                {"seq": 10, "kind": "RESEARCH", "planet_id": 0, "planet_coords": "account", "planet_name": "Account", "entity_key": "r2", "entity_name": "Energy technology", "target_level": 5},
+                {
+                    "seq": 10,
+                    "kind": "RESEARCH",
+                    "planet_id": 0,
+                    "planet_coords": "account",
+                    "planet_name": "Account",
+                    "entity_key": "r2",
+                    "entity_name": "Energy technology",
+                    "target_level": 5,
+                },
             ]
         }
         actions, conflicts = ap.reconcile_live_ai_actions(state, plan_result, StrategyConfig())
@@ -742,13 +927,18 @@ class AiPlannerUnitTests(unittest.TestCase):
             for stmt in tree.body:
                 if isinstance(stmt, (ast.FunctionDef, ast.ClassDef)):
                     kept.append(stmt)
-                elif isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name) and stmt.target.id in (
-                    "PRODUCTION_FLOW_KEYS",
-                    "PATH_FLOW_BUILDING_KEYS",
-                    "PATH_MINE_KEYS",
-                    "PATH_ACCELERATOR_KEYS",
-                    "PATH_HOURS_PER_WEEK",
-                    "PATH_NEVER",
+                elif (
+                    isinstance(stmt, ast.AnnAssign)
+                    and isinstance(stmt.target, ast.Name)
+                    and stmt.target.id
+                    in (
+                        "PRODUCTION_FLOW_KEYS",
+                        "PATH_FLOW_BUILDING_KEYS",
+                        "PATH_MINE_KEYS",
+                        "PATH_ACCELERATOR_KEYS",
+                        "PATH_HOURS_PER_WEEK",
+                        "PATH_NEVER",
+                    )
                 ):
                     kept.append(stmt)
             exec(compile(ast.Module(body=kept, type_ignores=[]), f"fp_cell_{idx}", "exec"), ns)
@@ -786,7 +976,20 @@ class AiPlannerUnitTests(unittest.TestCase):
                     101,
                     "02:380:12",
                     "Homeworld",
-                    {"b1": 10, "b2": 7, "b3": 9, "b4": 7, "b5": 12, "b7": 4, "b8": 4, "b10": 3, "b11": 4, "b12": 4, "b13": 4, "b14": 4},
+                    {
+                        "b1": 10,
+                        "b2": 7,
+                        "b3": 9,
+                        "b4": 7,
+                        "b5": 12,
+                        "b7": 4,
+                        "b8": 4,
+                        "b10": 3,
+                        "b11": 4,
+                        "b12": 4,
+                        "b13": 4,
+                        "b14": 4,
+                    },
                     is_central=True,
                     pays_for_research=True,
                     temperature=25,
@@ -796,7 +999,19 @@ class AiPlannerUnitTests(unittest.TestCase):
                     102,
                     "02:381:05",
                     "Colony 1",
-                    {"b1": 9, "b2": 6, "b3": 8, "b4": 7, "b5": 11, "b7": 3, "b10": 2, "b11": 4, "b12": 4, "b13": 4, "b14": 4},
+                    {
+                        "b1": 9,
+                        "b2": 6,
+                        "b3": 8,
+                        "b4": 7,
+                        "b5": 11,
+                        "b7": 3,
+                        "b10": 2,
+                        "b11": 4,
+                        "b12": 4,
+                        "b13": 4,
+                        "b14": 4,
+                    },
                     temperature=-20,
                 ),
             ],
@@ -837,14 +1052,18 @@ class AiPlannerUnitTests(unittest.TestCase):
             self.assertEqual(our_run["steps_started"], nb_run["steps_started"])
             self.assertEqual(our_run["order"], nb_run["order"])
             self.assertAlmostEqual(our_run["discounted_reward"], nb_run["discounted_reward"], places=6)
-            self.assertTrue(
-                np.allclose(our_run["weekly_spice_eq"], nb_run["weekly_spice_eq"], rtol=1e-9, atol=1e-6)
-            )
+            self.assertTrue(np.allclose(our_run["weekly_spice_eq"], nb_run["weekly_spice_eq"], rtol=1e-9, atol=1e-6))
 
     def test_interplanet_distance_and_travel_time_delay_cross_planet_steps(self) -> None:
-        t_same, d_same, _ = ap.estimate_interplanet_transport_seconds("02:380:01", "02:380:04", researches={"r4": 4, "r5": 4})
-        t_adj, d_adj, _ = ap.estimate_interplanet_transport_seconds("02:380:01", "02:381:01", researches={"r4": 4, "r5": 4})
-        t_far, d_far, _ = ap.estimate_interplanet_transport_seconds("02:380:01", "05:100:01", researches={"r4": 4, "r5": 4})
+        t_same, d_same, _ = ap.estimate_interplanet_transport_seconds(
+            "02:380:01", "02:380:04", researches={"r4": 4, "r5": 4}
+        )
+        t_adj, d_adj, _ = ap.estimate_interplanet_transport_seconds(
+            "02:380:01", "02:381:01", researches={"r4": 4, "r5": 4}
+        )
+        t_far, d_far, _ = ap.estimate_interplanet_transport_seconds(
+            "02:380:01", "05:100:01", researches={"r4": 4, "r5": 4}
+        )
         self.assertGreater(t_same, 0.0)
         self.assertLess(d_same, d_adj)
         self.assertLess(d_adj, d_far)
@@ -857,14 +1076,37 @@ class AiPlannerUnitTests(unittest.TestCase):
                 101,
                 "02:380:01",
                 "Donor",
-                buildings={"b1": 10, "b2": 6, "b3": 8, "b4": 6, "b5": 12, "b7": 4, "b8": 4, "b11": 8, "b12": 8, "b13": 8, "b14": 8},
+                buildings={
+                    "b1": 10,
+                    "b2": 6,
+                    "b3": 8,
+                    "b4": 6,
+                    "b5": 12,
+                    "b7": 4,
+                    "b8": 4,
+                    "b11": 8,
+                    "b12": 8,
+                    "b13": 8,
+                    "b14": 8,
+                },
                 resources=Resources(250_000, 150_000, 150_000, 80_000),
             )
             dest = _make_planet(
                 102,
                 dest_coords,
                 "RemoteColony",
-                buildings={"b1": 4, "b2": 0, "b3": 0, "b4": 0, "b5": 8, "b7": 2, "b11": 6, "b12": 6, "b13": 6, "b14": 6},
+                buildings={
+                    "b1": 4,
+                    "b2": 0,
+                    "b3": 0,
+                    "b4": 0,
+                    "b5": 8,
+                    "b7": 2,
+                    "b11": 6,
+                    "b12": 6,
+                    "b13": 6,
+                    "b14": 6,
+                },
                 resources=Resources(0, 0, 0, 0),
             )
             state = GameState(
@@ -884,7 +1126,19 @@ class AiPlannerUnitTests(unittest.TestCase):
                         101,
                         "02:380:01",
                         "Donor",
-                        {"b1": 10, "b2": 6, "b3": 8, "b4": 6, "b5": 12, "b7": 4, "b8": 4, "b11": 8, "b12": 8, "b13": 8, "b14": 8},
+                        {
+                            "b1": 10,
+                            "b2": 6,
+                            "b3": 8,
+                            "b4": 6,
+                            "b5": 12,
+                            "b7": 4,
+                            "b8": 4,
+                            "b11": 8,
+                            "b12": 8,
+                            "b13": 8,
+                            "b14": 8,
+                        },
                         is_central=True,
                         pays_for_research=True,
                     ),
@@ -930,7 +1184,19 @@ class AiPlannerUnitTests(unittest.TestCase):
             101,
             "02:380:01",
             "Donor",
-            buildings={"b1": 10, "b2": 6, "b3": 8, "b4": 6, "b5": 12, "b7": 4, "b8": 4, "b11": 8, "b12": 8, "b13": 8, "b14": 8},
+            buildings={
+                "b1": 10,
+                "b2": 6,
+                "b3": 8,
+                "b4": 6,
+                "b5": 12,
+                "b7": 4,
+                "b8": 4,
+                "b11": 8,
+                "b12": 8,
+                "b13": 8,
+                "b14": 8,
+            },
             resources=Resources(250_000, 150_000, 150_000, 80_000),
         )
         dest = _make_planet(
@@ -957,7 +1223,19 @@ class AiPlannerUnitTests(unittest.TestCase):
                     101,
                     "02:380:01",
                     "Donor",
-                    {"b1": 10, "b2": 6, "b3": 8, "b4": 6, "b5": 12, "b7": 4, "b8": 4, "b11": 8, "b12": 8, "b13": 8, "b14": 8},
+                    {
+                        "b1": 10,
+                        "b2": 6,
+                        "b3": 8,
+                        "b4": 6,
+                        "b5": 12,
+                        "b7": 4,
+                        "b8": 4,
+                        "b11": 8,
+                        "b12": 8,
+                        "b13": 8,
+                        "b14": 8,
+                    },
                     is_central=True,
                     pays_for_research=True,
                 ),
@@ -971,9 +1249,15 @@ class AiPlannerUnitTests(unittest.TestCase):
             ],
             planned_research={"r1": 2, "r2": 4},
         )
-        p0 = ap.run_ai_planner(state, target, params={"reward_weeks": 2, "ga_generations": 0, "transport_dispatch_delay_minutes": 0})
-        p120 = ap.run_ai_planner(state, target, params={"reward_weeks": 2, "ga_generations": 0, "transport_dispatch_delay_minutes": 120})
-        p300 = ap.run_ai_planner(state, target, params={"reward_weeks": 2, "ga_generations": 0, "transport_dispatch_delay_minutes": 300})
+        p0 = ap.run_ai_planner(
+            state, target, params={"reward_weeks": 2, "ga_generations": 0, "transport_dispatch_delay_minutes": 0}
+        )
+        p120 = ap.run_ai_planner(
+            state, target, params={"reward_weeks": 2, "ga_generations": 0, "transport_dispatch_delay_minutes": 120}
+        )
+        p300 = ap.run_ai_planner(
+            state, target, params={"reward_weeks": 2, "ga_generations": 0, "transport_dispatch_delay_minutes": 300}
+        )
 
         s0, s120, s300 = p0["steps"][0], p120["steps"][0], p300["steps"][0]
         self.assertEqual(p120["meta_parameters"]["transport_dispatch_delay_minutes"], 120.0)
@@ -991,14 +1275,37 @@ class AiPlannerUnitTests(unittest.TestCase):
             101,
             "02:380:01",
             "Donor",
-            buildings={"b1": 10, "b2": 6, "b3": 8, "b4": 6, "b5": 14, "b7": 6, "b8": 8, "b11": 10, "b12": 10, "b13": 10, "b14": 10},
+            buildings={
+                "b1": 10,
+                "b2": 6,
+                "b3": 8,
+                "b4": 6,
+                "b5": 14,
+                "b7": 6,
+                "b8": 8,
+                "b11": 10,
+                "b12": 10,
+                "b13": 10,
+                "b14": 10,
+            },
             resources=Resources(500_000, 300_000, 300_000, 150_000),
         )
         dest = _make_planet(
             102,
             "02:380:04",
             "Builder",
-            buildings={"b1": 14, "b2": 0, "b3": 0, "b4": 0, "b5": 16, "b7": 6, "b11": 10, "b12": 10, "b13": 10, "b14": 10},
+            buildings={
+                "b1": 14,
+                "b2": 0,
+                "b3": 0,
+                "b4": 0,
+                "b5": 16,
+                "b7": 6,
+                "b11": 10,
+                "b12": 10,
+                "b13": 10,
+                "b14": 10,
+            },
             resources=Resources(0, 0, 0, 0),
         )
         state = GameState(
@@ -1036,7 +1343,19 @@ class AiPlannerUnitTests(unittest.TestCase):
                     101,
                     "02:380:01",
                     "Donor",
-                    {"b1": 10, "b2": 6, "b3": 8, "b4": 6, "b5": 14, "b7": 6, "b8": 8, "b11": 10, "b12": 10, "b13": 10, "b14": 10},
+                    {
+                        "b1": 10,
+                        "b2": 6,
+                        "b3": 8,
+                        "b4": 6,
+                        "b5": 14,
+                        "b7": 6,
+                        "b8": 8,
+                        "b11": 10,
+                        "b12": 10,
+                        "b13": 10,
+                        "b14": 10,
+                    },
                     is_central=True,
                     pays_for_research=True,
                 ),
@@ -1120,12 +1439,24 @@ class AiPlannerUnitTests(unittest.TestCase):
         )
         target = _sample_target_config(
             [
-                _target_planet_entry(1, 101, "02:380:01", "Donor", {"b1": 1, "b5": 4, "b7": 2, "b8": 2, "b11": 4, "b12": 4, "b13": 4, "b14": 4}, is_central=True, pays_for_research=True),
-                _target_planet_entry(2, 102, "02:380:04", "Dest", {"b1": 5, "b5": 8, "b7": 2, "b11": 6, "b12": 6, "b13": 6, "b14": 6}),
+                _target_planet_entry(
+                    1,
+                    101,
+                    "02:380:01",
+                    "Donor",
+                    {"b1": 1, "b5": 4, "b7": 2, "b8": 2, "b11": 4, "b12": 4, "b13": 4, "b14": 4},
+                    is_central=True,
+                    pays_for_research=True,
+                ),
+                _target_planet_entry(
+                    2, 102, "02:380:04", "Dest", {"b1": 5, "b5": 8, "b7": 2, "b11": 6, "b12": 6, "b13": 6, "b14": 6}
+                ),
             ],
             planned_research={"r1": 1, "r2": 2},
         )
-        plan = ap.run_ai_planner(state, target, params={"reward_weeks": 1, "ga_generations": 0, "transport_dispatch_delay_minutes": 120.0})
+        plan = ap.run_ai_planner(
+            state, target, params={"reward_weeks": 1, "ga_generations": 0, "transport_dispatch_delay_minutes": 120.0}
+        )
         self.assertEqual(plan["summary"]["in_flight_arrivals_count"], 1)
         b1_5 = plan["steps"][0]
         self.assertEqual(b1_5["entity_key"], "b1")
@@ -1160,7 +1491,11 @@ class AiPlannerUnitTests(unittest.TestCase):
             ),
             speedup_factor=5.0,
         )
-        ret_plan = ap.run_ai_planner(ret_state, target, params={"reward_weeks": 1, "ga_generations": 0, "transport_dispatch_delay_minutes": 120.0})
+        ret_plan = ap.run_ai_planner(
+            ret_state,
+            target,
+            params={"reward_weeks": 1, "ga_generations": 0, "transport_dispatch_delay_minutes": 120.0},
+        )
         self.assertEqual(ret_plan["summary"]["in_flight_arrivals_count"], 1)
         self.assertAlmostEqual(ret_plan["steps"][0]["start_sec"], 900.0, delta=60.0)
         self.assertFalse(ret_plan["steps"][0]["needs_transport"])
@@ -1270,7 +1605,18 @@ class AiPlannerUnitTests(unittest.TestCase):
             102,
             "02:380:04",
             "DestSoon",
-            buildings={"b1": 14, "b2": 0, "b3": 0, "b4": 0, "b5": 18, "b7": 10, "b11": 10, "b12": 10, "b13": 10, "b14": 10},
+            buildings={
+                "b1": 14,
+                "b2": 0,
+                "b3": 0,
+                "b4": 0,
+                "b5": 18,
+                "b7": 10,
+                "b11": 10,
+                "b12": 10,
+                "b13": 10,
+                "b14": 10,
+            },
             resources=Resources(0, 0, 0, 0),
         )
         # DestFar builds b1 L15 finishing in 50_000s (~13.9h) -> well outside 120m dispatch + ~30m travel lead window!
@@ -1278,7 +1624,18 @@ class AiPlannerUnitTests(unittest.TestCase):
             103,
             "02:380:05",
             "DestLate",
-            buildings={"b1": 14, "b2": 0, "b3": 0, "b4": 0, "b5": 18, "b7": 10, "b11": 10, "b12": 10, "b13": 10, "b14": 10},
+            buildings={
+                "b1": 14,
+                "b2": 0,
+                "b3": 0,
+                "b4": 0,
+                "b5": 18,
+                "b7": 10,
+                "b11": 10,
+                "b12": 10,
+                "b13": 10,
+                "b14": 10,
+            },
             resources=Resources(0, 0, 0, 0),
         )
         # DestPrereq builds b7 L12 finishing in 1200s (with r2=10) -> unlocks b17 L1 next!
@@ -1299,18 +1656,63 @@ class AiPlannerUnitTests(unittest.TestCase):
             active_planet_id=101,
             researches={"r1": 2, "r2": 10, "r4": 4, "r5": 4},
             active_queues=(
-                QueueJob(category="building", name="Pig iron mine (Level 15)", building_id=1, target_level=15, origin_coords="02:380:04", remaining_seconds=1800),
-                QueueJob(category="building", name="Pig iron mine (Level 15)", building_id=1, target_level=15, origin_coords="02:380:05", remaining_seconds=50_000),
-                QueueJob(category="building", name="Development center (Level 12)", building_id=7, target_level=12, origin_coords="02:380:06", remaining_seconds=1200),
+                QueueJob(
+                    category="building",
+                    name="Pig iron mine (Level 15)",
+                    building_id=1,
+                    target_level=15,
+                    origin_coords="02:380:04",
+                    remaining_seconds=1800,
+                ),
+                QueueJob(
+                    category="building",
+                    name="Pig iron mine (Level 15)",
+                    building_id=1,
+                    target_level=15,
+                    origin_coords="02:380:05",
+                    remaining_seconds=50_000,
+                ),
+                QueueJob(
+                    category="building",
+                    name="Development center (Level 12)",
+                    building_id=7,
+                    target_level=12,
+                    origin_coords="02:380:06",
+                    remaining_seconds=1200,
+                ),
             ),
             speedup_factor=5.0,
         )
         plan_res = {
             "meta_parameters": {"transport_dispatch_delay_minutes": 120.0},
             "steps": [
-                {"seq": 1, "kind": "BUILD", "planet_id": 102, "planet_coords": "02:380:04", "entity_key": "b1", "entity_name": "Pig iron mine", "target_level": 16},
-                {"seq": 2, "kind": "BUILD", "planet_id": 103, "planet_coords": "02:380:05", "entity_key": "b1", "entity_name": "Pig iron mine", "target_level": 16},
-                {"seq": 3, "kind": "BUILD", "planet_id": 104, "planet_coords": "02:380:06", "entity_key": "b17", "entity_name": "Microsystem accelerator", "target_level": 1},
+                {
+                    "seq": 1,
+                    "kind": "BUILD",
+                    "planet_id": 102,
+                    "planet_coords": "02:380:04",
+                    "entity_key": "b1",
+                    "entity_name": "Pig iron mine",
+                    "target_level": 16,
+                },
+                {
+                    "seq": 2,
+                    "kind": "BUILD",
+                    "planet_id": 103,
+                    "planet_coords": "02:380:05",
+                    "entity_key": "b1",
+                    "entity_name": "Pig iron mine",
+                    "target_level": 16,
+                },
+                {
+                    "seq": 3,
+                    "kind": "BUILD",
+                    "planet_id": 104,
+                    "planet_coords": "02:380:06",
+                    "entity_key": "b17",
+                    "entity_name": "Microsystem accelerator",
+                    "target_level": 1,
+                },
             ],
         }
         needs = ap.compute_early_transport_needs(state, plan_res, ())
@@ -1427,18 +1829,64 @@ class AiPlannerUnitTests(unittest.TestCase):
         )
         plan_result = {
             "steps": [
-                {"seq": 1, "kind": "BUILD", "planet_id": 106, "planet_coords": "02:380:06", "entity_key": "b1", "entity_name": "Pig iron mine", "target_level": 6},
-                {"seq": 2, "kind": "BUILD", "planet_id": 105, "planet_coords": "02:380:05", "entity_key": "b1", "entity_name": "Pig iron mine", "target_level": 6},
-                {"seq": 3, "kind": "BUILD", "planet_id": 101, "planet_coords": "02:380:01", "entity_key": "b1", "entity_name": "Pig iron mine", "target_level": 6},
-                {"seq": 4, "kind": "BUILD", "planet_id": 102, "planet_coords": "02:380:02", "entity_key": "b1", "entity_name": "Pig iron mine", "target_level": 6},
-                {"seq": 5, "kind": "BUILD", "planet_id": 103, "planet_coords": "02:380:03", "entity_key": "b1", "entity_name": "Pig iron mine", "target_level": 6},
-                {"seq": 6, "kind": "BUILD", "planet_id": 104, "planet_coords": "02:380:04", "entity_key": "b1", "entity_name": "Pig iron mine", "target_level": 6},
+                {
+                    "seq": 1,
+                    "kind": "BUILD",
+                    "planet_id": 106,
+                    "planet_coords": "02:380:06",
+                    "entity_key": "b1",
+                    "entity_name": "Pig iron mine",
+                    "target_level": 6,
+                },
+                {
+                    "seq": 2,
+                    "kind": "BUILD",
+                    "planet_id": 105,
+                    "planet_coords": "02:380:05",
+                    "entity_key": "b1",
+                    "entity_name": "Pig iron mine",
+                    "target_level": 6,
+                },
+                {
+                    "seq": 3,
+                    "kind": "BUILD",
+                    "planet_id": 101,
+                    "planet_coords": "02:380:01",
+                    "entity_key": "b1",
+                    "entity_name": "Pig iron mine",
+                    "target_level": 6,
+                },
+                {
+                    "seq": 4,
+                    "kind": "BUILD",
+                    "planet_id": 102,
+                    "planet_coords": "02:380:02",
+                    "entity_key": "b1",
+                    "entity_name": "Pig iron mine",
+                    "target_level": 6,
+                },
+                {
+                    "seq": 5,
+                    "kind": "BUILD",
+                    "planet_id": 103,
+                    "planet_coords": "02:380:03",
+                    "entity_key": "b1",
+                    "entity_name": "Pig iron mine",
+                    "target_level": 6,
+                },
+                {
+                    "seq": 6,
+                    "kind": "BUILD",
+                    "planet_id": 104,
+                    "planet_coords": "02:380:04",
+                    "entity_key": "b1",
+                    "entity_name": "Pig iron mine",
+                    "target_level": 6,
+                },
             ]
         }
 
-        actions, conflicts = ap.reconcile_live_ai_actions(
-            state, plan_result, StrategyConfig(allow_multi_planet=True)
-        )
+        actions, conflicts = ap.reconcile_live_ai_actions(state, plan_result, StrategyConfig(allow_multi_planet=True))
         self.assertEqual(conflicts, [])
         by_pid = {a.planet_id: a for a in actions}
         # All 4 idle affordable colonies (p1 active + p2/p3/p4 remote) emit BUILD executable_now=True in parallel!
@@ -1453,9 +1901,7 @@ class AiPlannerUnitTests(unittest.TestCase):
         self.assertFalse(by_pid[106].executable_now)
 
         # allow_multi_planet=False restricts execution to active planet only.
-        single_acts, _ = ap.reconcile_live_ai_actions(
-            state, plan_result, StrategyConfig(allow_multi_planet=False)
-        )
+        single_acts, _ = ap.reconcile_live_ai_actions(state, plan_result, StrategyConfig(allow_multi_planet=False))
         single_by_pid = {a.planet_id: a for a in single_acts}
         self.assertEqual(single_by_pid[101].kind, "BUILD")
         self.assertTrue(single_by_pid[101].executable_now)
@@ -1544,14 +1990,36 @@ class AiPlannerUnitTests(unittest.TestCase):
         )
         plan_constr = {
             "steps": [
-                {"seq": 1, "kind": "BUILD", "planet_id": 101, "planet_coords": "02:380:01", "entity_key": "b1", "entity_name": "Pig iron mine", "target_level": 6},
-                {"seq": 2, "kind": "BUILD", "planet_id": 101, "planet_coords": "02:380:01", "entity_key": "b3", "entity_name": "Kryptonite mine", "target_level": 5},
-                {"seq": 3, "kind": "BUILD", "planet_id": 102, "planet_coords": "02:380:02", "entity_key": "b1", "entity_name": "Pig iron mine", "target_level": 6},
+                {
+                    "seq": 1,
+                    "kind": "BUILD",
+                    "planet_id": 101,
+                    "planet_coords": "02:380:01",
+                    "entity_key": "b1",
+                    "entity_name": "Pig iron mine",
+                    "target_level": 6,
+                },
+                {
+                    "seq": 2,
+                    "kind": "BUILD",
+                    "planet_id": 101,
+                    "planet_coords": "02:380:01",
+                    "entity_key": "b3",
+                    "entity_name": "Kryptonite mine",
+                    "target_level": 5,
+                },
+                {
+                    "seq": 3,
+                    "kind": "BUILD",
+                    "planet_id": 102,
+                    "planet_coords": "02:380:02",
+                    "entity_key": "b1",
+                    "entity_name": "Pig iron mine",
+                    "target_level": 6,
+                },
             ]
         }
-        acts_constr, _ = ap.reconcile_live_ai_actions(
-            st_constr, plan_constr, StrategyConfig(allow_multi_planet=True)
-        )
+        acts_constr, _ = ap.reconcile_live_ai_actions(st_constr, plan_constr, StrategyConfig(allow_multi_planet=True))
         constr_by_pid = {a.planet_id: a for a in acts_constr}
         # p1 skips in-flight b1 L6, queues b3 L5 as WAIT_RESOURCES (build queue full), while p2 STILL builds!
         self.assertEqual(constr_by_pid[101].target_id, 3)
@@ -1726,7 +2194,19 @@ class AiPlannerUnitTests(unittest.TestCase):
             ],
             planned_research={"r1": 2, "r2": 4},
         )
-        base_b = {"b1": 8, "b2": 5, "b3": 6, "b4": 4, "b5": 12, "b7": 4, "b8": 3, "b11": 6, "b12": 6, "b13": 6, "b14": 6}
+        base_b = {
+            "b1": 8,
+            "b2": 5,
+            "b3": 6,
+            "b4": 4,
+            "b5": 12,
+            "b7": 4,
+            "b8": 3,
+            "b11": 6,
+            "b12": 6,
+            "b13": 6,
+            "b14": 6,
+        }
 
         def _state_with_single(res: Resources, eco: dict[str, int]) -> GameState:
             return GameState(
@@ -1751,9 +2231,7 @@ class AiPlannerUnitTests(unittest.TestCase):
 
         # Case 1: Live b2 OFF (0%), 0 Metal stock -> AI-Planner wants ON (100%) at t=0 -> emits t=0 ENABLE toggle!
         st_off_need = _state_with_single(Resources(200_000, 0, 200_000, 100_000), {"resource2": 0})
-        plan_off_need = ap.run_ai_planner(
-            st_off_need, target_single, params={"reward_weeks": 2, "ga_generations": 0}
-        )
+        plan_off_need = ap.run_ai_planner(st_off_need, target_single, params={"reward_weeks": 2, "ga_generations": 0})
         sm1 = plan_off_need["smelting"]
         self.assertEqual(sm1["initial_live_mode"], "off")
         self.assertFalse(sm1["initial_live_any_enabled"])
@@ -1786,9 +2264,7 @@ class AiPlannerUnitTests(unittest.TestCase):
         # Case 2: Live b2 ALREADY ON (100%) with same 0 Metal stock -> aligned at t=0, NO initial toggle event,
         # and simulation reward/steps/metal_smelted remain 100% identical to Case 1!
         st_on_need = _state_with_single(Resources(200_000, 0, 200_000, 100_000), {"resource2": 100})
-        plan_on_need = ap.run_ai_planner(
-            st_on_need, target_single, params={"reward_weeks": 2, "ga_generations": 0}
-        )
+        plan_on_need = ap.run_ai_planner(st_on_need, target_single, params={"reward_weeks": 2, "ga_generations": 0})
         sm2 = plan_on_need["smelting"]
         self.assertEqual(sm2["initial_live_mode"], "on")
         self.assertTrue(sm2["initial_live_any_enabled"])
@@ -1798,9 +2274,7 @@ class AiPlannerUnitTests(unittest.TestCase):
         self.assertEqual(sm2["initial_planets_needing_toggle"], [])
         self.assertFalse(any(ev["is_initial"] for ev in sm2["smelting_events"]))
         self.assertEqual(sm2["metal_smelted"], sm1["metal_smelted"])
-        self.assertEqual(
-            plan_on_need["summary"]["discounted_reward"], plan_off_need["summary"]["discounted_reward"]
-        )
+        self.assertEqual(plan_on_need["summary"]["discounted_reward"], plan_off_need["summary"]["discounted_reward"])
         self.assertEqual(len(plan_on_need["steps"]), len(plan_off_need["steps"]))
 
         # Case 3: Live b2 ON (100%), abundant Metal stock -> AI-Planner wants OFF (0%) at t=0 -> emits t=0 DISABLE!
@@ -1818,9 +2292,30 @@ class AiPlannerUnitTests(unittest.TestCase):
         self.assertEqual(sm3["smelting_events"][0]["from_mode"], "on")
 
         # Case 4: Mixed multi-colony (P1 ON 100%, P2 OFF 0%, P3 no b2) -> only mismatched b2 planet flagged!
-        p1_on = _make_planet(101, "02:380:01", "Prime", buildings=base_b, resources=Resources(100_000, 0, 100_000, 50_000), economy_rates={"resource2": 100})
-        p2_off = _make_planet(102, "02:380:02", "Forge", buildings={"b1": 8, "b2": 4, "b3": 4, "b5": 12, "b11": 6, "b12": 6, "b13": 6, "b14": 6}, resources=Resources(50_000, 0, 50_000, 20_000), economy_rates={"resource2": 0})
-        p3_nob2 = _make_planet(103, "02:380:03", "Outpost", buildings={"b1": 6, "b3": 4, "b5": 10, "b11": 6, "b12": 6, "b13": 6, "b14": 6}, resources=Resources(50_000, 0, 50_000, 20_000), economy_rates={"resource2": 0})
+        p1_on = _make_planet(
+            101,
+            "02:380:01",
+            "Prime",
+            buildings=base_b,
+            resources=Resources(100_000, 0, 100_000, 50_000),
+            economy_rates={"resource2": 100},
+        )
+        p2_off = _make_planet(
+            102,
+            "02:380:02",
+            "Forge",
+            buildings={"b1": 8, "b2": 4, "b3": 4, "b5": 12, "b11": 6, "b12": 6, "b13": 6, "b14": 6},
+            resources=Resources(50_000, 0, 50_000, 20_000),
+            economy_rates={"resource2": 0},
+        )
+        p3_nob2 = _make_planet(
+            103,
+            "02:380:03",
+            "Outpost",
+            buildings={"b1": 6, "b3": 4, "b5": 10, "b11": 6, "b12": 6, "b13": 6, "b14": 6},
+            resources=Resources(50_000, 0, 50_000, 20_000),
+            economy_rates={"resource2": 0},
+        )
         st_mixed = GameState(
             universe_id=31,
             user_id=1,
@@ -1833,14 +2328,26 @@ class AiPlannerUnitTests(unittest.TestCase):
         )
         target_mixed = _sample_target_config(
             [
-                _target_planet_entry(1, 101, "02:380:01", "Prime", {**base_b, "b7": 5}, is_central=True, pays_for_research=True),
-                _target_planet_entry(2, 102, "02:380:02", "Forge", {"b1": 8, "b2": 4, "b3": 4, "b5": 12, "b11": 6, "b12": 6, "b13": 6, "b14": 6}),
-                _target_planet_entry(3, 103, "02:380:03", "Outpost", {"b1": 6, "b3": 4, "b5": 10, "b11": 6, "b12": 6, "b13": 6, "b14": 6}),
+                _target_planet_entry(
+                    1, 101, "02:380:01", "Prime", {**base_b, "b7": 5}, is_central=True, pays_for_research=True
+                ),
+                _target_planet_entry(
+                    2,
+                    102,
+                    "02:380:02",
+                    "Forge",
+                    {"b1": 8, "b2": 4, "b3": 4, "b5": 12, "b11": 6, "b12": 6, "b13": 6, "b14": 6},
+                ),
+                _target_planet_entry(
+                    3, 103, "02:380:03", "Outpost", {"b1": 6, "b3": 4, "b5": 10, "b11": 6, "b12": 6, "b13": 6, "b14": 6}
+                ),
             ],
             planned_research={"r1": 2, "r2": 4},
         )
         plan_mixed = ap.run_ai_planner(
-            st_mixed, target_mixed, params={"reward_weeks": 2, "ga_generations": 0, "transport_dispatch_delay_minutes": 0}
+            st_mixed,
+            target_mixed,
+            params={"reward_weeks": 2, "ga_generations": 0, "transport_dispatch_delay_minutes": 0},
         )
         sm4 = plan_mixed["smelting"]
         self.assertEqual(sm4["initial_live_mode"], "mixed")
@@ -1855,13 +2362,34 @@ class AiPlannerUnitTests(unittest.TestCase):
         self.assertEqual(sm4["smelting_events"][0]["from_mode"], "mixed")
 
         # Case 5: No b2 built anywhere yet -> mode="none", no t=0 toggle needed!
-        p_nob2 = _make_planet(201, "02:380:09", "Fresh", buildings={"b1": 4, "b3": 2, "b5": 6, "b11": 4, "b12": 4, "b13": 4, "b14": 4}, resources=Resources(10_000, 0, 10_000, 5_000))
+        p_nob2 = _make_planet(
+            201,
+            "02:380:09",
+            "Fresh",
+            buildings={"b1": 4, "b3": 2, "b5": 6, "b11": 4, "b12": 4, "b13": 4, "b14": 4},
+            resources=Resources(10_000, 0, 10_000, 5_000),
+        )
         st_nob2 = GameState(
-            universe_id=31, user_id=1, nickname="NoB2", timestamp=1_700_000_000.0,
-            planets=(p_nob2,), active_planet_id=201, researches={"r1": 1, "r2": 1}, speedup_factor=5.0,
+            universe_id=31,
+            user_id=1,
+            nickname="NoB2",
+            timestamp=1_700_000_000.0,
+            planets=(p_nob2,),
+            active_planet_id=201,
+            researches={"r1": 1, "r2": 1},
+            speedup_factor=5.0,
         )
         target_nob2 = _sample_target_config(
-            [_target_planet_entry(1, 201, "02:380:09", "Fresh", {"b1": 5, "b3": 2, "b5": 6, "b11": 4, "b12": 4, "b13": 4, "b14": 4}, is_central=True)],
+            [
+                _target_planet_entry(
+                    1,
+                    201,
+                    "02:380:09",
+                    "Fresh",
+                    {"b1": 5, "b3": 2, "b5": 6, "b11": 4, "b12": 4, "b13": 4, "b14": 4},
+                    is_central=True,
+                )
+            ],
             planned_research={"r1": 1, "r2": 1},
         )
         plan_nob2 = ap.run_ai_planner(st_nob2, target_nob2, params={"reward_weeks": 1, "ga_generations": 0})
@@ -2198,9 +2726,7 @@ class AiPlannerUnitTests(unittest.TestCase):
             research_offers=(stale_nonlab_offer,),
             speedup_factor=5.0,
         )
-        acts_lab_blocked, _ = ap.reconcile_live_ai_actions(
-            st_active_lab_blocked, plan_res, _config_with_adaptive(True)
-        )
+        acts_lab_blocked, _ = ap.reconcile_live_ai_actions(st_active_lab_blocked, plan_res, _config_with_adaptive(True))
         self.assertFalse(acts_lab_blocked[0].executable_now)
 
         st_active_lab_ready = GameState(
@@ -2214,9 +2740,7 @@ class AiPlannerUnitTests(unittest.TestCase):
             research_offers=(ready_lab_offer,),
             speedup_factor=5.0,
         )
-        acts_lab_ready, _ = ap.reconcile_live_ai_actions(
-            st_active_lab_ready, plan_res, _config_with_adaptive(True)
-        )
+        acts_lab_ready, _ = ap.reconcile_live_ai_actions(st_active_lab_ready, plan_res, _config_with_adaptive(True))
         self.assertTrue(acts_lab_ready[0].executable_now)
         self.assertEqual(acts_lab_ready[0].action_href, ready_lab_offer.research_href)
 
@@ -2264,7 +2788,19 @@ class AiPlannerUnitTests(unittest.TestCase):
             101,
             "02:380:01",
             "Donor",
-            buildings={"b1": 12, "b2": 8, "b3": 10, "b4": 8, "b5": 16, "b7": 6, "b8": 4, "b11": 8, "b12": 8, "b13": 8, "b14": 8},
+            buildings={
+                "b1": 12,
+                "b2": 8,
+                "b3": 10,
+                "b4": 8,
+                "b5": 16,
+                "b7": 6,
+                "b8": 4,
+                "b11": 8,
+                "b12": 8,
+                "b13": 8,
+                "b14": 8,
+            },
             resources=Resources(500_000, 300_000, 300_000, 150_000),
         )
         dest = _make_planet(
@@ -2291,7 +2827,19 @@ class AiPlannerUnitTests(unittest.TestCase):
                     101,
                     "02:380:01",
                     "Donor",
-                    {"b1": 12, "b2": 8, "b3": 10, "b4": 8, "b5": 16, "b7": 6, "b8": 4, "b11": 8, "b12": 8, "b13": 8, "b14": 8},
+                    {
+                        "b1": 12,
+                        "b2": 8,
+                        "b3": 10,
+                        "b4": 8,
+                        "b5": 16,
+                        "b7": 6,
+                        "b8": 4,
+                        "b11": 8,
+                        "b12": 8,
+                        "b13": 8,
+                        "b14": 8,
+                    },
                     is_central=True,
                     pays_for_research=True,
                 ),
@@ -2367,7 +2915,19 @@ class AiPlannerUnitTests(unittest.TestCase):
                     101,
                     "02:380:01",
                     "Donor",
-                    {"b1": 13, "b2": 8, "b3": 10, "b4": 8, "b5": 16, "b7": 6, "b8": 4, "b11": 8, "b12": 8, "b13": 8, "b14": 8},
+                    {
+                        "b1": 13,
+                        "b2": 8,
+                        "b3": 10,
+                        "b4": 8,
+                        "b5": 16,
+                        "b7": 6,
+                        "b8": 4,
+                        "b11": 8,
+                        "b12": 8,
+                        "b13": 8,
+                        "b14": 8,
+                    },
                     is_central=True,
                     pays_for_research=True,
                 ),
@@ -2485,7 +3045,19 @@ class AiPlannerUnitTests(unittest.TestCase):
             user_id=1,
             nickname="DiagTest",
             timestamp=now_ts,
-            planets=(p_build, p_ready, p_field, p_storage, p_inbound, p_wait_m, p_wait_p, p_wait_k, p_wait_s, p_done, p_raid),
+            planets=(
+                p_build,
+                p_ready,
+                p_field,
+                p_storage,
+                p_inbound,
+                p_wait_m,
+                p_wait_p,
+                p_wait_k,
+                p_wait_s,
+                p_done,
+                p_raid,
+            ),
             active_planet_id=101,
             researches={"r1": 4, "r2": 10},
             active_queues=(
@@ -2513,27 +3085,123 @@ class AiPlannerUnitTests(unittest.TestCase):
         plan_res = {
             "steps": [
                 # p_build: b1 L6 in flight, b3 L5 affordable (must NOT set idle_with_affordable since building!)
-                {"seq": 1, "kind": "BUILD", "planet_id": 101, "planet_coords": "02:380:01", "entity_key": "b1", "entity_name": "Pig iron mine", "target_level": 6},
-                {"seq": 2, "kind": "BUILD", "planet_id": 101, "planet_coords": "02:380:01", "entity_key": "b3", "entity_name": "Kryptonite mine", "target_level": 5},
+                {
+                    "seq": 1,
+                    "kind": "BUILD",
+                    "planet_id": 101,
+                    "planet_coords": "02:380:01",
+                    "entity_key": "b1",
+                    "entity_name": "Pig iron mine",
+                    "target_level": 6,
+                },
+                {
+                    "seq": 2,
+                    "kind": "BUILD",
+                    "planet_id": 101,
+                    "planet_coords": "02:380:01",
+                    "entity_key": "b3",
+                    "entity_name": "Kryptonite mine",
+                    "target_level": 5,
+                },
                 # p_ready: b1 L6 ready
-                {"seq": 3, "kind": "BUILD", "planet_id": 102, "planet_coords": "02:380:02", "entity_key": "b1", "entity_name": "Pig iron mine", "target_level": 6},
+                {
+                    "seq": 3,
+                    "kind": "BUILD",
+                    "planet_id": 102,
+                    "planet_coords": "02:380:02",
+                    "entity_key": "b1",
+                    "entity_name": "Pig iron mine",
+                    "target_level": 6,
+                },
                 # p_field: b1 L11 field-blocked
-                {"seq": 4, "kind": "BUILD", "planet_id": 103, "planet_coords": "02:380:03", "entity_key": "b1", "entity_name": "Pig iron mine", "target_level": 11},
+                {
+                    "seq": 4,
+                    "kind": "BUILD",
+                    "planet_id": 103,
+                    "planet_coords": "02:380:03",
+                    "entity_key": "b1",
+                    "entity_name": "Pig iron mine",
+                    "target_level": 11,
+                },
                 # p_storage: b17 L1 exceeds 400k storage
-                {"seq": 5, "kind": "BUILD", "planet_id": 104, "planet_coords": "02:380:04", "entity_key": "b17", "entity_name": "Microsystem accelerator", "target_level": 1},
+                {
+                    "seq": 5,
+                    "kind": "BUILD",
+                    "planet_id": 104,
+                    "planet_coords": "02:380:04",
+                    "entity_key": "b17",
+                    "entity_name": "Microsystem accelerator",
+                    "target_level": 1,
+                },
                 # p_inbound: b7 L6 short of Metal, covered by inbound Transport
-                {"seq": 6, "kind": "BUILD", "planet_id": 105, "planet_coords": "02:380:05", "entity_key": "b7", "entity_name": "Development center", "target_level": 6},
+                {
+                    "seq": 6,
+                    "kind": "BUILD",
+                    "planet_id": 105,
+                    "planet_coords": "02:380:05",
+                    "entity_key": "b7",
+                    "entity_name": "Development center",
+                    "target_level": 6,
+                },
                 # p_wait_m: top step b7 L6 waits on Metal, later step b1 L6 IS locally affordable!
-                {"seq": 7, "kind": "BUILD", "planet_id": 106, "planet_coords": "02:380:06", "entity_key": "b7", "entity_name": "Development center", "target_level": 6},
-                {"seq": 8, "kind": "BUILD", "planet_id": 106, "planet_coords": "02:380:06", "entity_key": "b1", "entity_name": "Pig iron mine", "target_level": 6},
+                {
+                    "seq": 7,
+                    "kind": "BUILD",
+                    "planet_id": 106,
+                    "planet_coords": "02:380:06",
+                    "entity_key": "b7",
+                    "entity_name": "Development center",
+                    "target_level": 6,
+                },
+                {
+                    "seq": 8,
+                    "kind": "BUILD",
+                    "planet_id": 106,
+                    "planet_coords": "02:380:06",
+                    "entity_key": "b1",
+                    "entity_name": "Pig iron mine",
+                    "target_level": 6,
+                },
                 # p_wait_p: b1 L6 waits on Pig iron
-                {"seq": 9, "kind": "BUILD", "planet_id": 107, "planet_coords": "02:380:07", "entity_key": "b1", "entity_name": "Pig iron mine", "target_level": 6},
+                {
+                    "seq": 9,
+                    "kind": "BUILD",
+                    "planet_id": 107,
+                    "planet_coords": "02:380:07",
+                    "entity_key": "b1",
+                    "entity_name": "Pig iron mine",
+                    "target_level": 6,
+                },
                 # p_wait_k: b1 L6 waits on Kryptonite
-                {"seq": 10, "kind": "BUILD", "planet_id": 108, "planet_coords": "02:380:08", "entity_key": "b1", "entity_name": "Pig iron mine", "target_level": 6},
+                {
+                    "seq": 10,
+                    "kind": "BUILD",
+                    "planet_id": 108,
+                    "planet_coords": "02:380:08",
+                    "entity_key": "b1",
+                    "entity_name": "Pig iron mine",
+                    "target_level": 6,
+                },
                 # p_wait_s: b7 L6 waits on Spice
-                {"seq": 11, "kind": "BUILD", "planet_id": 109, "planet_coords": "02:380:09", "entity_key": "b7", "entity_name": "Development center", "target_level": 6},
+                {
+                    "seq": 11,
+                    "kind": "BUILD",
+                    "planet_id": 109,
+                    "planet_coords": "02:380:09",
+                    "entity_key": "b7",
+                    "entity_name": "Development center",
+                    "target_level": 6,
+                },
                 # p_done: b1 L10 already built
-                {"seq": 12, "kind": "BUILD", "planet_id": 110, "planet_coords": "02:380:10", "entity_key": "b1", "entity_name": "Pig iron mine", "target_level": 10},
+                {
+                    "seq": 12,
+                    "kind": "BUILD",
+                    "planet_id": 110,
+                    "planet_coords": "02:380:10",
+                    "entity_key": "b1",
+                    "entity_name": "Pig iron mine",
+                    "target_level": 10,
+                },
             ]
         }
 
@@ -2600,14 +3268,39 @@ class AiPlannerUnitTests(unittest.TestCase):
             101,
             "02:380:12",
             "Homeworld",
-            buildings={"b1": 6, "b2": 3, "b3": 5, "b4": 3, "b5": 9, "b7": 3, "b8": 3, "b10": 1, "b11": 5, "b12": 5, "b13": 5, "b14": 5},
+            buildings={
+                "b1": 6,
+                "b2": 3,
+                "b3": 5,
+                "b4": 3,
+                "b5": 9,
+                "b7": 3,
+                "b8": 3,
+                "b10": 1,
+                "b11": 5,
+                "b12": 5,
+                "b13": 5,
+                "b14": 5,
+            },
             resources=Resources(30_000, 15_000, 15_000, 8_000),
         )
         p2 = _make_planet(
             102,
             "02:381:05",
             "Colony 1",
-            buildings={"b1": 4, "b2": 2, "b3": 4, "b4": 2, "b5": 7, "b7": 2, "b10": 1, "b11": 5, "b12": 5, "b13": 5, "b14": 5},
+            buildings={
+                "b1": 4,
+                "b2": 2,
+                "b3": 4,
+                "b4": 2,
+                "b5": 7,
+                "b7": 2,
+                "b10": 1,
+                "b11": 5,
+                "b12": 5,
+                "b13": 5,
+                "b14": 5,
+            },
             resources=Resources(15_000, 8_000, 8_000, 4_000),
         )
         state = GameState(
@@ -2627,7 +3320,20 @@ class AiPlannerUnitTests(unittest.TestCase):
                     101,
                     "02:380:12",
                     "Homeworld",
-                    {"b1": 12, "b2": 8, "b3": 10, "b4": 8, "b5": 14, "b7": 5, "b8": 5, "b10": 3, "b11": 5, "b12": 5, "b13": 5, "b14": 5},
+                    {
+                        "b1": 12,
+                        "b2": 8,
+                        "b3": 10,
+                        "b4": 8,
+                        "b5": 14,
+                        "b7": 5,
+                        "b8": 5,
+                        "b10": 3,
+                        "b11": 5,
+                        "b12": 5,
+                        "b13": 5,
+                        "b14": 5,
+                    },
                     is_central=True,
                     pays_for_research=True,
                 ),
@@ -2636,7 +3342,19 @@ class AiPlannerUnitTests(unittest.TestCase):
                     102,
                     "02:381:05",
                     "Colony 1",
-                    {"b1": 10, "b2": 7, "b3": 9, "b4": 7, "b5": 13, "b7": 4, "b10": 2, "b11": 5, "b12": 5, "b13": 5, "b14": 5},
+                    {
+                        "b1": 10,
+                        "b2": 7,
+                        "b3": 9,
+                        "b4": 7,
+                        "b5": 13,
+                        "b7": 4,
+                        "b10": 2,
+                        "b11": 5,
+                        "b12": 5,
+                        "b13": 5,
+                        "b14": 5,
+                    },
                 ),
             ],
             planned_research={"r1": 5, "r2": 6},
@@ -2719,7 +3437,9 @@ class AiPlannerUnitTests(unittest.TestCase):
         warm_comp = next(
             row for row in wga_search["strategy_comparisons"] if row["strategy"] == "warm-start tuned strategy"
         )
-        self.assertGreaterEqual(wga_search["best_reward"], max(best_baseline_reward, float(warm_comp["discounted_reward"])) - 1e-2)
+        self.assertGreaterEqual(
+            wga_search["best_reward"], max(best_baseline_reward, float(warm_comp["discounted_reward"])) - 1e-2
+        )
 
         # 4. Warm-start from `best_parameters` dict (bias -> log2 round-trip) & graceful ignore of cheapest rule
         bp_payload = {
@@ -2772,8 +3492,22 @@ class AiPlannerUnitTests(unittest.TestCase):
             active_queues=(q_multi,),
         )
         prob_planets = [
-            {"index": 0, "planet_id": 201, "coords": "02:380:01", "name": "Alpha", "is_placeholder": False, "levels": {}},
-            {"index": 1, "planet_id": 202, "coords": "02:380:02", "name": "Beta", "is_placeholder": False, "levels": {}},
+            {
+                "index": 0,
+                "planet_id": 201,
+                "coords": "02:380:01",
+                "name": "Alpha",
+                "is_placeholder": False,
+                "levels": {},
+            },
+            {
+                "index": 1,
+                "planet_id": 202,
+                "coords": "02:380:02",
+                "name": "Beta",
+                "is_placeholder": False,
+                "levels": {},
+            },
         ]
         _, _, arrivals = ap._extract_live_in_progress_state(
             st,
@@ -2910,9 +3644,7 @@ class AiPlannerUnitTests(unittest.TestCase):
         dag = ag.build_ai_planner_graph(state_38, plan)
         dag_kinds = [n["kind"] for n in dag["nodes"]]
         self.assertIn("DEMOLISH", dag_kinds)
-        self.assertTrue(
-            any("frees 1 field" in str(e.get("label") or "") for e in dag["edges"])
-        )
+        self.assertTrue(any("frees 1 field" in str(e.get("label") or "") for e in dag["edges"]))
 
 
 if __name__ == "__main__":

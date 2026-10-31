@@ -497,7 +497,15 @@ class TestOperatorControlUi(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory(prefix="si_ui_srv_")
         cfg_path = Path(self._tmp.name) / "config.json"
         cfg_path.write_text(
-            json.dumps({"planner_mode": planner_mode, "allow_galaxy_scan": True, "allow_raids": True, "ga_generations": 4, "ga_population_size": 8}),
+            json.dumps(
+                {
+                    "planner_mode": planner_mode,
+                    "allow_galaxy_scan": True,
+                    "allow_raids": True,
+                    "ga_generations": 4,
+                    "ga_population_size": 8,
+                }
+            ),
             encoding="utf-8",
         )
         st = state_obj or _sample_state()
@@ -992,7 +1000,9 @@ class TestOperatorControlUi(unittest.TestCase):
         try:
             with patch("spaceinvasion.runtime.api_server.is_debug_port_open", return_value=True):
                 html_txt = requests.get(f"{base_url}/", timeout=5).text
-                css_txt = re.sub(r"/\*.*?\*/", "", requests.get(f"{base_url}/styles.css", timeout=5).text, flags=re.DOTALL)
+                css_txt = re.sub(
+                    r"/\*.*?\*/", "", requests.get(f"{base_url}/styles.css", timeout=5).text, flags=re.DOTALL
+                )
 
             # 1) .meter-fill.gann-bar-{cyan,mint,gold} are qualified and not overridden by .meter-fill
             m_meter = re.search(r"\.meter-fill\s*\{[^}]*background\s*:\s*var\(--ivory\)", css_txt)
@@ -1029,7 +1039,9 @@ class TestOperatorControlUi(unittest.TestCase):
             nxq_start = html_txt.rfind('<div class="window-bar', 0, html_txt.find('id="dash-plan-tbody"'))
             nxq_bar_tag = html_txt[nxq_start : html_txt.find(">", nxq_start) + 1]
             self.assertIn("window-bar-wrap", nxq_bar_tag)
-            self.assertRegex(css_txt, r"@media\s*\(\s*max-width\s*:\s*680px\s*\)[\s\S]*?\.window-bar\s*\{[^}]*flex-wrap\s*:\s*wrap")
+            self.assertRegex(
+                css_txt, r"@media\s*\(\s*max-width\s*:\s*680px\s*\)[\s\S]*?\.window-bar\s*\{[^}]*flex-wrap\s*:\s*wrap"
+            )
         finally:
             server.shutdown()
             server.server_close()
@@ -2006,7 +2018,6 @@ return {
             server.server_close()
             self._tmp.cleanup()
 
-
     def test_action_graph_static_html_css_js_and_english_only_contracts(self) -> None:
         from spaceinvasion.runtime.api_server import UI_DIR
 
@@ -2459,7 +2470,6 @@ return {
                 server.server_close()
                 bridge.close()
 
-
     def test_node_vm_espionage_colonies_attacks_and_recyclers_views(self) -> None:
         import time
         from spaceinvasion.parsing.models import (
@@ -2576,7 +2586,12 @@ return {
                             "cargo_capacity": 60000,
                             "harvested": {"pig_iron": 17036, "metal": 12036, "kryptonite": 14310, "spice": 18098},
                             "harvested_spice_eq": 30521.1,
-                            "debris_available": {"pig_iron": 17036, "metal": 12036, "kryptonite": 14310, "spice": 18098},
+                            "debris_available": {
+                                "pig_iron": 17036,
+                                "metal": 12036,
+                                "kryptonite": 14310,
+                                "spice": 18098,
+                            },
                         },
                     ),
                     InboxMessage(
@@ -2589,11 +2604,15 @@ return {
                         msg_date_text="11/16/2026 19:10:00",
                         coords="02:380:12",
                         body_text="A fleet returning from duty reaches Colony [02:380:12].",
-                        parsed_data={"unloaded": {"pig_iron": 17036, "metal": 12036, "kryptonite": 14310, "spice": 18098}},
+                        parsed_data={
+                            "unloaded": {"pig_iron": 17036, "metal": 12036, "kryptonite": 14310, "spice": 18098}
+                        },
                     ),
                 ]
             )
-            bridge._db.record_target_block("02:378:15", blocked_until_ts=time.time() + 3600.0, reason="bash protection", is_bash=True)
+            bridge._db.record_target_block(
+                "02:378:15", blocked_until_ts=time.time() + 3600.0, reason="bash protection", is_bash=True
+            )
 
             server = create_api_server(bridge, host="127.0.0.1", port=0)
             base_url = f"http://127.0.0.1:{server.server_address[1]}"
@@ -2645,7 +2664,6 @@ return {
                 server.shutdown()
                 server.server_close()
                 bridge.close()
-
 
     def test_node_vm_manual_queue_composer_pin_reprioritize_reorder_and_drop(self) -> None:
         import time
@@ -2773,7 +2791,6 @@ return {
                 server.server_close()
                 bridge.close()
 
-
     @unittest.skipUnless(shutil.which("node"), "Node.js not installed")
     def test_dashboard_removes_building_eta_card_and_splits_three_side_by_side_queues(self) -> None:
         import time
@@ -2825,13 +2842,31 @@ return {
 
             # Enqueue 1 Building, 1 Fleet (Ship), and 1 Research command so all 3 Dashboard queues populate
             bridge._db.enqueue_manual_command(
-                kind="BUILD", planet_id=12476, planet_coords="02:380:12", target_id=4, target_name="Spice mine", target_level=8, priority="P1"
+                kind="BUILD",
+                planet_id=12476,
+                planet_coords="02:380:12",
+                target_id=4,
+                target_name="Spice mine",
+                target_level=8,
+                priority="P1",
             )
             bridge._db.enqueue_manual_command(
-                kind="BUILD_SHIP", planet_id=12476, planet_coords="02:380:12", target_id=10, target_name="Spy probe", target_level=4, priority="P1"
+                kind="BUILD_SHIP",
+                planet_id=12476,
+                planet_coords="02:380:12",
+                target_id=10,
+                target_name="Spy probe",
+                target_level=4,
+                priority="P1",
             )
             bridge._db.enqueue_manual_command(
-                kind="RESEARCH", planet_id=12476, planet_coords="02:380:12", target_id=1, target_name="Mining technology", target_level=4, priority="P1"
+                kind="RESEARCH",
+                planet_id=12476,
+                planet_coords="02:380:12",
+                target_id=1,
+                target_name="Mining technology",
+                target_level=4,
+                priority="P1",
             )
 
             server = create_api_server(bridge, host="127.0.0.1", port=0)
@@ -2956,8 +2991,7 @@ return {
                 '<input type="submit" value="Continue"/></form>'
             )
             fake_client._wait_frame_ready.return_value = (
-                '<div>You have 2 unread Messages! [i]</div>'
-                '<div style="color:red">This user can\'t be attacked!</div>'
+                '<div>You have 2 unread Messages! [i]</div><div style="color:red">This user can\'t be attacked!</div>'
             )
 
             bridge = GameApiBridge(
@@ -2976,7 +3010,7 @@ return {
             try:
                 fav_svg = requests.get(f"{base_url}/favicon.svg", timeout=5)
                 self.assertEqual(fav_svg.status_code, 200)
-                self.assertIn("rx=\"14\"", fav_svg.text)
+                self.assertIn('rx="14"', fav_svg.text)
                 fav_ico = requests.get(f"{base_url}/favicon.ico", timeout=5)
                 self.assertEqual(fav_ico.status_code, 200)
                 self.assertGreater(len(fav_ico.content), 64)

@@ -66,18 +66,14 @@ def normalize_planner_mode(value: Any, *, strict: bool = False) -> str:
         ok, fsp = _safe_fspath(value)
         if not ok:
             if strict:
-                raise ValueError(
-                    f"Unsupported planner_mode; expected one of {VALID_PLANNER_MODES}."
-                )
+                raise ValueError(f"Unsupported planner_mode; expected one of {VALID_PLANNER_MODES}.")
             return "priority"
         value = fsp
         if value is None:
             return "priority"
     if isinstance(value, (bool, int, float, Mapping, list, tuple, set, frozenset)):
         if strict:
-            raise ValueError(
-                f"Unsupported planner_mode {type(value).__name__}; expected one of {VALID_PLANNER_MODES}."
-            )
+            raise ValueError(f"Unsupported planner_mode {type(value).__name__}; expected one of {VALID_PLANNER_MODES}.")
         return "priority"
     if isinstance(value, (bytes, bytearray)):
         value = _decode_cfg_bytes(value)
@@ -85,19 +81,16 @@ def normalize_planner_mode(value: Any, *, strict: bool = False) -> str:
         mode = str(value).strip().lower()
     except Exception:
         if strict:
-            raise ValueError(
-                f"Unsupported planner_mode; expected one of {VALID_PLANNER_MODES}."
-            )
+            raise ValueError(f"Unsupported planner_mode; expected one of {VALID_PLANNER_MODES}.")
         return "priority"
     if not mode or mode == "ga_nn":
         return "priority"
     if mode in VALID_PLANNER_MODES:
         return mode
     if strict:
-        raise ValueError(
-            f"Unsupported planner_mode {_redact_cfg_text(mode)!r}; expected one of {VALID_PLANNER_MODES}."
-        )
+        raise ValueError(f"Unsupported planner_mode {_redact_cfg_text(mode)!r}; expected one of {VALID_PLANNER_MODES}.")
     return "priority"
+
 
 DEFAULT_SHIPYARD_TARGETS: dict[str, int] = {
     "small-fighter": 12,
@@ -168,12 +161,8 @@ class StrategyConfig:
     ga_population_size: int = 24
     ga_generations: int = 12
     ga_mutation_rate: float = 0.25
-    shipyard_targets: dict[str, int] = field(
-        default_factory=lambda: dict(DEFAULT_SHIPYARD_TARGETS)
-    )
-    fleet_research_targets: dict[str, int] = field(
-        default_factory=lambda: dict(DEFAULT_FLEET_RESEARCH_TARGETS)
-    )
+    shipyard_targets: dict[str, int] = field(default_factory=lambda: dict(DEFAULT_SHIPYARD_TARGETS))
+    fleet_research_targets: dict[str, int] = field(default_factory=lambda: dict(DEFAULT_FLEET_RESEARCH_TARGETS))
 
 
 _MAX_CFG_INT: int = 10**200
@@ -431,11 +420,7 @@ def _sanitize_cfg_json_tree(
                         if budget[0] <= 0:
                             out["[Truncated]"] = "[Truncated]"
                             break
-                        clean_k = (
-                            _redact_cfg_text(k)
-                            if type(k) is str
-                            else _redact_cfg_text(_safe_cfg_key(k))
-                        )
+                        clean_k = _redact_cfg_text(k) if type(k) is str else _redact_cfg_text(_safe_cfg_key(k))
                         if _is_cfg_secret_dict_key(clean_k):
                             if v is None or v == "":
                                 out[clean_k] = v
@@ -505,11 +490,7 @@ def _safe_cfg_int(value: Any, default: int) -> int:
 
 
 def _safe_cfg_optional_int(value: Any, default: Optional[int] = None) -> Optional[int]:
-    safe_default = (
-        _clamp_cfg_int(default)
-        if isinstance(default, int) and not isinstance(default, bool)
-        else default
-    )
+    safe_default = _clamp_cfg_int(default) if isinstance(default, int) and not isinstance(default, bool) else default
     if isinstance(value, os.PathLike):
         ok, value = _safe_fspath(value)
         if not ok:
@@ -772,9 +753,7 @@ def strategy_config_from_dict(data: Any) -> StrategyConfig:
         fleet_save_fuel_reserve_spice=max(0, _safe_cfg_int(data.get("fleet_save_fuel_reserve_spice"), 500)),
         action_batch_interval_seconds=max(5, min(86400, _safe_cfg_int(data.get("action_batch_interval_seconds"), 120))),
         max_actions_per_hour=max(1, _safe_cfg_int(data.get("max_actions_per_hour"), 60)),
-        page_view_limit_per_minute=max(
-            6, min(600, _safe_cfg_int(data.get("page_view_limit_per_minute"), 60))
-        ),
+        page_view_limit_per_minute=max(6, min(600, _safe_cfg_int(data.get("page_view_limit_per_minute"), 60))),
         hot_planet_solar_temp_threshold=_safe_cfg_int(data.get("hot_planet_solar_temp_threshold"), 40),
         min_free_fields_warning=max(1, _safe_cfg_int(data.get("min_free_fields_warning"), 20)),
         min_colony_fields=max(50, min(600, _safe_cfg_int(data.get("min_colony_fields"), 300))),
@@ -792,22 +771,14 @@ def strategy_config_from_dict(data: Any) -> StrategyConfig:
         galaxy_scan_explore_first=_safe_cfg_bool(data.get("galaxy_scan_explore_first"), True),
         galaxy_scan_refresh_pct=max(0, min(100, _safe_cfg_int(data.get("galaxy_scan_refresh_pct"), 0))),
         galaxy_scan_all_galaxies=_safe_cfg_bool(data.get("galaxy_scan_all_galaxies"), False),
-        galaxy_scan_block_other_actions=_safe_cfg_bool(
-            data.get("galaxy_scan_block_other_actions"), True
-        ),
-        galaxy_scan_near_weight=max(
-            0.0, min(20.0, _safe_cfg_float(data.get("galaxy_scan_near_weight"), 2.0))
-        ),
-        galaxy_scan_attack_weight=max(
-            0.0, min(20.0, _safe_cfg_float(data.get("galaxy_scan_attack_weight"), 3.0))
-        ),
+        galaxy_scan_block_other_actions=_safe_cfg_bool(data.get("galaxy_scan_block_other_actions"), True),
+        galaxy_scan_near_weight=max(0.0, min(20.0, _safe_cfg_float(data.get("galaxy_scan_near_weight"), 2.0))),
+        galaxy_scan_attack_weight=max(0.0, min(20.0, _safe_cfg_float(data.get("galaxy_scan_attack_weight"), 3.0))),
         reserved_spy_slots=max(0, min(10, _safe_cfg_int(data.get("reserved_spy_slots"), 1))),
         spy_reserved_slots_only=_safe_cfg_bool(data.get("spy_reserved_slots_only"), False),
         spy_dispatch_planet_id=max(0, _safe_cfg_int(data.get("spy_dispatch_planet_id"), 0)),
         planner_mode=normalize_planner_mode(raw_mode),
-        ai_resource_spare_pct=max(
-            0.0, min(100.0, _safe_cfg_float(data.get("ai_resource_spare_pct"), 10.0))
-        ),
+        ai_resource_spare_pct=max(0.0, min(100.0, _safe_cfg_float(data.get("ai_resource_spare_pct"), 10.0))),
         ai_adaptive_execution=_safe_cfg_bool(data.get("ai_adaptive_execution"), False),
         ga_population_size=max(4, min(200, _safe_cfg_int(data.get("ga_population_size"), 24))),
         ga_generations=max(1, min(200, _safe_cfg_int(data.get("ga_generations"), 12))),

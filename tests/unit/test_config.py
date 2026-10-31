@@ -310,7 +310,9 @@ class TestStrategyConfig(unittest.TestCase):
     def test_r9_rejects_arabic_indic_ints_and_huge_playstyle_or_planner_mode(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             p = Path(tmp) / "arabic_ints.json"
-            p.write_text('{"max_actions_per_hour": "\u0661\u0665", "ga_population_size": "\u0661\u0666"}', encoding="utf-8")
+            p.write_text(
+                '{"max_actions_per_hour": "\u0661\u0665", "ga_population_size": "\u0661\u0666"}', encoding="utf-8"
+            )
             cfg = load_strategy_config(p)
             self.assertEqual(cfg.max_actions_per_hour, 60)
             self.assertEqual(cfg.ga_population_size, 24)
@@ -361,7 +363,6 @@ class TestStrategyConfig(unittest.TestCase):
             reloaded = load_strategy_config(out_p)
             self.assertEqual(asdict(reloaded)["playstyle"], "miner")
             self.assertEqual(asdict(reloaded)["planner_mode"], "ai_planner")
-
 
     def test_r11_frozenset_pathlike_unknown_scalar_and_secret_key_redaction(self) -> None:
         import json
@@ -452,8 +453,18 @@ class TestStrategyConfig(unittest.TestCase):
         forbidden_imports = [
             ast.dump(node)
             for node in ast.walk(tree_ast)
-            if (isinstance(node, ast.Import) and any(a.name.startswith("spaceinvasion") and not a.name.startswith("spaceinvasion.core.") for a in node.names))
-            or (isinstance(node, ast.ImportFrom) and (node.module or "").startswith("spaceinvasion") and not (node.module or "").startswith("spaceinvasion.core."))
+            if (
+                isinstance(node, ast.Import)
+                and any(
+                    a.name.startswith("spaceinvasion") and not a.name.startswith("spaceinvasion.core.")
+                    for a in node.names
+                )
+            )
+            or (
+                isinstance(node, ast.ImportFrom)
+                and (node.module or "").startswith("spaceinvasion")
+                and not (node.module or "").startswith("spaceinvasion.core.")
+            )
         ]
         self.assertEqual(forbidden_imports, [])
 
@@ -528,16 +539,20 @@ class TestStrategyConfig(unittest.TestCase):
         from spaceinvasion.core import config as cfg_mod
 
         san_text_cases = (
-            ("client_secret=CS_1&user_password=UP_2&bot_api_key=BK_3&session_cookie=SC_4&access_passwd=AP_5&session_sid=SS_6",
-             ("CS_1", "UP_2", "BK_3", "SC_4", "AP_5", "SS_6")),
-            ("oauth_authorization=Bearer+OAUTH_TOK&my_authorization=PLAIN_AUTH",
-             ("OAUTH_TOK", "PLAIN_AUTH")),
-            ('Authorization: Bearer "QUOTED_BEAR" Bearer <ANG_BEAR> Authorization: Bearer [BRK_BEAR]',
-             ("QUOTED_BEAR", "ANG_BEAR", "BRK_BEAR")),
-            ("Authorization=Bearer%20%22ENC_Q_BEAR%22&x=Bearer%20%3cENC_ANG%3e",
-             ("ENC_Q_BEAR", "ENC_ANG")),
-            ("?s\u0130d=TURK_I1&?s\u0131d=TURK_I2&?cook\u0130e=TURK_CK&?ap\u0131_key=TURK_AK&?cl\u0130ent_secret=TURK_CS",
-             ("TURK_I1", "TURK_I2", "TURK_CK", "TURK_AK", "TURK_CS")),
+            (
+                "client_secret=CS_1&user_password=UP_2&bot_api_key=BK_3&session_cookie=SC_4&access_passwd=AP_5&session_sid=SS_6",
+                ("CS_1", "UP_2", "BK_3", "SC_4", "AP_5", "SS_6"),
+            ),
+            ("oauth_authorization=Bearer+OAUTH_TOK&my_authorization=PLAIN_AUTH", ("OAUTH_TOK", "PLAIN_AUTH")),
+            (
+                'Authorization: Bearer "QUOTED_BEAR" Bearer <ANG_BEAR> Authorization: Bearer [BRK_BEAR]',
+                ("QUOTED_BEAR", "ANG_BEAR", "BRK_BEAR"),
+            ),
+            ("Authorization=Bearer%20%22ENC_Q_BEAR%22&x=Bearer%20%3cENC_ANG%3e", ("ENC_Q_BEAR", "ENC_ANG")),
+            (
+                "?s\u0130d=TURK_I1&?s\u0131d=TURK_I2&?cook\u0130e=TURK_CK&?ap\u0131_key=TURK_AK&?cl\u0130ent_secret=TURK_CS",
+                ("TURK_I1", "TURK_I2", "TURK_CK", "TURK_AK", "TURK_CS"),
+            ),
         )
         for raw, secrets_list in san_text_cases:
             red = cfg_mod._redact_cfg_text(raw)
@@ -584,13 +599,21 @@ class TestStrategyConfig(unittest.TestCase):
         self.assertEqual(san_tree["token"], "benign_tok")
         self.assertIn('"has_password": "true"', san_tree["json_str"])
         dumped = json.dumps(san_tree, allow_nan=False)
-        for sec in ("DICT_CSEC", "DICT_UPW", "DICT_BKEY", "DICT_SC", "DICT_XAPI", "DICT_PAUTH", "DICT_SSID", "JSON_CSEC"):
+        for sec in (
+            "DICT_CSEC",
+            "DICT_UPW",
+            "DICT_BKEY",
+            "DICT_SC",
+            "DICT_XAPI",
+            "DICT_PAUTH",
+            "DICT_SSID",
+            "JSON_CSEC",
+        ):
             self.assertNotIn(sec, dumped)
 
         cyc_exc = RuntimeError("cyc")
         cyc_exc.args = (cyc_exc, cyc_exc)
         self.assertIsInstance(cfg_mod._safe_cfg_exc_text(cyc_exc), str)
-
 
     def test_r14_config_shipyard_aliases_urlenc_json_esc_quotes_and_dag20_cycles(self) -> None:
         import time
@@ -633,20 +656,31 @@ class TestStrategyConfig(unittest.TestCase):
 
         # 3. Linear redaction: urlenc JSON, escaped JSON quotes, spaced brackets, unclosed, schemeless Bearer, zero ReDoS
         vectors = (
-            '%22password%22%3A%22CFG_UE_PW%22',
-            '%22Bearer%20CFG_UE_BR%22',
-            'Bearer %3CCFG_UE_ANG%3E',
-            'Bearer %5BCFG_UE_BRK%5D',
+            "%22password%22%3A%22CFG_UE_PW%22",
+            "%22Bearer%20CFG_UE_BR%22",
+            "Bearer %3CCFG_UE_ANG%3E",
+            "Bearer %5BCFG_UE_BRK%5D",
             '\\"password\\":\\"CFG_ESC_PW\\"',
             '\\\\"password\\\\":\\\\"CFG_DESC_PW\\\\"',
-            'Bearer [MY CFG SECRET]',
-            'Bearer <MY CFG ANG>',
+            "Bearer [MY CFG SECRET]",
+            "Bearer <MY CFG ANG>",
             'Bearer "UNCLOSED_CFG_Q',
-            'Bearer CFG_SCHEMELESS_BR',
+            "Bearer CFG_SCHEMELESS_BR",
         )
         for v in vectors:
             red = _redact_cfg_text(v)
-            for marker in ("CFG_UE_PW", "CFG_UE_BR", "CFG_UE_ANG", "CFG_UE_BRK", "CFG_ESC_PW", "CFG_DESC_PW", "MY CFG SECRET", "MY CFG ANG", "UNCLOSED_CFG_Q", "CFG_SCHEMELESS_BR"):
+            for marker in (
+                "CFG_UE_PW",
+                "CFG_UE_BR",
+                "CFG_UE_ANG",
+                "CFG_UE_BRK",
+                "CFG_ESC_PW",
+                "CFG_DESC_PW",
+                "MY CFG SECRET",
+                "MY CFG ANG",
+                "UNCLOSED_CFG_Q",
+                "CFG_SCHEMELESS_BR",
+            ):
                 self.assertNotIn(marker, red, f"Leaked {marker} in {red!r}")
         # Bearer %3C...%3E / %5B...%5D check directly on delimited tokens
         self.assertNotIn("CFG_SEC1", _redact_cfg_text("Bearer %3CCFG_SEC1%3E"))
@@ -655,7 +689,7 @@ class TestStrategyConfig(unittest.TestCase):
         self.assertEqual(_redact_cfg_text("Authorization: Bearer REDACTED"), "Authorization: Bearer REDACTED")
         self.assertEqual(_redact_cfg_text("has_sid=false&has_password=true"), "has_sid=false&has_password=true")
 
-        redos_s = 'password=' + ('\\' * 5000) + '"'
+        redos_s = "password=" + ("\\" * 5000) + '"'
         t0 = time.perf_counter()
         _ = _redact_cfg_text(redos_s)
         self.assertLess((time.perf_counter() - t0) * 1000.0, 250.0)
@@ -749,15 +783,11 @@ class TestStrategyConfig(unittest.TestCase):
         default_cfg = StrategyConfig()
         self.assertAlmostEqual(default_cfg.ai_resource_spare_pct, 10.0)
 
-        low_c = strategy_config_from_dict(
-            {"planner_mode": "AI_PLANNER", "ai_resource_spare_pct": -15.0}
-        )
+        low_c = strategy_config_from_dict({"planner_mode": "AI_PLANNER", "ai_resource_spare_pct": -15.0})
         self.assertEqual(low_c.planner_mode, "ai_planner")
         self.assertAlmostEqual(low_c.ai_resource_spare_pct, 0.0)
 
-        high_c = strategy_config_from_dict(
-            {"planner_mode": "ai_planner", "ai_resource_spare_pct": 250.0}
-        )
+        high_c = strategy_config_from_dict({"planner_mode": "ai_planner", "ai_resource_spare_pct": 250.0})
         self.assertEqual(high_c.planner_mode, "ai_planner")
         self.assertAlmostEqual(high_c.ai_resource_spare_pct, 100.0)
 
@@ -936,9 +966,7 @@ class TestStrategyConfig(unittest.TestCase):
         enabled_cfg = strategy_config_from_dict({"ai_adaptive_execution": True})
         self.assertTrue(enabled_cfg.ai_adaptive_execution)
 
-        eff_cfg, changed = merge_strategy_config_overrides(
-            default_cfg, {"ai_adaptive_execution": True}
-        )
+        eff_cfg, changed = merge_strategy_config_overrides(default_cfg, {"ai_adaptive_execution": True})
         self.assertTrue(eff_cfg.ai_adaptive_execution)
         self.assertEqual(changed, ["ai_adaptive_execution"])
 

@@ -168,7 +168,7 @@ class _FakeDriver:
             if 'onclick*="p_galaxy"' in value:
                 return [el for el in fr.links if "p_galaxy" in el.get_attribute("onclick")]
             if "action=" in value:
-                m = re.search(r'action=([a-zA-Z0-9_]+)', value)
+                m = re.search(r"action=([a-zA-Z0-9_]+)", value)
                 act = m.group(1) if m else ""
                 return [el for el in fr.links if f"action={act}" in el.get_attribute("href")]
         return []
@@ -413,7 +413,9 @@ class TestPageViewLimiterAndClient(unittest.TestCase):
 
         # Wrong iframe page triggers location.replace(frame_src)
         driver.frames["F_planets"].href = "https://spaceinvasion.bitmeup.com/indexInternal.es?action=internalHome"
-        driver.frames["F_planets"].frame_src = "https://spaceinvasion.bitmeup.com/indexInternal.es?action=internalPlanetsOverview"
+        driver.frames[
+            "F_planets"
+        ].frame_src = "https://spaceinvasion.bitmeup.com/indexInternal.es?action=internalPlanetsOverview"
         orig_find = driver.find_element
 
         def _find_with_src(by: str, val: str):
@@ -446,7 +448,9 @@ class TestPageViewLimiterAndClient(unittest.TestCase):
             if url == "__poll__":
                 polls[0] += 1
                 if polls[0] >= 2:
-                    main.href = "https://spaceinvasion.bitmeup.com/indexInternal.es?action=internalGalaxy&galaxy=2&system=381"
+                    main.href = (
+                        "https://spaceinvasion.bitmeup.com/indexInternal.es?action=internalGalaxy&galaxy=2&system=381"
+                    )
                     main.html = "<table><tr><td>2</td><td>New381</td><td>NewOwner</td></tr></table>"
                     main.nav_token = None
 
@@ -1084,6 +1088,7 @@ class TestPageViewLimiterAndClient(unittest.TestCase):
 
         res_d2: list[tuple[int, str]] = []
         with patch.object(client, "read_planets_overview", side_effect=_failing_once_read_ov):
+
             def _run_d2(idx: int) -> None:
                 try:
                     client.ensure_in_game(priority="interactive")
@@ -1357,6 +1362,7 @@ class TestPageViewLimiterAndClient(unittest.TestCase):
         res_a: list[tuple[int, str]] = []
         res_lock = threading.Lock()
         with patch.object(limiter, "begin_or_wait_throttle_recovery", side_effect=_gated_begin):
+
             def _t1() -> None:
                 try:
                     client.ensure_in_game(priority="interactive")
@@ -1404,6 +1410,7 @@ class TestPageViewLimiterAndClient(unittest.TestCase):
 
         res_b1: list[tuple[int, str]] = []
         with patch.object(limiter, "record_rate_limit_if_generation", side_effect=_gated_rec):
+
             def _t1_b() -> None:
                 try:
                     client.ensure_in_game(priority="interactive")
@@ -1411,7 +1418,9 @@ class TestPageViewLimiterAndClient(unittest.TestCase):
                         res_b1.append((1, "ok"))
                 except RateLimitError as exc:
                     with res_lock:
-                        res_b1.append((1, f"RL:{exc.server_throttle}:{getattr(exc, '_recorded_limiter_id', None) == id(limiter)}"))
+                        res_b1.append(
+                            (1, f"RL:{exc.server_throttle}:{getattr(exc, '_recorded_limiter_id', None) == id(limiter)}")
+                        )
 
             t1 = threading.Thread(target=_t1_b)
             t1.start()
@@ -1420,7 +1429,9 @@ class TestPageViewLimiterAndClient(unittest.TestCase):
                 client.ensure_in_game(priority="interactive")
                 res_b1.append((0, "ok"))
             except RateLimitError as exc:
-                res_b1.append((0, f"RL:{exc.server_throttle}:{getattr(exc, '_recorded_limiter_id', None) == id(limiter)}"))
+                res_b1.append(
+                    (0, f"RL:{exc.server_throttle}:{getattr(exc, '_recorded_limiter_id', None) == id(limiter)}")
+                )
             allow_t1_rec.set()
             t1.join(timeout=3.0)
 
@@ -1439,6 +1450,7 @@ class TestPageViewLimiterAndClient(unittest.TestCase):
         res_b2: list[tuple[int, str]] = []
 
         with patch.object(limiter, "record_rate_limit_if_generation", side_effect=_gated_rec):
+
             def _t1_b2() -> None:
                 try:
                     client.ensure_in_game(priority="interactive")
@@ -1488,6 +1500,7 @@ class TestPageViewLimiterAndClient(unittest.TestCase):
         begin_calls[0] = 0
         res_c1: list[str] = []
         with patch.object(limiter, "begin_or_wait_throttle_recovery", side_effect=_gated_begin):
+
             def _t1_c1() -> None:
                 client.ensure_in_game(priority="interactive")
                 res_c1.append("ok")
@@ -1523,6 +1536,7 @@ class TestPageViewLimiterAndClient(unittest.TestCase):
         begin_calls[0] = 0
         res_c2: list[tuple[int, str]] = []
         with patch.object(limiter, "begin_or_wait_throttle_recovery", side_effect=_gated_begin):
+
             def _t1_c2() -> None:
                 try:
                     client.ensure_in_game(priority="interactive")
@@ -1600,6 +1614,7 @@ class TestPageViewLimiterAndClient(unittest.TestCase):
         barrier16_2 = threading.Barrier(16)
         res_c4: list[str] = []
         with patch.object(client, "read_planets_overview", side_effect=_fail_15_times):
+
             def _bar16_fail() -> None:
                 barrier16_2.wait(timeout=5.0)
                 try:
@@ -1688,10 +1703,15 @@ class TestPageViewLimiterAndClient(unittest.TestCase):
                 client.ensure_in_game()
             orig_guards(html)
 
-        with patch.object(client, "_check_page_guards", side_effect=_guarded_spy), patch.object(
-            client,
-            "page_source_safe",
-            side_effect=AssertionError("read_full_snapshot must reuse raw_main_html instead of calling page_source_safe()"),
+        with (
+            patch.object(client, "_check_page_guards", side_effect=_guarded_spy),
+            patch.object(
+                client,
+                "page_source_safe",
+                side_effect=AssertionError(
+                    "read_full_snapshot must reuse raw_main_html instead of calling page_source_safe()"
+                ),
+            ),
         ):
             snap = client.read_full_snapshot(
                 include_buildings=False,
@@ -1717,10 +1737,13 @@ class TestPageViewLimiterAndClient(unittest.TestCase):
             return orig_ps_prop.fget(drv_self)
 
         client._switch_frame("F_Hauptframe")
-        with patch.object(_FakeDriver, "page_source", property(_checked_ps)), patch.object(
-            client,
-            "_check_page_guards",
-            side_effect=lambda h: (guards_lock_states.append(client._driver_lock._is_owned()), orig_guards(h))[1],
+        with (
+            patch.object(_FakeDriver, "page_source", property(_checked_ps)),
+            patch.object(
+                client,
+                "_check_page_guards",
+                side_effect=lambda h: (guards_lock_states.append(client._driver_lock._is_owned()), orig_guards(h))[1],
+            ),
         ):
             out_html = client.page_source_safe()
 
@@ -1804,8 +1827,9 @@ class TestPageViewLimiterAndClient(unittest.TestCase):
 
             spy_patches.append(patch.object(limiter, m_name, side_effect=_make_spy(m_name, orig_m)))
 
-        with patch.object(limiter, "clear_throttle_recovery", side_effect=_spy_clear), patch(
-            "spaceinvasion.session.client.find_and_switch_game_tab", return_value=True
+        with (
+            patch.object(limiter, "clear_throttle_recovery", side_effect=_spy_clear),
+            patch("spaceinvasion.session.client.find_and_switch_game_tab", return_value=True),
         ):
             client.ensure_in_game(priority="interactive")
         self.assertEqual(lock_owned_on_tab_clear, [False])
@@ -1858,6 +1882,7 @@ class TestPageViewLimiterAndClient(unittest.TestCase):
 
             res_4b: list[str] = []
             with patch.object(lim, hook_name, side_effect=_gated_4b):
+
                 def _run_4b() -> None:
                     try:
                         c_4b.ensure_in_game(priority="interactive")
@@ -1911,6 +1936,7 @@ class TestPageViewLimiterAndClient(unittest.TestCase):
 
             res_4c: list[str] = []
             with patch.object(lim, hook_name, side_effect=_gated_4c):
+
                 def _run_4c() -> None:
                     try:
                         c_4c.ensure_in_game(priority="interactive")
@@ -1958,6 +1984,7 @@ class TestPageViewLimiterAndClient(unittest.TestCase):
 
         res_4d: list[str] = []
         with patch.object(lim_d, "begin_or_wait_throttle_recovery", side_effect=_gated_4d):
+
             def _run_4d() -> None:
                 try:
                     c_4d.ensure_in_game(priority="interactive")
@@ -2000,6 +2027,7 @@ class TestPageViewLimiterAndClient(unittest.TestCase):
 
         res_4e: list[str] = []
         with patch.object(lim_e, "begin_or_wait_throttle_recovery", side_effect=_gated_4e):
+
             def _run_4e() -> None:
                 try:
                     c_4e.ensure_in_game(priority="interactive")
@@ -2070,10 +2098,14 @@ class TestPageViewLimiterAndClient(unittest.TestCase):
             return True
 
         res_4f: list[str] = []
-        with patch.object(lim_f, "rate_limit_remaining", side_effect=_gated_rem), patch(
-            "spaceinvasion.session.client.find_and_switch_game_tab",
-            side_effect=_switch_tab_recover,
+        with (
+            patch.object(lim_f, "rate_limit_remaining", side_effect=_gated_rem),
+            patch(
+                "spaceinvasion.session.client.find_and_switch_game_tab",
+                side_effect=_switch_tab_recover,
+            ),
         ):
+
             def _run_t1() -> None:
                 try:
                     c_4f.ensure_in_game(priority="interactive")
@@ -2151,18 +2183,22 @@ class TestPageViewLimiterAndClient(unittest.TestCase):
             drv_portal.execute_script.return_value = "https://uni/indexInternal.es?action=internalBuildings"
             drv_portal.page_source = marker_html
             c_portal = GameBrowserClient(drv_portal, page_limiter=lim, min_nav_delay=(0.0, 0.0))
-            with patch.object(c_portal, "ensure_in_game", return_value=None), patch.object(
-                c_portal,
-                "read_planets_overview",
-                return_value=GameState(
-                    universe_id=1,
-                    user_id=1,
-                    nickname="Test",
-                    timestamp=100.0,
-                    planets=(),
-                    researches={},
+            with (
+                patch.object(c_portal, "ensure_in_game", return_value=None),
+                patch.object(
+                    c_portal,
+                    "read_planets_overview",
+                    return_value=GameState(
+                        universe_id=1,
+                        user_id=1,
+                        nickname="Test",
+                        timestamp=100.0,
+                        planets=(),
+                        researches={},
+                    ),
                 ),
-            ), patch.object(c_portal, "read_menu_status", return_value=({}, None, None)):
+                patch.object(c_portal, "read_menu_status", return_value=({}, None, None)),
+            ):
                 with self.assertRaises(SpaceInvasionAuthError):
                     c_portal.read_full_snapshot(
                         include_home=False,
@@ -2217,14 +2253,19 @@ class TestPageViewLimiterAndClient(unittest.TestCase):
             f'<option selected="selected" value="indexInternal.es?action=internalHome&newplanet={huge}">Huge</option>'
             f"</select>"
         )
-        self.assertIsNone(GameBrowserClient._extract_selected_planet_id(html_huge, "https://uni/indexInternal.es?action=internalHome"))
+        self.assertIsNone(
+            GameBrowserClient._extract_selected_planet_id(html_huge, "https://uni/indexInternal.es?action=internalHome")
+        )
 
         html_ok = (
             '<select name="planet">'
             '<option selected="selected" value="indexInternal.es?action=internalHome&newplanet=12476">Ok</option>'
             "</select>"
         )
-        self.assertEqual(GameBrowserClient._extract_selected_planet_id(html_ok, "https://uni/indexInternal.es?action=internalHome"), 12476)
+        self.assertEqual(
+            GameBrowserClient._extract_selected_planet_id(html_ok, "https://uni/indexInternal.es?action=internalHome"),
+            12476,
+        )
 
     def test_r7_client_and_limiter_clamp_nan_inf_waits_without_overflow_error(self) -> None:
         import math
@@ -2328,7 +2369,9 @@ class TestPageViewLimiterAndClient(unittest.TestCase):
         )
         self.assertEqual(lim.max_views_per_minute, 30)
         self.assertEqual(lim.reserved_interactive_views, 6)
-        self.assertIsNone(GameBrowserClient._extract_selected_planet_id('<option selected value="\u0661\u0662\u0663">P</option>'))
+        self.assertIsNone(
+            GameBrowserClient._extract_selected_planet_id('<option selected value="\u0661\u0662\u0663">P</option>')
+        )
         cli = GameBrowserClient(MagicMock(), timeout=b"25.0")  # type: ignore[arg-type]
         self.assertEqual(cli.timeout, 25.0)
         cli2 = GameBrowserClient(MagicMock(), timeout="\u0662\u0665")  # type: ignore[arg-type]
@@ -2497,9 +2540,7 @@ class TestPageViewLimiterAndClient(unittest.TestCase):
         from dataclasses import asdict
 
         fake_api = MagicMock()
-        fake_api.get_state.return_value = GameState(
-            31, 1, "u", 1000.0, (p_not_full,), active_planet_id=12476
-        )
+        fake_api.get_state.return_value = GameState(31, 1, "u", 1000.0, (p_not_full,), active_planet_id=12476)
         fake_api.send_command.side_effect = GameApiError(
             "HTTP 429: SpaceInvasion per-minute page-view throttle hit; retry after 45.0s."
         )
@@ -2561,11 +2602,13 @@ class TestPageViewLimiterAndClient(unittest.TestCase):
         passive_html = (
             '<html><head><script src="https://challenges.cloudflare.com/turnstile/v0/api.js"></script></head>'
             '<body><div id="si-captcha-gate" style="display:none;"><div class="cf-turnstile"></div></div>'
-            '<div>Normal game frame</div></body></html>'
+            "<div>Normal game frame</div></body></html>"
         )
         client._check_page_guards(passive_html)
 
-        visible_class_only_html = '<html><body><div id="si-captcha-gate"><div class="cf-turnstile"></div></div></body></html>'
+        visible_class_only_html = (
+            '<html><body><div id="si-captcha-gate"><div class="cf-turnstile"></div></div></body></html>'
+        )
         with patch.object(client, "_is_antibot_visible_in_live_dom", return_value=False):
             client._check_page_guards(visible_class_only_html)
         with patch.object(client, "_is_antibot_visible_in_live_dom", return_value=True):
@@ -2755,7 +2798,9 @@ class TestPageViewLimiterAndClient(unittest.TestCase):
             cli_rec._recover_renderer_timeout()
         self.assertEqual(script_timeouts, [3.0, 25.0])
         stop_calls = [
-            call.args[0] for call in drv_rec.execute_script.call_args_list if call.args and "window.stop()" in str(call.args[0])
+            call.args[0]
+            for call in drv_rec.execute_script.call_args_list
+            if call.args and "window.stop()" in str(call.args[0])
         ]
         self.assertGreaterEqual(len(stop_calls), 2)
 
@@ -2800,6 +2845,7 @@ class TestPageViewLimiterAndClient(unittest.TestCase):
                 "token": None,
             },
         ]
+
         def _wait_exec(script, *args):
             if "document.readyState" in script:
                 val = wait_probes.pop(0)
@@ -2811,7 +2857,9 @@ class TestPageViewLimiterAndClient(unittest.TestCase):
         drv_wait.execute_script.side_effect = _wait_exec
         cli_wait = GameBrowserClient(drv_wait, min_nav_delay=(0.0, 0.0), timeout=2.0)
         with patch.object(cli_wait, "_switch_frame"), patch.object(cli_wait, "_recover_renderer_timeout") as mock_wrec:
-            got_html = cli_wait._wait_frame_ready("F_Hauptframe", expected_action="internalBuildings", nav_token="tok-old")
+            got_html = cli_wait._wait_frame_ready(
+                "F_Hauptframe", expected_action="internalBuildings", nav_token="tok-old"
+            )
         self.assertEqual(got_html, valid_html)
         self.assertEqual(mock_wrec.call_count, 1)
 
@@ -2819,7 +2867,10 @@ class TestPageViewLimiterAndClient(unittest.TestCase):
         drv_wait2 = MagicMock()
         drv_wait2.execute_script.side_effect = TimeoutException(raw_timeout_msg)
         cli_wait2 = GameBrowserClient(drv_wait2, min_nav_delay=(0.0, 0.0), timeout=2.0)
-        with patch.object(cli_wait2, "_switch_frame"), patch.object(cli_wait2, "_recover_renderer_timeout") as mock_wrec2:
+        with (
+            patch.object(cli_wait2, "_switch_frame"),
+            patch.object(cli_wait2, "_recover_renderer_timeout") as mock_wrec2,
+        ):
             with self.assertRaises(SpaceInvasionAuthError) as ctx_w:
                 cli_wait2._wait_frame_ready("F_Hauptframe", expected_action="internalBuildings", nav_token="tok-old")
         self.assertEqual(mock_wrec2.call_count, 1)
@@ -3039,14 +3090,18 @@ class TestPageViewLimiterAndClient(unittest.TestCase):
         drv_el.execute_script.side_effect = _exec_el
         cli_el = GameBrowserClient(drv_el, min_nav_delay=(0.0, 0.0), timeout=2.0)
         self.assertEqual(
-            cli_el._finalize_galaxy_arrow_click({"clicked": "element", "el": el_ok}, fallback_js="return false;", step_dir=1),
+            cli_el._finalize_galaxy_arrow_click(
+                {"clicked": "element", "el": el_ok}, fallback_js="return false;", step_dir=1
+            ),
             "dom",
         )
         self.assertEqual(el_ok.clicks, 1)
         self.assertEqual(js_clicks, [])
 
         self.assertEqual(
-            cli_el._finalize_galaxy_arrow_click({"clicked": "element", "el": el_int}, fallback_js="return false;", step_dir=1),
+            cli_el._finalize_galaxy_arrow_click(
+                {"clicked": "element", "el": el_int}, fallback_js="return false;", step_dir=1
+            ),
             "dom",
         )
         self.assertEqual(js_clicks, [el_int])
@@ -3055,7 +3110,7 @@ class TestPageViewLimiterAndClient(unittest.TestCase):
         # Live RETRO 2D Galaxy HTML has NO <form> tags, a static hidden #planet-list dropdown, and
         # SI_TPL.galaxy with nested json:{...} before maxSystem:400,maxGalaxies:8.
         live_2d_html = (
-            '<html><body>'
+            "<html><body>"
             '<div id="planet-list" style="display:none;"><table><tr><td>Own Home</td></tr></table></div>'
             '<div id="galaxy-container"><div class="planet-hit" data-planet="1"></div></div>'
             '<textarea id="json-element">{"position":{"galaxy":1,"system":344},"planets":{}}</textarea>'
@@ -3081,9 +3136,17 @@ class TestPageViewLimiterAndClient(unittest.TestCase):
         with (
             patch.object(cli, "_switch_frame"),
             patch.object(cli, "_resolve_sid_query", return_value="sid=abc123"),
-            patch.object(cli, "_build_internal_url", return_value="https://spaceinvasion.bitmeup.com/indexInternal.es?action=internalGalaxy&sid=abc123&g=9&s=344"),
+            patch.object(
+                cli,
+                "_build_internal_url",
+                return_value="https://spaceinvasion.bitmeup.com/indexInternal.es?action=internalGalaxy&sid=abc123&g=9&s=344",
+            ),
             patch.object(cli, "_open_frame_url_with_retry", return_value=live_2d_html),
-            patch.object(cli, "_submit_galaxy_coords_form", side_effect=AssertionError("Must not call _submit_galaxy_coords_form on 2D Galaxy")),
+            patch.object(
+                cli,
+                "_submit_galaxy_coords_form",
+                side_effect=AssertionError("Must not call _submit_galaxy_coords_form on 2D Galaxy"),
+            ),
         ):
             _html, ag, asys = cli.open_galaxy_with_coords(galaxy=9, system=344)
 
@@ -3105,10 +3168,18 @@ class TestPageViewLimiterAndClient(unittest.TestCase):
         with (
             patch.object(cli, "_switch_frame"),
             patch.object(cli, "_resolve_sid_query", return_value="sid=abc123"),
-            patch.object(cli, "_build_internal_url", return_value="https://spaceinvasion.bitmeup.com/indexInternal.es?action=internalGalaxy&sid=abc123&g=1&s=345"),
+            patch.object(
+                cli,
+                "_build_internal_url",
+                return_value="https://spaceinvasion.bitmeup.com/indexInternal.es?action=internalGalaxy&sid=abc123&g=1&s=345",
+            ),
             patch.object(cli, "_open_frame_url_with_retry", return_value=live_2d_html),
             patch.object(cli, "step_galaxy_system", side_effect=_fake_step),
-            patch.object(cli, "_submit_galaxy_coords_form", side_effect=AssertionError("Must not call _submit_galaxy_coords_form on 2D Galaxy")),
+            patch.object(
+                cli,
+                "_submit_galaxy_coords_form",
+                side_effect=AssertionError("Must not call _submit_galaxy_coords_form on 2D Galaxy"),
+            ),
         ):
             _html2, ag2, asys2 = cli.open_galaxy_with_coords(galaxy=1, system=345)
         self.assertEqual((ag2, asys2), (1, 345))

@@ -87,9 +87,7 @@ class TestRankingEvolution(unittest.TestCase):
         econ_ok = estimate_hourly_economy(healthy)
         econ_low = estimate_hourly_economy(throttled)
         self.assertGreater(econ_ok["pts_per_hr_steady"], 20.0)
-        self.assertAlmostEqual(
-            econ_low["pts_per_hr_steady"], econ_ok["pts_per_hr_steady"] * 0.5, delta=0.5
-        )
+        self.assertAlmostEqual(econ_low["pts_per_hr_steady"], econ_ok["pts_per_hr_steady"] * 0.5, delta=0.5)
 
     def test_evolution_horizons_milestones_and_history_tracking(self) -> None:
         st = _sample_ranking_state()
@@ -230,7 +228,7 @@ class TestActionEtaEngine(unittest.TestCase):
         eta = compute_action_eta(state, act)
         b_row = next(r for r in build_buildings_eta(state)["buildings"] if r["building_id"] == 1)
         base_s = float(game_data.building_level_stats(1, 4)["base_time_s"])
-        expected_dur = base_s / ((3 + 1) * (2 ** 1) * 2.0)
+        expected_dur = base_s / ((3 + 1) * (2**1) * 2.0)
 
         self.assertEqual(eta["wait_hours"], 0.0)
         self.assertEqual(eta["wait_seconds"], 0.0)
@@ -337,22 +335,30 @@ class TestActionEtaEngine(unittest.TestCase):
         ship_base = float(game_data.SHIPS["small-transport"]["base_build_time_s"])
         def_base = float(game_data.DEFENSES["mortar"]["base_build_time_s"])
 
-        e_wf0 = compute_action_eta(state, {"kind": "BUILD_SHIP", "planet_id": 101, "target_id": 1, "target_level": None})
+        e_wf0 = compute_action_eta(
+            state, {"kind": "BUILD_SHIP", "planet_id": 101, "target_id": 1, "target_level": None}
+        )
         self.assertAlmostEqual(e_wf0["duration_seconds"], ship_base / (1 * 2 * 2.0), delta=0.05)
 
         e_wf5 = compute_action_eta(state, {"kind": "BUILD_SHIP", "planet_id": 102, "target_id": 1, "target_level": 4})
         self.assertAlmostEqual(e_wf5["duration_seconds"], (4 * ship_base) / (5 * 2 * 2.0), delta=0.05)
 
-        e_zero_qty = compute_action_eta(state, {"kind": "BUILD_SHIP", "planet_id": 102, "target_id": 1, "target_level": 0})
+        e_zero_qty = compute_action_eta(
+            state, {"kind": "BUILD_SHIP", "planet_id": 102, "target_id": 1, "target_level": 0}
+        )
         self.assertEqual(e_zero_qty["duration_seconds"], 0.0)
         self.assertEqual(e_zero_qty["duration_text"], "Instant")
 
-        e_def = compute_action_eta(state, {"kind": "BUILD_DEFENSE", "planet_id": 102, "target_id": 1, "target_level": 3})
+        e_def = compute_action_eta(
+            state, {"kind": "BUILD_DEFENSE", "planet_id": 102, "target_id": 1, "target_level": 3}
+        )
         self.assertAlmostEqual(e_def["duration_seconds"], (3 * def_base) / (5 * 2 * 2.0), delta=0.05)
 
         e_adv = compute_action_eta(
             state,
-            PlannedAction("P3", "SHIP", 102, "02:380:13", "Small transport", "advisory", missing=Resources(0, 0, 500, 0)),
+            PlannedAction(
+                "P3", "SHIP", 102, "02:380:13", "Small transport", "advisory", missing=Resources(0, 0, 500, 0)
+            ),
         )
         self.assertGreater(e_adv["wait_hours"], 0.0)
         self.assertEqual(e_adv["duration_seconds"], 0.0)
@@ -442,7 +448,17 @@ class TestActionEtaEngine(unittest.TestCase):
         # Blocked over-drain still produces finite duration
         e_drain = compute_action_eta(
             state,
-            PlannedAction("P2", "BUILD", 10, p_drain.coords, "Pig iron mine", "drain", target_id=1, target_level=3, missing=Resources(100, 0, 0, 0)),
+            PlannedAction(
+                "P2",
+                "BUILD",
+                10,
+                p_drain.coords,
+                "Pig iron mine",
+                "drain",
+                target_id=1,
+                target_level=3,
+                missing=Resources(100, 0, 0, 0),
+            ),
         )
         self.assertIsNone(e_drain["wait_hours"])
         self.assertIsNone(e_drain["wait_seconds"])
@@ -455,7 +471,17 @@ class TestActionEtaEngine(unittest.TestCase):
         # Energy blackout blocks wait while computing duration
         e_black = compute_action_eta(
             state,
-            PlannedAction("P2", "BUILD", 20, p_blackout.coords, "Pig iron mine", "black", target_id=1, target_level=6, missing=Resources(50, 0, 0, 0)),
+            PlannedAction(
+                "P2",
+                "BUILD",
+                20,
+                p_blackout.coords,
+                "Pig iron mine",
+                "black",
+                target_id=1,
+                target_level=6,
+                missing=Resources(50, 0, 0, 0),
+            ),
         )
         self.assertIsNone(e_black["wait_hours"])
         self.assertEqual(e_black["eta_bottleneck"], "pig_iron")
@@ -464,7 +490,17 @@ class TestActionEtaEngine(unittest.TestCase):
         # Explicit missing planet_id does NOT leak p_drain/p_blackout even when planet_coords matches
         e_missing_pid = compute_action_eta(
             state,
-            PlannedAction("P2", "BUILD", 999, p_drain.coords, "Pig iron mine", "bad pid", target_id=1, target_level=2, missing=Resources(0, 0, 50, 0)),
+            PlannedAction(
+                "P2",
+                "BUILD",
+                999,
+                p_drain.coords,
+                "Pig iron mine",
+                "bad pid",
+                target_id=1,
+                target_level=2,
+                missing=Resources(0, 0, 50, 0),
+            ),
         )
         self.assertIsNone(e_missing_pid["wait_hours"])
         self.assertEqual(e_missing_pid["wait_eta"], "—")
@@ -485,7 +521,10 @@ class TestActionEtaEngine(unittest.TestCase):
             buildings={"b3": 5},
         )
         st_bool = GameState(31, 1, "u", 0.0, (p_one,), active_planet_id=1, speedup_factor=1.0)
-        e_bool = compute_action_eta(st_bool, {"kind": "BUILD", "planet_id": True, "target_id": 3, "target_level": 6, "missing": {"kryptonite": 50}})
+        e_bool = compute_action_eta(
+            st_bool,
+            {"kind": "BUILD", "planet_id": True, "target_id": 3, "target_level": 6, "missing": {"kryptonite": 50}},
+        )
         self.assertIsNone(e_bool["wait_hours"])
 
         # Unknown target_id and sub-second high-speedup formatting
@@ -837,7 +876,13 @@ class TestActionEtaEngine(unittest.TestCase):
         self.assertEqual(sim_corrupt["attacker_power"], 0.0)
         huge_eta = compute_action_eta(
             st_bad,
-            {"kind": "BUILD", "planet_id": "  ", "planet_coords": "01:001:01", "target_id": 1, "missing": {"pig_iron": "1e99999999999999999999"}},
+            {
+                "kind": "BUILD",
+                "planet_id": "  ",
+                "planet_coords": "01:001:01",
+                "target_id": 1,
+                "missing": {"pig_iron": "1e99999999999999999999"},
+            },
         )
         self.assertIsNotNone(huge_eta["wait_hours"])
         self.assertGreater(huge_eta["wait_hours"], 0.0)
@@ -971,7 +1016,14 @@ class TestActionEtaEngine(unittest.TestCase):
             json.dumps(recorded, allow_nan=False)
             evo = build_ranking_evolution(
                 st_huge,
-                [{"ts": 1000.0, "estimated_points": float("nan"), "server_rank": float("inf"), "server_points": 10**5000}],
+                [
+                    {
+                        "ts": 1000.0,
+                        "estimated_points": float("nan"),
+                        "server_rank": float("inf"),
+                        "server_points": 10**5000,
+                    }
+                ],
             )
             json.dumps(evo, allow_nan=False)
 

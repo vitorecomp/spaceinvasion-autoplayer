@@ -409,8 +409,9 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--format-check",
-        action="store_true",
-        help="Also run `ruff format --check` across production Python.",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Run `ruff format --check` across production Python and tests (default: enabled).",
     )
     parser.add_argument(
         "--record-coverage",
@@ -489,7 +490,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
     if args.write_baseline:
         payload = _build_baseline_payload()
-        BASELINE_PATH.write_text(json.dumps(payload, indent=2, sort_keys=True, allow_nan=False) + "\n", encoding="utf-8")
+        BASELINE_PATH.write_text(
+            json.dumps(payload, indent=2, sort_keys=True, allow_nan=False) + "\n", encoding="utf-8"
+        )
         _emit(f"Wrote baseline to {BASELINE_PATH.relative_to(REPO_ROOT)}")
         return 0
 
@@ -497,7 +500,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 1
 
     if args.format_check:
-        fmt_cmd = [*_resolve_python_tool("ruff"), "format", "--check", *PROD_ROOTS]
+        fmt_cmd = [*_resolve_python_tool("ruff"), "format", "--check", *PROD_ROOTS, "tests"]
         if not _run_subprocess_step("ruff format --check", fmt_cmd):
             return 1
 

@@ -271,9 +271,27 @@ class TestGameDatabase(unittest.TestCase):
                     reason="Upgrade mine",
                     executable_now=True,
                 )
-                db.record_action(source="api", command="build", action=act_ok, executed=True, dry_run=False, message="sid=SECRET_SID_99887766", ts=2100.0)
-                db.record_action(source="api", command="build", action=act_ok, executed=False, dry_run=False, message="Aborted sid=deadbeef1234", ts=2110.0)
-                db.record_action(source="api", command="build", action=act_ok, executed=False, dry_run=True, message="Dry", ts=2120.0)
+                db.record_action(
+                    source="api",
+                    command="build",
+                    action=act_ok,
+                    executed=True,
+                    dry_run=False,
+                    message="sid=SECRET_SID_99887766",
+                    ts=2100.0,
+                )
+                db.record_action(
+                    source="api",
+                    command="build",
+                    action=act_ok,
+                    executed=False,
+                    dry_run=False,
+                    message="Aborted sid=deadbeef1234",
+                    ts=2110.0,
+                )
+                db.record_action(
+                    source="api", command="build", action=act_ok, executed=False, dry_run=True, message="Dry", ts=2120.0
+                )
 
                 db.record_raid(
                     "02:380:04",
@@ -317,7 +335,9 @@ class TestGameDatabase(unittest.TestCase):
                 self.assertNotIn("SECRET_SID_99887766", dumped)
                 self.assertNotIn("deadbeef1234", dumped)
                 self.assertNotIn("ventkx86", dumped)
-                leaked = [s for s in re.findall(r"sid=([A-Za-z0-9_-]{4,})", dumped, flags=re.I) if s.upper() != "REDACTED"]
+                leaked = [
+                    s for s in re.findall(r"sid=([A-Za-z0-9_-]{4,})", dumped, flags=re.I) if s.upper() != "REDACTED"
+                ]
                 self.assertEqual(leaked, [])
             finally:
                 db.close()
@@ -480,9 +500,7 @@ class TestGameDatabase(unittest.TestCase):
                     "VALUES(?, 31, 'u', NULL, NULL, ?, ?, ?, -1)",
                     (float("nan"), float("nan"), float("inf"), float("-inf")),
                 )
-                db._conn.execute(
-                    "INSERT INTO galaxy_scans(galaxy, system, last_scanned_ts) VALUES(0, 10, 100.0)"
-                )
+                db._conn.execute("INSERT INTO galaxy_scans(galaxy, system, last_scanned_ts) VALUES(0, 10, 100.0)")
                 db._conn.execute(
                     "INSERT INTO galaxy_scans(galaxy, system, last_scanned_ts) VALUES(2, 380, ?)",
                     (float("nan"),),
@@ -1021,22 +1039,33 @@ class TestGameDatabase(unittest.TestCase):
         from spaceinvasion.db import storage as st_mod
 
         vectors = (
-            '%22password%22%3A%22ST_UE_PW%22',
-            '%22Bearer%20ST_UE_BR%22',
+            "%22password%22%3A%22ST_UE_PW%22",
+            "%22Bearer%20ST_UE_BR%22",
             '\\"password\\":\\"ST_ESC_PW\\"',
             '\\\\"password\\\\":\\\\"ST_DESC_PW\\\\"',
-            'Bearer [MY ST SECRET]',
-            'Bearer <MY ST ANG>',
+            "Bearer [MY ST SECRET]",
+            "Bearer <MY ST ANG>",
             'Bearer "UNCLOSED_ST_Q',
-            'Bearer ST_SCHEMELESS_BR',
-            '?s\u0130d=ST_TR_I1&?sid=ST_REG_SID',
+            "Bearer ST_SCHEMELESS_BR",
+            "?s\u0130d=ST_TR_I1&?sid=ST_REG_SID",
         )
         for v in vectors:
             red = st_mod._sanitize_text(v)
-            for marker in ("ST_UE_PW", "ST_UE_BR", "ST_ESC_PW", "ST_DESC_PW", "MY ST SECRET", "MY ST ANG", "UNCLOSED_ST_Q", "ST_SCHEMELESS_BR", "ST_TR_I1", "ST_REG_SID"):
+            for marker in (
+                "ST_UE_PW",
+                "ST_UE_BR",
+                "ST_ESC_PW",
+                "ST_DESC_PW",
+                "MY ST SECRET",
+                "MY ST ANG",
+                "UNCLOSED_ST_Q",
+                "ST_SCHEMELESS_BR",
+                "ST_TR_I1",
+                "ST_REG_SID",
+            ):
                 self.assertNotIn(marker, red, f"Leaked {marker} in {red!r}")
 
-        redos_s = 'password=' + ('\\' * 5000) + '"'
+        redos_s = "password=" + ("\\" * 5000) + '"'
         t0 = time.perf_counter()
         _ = st_mod._sanitize_text(redos_s)
         self.assertLess((time.perf_counter() - t0) * 1000.0, 250.0)
@@ -1366,7 +1395,9 @@ class TestGameDatabase(unittest.TestCase):
                     {
                         "meta_parameters": {"reward_weeks": 12, "weekly_discount": 0.85},
                         "summary": {"discounted_reward_spice_eq": 50000.0, "total_net_spice_eq": 90000.0},
-                        "steps": [{"seq": 1, "kind": "BUILD", "planet_id": 12476, "entity_key": "b2", "target_level": 12}],
+                        "steps": [
+                            {"seq": 1, "kind": "BUILD", "planet_id": 12476, "entity_key": "b2", "target_level": 12}
+                        ],
                     },
                     config_run_id=rid2,
                     trigger_source="preview",
@@ -1522,7 +1553,10 @@ class TestGameDatabase(unittest.TestCase):
                     subject="Colony [02:380:06] station",
                     coords="02:380:06",
                     body_text="Colony [02:380:06] station One of your fleets (6 Recycler) was re-stationed from Colony [02:379:06] to Colony [02:380:06]. It delivers 0 Pig iron, 0 Metal, 0 Kryptonite, 0 Spice.",
-                    parsed_data={"recycler_count": 6, "harvested": {"pig_iron": 0, "metal": 0, "kryptonite": 0, "spice": 0}},
+                    parsed_data={
+                        "recycler_count": 6,
+                        "harvested": {"pig_iron": 0, "metal": 0, "kryptonite": 0, "spice": 0},
+                    },
                 )
                 genuine_rec = InboxMessage(
                     msg_uid="id:real_rec_1",
@@ -1534,7 +1568,10 @@ class TestGameDatabase(unittest.TestCase):
                     subject="Space rubble [02:379:13] recycling report",
                     coords="02:379:13",
                     body_text="Space rubble [02:379:13] recycling report Your fleet (10 Recycler) processed 10000 Pig iron, 5000 Metal pieces of rubble there.",
-                    parsed_data={"recycler_count": 10, "harvested": {"pig_iron": 10000, "metal": 5000, "kryptonite": 0, "spice": 0}},
+                    parsed_data={
+                        "recycler_count": 10,
+                        "harvested": {"pig_iron": 10000, "metal": 5000, "kryptonite": 0, "spice": 0},
+                    },
                 )
                 db.record_game_messages([station_legacy, genuine_rec], ts=1050.0)
                 rec_rows = db.get_recycle_reports(limit=20)
@@ -1659,7 +1696,10 @@ class TestGameDatabase(unittest.TestCase):
                             subject="Battle report [02:380:11]",
                             coords="02:380:11",
                             body_text="You won the battle and stole 5000 Pig iron, 2500 Metal.",
-                            parsed_data={"outcome": "win", "loot": {"pig_iron": 5000, "metal": 2500, "kryptonite": 0, "spice": 0}},
+                            parsed_data={
+                                "outcome": "win",
+                                "loot": {"pig_iron": 5000, "metal": 2500, "kryptonite": 0, "spice": 0},
+                            },
                         ),
                         InboxMessage(
                             msg_uid="id:st_rec_h2",
@@ -1671,7 +1711,10 @@ class TestGameDatabase(unittest.TestCase):
                             subject="Space rubble [02:380:12] recycling report",
                             coords="02:380:12",
                             body_text="Your fleet (8 Recycler) processed 3000 Kryptonite, 1000 Spice pieces of rubble there.",
-                            parsed_data={"recycler_count": 8, "harvested": {"pig_iron": 0, "metal": 0, "kryptonite": 3000, "spice": 1000}},
+                            parsed_data={
+                                "recycler_count": 8,
+                                "harvested": {"pig_iron": 0, "metal": 0, "kryptonite": 3000, "spice": 1000},
+                            },
                         ),
                     ],
                     ts=float(base_hr + 3600 + 300),

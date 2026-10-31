@@ -791,10 +791,7 @@ class PostgresSession:
                 """,
                 (table_name.lower(), table_name.lower()),
             )
-            return [
-                (int(r[0]), str(r[1]), str(r[2]), int(r[3]), r[4], int(r[5]))
-                for r in cur.fetchall()
-            ]
+            return [(int(r[0]), str(r[1]), str(r[2]), int(r[3]), r[4], int(r[5])) for r in cur.fetchall()]
 
     def _ensure_pragma_table(self) -> None:
         with self._raw.cursor() as cur:

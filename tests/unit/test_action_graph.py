@@ -159,9 +159,31 @@ class TestActionGraphEngine(unittest.TestCase):
         p2 = _mk_planet(202, "Beta", "01:010:02")
         st = GameState(1, 1, "cmdr", 100.0, (p1, p2), active_planet_id=101)
         acts = [
-            PlannedAction("P2", "BUILD", 101, "01:010:01", "Pig iron mine", "ROI", target_id=1, target_level=5, executable_now=True),
-            PlannedAction("P2", "BUILD", 202, "01:010:02", "Spice mine", "ROI", target_id=4, target_level=4, executable_now=True),
-            PlannedAction("P2", "RESEARCH", 101, "01:010:01", "Energy technology", "Tech", target_id=2, target_level=1, executable_now=False),
+            PlannedAction(
+                "P2",
+                "BUILD",
+                101,
+                "01:010:01",
+                "Pig iron mine",
+                "ROI",
+                target_id=1,
+                target_level=5,
+                executable_now=True,
+            ),
+            PlannedAction(
+                "P2", "BUILD", 202, "01:010:02", "Spice mine", "ROI", target_id=4, target_level=4, executable_now=True
+            ),
+            PlannedAction(
+                "P2",
+                "RESEARCH",
+                101,
+                "01:010:01",
+                "Energy technology",
+                "Tech",
+                target_id=2,
+                target_level=1,
+                executable_now=False,
+            ),
         ]
         g_filtered = build_action_graph(st, acts, effective_config=cfg, active_config=cfg, planet_filter=202)
         self._assert_strict_dag(g_filtered)
@@ -177,7 +199,9 @@ class TestActionGraphEngine(unittest.TestCase):
             "01:042:07",
             ships={"s1": 8, "s4": 10},
             building_offers=(
-                BuildingOffer(1, "Pig iron mine", 4, 5, Resources(1000, 400, 0, 0), True, "Available", "indexInternal.es?b=1"),
+                BuildingOffer(
+                    1, "Pig iron mine", 4, 5, Resources(1000, 400, 0, 0), True, "Available", "indexInternal.es?b=1"
+                ),
             ),
         )
         st = GameState(
@@ -203,19 +227,14 @@ class TestActionGraphEngine(unittest.TestCase):
         self.assertEqual(esc_node["status"], "ready")
 
         has_alert_to_esc = any(
-            e["source"] == alert_node["id"]
-            and e["target"] == esc_node["id"]
-            and "priority_gate" in e["types"]
+            e["source"] == alert_node["id"] and e["target"] == esc_node["id"] and "priority_gate" in e["types"]
             for e in graph["edges"]
         )
         self.assertTrue(has_alert_to_esc)
         non_p0 = [n for n in graph["nodes"] if n["priority"] != "P0"]
         if non_p0:
             self.assertTrue(
-                any(
-                    e["source"] == esc_node["id"] and "priority_gate" in e["types"]
-                    for e in graph["edges"]
-                )
+                any(e["source"] == esc_node["id"] and "priority_gate" in e["types"] for e in graph["edges"])
             )
 
     def test_tech_prerequisite_chain_b7_b8_r2_b9_ships_and_recon(self) -> None:
@@ -227,16 +246,100 @@ class TestActionGraphEngine(unittest.TestCase):
         )
         st = GameState(1, 1, "cmdr", 500.0, (p1,), active_planet_id=101, researches={})
         chain = [
-            PlannedAction("P2", "BUILD", 101, "01:042:07", "Development center", "Unlock lab", target_id=7, target_level=2, executable_now=True),
-            PlannedAction("P2", "WAIT_RESOURCES", 101, "01:042:07", "Development center", "Unlock WF", target_id=7, target_level=3, executable_now=False),
-            PlannedAction("P2", "WAIT_RESOURCES", 101, "01:042:07", "Research lab", "Unlock research", target_id=8, target_level=1, executable_now=False),
-            PlannedAction("P2", "RESEARCH", 101, "01:042:07", "Energy technology", "Unlock WF & engines", target_id=2, target_level=1, executable_now=False),
-            PlannedAction("P2", "WAIT_RESOURCES", 101, "01:042:07", "Weapons factory", "Unlock shipyard", target_id=9, target_level=1, executable_now=False),
-            PlannedAction("P2", "BUILD_SHIP", 101, "01:042:07", "Small fighter", "Build fighters", target_id=4, target_level=5, executable_now=False),
-            PlannedAction("P2", "BUILD_SHIP", 101, "01:042:07", "Spy probe", "Build probes", target_id=10, target_level=2, executable_now=False),
-            PlannedAction("P2", "SCAN_GALAXY", 101, "01:042:07", "Galaxy [01:042]", "Scan system 01:042", executable_now=True),
-            PlannedAction("P2", "SPY", 101, "01:042:07", "01:042:09 (Inactive)", "Scout target", target_id=10, target_level=1, executable_now=False),
-            PlannedAction("P2", "ATTACK", 101, "01:042:07", "01:042:09 (Inactive)", "Raid target", executable_now=False),
+            PlannedAction(
+                "P2",
+                "BUILD",
+                101,
+                "01:042:07",
+                "Development center",
+                "Unlock lab",
+                target_id=7,
+                target_level=2,
+                executable_now=True,
+            ),
+            PlannedAction(
+                "P2",
+                "WAIT_RESOURCES",
+                101,
+                "01:042:07",
+                "Development center",
+                "Unlock WF",
+                target_id=7,
+                target_level=3,
+                executable_now=False,
+            ),
+            PlannedAction(
+                "P2",
+                "WAIT_RESOURCES",
+                101,
+                "01:042:07",
+                "Research lab",
+                "Unlock research",
+                target_id=8,
+                target_level=1,
+                executable_now=False,
+            ),
+            PlannedAction(
+                "P2",
+                "RESEARCH",
+                101,
+                "01:042:07",
+                "Energy technology",
+                "Unlock WF & engines",
+                target_id=2,
+                target_level=1,
+                executable_now=False,
+            ),
+            PlannedAction(
+                "P2",
+                "WAIT_RESOURCES",
+                101,
+                "01:042:07",
+                "Weapons factory",
+                "Unlock shipyard",
+                target_id=9,
+                target_level=1,
+                executable_now=False,
+            ),
+            PlannedAction(
+                "P2",
+                "BUILD_SHIP",
+                101,
+                "01:042:07",
+                "Small fighter",
+                "Build fighters",
+                target_id=4,
+                target_level=5,
+                executable_now=False,
+            ),
+            PlannedAction(
+                "P2",
+                "BUILD_SHIP",
+                101,
+                "01:042:07",
+                "Spy probe",
+                "Build probes",
+                target_id=10,
+                target_level=2,
+                executable_now=False,
+            ),
+            PlannedAction(
+                "P2", "SCAN_GALAXY", 101, "01:042:07", "Galaxy [01:042]", "Scan system 01:042", executable_now=True
+            ),
+            PlannedAction(
+                "P2",
+                "SPY",
+                101,
+                "01:042:07",
+                "01:042:09 (Inactive)",
+                "Scout target",
+                target_id=10,
+                target_level=1,
+                executable_now=False,
+            ),
+            PlannedAction(
+                "P2", "ATTACK", 101, "01:042:07", "01:042:09 (Inactive)", "Raid target", executable_now=False
+            ),
         ]
         graph = build_action_graph(st, chain, effective_config=StrategyConfig())
         self._assert_strict_dag(graph)
@@ -245,12 +348,7 @@ class TestActionGraphEngine(unittest.TestCase):
         # b7 L2 -> b7 L3 (level_chain)
         self.assertIn("level_chain", edge_map[("act_0", "act_1")]["types"])
         # b7 L2 (or L3) -> b8 L1 (prerequisite)
-        self.assertTrue(
-            any(
-                e["target"] == "act_2" and "prerequisite" in e["types"]
-                for e in graph["edges"]
-            )
-        )
+        self.assertTrue(any(e["target"] == "act_2" and "prerequisite" in e["types"] for e in graph["edges"]))
         # b8 L1 -> r2 L1 (prerequisite)
         self.assertIn("prerequisite", edge_map[("act_2", "act_3")]["types"])
         # b7 L3 -> b9 L1 AND r2 L1 -> b9 L1 (prerequisites)
@@ -273,8 +371,12 @@ class TestActionGraphEngine(unittest.TestCase):
             energy=EnergyBalance(produced=80, used=110),
             buildings={"b1": 5, "b5": 3},
             building_offers=(
-                BuildingOffer(5, "Fusion plant", 3, 4, Resources(800, 320, 0, 0), True, "Available", "indexInternal.es?b=5"),
-                BuildingOffer(1, "Pig iron mine", 5, 6, Resources(900, 400, 0, 0), True, "Available", "indexInternal.es?b=1"),
+                BuildingOffer(
+                    5, "Fusion plant", 3, 4, Resources(800, 320, 0, 0), True, "Available", "indexInternal.es?b=5"
+                ),
+                BuildingOffer(
+                    1, "Pig iron mine", 5, 6, Resources(900, 400, 0, 0), True, "Available", "indexInternal.es?b=1"
+                ),
             ),
         )
         st = GameState(1, 1, "cmdr", 600.0, (p1,), active_planet_id=101)
@@ -288,9 +390,7 @@ class TestActionGraphEngine(unittest.TestCase):
         self.assertLess(fus_node["topological_layer"], mine_node["topological_layer"])
         self.assertTrue(
             any(
-                e["source"] == fus_node["id"]
-                and e["target"] == mine_node["id"]
-                and "energy_support" in e["types"]
+                e["source"] == fus_node["id"] and e["target"] == mine_node["id"] and "energy_support" in e["types"]
                 for e in graph["edges"]
             )
         )
@@ -479,11 +579,61 @@ class TestActionGraphEngine(unittest.TestCase):
         p2 = _mk_planet(202, "ColonyTwo", "01:010:02", buildings={"b1": 4, "b5": 6, "b8": 2})
         st = GameState(1, 1, "cmdr", 900.0, (p1, p2), active_planet_id=101)
         acts = [
-            PlannedAction("P2", "BUILD", 101, "01:010:01", "Pig iron mine", "Colony 1 build #1", target_id=1, target_level=5, executable_now=True),
-            PlannedAction("P2", "BUILD", 202, "01:010:02", "Pig iron mine", "Colony 2 build #1", target_id=1, target_level=5, executable_now=True),
-            PlannedAction("P2", "BUILD", 101, "01:010:01", "Kryptonite mine", "Colony 1 build #2", target_id=3, target_level=5, executable_now=True),
-            PlannedAction("P2", "RESEARCH", 101, "01:010:01", "Energy technology", "Global research #1", target_id=2, target_level=2, executable_now=True),
-            PlannedAction("P2", "RESEARCH", 202, "01:010:02", "Engine research", "Global research #2", target_id=3, target_level=2, executable_now=False),
+            PlannedAction(
+                "P2",
+                "BUILD",
+                101,
+                "01:010:01",
+                "Pig iron mine",
+                "Colony 1 build #1",
+                target_id=1,
+                target_level=5,
+                executable_now=True,
+            ),
+            PlannedAction(
+                "P2",
+                "BUILD",
+                202,
+                "01:010:02",
+                "Pig iron mine",
+                "Colony 2 build #1",
+                target_id=1,
+                target_level=5,
+                executable_now=True,
+            ),
+            PlannedAction(
+                "P2",
+                "BUILD",
+                101,
+                "01:010:01",
+                "Kryptonite mine",
+                "Colony 1 build #2",
+                target_id=3,
+                target_level=5,
+                executable_now=True,
+            ),
+            PlannedAction(
+                "P2",
+                "RESEARCH",
+                101,
+                "01:010:01",
+                "Energy technology",
+                "Global research #1",
+                target_id=2,
+                target_level=2,
+                executable_now=True,
+            ),
+            PlannedAction(
+                "P2",
+                "RESEARCH",
+                202,
+                "01:010:02",
+                "Engine research",
+                "Global research #2",
+                target_id=3,
+                target_level=2,
+                executable_now=False,
+            ),
         ]
         graph = build_action_graph(st, acts, effective_config=StrategyConfig(allow_multi_planet=True))
         self._assert_strict_dag(graph)
@@ -505,9 +655,7 @@ class TestActionGraphEngine(unittest.TestCase):
         self.assertEqual(by_id["act_4"]["topological_layer"], 1)
         self.assertTrue(
             any(
-                e["source"] == "act_3"
-                and e["target"] == "act_4"
-                and "queue_order" in e["types"]
+                e["source"] == "act_3" and e["target"] == "act_4" and "queue_order" in e["types"]
                 for e in graph["edges"]
             )
         )
@@ -520,9 +668,15 @@ class TestActionGraphEngine(unittest.TestCase):
             resources=Resources(25_000, 18_000, 12_000, 8_000),
             buildings={"b1": 4, "b2": 3, "b3": 4, "b4": 3, "b5": 6, "b7": 3, "b8": 2, "b9": 2},
             building_offers=(
-                BuildingOffer(1, "Pig iron mine", 4, 5, Resources(800, 320, 0, 0), True, "Available", "indexInternal.es?b=1"),
-                BuildingOffer(3, "Kryptonite mine", 4, 5, Resources(700, 500, 0, 0), True, "Available", "indexInternal.es?b=3"),
-                BuildingOffer(4, "Spice mine", 3, 4, Resources(900, 600, 200, 0), True, "Available", "indexInternal.es?b=4"),
+                BuildingOffer(
+                    1, "Pig iron mine", 4, 5, Resources(800, 320, 0, 0), True, "Available", "indexInternal.es?b=1"
+                ),
+                BuildingOffer(
+                    3, "Kryptonite mine", 4, 5, Resources(700, 500, 0, 0), True, "Available", "indexInternal.es?b=3"
+                ),
+                BuildingOffer(
+                    4, "Spice mine", 3, 4, Resources(900, 600, 200, 0), True, "Available", "indexInternal.es?b=4"
+                ),
             ),
         )
         st = GameState(
@@ -534,7 +688,17 @@ class TestActionGraphEngine(unittest.TestCase):
             active_planet_id=101,
             researches={"r2": 2, "r3": 2, "r4": 2},
             research_offers=(
-                ResearchOffer(2, "r2", "Energy technology", 2, 3, Resources(0, 1600, 3200, 1600), True, "Available", "indexInternal.es?r=2"),
+                ResearchOffer(
+                    2,
+                    "r2",
+                    "Energy technology",
+                    2,
+                    3,
+                    Resources(0, 1600, 3200, 1600),
+                    True,
+                    "Available",
+                    "indexInternal.es?r=2",
+                ),
             ),
             speedup_factor=4.0,
         )
@@ -648,14 +812,95 @@ class TestActionGraphEngine(unittest.TestCase):
 
         huge_digits = "9" * 5000
         acts = [
-            PlannedAction("P1", "BUILD", 101, "01:042:07", "Spice store", "Expand spice cap", target_id=14, target_level=2, executable_now=True),
-            PlannedAction("P1", "BUILD", 101, "01:042:07", "Fusion plant", "Prefixed target_id", target_id="b5", target_level=6, executable_now=True),  # type: ignore[arg-type]
-            PlannedAction("P2", "RESEARCH", 101, "01:042:07", "Energy technology", "Prefixed research id", target_id="r2", target_level=2, executable_now=True),  # type: ignore[arg-type]
-            PlannedAction("P2", "BUILD_SHIP", 101, "01:042:07", "Spy probe", "Prefixed ship id", target_id="s10", target_level=2, executable_now=True),  # type: ignore[arg-type]
-            PlannedAction("P2", "BUILD", 101, "01:042:07", "Pig iron mine", "Unicode superscript target_id", target_id="b\u00b2", target_level=5, cost=Resources(500, 500, 500, 10**305), executable_now=False),  # type: ignore[arg-type]
-            PlannedAction("P2", "RESEARCH", 101, "01:042:07", "Engine research", "Unicode digit research", target_id="\u00b2", target_level=2, executable_now=False),  # type: ignore[arg-type]
-            PlannedAction("P2", "BUILD_SHIP", 101, "01:042:07", "Recycler", "5000-digit ship id", target_id="s" + huge_digits, target_level=1, executable_now=False),  # type: ignore[arg-type]
-            PlannedAction("P2", "BUILD", 101, "01:042:07", "Metal mine", "5000-digit build id", target_id=huge_digits, target_level=4, executable_now=False),  # type: ignore[arg-type]
+            PlannedAction(
+                "P1",
+                "BUILD",
+                101,
+                "01:042:07",
+                "Spice store",
+                "Expand spice cap",
+                target_id=14,
+                target_level=2,
+                executable_now=True,
+            ),
+            PlannedAction(
+                "P1",
+                "BUILD",
+                101,
+                "01:042:07",
+                "Fusion plant",
+                "Prefixed target_id",
+                target_id="b5",
+                target_level=6,
+                executable_now=True,
+            ),  # type: ignore[arg-type]
+            PlannedAction(
+                "P2",
+                "RESEARCH",
+                101,
+                "01:042:07",
+                "Energy technology",
+                "Prefixed research id",
+                target_id="r2",
+                target_level=2,
+                executable_now=True,
+            ),  # type: ignore[arg-type]
+            PlannedAction(
+                "P2",
+                "BUILD_SHIP",
+                101,
+                "01:042:07",
+                "Spy probe",
+                "Prefixed ship id",
+                target_id="s10",
+                target_level=2,
+                executable_now=True,
+            ),  # type: ignore[arg-type]
+            PlannedAction(
+                "P2",
+                "BUILD",
+                101,
+                "01:042:07",
+                "Pig iron mine",
+                "Unicode superscript target_id",
+                target_id="b\u00b2",
+                target_level=5,
+                cost=Resources(500, 500, 500, 10**305),
+                executable_now=False,
+            ),  # type: ignore[arg-type]
+            PlannedAction(
+                "P2",
+                "RESEARCH",
+                101,
+                "01:042:07",
+                "Engine research",
+                "Unicode digit research",
+                target_id="\u00b2",
+                target_level=2,
+                executable_now=False,
+            ),  # type: ignore[arg-type]
+            PlannedAction(
+                "P2",
+                "BUILD_SHIP",
+                101,
+                "01:042:07",
+                "Recycler",
+                "5000-digit ship id",
+                target_id="s" + huge_digits,
+                target_level=1,
+                executable_now=False,
+            ),  # type: ignore[arg-type]
+            PlannedAction(
+                "P2",
+                "BUILD",
+                101,
+                "01:042:07",
+                "Metal mine",
+                "5000-digit build id",
+                target_id=huge_digits,
+                target_level=4,
+                executable_now=False,
+            ),  # type: ignore[arg-type]
         ]
         cfg = StrategyConfig(planner_mode="priority")
         g_adv = build_action_graph(st, acts, effective_config=cfg, active_config=cfg)
@@ -1043,22 +1288,104 @@ class TestActionGraphEngine(unittest.TestCase):
         )
         planned = [
             # Non-fleet BUILD/RESEARCH must be excluded from Tab 4 Fleet graph
-            PlannedAction("P2", "BUILD", 101, "01:042:07", "Pig iron mine", "Excluded", target_id=1, target_level=11, executable_now=True),
-            PlannedAction("P2", "RESEARCH", 101, "01:042:07", "Mining technology", "Excluded", target_id=1, target_level=4, executable_now=True),
+            PlannedAction(
+                "P2",
+                "BUILD",
+                101,
+                "01:042:07",
+                "Pig iron mine",
+                "Excluded",
+                target_id=1,
+                target_level=11,
+                executable_now=True,
+            ),
+            PlannedAction(
+                "P2",
+                "RESEARCH",
+                101,
+                "01:042:07",
+                "Mining technology",
+                "Excluded",
+                target_id=1,
+                target_level=4,
+                executable_now=True,
+            ),
             # Fleet & shipyard actions
-            PlannedAction("P0", "ALERT_HOSTILE", 101, "01:042:07", "Incoming attack", "Hostile detected", executable_now=False),
+            PlannedAction(
+                "P0", "ALERT_HOSTILE", 101, "01:042:07", "Incoming attack", "Hostile detected", executable_now=False
+            ),
             PlannedAction("P0", "ESCAPE_FLIGHT", 101, "01:042:07", "Escape flight", "Save fleet", executable_now=True),
-            PlannedAction("P1", "BUILD_SHIP", 101, "01:042:07", "Spy probe", "Replace probes", target_id=10, target_level=2, executable_now=True),
-            PlannedAction("P1", "BUILD_SHIP", 101, "01:042:07", "Recycler", "Add recycler", target_id=11, target_level=1, executable_now=True),
-            PlannedAction("P1", "BUILD_SHIP", 101, "01:042:07", "Colony ship", "New colony", target_id=8, target_level=1, executable_now=False),
-            PlannedAction("P1", "SCAN_GALAXY", 101, "01:042:07", "Galaxy [01:042]", "Scan local system", executable_now=True),
-            PlannedAction("P1", "SPY", 101, "01:042:07", "01:042:12 (Inactive)", "Scout target", target_id=10, target_level=1, executable_now=True),
-            PlannedAction("P1", "COLONIZE", 101, "01:042:07", "01:042:09", "Colonize slot", target_id=8, target_level=1, executable_now=False),
-            PlannedAction("P2", "TRANSPORT", 101, "01:042:07", "Transport to [01:042:08]", "Feed upgrade", executable_now=True),
-            PlannedAction("P2", "STATION", 101, "01:042:07", "Station at [01:042:08]", "Deploy raiders", executable_now=True),
-            PlannedAction("P2", "ATTACK", 202, "01:042:08", "01:042:12 (Inactive)", "Raid target", executable_now=False),
+            PlannedAction(
+                "P1",
+                "BUILD_SHIP",
+                101,
+                "01:042:07",
+                "Spy probe",
+                "Replace probes",
+                target_id=10,
+                target_level=2,
+                executable_now=True,
+            ),
+            PlannedAction(
+                "P1",
+                "BUILD_SHIP",
+                101,
+                "01:042:07",
+                "Recycler",
+                "Add recycler",
+                target_id=11,
+                target_level=1,
+                executable_now=True,
+            ),
+            PlannedAction(
+                "P1",
+                "BUILD_SHIP",
+                101,
+                "01:042:07",
+                "Colony ship",
+                "New colony",
+                target_id=8,
+                target_level=1,
+                executable_now=False,
+            ),
+            PlannedAction(
+                "P1", "SCAN_GALAXY", 101, "01:042:07", "Galaxy [01:042]", "Scan local system", executable_now=True
+            ),
+            PlannedAction(
+                "P1",
+                "SPY",
+                101,
+                "01:042:07",
+                "01:042:12 (Inactive)",
+                "Scout target",
+                target_id=10,
+                target_level=1,
+                executable_now=True,
+            ),
+            PlannedAction(
+                "P1",
+                "COLONIZE",
+                101,
+                "01:042:07",
+                "01:042:09",
+                "Colonize slot",
+                target_id=8,
+                target_level=1,
+                executable_now=False,
+            ),
+            PlannedAction(
+                "P2", "TRANSPORT", 101, "01:042:07", "Transport to [01:042:08]", "Feed upgrade", executable_now=True
+            ),
+            PlannedAction(
+                "P2", "STATION", 101, "01:042:07", "Station at [01:042:08]", "Deploy raiders", executable_now=True
+            ),
+            PlannedAction(
+                "P2", "ATTACK", 202, "01:042:08", "01:042:12 (Inactive)", "Raid target", executable_now=False
+            ),
             PlannedAction("P2", "RECYCLE", 101, "01:042:07", "01:042:12 Debris", "Harvest debris", executable_now=True),
-            PlannedAction("P2", "ACTIVATE_TRANSMITTER", 0, "", "Interdimensional Transmitter", "Free spin", executable_now=True),
+            PlannedAction(
+                "P2", "ACTIVATE_TRANSMITTER", 0, "", "Interdimensional Transmitter", "Free spin", executable_now=True
+            ),
         ]
         telemetry = {"median_loot_spice_eq": 18500.0, "median_round_trip_seconds": 1800.0, "sample_count": 14}
         spare = {"spare_percent": {"pig_iron": 10.0, "metal": 10.0}, "can_spend": True}

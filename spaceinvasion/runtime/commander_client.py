@@ -98,15 +98,15 @@ class GameApiClient:
                 data = resp.json()
             except ValueError as exc:
                 body_preview = _safe_client_text(getattr(resp, "text", ""), "", max_len=200)
-                raise GameApiError(
-                    f"Non-JSON response ({resp.status_code}): {body_preview}"
-                ) from exc
+                raise GameApiError(f"Non-JSON response ({resp.status_code}): {body_preview}") from exc
             if not isinstance(data, dict):
                 raise GameApiError(
                     f"Expected JSON object response (HTTP {resp.status_code}, got {type(data).__name__})"
                 )
             if resp.status_code >= 400 or (data.get("ok") is False and "error" in data):
-                raise GameApiError(_safe_client_text(data.get("error"), f"HTTP {resp.status_code}") or f"HTTP {resp.status_code}")
+                raise GameApiError(
+                    _safe_client_text(data.get("error"), f"HTTP {resp.status_code}") or f"HTTP {resp.status_code}"
+                )
             return data
         finally:
             _close_http_response(resp)

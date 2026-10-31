@@ -286,9 +286,7 @@ def append_tick_logs(
                             "planet": planet.coords if planet else None,
                             "resources": asdict(planet.resources) if planet else None,
                             "energy": (
-                                {"produced": planet.energy.produced, "used": planet.energy.used}
-                                if planet
-                                else None
+                                {"produced": planet.energy.produced, "used": planet.energy.used} if planet else None
                             ),
                             "actual_action": actual_dict,
                             "actual_result": actual_result,
@@ -306,11 +304,7 @@ def append_tick_logs(
         handle.write(json.dumps(record, allow_nan=False) + "\n")
 
     sanitized_result = record.get("actual_result")
-    raw_msg = (
-        sanitized_result.get("message", "no action")
-        if isinstance(sanitized_result, Mapping)
-        else "no action"
-    )
+    raw_msg = sanitized_result.get("message", "no action") if isinstance(sanitized_result, Mapping) else "no action"
     result_msg = _safe_summary_text(raw_msg, "no action") if raw_msg is not None else "no action"
     planet_label = _safe_summary_text(record.get("planet"), "?") or "?"
     mode_label = _safe_summary_text(record.get("mode"), "") or _safe_summary_text(mode, "")
@@ -384,9 +378,7 @@ def append_api_log(
     msg = _safe_summary_text(record.get("message"), "")
     cmd_label = _safe_summary_text(record.get("command"), "")
     actual_str = (
-        format_action_summary(record["actual_action"])
-        if record.get("actual_action")
-        else (cmd_label or redacted_path)
+        format_action_summary(record["actual_action"]) if record.get("actual_action") else (cmd_label or redacted_path)
     )
     next_str = format_action_summary(record["next_action"]) if record["next_action"] else "n/a"
     status_label = (
@@ -480,13 +472,9 @@ def append_crash_debug_log(
         rec_exc_type = _safe_summary_text(record.get("exc_type"), "")
         rec_exc_msg = _safe_summary_text(record.get("exc_message"), "")
         header = redact_sensitive(
-            f"=== [{ts}] {comp_s} :: {evt_s}"
-            + (f" ({rec_exc_type}: {rec_exc_msg})" if rec_exc_type else "")
-            + " ===\n"
+            f"=== [{ts}] {comp_s} :: {evt_s}" + (f" ({rec_exc_type}: {rec_exc_msg})" if rec_exc_type else "") + " ===\n"
         )
-        det_json = redact_sensitive(
-            json.dumps(record.get("details") or {}, indent=2, allow_nan=False)
-        )
+        det_json = redact_sensitive(json.dumps(record.get("details") or {}, indent=2, allow_nan=False))
         tb_redacted = redact_sensitive(str(record.get("traceback") or ""))
         if skip_disk:
             sys.stderr.write(header)

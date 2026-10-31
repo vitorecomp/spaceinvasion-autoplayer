@@ -109,7 +109,9 @@ class TestFleetAndCombat(unittest.TestCase):
         pvp_slot = GalaxySlot("02:380:06", 6, name="Rival", owner="PlayerX", status_color="light_red")
         pvp_rep = SpyReport("02:380:06", owner="PlayerX", resources=rep.resources, defense=rep.defense, is_spacia=False)
         self.assertIsNone(score_raid_target("02:380:12", pvp_slot, pvp_rep, {"s7": 5, "s3": 2}, allow_pvp_in_az=False))
-        self.assertIsNotNone(score_raid_target("02:380:12", pvp_slot, pvp_rep, {"s7": 5, "s3": 2}, allow_pvp_in_az=True))
+        self.assertIsNotNone(
+            score_raid_target("02:380:12", pvp_slot, pvp_rep, {"s7": 5, "s3": 2}, allow_pvp_in_az=True)
+        )
 
     def test_parse_galaxy_system_html_handles_real_dom_variations_and_coords(self) -> None:
         html = """
@@ -533,7 +535,9 @@ class TestFleetAndCombat(unittest.TestCase):
         self.assertEqual(_extract_spy_coords("Report [12:05:12] target [02:380:04] Pig iron: 5000"), "02:380:04")
         self.assertEqual(_extract_spy_coords("Report [14:35:12] target 2:380:4 Pig iron: 5000"), "2:380:4")
         self.assertEqual(_extract_spy_coords("Report 12:05:12 target 02:380:04 Pig iron: 5000"), "02:380:04")
-        rep_norm = parse_spy_report_html("<html><body><div>[14:35:12] target 2:380:4</div><div>Pig iron 1000</div></body></html>")
+        rep_norm = parse_spy_report_html(
+            "<html><body><div>[14:35:12] target 2:380:4</div><div>Pig iron 1000</div></body></html>"
+        )
         self.assertEqual(normalize_coords(rep_norm.target_coords), "02:380:04")
         self.assertEqual(
             extract_galaxy_system_coords("<div>Server time [12:05:12]</div>", default=(9, 99)),
@@ -854,7 +858,7 @@ class TestFleetAndCombat(unittest.TestCase):
     def test_r14_parse_galaxy_system_html_resists_huge_10e5000_coords(self) -> None:
         from spaceinvasion.parsing.galaxy import parse_galaxy_system_html
 
-        html = '<table><tr><td>1</td><td>Planet</td><td>User</td><td></td></tr></table>'
+        html = "<table><tr><td>1</td><td>Planet</td><td>User</td><td></td></tr></table>"
         huge = 10**5000
         entries_huge = parse_galaxy_system_html(html, galaxy=huge, system=huge)  # type: ignore[arg-type]
         self.assertIsInstance(entries_huge, tuple)
@@ -1151,7 +1155,9 @@ class TestFleetAndCombat(unittest.TestCase):
         for m in inbox_msgs:
             self.assertNotIn("SECRET999", m.raw_html)
 
-    def test_real_retro_recycle_4res_fleet_return_battle_dot_thousands_embedded_spy_json_and_colony_grades(self) -> None:
+    def test_real_retro_recycle_4res_fleet_return_battle_dot_thousands_embedded_spy_json_and_colony_grades(
+        self,
+    ) -> None:
         from spaceinvasion.combat.colonies import grade_colony_candidate
         from spaceinvasion.parsing.inbox import parse_inbox_messages_html
         from spaceinvasion.parsing.spy import parse_spy_report_html
@@ -1248,15 +1254,24 @@ class TestFleetAndCombat(unittest.TestCase):
         self.assertEqual(srep.target_coords, "02:383:02")
         self.assertEqual(srep.planet_name, "Spacia Planet")
         self.assertTrue(srep.is_spacia)
-        self.assertEqual((srep.resources.pig_iron, srep.resources.metal, srep.resources.kryptonite, srep.resources.spice), (17020, 65030, 76151, 40501))
+        self.assertEqual(
+            (srep.resources.pig_iron, srep.resources.metal, srep.resources.kryptonite, srep.resources.spice),
+            (17020, 65030, 76151, 40501),
+        )
         self.assertEqual(srep.buildings, {"b1": 31, "b4": 28})
 
         g_s = grade_colony_candidate("02:380:12", "02:381:09", uninhabited_fields=320, min_fields_target=300)
-        self.assertEqual((g_s["grade"], g_s["meets_target"], g_s["probed"], g_s["system_distance"]), ("S", True, True, 1))
+        self.assertEqual(
+            (g_s["grade"], g_s["meets_target"], g_s["probed"], g_s["system_distance"]), ("S", True, True, 1)
+        )
         self.assertIn("Pos 7-12", g_s["orbital_band"])
-        g_opt = grade_colony_candidate("02:382:08", origin_coords="02:380:12", uninhabited_fields=302, min_fields_target=300)
+        g_opt = grade_colony_candidate(
+            "02:382:08", origin_coords="02:380:12", uninhabited_fields=302, min_fields_target=300
+        )
         self.assertEqual((g_opt["grade"], g_opt["meets_target"], g_opt["system_distance"]), ("A+", True, 2))
-        g_strat = grade_colony_candidate(coords="02:380:10", position=10, uninhabited_fields=None, origin_coords="02:380:12", min_fields_target=300)
+        g_strat = grade_colony_candidate(
+            coords="02:380:10", position=10, uninhabited_fields=None, origin_coords="02:380:12", min_fields_target=300
+        )
         self.assertEqual((g_strat["grade"], g_strat["probed"]), ("?", False))
         self.assertIn("Prime Large-Field Belt", g_strat["orbital_zone"])
 
@@ -1346,10 +1361,18 @@ class TestFleetAndCombat(unittest.TestCase):
         self.assertAlmostEqual(slowest, s11_r7, places=4)
 
         # Flight duration increases monotonically with distance and doubles for round-trip
-        rt_same = estimate_fleet_flight_seconds("02:380:12", "02:380:14", {"s1": 10}, researches={"r4": 8}, round_trip=True)
-        rt_near = estimate_fleet_flight_seconds("02:380:12", "02:382:04", {"s1": 10}, researches={"r4": 8}, round_trip=True)
-        rt_far = estimate_fleet_flight_seconds("02:380:12", "02:300:04", {"s1": 10}, researches={"r4": 8}, round_trip=True)
-        ow_near = estimate_fleet_flight_seconds("02:380:12", "02:382:04", {"s1": 10}, researches={"r4": 8}, round_trip=False)
+        rt_same = estimate_fleet_flight_seconds(
+            "02:380:12", "02:380:14", {"s1": 10}, researches={"r4": 8}, round_trip=True
+        )
+        rt_near = estimate_fleet_flight_seconds(
+            "02:380:12", "02:382:04", {"s1": 10}, researches={"r4": 8}, round_trip=True
+        )
+        rt_far = estimate_fleet_flight_seconds(
+            "02:380:12", "02:300:04", {"s1": 10}, researches={"r4": 8}, round_trip=True
+        )
+        ow_near = estimate_fleet_flight_seconds(
+            "02:380:12", "02:382:04", {"s1": 10}, researches={"r4": 8}, round_trip=False
+        )
         self.assertLess(rt_same, rt_near)
         self.assertLess(rt_near, rt_far)
         self.assertAlmostEqual(rt_near, ow_near * 2.0, places=2)

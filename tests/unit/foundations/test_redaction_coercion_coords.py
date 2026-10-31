@@ -350,5 +350,11 @@ def test_coords_parity_across_edge_cases() -> None:
     assert coords.galaxy_sector_distance(3, 5, colonies) == 10
     assert coords.galaxy_sector_distance(3, 125, colonies) == 5
     assert coords.galaxy_sector_distance(4, 120, colonies) == 250
-    for a, b, exp in ((1, 400, (1, -1)), (400, 1, (1, 1)), (120, 120, (0, 0)), (10, 210, (200, 1)), (10, 211, (199, -1))):
+    for a, b, exp in (
+        (1, 400, (1, -1)),
+        (400, 1, (1, 1)),
+        (120, 120, (0, 0)),
+        (10, 210, (200, 1)),
+        (10, 211, (199, -1)),
+    ):
         assert coords.circular_system_delta(a, b) == exp

@@ -228,9 +228,7 @@ class PageViewLimiter:
         self.default_cooldown_seconds = _safe_clamp_cooldown(
             default_cooldown_seconds, DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS
         )
-        self.window_seconds = _safe_bounded_float(
-            window_seconds, PAGE_VIEW_WINDOW_SECONDS, min_val=1.0, max_val=3600.0
-        )
+        self.window_seconds = _safe_bounded_float(window_seconds, PAGE_VIEW_WINDOW_SECONDS, min_val=1.0, max_val=3600.0)
         self._clock = clock
         self._sleeper = sleeper
         self._lock = threading.Lock()
@@ -376,19 +374,13 @@ class PageViewLimiter:
         deadline = (
             None
             if wait_timeout is None
-            else (
-                time.monotonic()
-                + _safe_bounded_float(wait_timeout, 15.0, min_val=0.0, max_val=300.0)
-            )
+            else (time.monotonic() + _safe_bounded_float(wait_timeout, 15.0, min_val=0.0, max_val=300.0))
         )
         with self._recovery_cond:
             if not self._throttle_recovery_in_flight:
                 return "idle"
             start_gen = self._throttle_recovery_generation
-            while (
-                self._throttle_recovery_in_flight
-                and self._throttle_recovery_generation == start_gen
-            ):
+            while self._throttle_recovery_in_flight and self._throttle_recovery_generation == start_gen:
                 if self._rate_limit_until > self._clock():
                     return "cooldown"
                 if deadline is not None:
@@ -411,10 +403,7 @@ class PageViewLimiter:
         deadline = (
             None
             if wait_timeout is None
-            else (
-                time.monotonic()
-                + _safe_bounded_float(wait_timeout, 15.0, min_val=0.0, max_val=300.0)
-            )
+            else (time.monotonic() + _safe_bounded_float(wait_timeout, 15.0, min_val=0.0, max_val=300.0))
         )
         with self._recovery_cond:
             while True:
@@ -434,10 +423,7 @@ class PageViewLimiter:
                     self._recovery_cond.wait(timeout=rem)
                 else:
                     self._recovery_cond.wait()
-                if (
-                    not self._throttle_recovery_in_flight
-                    or self._throttle_recovery_generation != start_gen
-                ):
+                if not self._throttle_recovery_in_flight or self._throttle_recovery_generation != start_gen:
                     if self._rate_limit_until > self._clock():
                         return ("cooldown", self._throttle_recovery_generation)
                     return ("waited", self._throttle_recovery_generation)
@@ -477,11 +463,7 @@ class PageViewLimiter:
             target_gap = safe_low
         else:
             target_gap = random.uniform(safe_low, safe_high)
-        safe_max_wait = (
-            None
-            if max_wait is None
-            else _safe_bounded_float(max_wait, 60.0, min_val=0.0, max_val=3600.0)
-        )
+        safe_max_wait = None if max_wait is None else _safe_bounded_float(max_wait, 60.0, min_val=0.0, max_val=3600.0)
 
         waited_total = 0.0
         while True:
@@ -505,11 +487,7 @@ class PageViewLimiter:
                     expire_idx = min(len(self._views) - 1, needed - 1)
                     budget_wait = max(0.0, (self._views[expire_idx] + self.window_seconds) - now)
 
-                gap_wait = (
-                    max(0.0, target_gap - (now - self._last_view_at))
-                    if self._last_view_at is not None
-                    else 0.0
-                )
+                gap_wait = max(0.0, target_gap - (now - self._last_view_at)) if self._last_view_at is not None else 0.0
                 wait_s = max(budget_wait, gap_wait)
 
                 if wait_s <= 0.0:
@@ -625,9 +603,7 @@ class GameBrowserClient:
         self.detach_on_close = detach_on_close
         self.page_limiter = page_limiter or limiter or get_default_page_view_limiter()
         self._min_nav_delay_override = min_nav_delay
-        self.min_nav_delay = (
-            min_nav_delay if min_nav_delay is not None else self.page_limiter.min_delay_range
-        )
+        self.min_nav_delay = min_nav_delay if min_nav_delay is not None else self.page_limiter.min_delay_range
         self.timeout = _safe_positive_timeout(timeout, 20.0, min_val=0.05, max_val=300.0)
         self.max_limiter_wait = (
             None
@@ -656,7 +632,11 @@ class GameBrowserClient:
     ) -> GameBrowserClient:
         """Attach to an already-open Chrome session inside the game."""
         if not is_debug_port_open(port, host):
-            port_s = game_data.fmt_compact_int(port) if (isinstance(port, int) and not isinstance(port, bool)) else game_data.safe_key(port)
+            port_s = (
+                game_data.fmt_compact_int(port)
+                if (isinstance(port, int) and not isinstance(port, bool))
+                else game_data.safe_key(port)
+            )
             raise SpaceInvasionAuthError(
                 f"No Chrome debug session is listening on {host}:{port_s}. "
                 f"Start Chrome with `python3 login.py --debug-port {port_s} --detach`."
@@ -722,9 +702,7 @@ class GameBrowserClient:
             diag["matched_made_more_than"] = (
                 cleaned_diag_html[max(0, idx_m - 160) : idx_m + 320] if idx_m >= 0 else None
             )
-            diag["matched_page_views"] = (
-                cleaned_diag_html[max(0, idx_p - 160) : idx_p + 320] if idx_p >= 0 else None
-            )
+            diag["matched_page_views"] = cleaned_diag_html[max(0, idx_p - 160) : idx_p + 320] if idx_p >= 0 else None
             try:
                 soup = BeautifulSoup(cleaned_diag_html, "html.parser")
                 for hidden_el in soup.find_all(["script", "style", "template", "noscript"]):
@@ -783,9 +761,7 @@ class GameBrowserClient:
         if issue and self._is_antibot_visible_in_live_dom() is False:
             issue = None
         if issue:
-            err_ab = AntiBotChallengeError(
-                f"{issue}. Stopping automation; handle verification in Chrome."
-            )
+            err_ab = AntiBotChallengeError(f"{issue}. Stopping automation; handle verification in Chrome.")
             if self.detach_on_close and getattr(self.driver, "__class__", object).__module__.startswith("selenium"):
                 append_crash_debug_log(
                     component="client._check_page_guards",
@@ -824,7 +800,7 @@ class GameBrowserClient:
     def _dom_recovered_before_record(self, dom_epoch_seen: int) -> bool:
         """Re-check under `_driver_lock` (without holding limiter lock) if DOM recovered."""
         drv_lock = getattr(self, "_driver_lock", None)
-        with (drv_lock if drv_lock is not None else contextlib.nullcontext()):
+        with drv_lock if drv_lock is not None else contextlib.nullcontext():
             if getattr(self, "_dom_healthy_epoch", 0) != dom_epoch_seen:
                 return True
             try:
@@ -848,9 +824,7 @@ class GameBrowserClient:
 
     def ensure_in_game(self, *, priority: str = "normal") -> None:
         """Verify the attached browser has an active `indexGame.es` tab with game frames."""
-        wait_budget = _safe_positive_timeout(
-            getattr(self, "timeout", 20.0), 20.0, min_val=0.05, max_val=300.0
-        )
+        wait_budget = _safe_positive_timeout(getattr(self, "timeout", 20.0), 20.0, min_val=0.05, max_val=300.0)
         deadline = time.monotonic() + wait_budget
         drv_lock = getattr(self, "_driver_lock", None)
         renderer_recoveries = 0
@@ -886,7 +860,7 @@ class GameBrowserClient:
             missing_exc: Optional[NoSuchElementException] = None
             dom_epoch_seen = getattr(self, "_dom_healthy_epoch", 0)
             renderer_timed_out = False
-            with (drv_lock if drv_lock is not None else contextlib.nullcontext()):
+            with drv_lock if drv_lock is not None else contextlib.nullcontext():
                 try:
                     self.driver.switch_to.default_content()
                     try:
@@ -932,7 +906,7 @@ class GameBrowserClient:
             if top_shell_html:
                 top_issue = detect_antibot_challenge(200, top_shell_html)
                 if top_issue and missing_exc is None:
-                    with (drv_lock if drv_lock is not None else contextlib.nullcontext()):
+                    with drv_lock if drv_lock is not None else contextlib.nullcontext():
                         self.driver.switch_to.default_content()
                         if self._is_antibot_visible_in_live_dom() is False:
                             top_issue = None
@@ -940,7 +914,9 @@ class GameBrowserClient:
                     err_top_ab = AntiBotChallengeError(
                         f"{top_issue}. Stopping automation; handle verification in Chrome."
                     )
-                    if self.detach_on_close and getattr(self.driver, "__class__", object).__module__.startswith("selenium"):
+                    if self.detach_on_close and getattr(self.driver, "__class__", object).__module__.startswith(
+                        "selenium"
+                    ):
                         append_crash_debug_log(
                             component="client.ensure_in_game",
                             event="antibot_challenge",
@@ -956,7 +932,7 @@ class GameBrowserClient:
             # If a popup window (e.g. `p_galaxy()` `"Galaxy"` window) stole focus, switch back to `indexGame.es`
             if not in_planets_frame:
                 switched_tab = False
-                with (drv_lock if drv_lock is not None else contextlib.nullcontext()):
+                with drv_lock if drv_lock is not None else contextlib.nullcontext():
                     try:
                         handles = list(getattr(self.driver, "window_handles", None) or [])
                         if len(handles) > 1 and find_and_switch_game_tab(self.driver):
@@ -975,7 +951,7 @@ class GameBrowserClient:
                     ) from missing_exc
                 if is_server_rate_limit_html(frame_html):
                     if coordinated:
-                        with (drv_lock if drv_lock is not None else contextlib.nullcontext()):
+                        with drv_lock if drv_lock is not None else contextlib.nullcontext():
                             cur_dom_epoch = getattr(self, "_dom_healthy_epoch", 0)
                         if cur_dom_epoch != dom_epoch_seen:
                             continue
@@ -1019,7 +995,7 @@ class GameBrowserClient:
                                         refresh=True,
                                         priority=priority,
                                     )
-                                    with (drv_lock if drv_lock is not None else contextlib.nullcontext()):
+                                    with drv_lock if drv_lock is not None else contextlib.nullcontext():
                                         self.driver.switch_to.default_content()
                                     recovered = True
                                     rearm = False
@@ -1032,7 +1008,7 @@ class GameBrowserClient:
                                     raise
                                 except NoSuchElementException:
                                     rearm = False
-                                    with (drv_lock if drv_lock is not None else contextlib.nullcontext()):
+                                    with drv_lock if drv_lock is not None else contextlib.nullcontext():
                                         try:
                                             frame_html = str(getattr(self.driver, "page_source", "") or "")
                                         except Exception:
@@ -1051,9 +1027,7 @@ class GameBrowserClient:
                                     continue
                                 if self._dom_recovered_before_record(dom_epoch_seen):
                                     continue
-                                recorded, cooldown = self.page_limiter.record_rate_limit_if_generation(
-                                    gen_before
-                                )
+                                recorded, cooldown = self.page_limiter.record_rate_limit_if_generation(gen_before)
                                 if not recorded and cooldown <= 0.0:
                                     continue
                                 cd_val = max(1.0, cooldown)
@@ -1071,14 +1045,14 @@ class GameBrowserClient:
                                     refresh=True,
                                     priority=priority,
                                 )
-                                with (drv_lock if drv_lock is not None else contextlib.nullcontext()):
+                                with drv_lock if drv_lock is not None else contextlib.nullcontext():
                                     self.driver.switch_to.default_content()
                                 return
                             except RateLimitError:
                                 self.page_limiter.rearm_throttle_recovery()
                                 raise
                             except NoSuchElementException:
-                                with (drv_lock if drv_lock is not None else contextlib.nullcontext()):
+                                with drv_lock if drv_lock is not None else contextlib.nullcontext():
                                     try:
                                         frame_html = str(getattr(self.driver, "page_source", "") or "")
                                     except Exception:
@@ -1086,9 +1060,7 @@ class GameBrowserClient:
                     elif coordinated:
                         if self._dom_recovered_before_record(dom_epoch_seen):
                             continue
-                        recorded, cooldown = self.page_limiter.record_rate_limit_if_generation(
-                            gen_before
-                        )
+                        recorded, cooldown = self.page_limiter.record_rate_limit_if_generation(gen_before)
                         if not recorded and cooldown <= 0.0:
                             continue
                         cd_val = max(1.0, cooldown)
@@ -1105,7 +1077,7 @@ class GameBrowserClient:
             tab_recovered = False
             top_html = ""
             cur_url = ""
-            with (drv_lock if drv_lock is not None else contextlib.nullcontext()):
+            with drv_lock if drv_lock is not None else contextlib.nullcontext():
                 try:
                     self.driver.switch_to.default_content()
                 except Exception:
@@ -1137,7 +1109,7 @@ class GameBrowserClient:
 
     def _switch_frame(self, frame_id: str) -> None:
         drv_lock = getattr(self, "_driver_lock", None)
-        with (drv_lock if drv_lock is not None else contextlib.nullcontext()):
+        with drv_lock if drv_lock is not None else contextlib.nullcontext():
             self.driver.switch_to.default_content()
             frame = self.driver.find_element(By.ID, frame_id)
             self.driver.switch_to.frame(frame)
@@ -1158,16 +1130,12 @@ class GameBrowserClient:
             return True
         low = str(exc or "").lower()
         return (
-            "timed out receiving message from renderer" in low
-            or "timeout: timed out" in low
-            or "script timeout" in low
+            "timed out receiving message from renderer" in low or "timeout: timed out" in low or "script timeout" in low
         )
 
     def _recover_renderer_timeout(self) -> None:
         """Abort stuck subresource/page loads (`window.stop()`) to unblock ChromeDriver's renderer queue."""
-        restore_timeout = _safe_positive_timeout(
-            getattr(self, "timeout", 20.0), 20.0, min_val=5.0, max_val=300.0
-        )
+        restore_timeout = _safe_positive_timeout(getattr(self, "timeout", 20.0), 20.0, min_val=5.0, max_val=300.0)
         set_script = getattr(self.driver, "set_script_timeout", None)
         if callable(set_script):
             try:
@@ -1209,9 +1177,7 @@ class GameBrowserClient:
             expected_action == "internalTransmitter"
             and "indexinternal.es" in href_l
             and (
-                'id="tm.form"' in html
-                or 'value="internalTransmitter"' in html
-                or "action=internalTransmitter" in html
+                'id="tm.form"' in html or 'value="internalTransmitter"' in html or "action=internalTransmitter" in html
             )
         ):
             return True
@@ -1256,9 +1222,7 @@ class GameBrowserClient:
         self._check_page_guards(html)
         html_low = html.lower()
         if "bitmeup-login" in html_low or "sip-tab-universe" in html_low:
-            raise SpaceInvasionAuthError(
-                "Browser redirected to BitMeUp portal/login while waiting for game frame."
-            )
+            raise SpaceInvasionAuthError("Browser redirected to BitMeUp portal/login while waiting for game frame.")
         return html
 
     def _wait_frame_ready(
@@ -1268,9 +1232,7 @@ class GameBrowserClient:
         *,
         nav_token: Optional[str] = None,
     ) -> str:
-        wait_budget = _safe_positive_timeout(
-            getattr(self, "timeout", 20.0), 20.0, min_val=0.05, max_val=300.0
-        )
+        wait_budget = _safe_positive_timeout(getattr(self, "timeout", 20.0), 20.0, min_val=0.05, max_val=300.0)
         deadline = time.monotonic() + wait_budget
         recovered_timeout = False
         while True:
@@ -1298,9 +1260,9 @@ class GameBrowserClient:
                     href = str(self.driver.execute_script("return location.href;") or "")
                     cur_token = None
 
-                if (
-                    ready == "complete" or (recovered_timeout and ready == "interactive")
-                ) and (nav_token is None or cur_token != nav_token):
+                if (ready == "complete" or (recovered_timeout and ready == "interactive")) and (
+                    nav_token is None or cur_token != nav_token
+                ):
                     html = self.driver.page_source or ""
                     self._check_page_guards(html)
                     html_low = html.lower()
@@ -1333,9 +1295,7 @@ class GameBrowserClient:
             if time.monotonic() >= deadline:
                 break
             time.sleep(0.2)
-        raise SpaceInvasionAuthError(
-            f"Timed out waiting for frame {frame_id} ({expected_action or 'ready'})."
-        )
+        raise SpaceInvasionAuthError(f"Timed out waiting for frame {frame_id} ({expected_action or 'ready'}).")
 
     def _resolve_sid_query(self) -> str:
         self._switch_frame("F_Navi")
@@ -1441,9 +1401,7 @@ class GameBrowserClient:
                 if not self._is_renderer_timeout(nav_exc):
                     raise
                 if attempt >= 1:
-                    raise SpaceInvasionAuthError(
-                        f"Renderer timed out loading {expected_action}."
-                    ) from nav_exc
+                    raise SpaceInvasionAuthError(f"Renderer timed out loading {expected_action}.") from nav_exc
                 self._recover_renderer_timeout()
                 landed_html = self._try_read_landed_frame(
                     frame_id,
@@ -1475,9 +1433,7 @@ class GameBrowserClient:
                 if not self._is_renderer_timeout(nav_exc):
                     raise
                 if attempt >= 1:
-                    raise SpaceInvasionAuthError(
-                        f"Renderer timed out navigating to {action}."
-                    ) from nav_exc
+                    raise SpaceInvasionAuthError(f"Renderer timed out navigating to {action}.") from nav_exc
                 self._recover_renderer_timeout()
                 landed_html = self._try_read_landed_frame(
                     "F_Hauptframe",
@@ -1709,16 +1665,8 @@ class GameBrowserClient:
         """Open `internalGalaxy` inside `F_Hauptframe` and return `(html, actual_galaxy, actual_system)`."""
         self._pace(priority=priority)
         sid_query = self._resolve_sid_query()
-        gal_arg = (
-            game_data.cap_json_int(max(1, game_data.safe_int(galaxy, 1)))
-            if galaxy is not None
-            else None
-        )
-        sys_arg = (
-            game_data.cap_json_int(max(1, game_data.safe_int(system, 1)))
-            if system is not None
-            else None
-        )
+        gal_arg = game_data.cap_json_int(max(1, game_data.safe_int(galaxy, 1))) if galaxy is not None else None
+        sys_arg = game_data.cap_json_int(max(1, game_data.safe_int(system, 1))) if system is not None else None
         if sid_query:
             p_gal_js = None
             if self.detach_on_close and self._is_real_selenium_driver():
@@ -1915,7 +1863,11 @@ class GameBrowserClient:
                 # Widescreen `g2w.swing(dir)` animates for 420ms before calling `si.navigate` / setting `_getStatus`;
                 # wait at least 0.90s while idle and not animating before bailing out early.
                 if bail_if_idle_unchanged and not busy and not animating and (time.monotonic() - started) >= 0.90:
-                    if before_coords is not None and (cur_g, cur_s) == before_coords and (res_g, res_s) == before_coords:
+                    if (
+                        before_coords is not None
+                        and (cur_g, cur_s) == before_coords
+                        and (res_g, res_s) == before_coords
+                    ):
                         return False, None
                     if res_g > 0 and res_g != expected_galaxy:
                         return False, None
@@ -2400,9 +2352,7 @@ class GameBrowserClient:
         has_si = False
         try:
             has_si = bool(
-                self.driver.execute_script(
-                    "return Boolean(window.si && typeof window.si.getData === 'function');"
-                )
+                self.driver.execute_script("return Boolean(window.si && typeof window.si.getData === 'function');")
             )
         except Exception:
             has_si = False
@@ -2413,8 +2363,7 @@ class GameBrowserClient:
         self._switch_frame("F_Hauptframe")
         ta_part = "&ta=1" if is_asteroid else ""
         param = (
-            f"&startFleet=1&fleets={qty_arg}&startFleetAction=spy"
-            f"&gal={gal_arg}&sun={sys_arg}&p={pos_arg}{ta_part}&m=1"
+            f"&startFleet=1&fleets={qty_arg}&startFleetAction=spy&gal={gal_arg}&sun={sys_arg}&p={pos_arg}{ta_part}&m=1"
         )
         self.driver.execute_script(
             "var g = document.getElementById('fa-gal'); if (g) g.value = String(arguments[0]);"
@@ -2615,14 +2564,11 @@ class GameBrowserClient:
                         limiter._views.popleft()
                     avail = max(
                         1,
-                        limiter.max_views_per_minute
-                        - limiter.reserved_interactive_views
-                        - len(limiter._views)
-                        - 2,
+                        limiter.max_views_per_minute - limiter.reserved_interactive_views - len(limiter._views) - 2,
                     )
                     cap_fetches = max(1, min(cap_fetches, avail))
 
-        with (drv_lock if drv_lock is not None else contextlib.nullcontext()):
+        with drv_lock if drv_lock is not None else contextlib.nullcontext():
             try:
                 self._switch_frame("F_Hauptframe")
                 res = self.driver.execute_script(
@@ -2874,7 +2820,7 @@ class GameBrowserClient:
             return None
         if fetches <= 0:
             time.sleep(0.25)
-        with (drv_lock if drv_lock is not None else contextlib.nullcontext()):
+        with drv_lock if drv_lock is not None else contextlib.nullcontext():
             try:
                 self._switch_frame("F_Hauptframe")
                 return str(self.driver.page_source or "")
@@ -2893,9 +2839,7 @@ class GameBrowserClient:
         Probes the live DOM before pacing so pages without delete controls incur zero extra views.
         """
         clean_ids = [
-            str(mid).strip()
-            for mid in (server_msg_ids or ())
-            if str(mid).strip() and str(mid).strip().isascii()
+            str(mid).strip() for mid in (server_msg_ids or ()) if str(mid).strip() and str(mid).strip().isascii()
         ]
         if not clean_ids and not all_on_page_persisted:
             return (False, "")
@@ -3156,7 +3100,7 @@ class GameBrowserClient:
         drv_lock = getattr(self, "_driver_lock", None)
         mode_found = ""
         current_html = ""
-        with (drv_lock if drv_lock is not None else contextlib.nullcontext()):
+        with drv_lock if drv_lock is not None else contextlib.nullcontext():
             try:
                 self._switch_frame("F_Hauptframe")
                 current_html = str(self.driver.page_source or "")
@@ -3172,7 +3116,7 @@ class GameBrowserClient:
         self._pace(priority=priority)
         nav_token = self._mark_frame_navigation("F_Hauptframe")
         triggered = False
-        with (drv_lock if drv_lock is not None else contextlib.nullcontext()):
+        with drv_lock if drv_lock is not None else contextlib.nullcontext():
             try:
                 self._switch_frame("F_Hauptframe")
                 triggered = bool(
@@ -3197,7 +3141,7 @@ class GameBrowserClient:
         except (RateLimitError, AntiBotChallengeError):
             raise
         except Exception:
-            with (drv_lock if drv_lock is not None else contextlib.nullcontext()):
+            with drv_lock if drv_lock is not None else contextlib.nullcontext():
                 try:
                     self._switch_frame("F_Hauptframe")
                     return (True, str(self.driver.page_source or ""))
@@ -3214,7 +3158,7 @@ class GameBrowserClient:
         frame_src = ""
         wrong_frame_page = False
 
-        with (drv_lock if drv_lock is not None else contextlib.nullcontext()):
+        with drv_lock if drv_lock is not None else contextlib.nullcontext():
             self.driver.switch_to.default_content()
             planets_frame = self.driver.find_element(By.ID, "F_planets")
             try:
@@ -3241,7 +3185,7 @@ class GameBrowserClient:
 
         if need_reload:
             self._pace(priority=priority)
-            with (drv_lock if drv_lock is not None else contextlib.nullcontext()):
+            with drv_lock if drv_lock is not None else contextlib.nullcontext():
                 self._switch_frame("F_planets")
                 if wrong_frame_page:
                     self.driver.execute_script(
@@ -3250,23 +3194,19 @@ class GameBrowserClient:
                     )
                 else:
                     self.driver.execute_script("window.__siReloadPending = 1; location.reload();")
-            wait_budget = _safe_positive_timeout(
-                getattr(self, "timeout", 20.0), 12.0, min_val=0.05, max_val=12.0
-            )
+            wait_budget = _safe_positive_timeout(getattr(self, "timeout", 20.0), 12.0, min_val=0.05, max_val=12.0)
             deadline = time.monotonic() + wait_budget
             while True:
                 html_to_check: Optional[str] = None
                 ready_with_json = False
-                with (drv_lock if drv_lock is not None else contextlib.nullcontext()):
+                with drv_lock if drv_lock is not None else contextlib.nullcontext():
                     self._switch_frame("F_planets")
                     pending = self.driver.execute_script("return Boolean(window.__siReloadPending);")
                     ready = self.driver.execute_script("return document.readyState;")
                     if not pending and ready == "complete":
                         html_to_check = self.driver.page_source or ""
                         ready_with_json = bool(
-                            self.driver.execute_script(
-                                "return Boolean(document.getElementById('json-container'));"
-                            )
+                            self.driver.execute_script("return Boolean(document.getElementById('json-container'));")
                         )
                 if html_to_check is not None:
                     self._check_page_guards(html_to_check)
@@ -3281,7 +3221,7 @@ class GameBrowserClient:
                     break
                 time.sleep(0.2)
 
-            with (drv_lock if drv_lock is not None else contextlib.nullcontext()):
+            with drv_lock if drv_lock is not None else contextlib.nullcontext():
                 self._switch_frame("F_planets")
                 try:
                     jc = self.driver.find_element(By.ID, "json-container")
@@ -3306,7 +3246,7 @@ class GameBrowserClient:
     def read_menu_status(self) -> tuple[dict[str, int], Optional[int], Optional[int]]:
         """Read unread message counters, server points, and rank from `F_Navi`."""
         drv_lock = getattr(self, "_driver_lock", None)
-        with (drv_lock if drv_lock is not None else contextlib.nullcontext()):
+        with drv_lock if drv_lock is not None else contextlib.nullcontext():
             self._switch_frame("F_Navi")
             html = self.driver.page_source or ""
         return parse_menu_status(html)
@@ -3351,17 +3291,14 @@ class GameBrowserClient:
 
         # Check current main frame URL; navigate to internalHome if on another view or stale throttle/login DOM
         drv_lock = getattr(self, "_driver_lock", None)
-        with (drv_lock if drv_lock is not None else contextlib.nullcontext()):
+        with drv_lock if drv_lock is not None else contextlib.nullcontext():
             self._switch_frame("F_Hauptframe")
             main_url = str(self.driver.execute_script("return location.href;") or "")
             raw_main_html = str(self.driver.page_source or "")
 
         home_html = ""
         raw_main_low = raw_main_html.lower()
-        has_portal_redirect = (
-            "bitmeup-login" in raw_main_low
-            or "sip-tab-universe" in raw_main_low
-        )
+        has_portal_redirect = "bitmeup-login" in raw_main_low or "sip-tab-universe" in raw_main_low
         if "action=internalHome" in main_url:
             is_stale_home = (
                 not raw_main_low.strip()
@@ -3400,16 +3337,12 @@ class GameBrowserClient:
         elif raw_main_html.strip():
             self._check_page_guards(raw_main_html)
             if has_portal_redirect:
-                raise SpaceInvasionAuthError(
-                    "Browser redirected to BitMeUp portal/login while reading game snapshot."
-                )
+                raise SpaceInvasionAuthError("Browser redirected to BitMeUp portal/login while reading game snapshot.")
 
         if home_html:
             tutorial = parse_tutorial_from_home(home_html)
             active_pid, speedup, newbie, queues, alerts = parse_home_metadata(home_html)
-            self.last_home_daily_bonus_present = bool(
-                parse_daily_login_bonus(home_html).get("present", False)
-            )
+            self.last_home_daily_bonus_present = bool(parse_daily_login_bonus(home_html).get("present", False))
         else:
             tutorial = None
             active_pid = self._extract_selected_planet_id(raw_main_html, main_url)
@@ -3459,10 +3392,7 @@ class GameBrowserClient:
         # Passively detect Metal production enabled/disabled from `<form id="ress">` ticker on zero extra views
         if active_idx is not None and planets:
             cur_ap = planets[active_idx]
-            if (
-                normalize_planet_type(cur_ap) not in ("asteroid", "raid")
-                and cur_ap.building_level(2) >= 1
-            ):
+            if normalize_planet_type(cur_ap) not in ("asteroid", "raid") and cur_ap.building_level(2) >= 1:
                 ticker_src = b_html or home_html
                 if not ticker_src and raw_main_html:
                     raw_sel = self._extract_selected_planet_id(raw_main_html, main_url)
@@ -3471,10 +3401,7 @@ class GameBrowserClient:
                 ticker = parse_ticker_rates(ticker_src)
                 if "metal" in ticker:
                     econ = dict(cur_ap.economy_rates or {})
-                    metal_storage_full = (
-                        cur_ap.storage.metal > 0
-                        and cur_ap.resources.metal >= cur_ap.storage.metal
-                    )
+                    metal_storage_full = cur_ap.storage.metal > 0 and cur_ap.resources.metal >= cur_ap.storage.metal
                     has_pig_feed = (
                         cur_ap.resources.pig_iron > 0
                         or ticker.get("pig_iron", 0.0) > 0.0
@@ -3593,7 +3520,7 @@ class GameBrowserClient:
             unread["total"] = max(unread.get("total", 0), banner_unread)
 
         self.last_snapshot_observed_active_planet = active_pid is not None
-        with (drv_lock if drv_lock is not None else contextlib.nullcontext()):
+        with drv_lock if drv_lock is not None else contextlib.nullcontext():
             self.driver.switch_to.default_content()
         return replace(
             state,
@@ -3612,7 +3539,7 @@ class GameBrowserClient:
 
     def page_source_safe(self) -> str:
         drv_lock = getattr(self, "_driver_lock", None)
-        with (drv_lock if drv_lock is not None else contextlib.nullcontext()):
+        with drv_lock if drv_lock is not None else contextlib.nullcontext():
             html = str(getattr(self.driver, "page_source", "") or "")
         self._check_page_guards(html)
         return html

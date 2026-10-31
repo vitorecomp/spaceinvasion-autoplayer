@@ -72,7 +72,10 @@ def test_fuzz_combat_cargo_colonies_flight_and_eta_invariants() -> None:
 
         pl = _rand_planet(rng)
         esc = cargo.plan_escape_flight(
-            pl, target_coords=_rand_coords(rng), fuel_reserve_spice=rng.choice([0, 500, 5000]), save_solar_cells=rng.random() < 0.3
+            pl,
+            target_coords=_rand_coords(rng),
+            fuel_reserve_spice=rng.choice([0, 500, 5000]),
+            save_solar_cells=rng.random() < 0.3,
         )
         assert esc.cargo_capacity >= 0 and esc.saved_resources.total() >= 0
 

@@ -170,7 +170,9 @@ def _resolve_target_pid(
         and "rueck" not in detail_l
     )
     if is_one_way_station:
-        dest_part = name_s.split("→", 1)[1] if "→" in name_s else (name_s.split("->", 1)[1] if "->" in name_s else name_s)
+        dest_part = (
+            name_s.split("→", 1)[1] if "→" in name_s else (name_s.split("->", 1)[1] if "->" in name_s else name_s)
+        )
         dest_coords = extract_coords_from_text(dest_part) or extract_coords_from_text(name_s)
         if dest_coords and dest_coords in pid_by_coords:
             return pid_by_coords[dest_coords]
@@ -192,7 +194,13 @@ def count_in_flight_ships_by_planet(state: object) -> dict[str, object]:
         if detail_l.strip().startswith(("shipyard", "weapons factory")):
             continue
         comb = f"{name_l} {detail_l}"
-        if "hostile" in comb or "enemy" in comb or "feind" in comb or name_l.startswith("incoming") or detail_l.startswith("incoming"):
+        if (
+            "hostile" in comb
+            or "enemy" in comb
+            or "feind" in comb
+            or name_l.startswith("incoming")
+            or detail_l.startswith("incoming")
+        ):
             continue
         orig_coords = extract_coords_from_text(safe_state_str(getattr(q, "origin_coords", "") or ""))
         target_pid = _resolve_target_pid(q, name_s, name_l, detail_l, orig_coords, pid_by_coords)
@@ -214,4 +222,8 @@ def count_in_flight_ships_by_planet(state: object) -> dict[str, object]:
         elif not orig_coords:
             for pid in complete_by_pid:
                 complete_by_pid[pid] = False
-    return {"by_planet_id": by_pid, "detail_complete_by_planet_id": complete_by_pid, "empire_in_flight": empire_in_flight}
+    return {
+        "by_planet_id": by_pid,
+        "detail_complete_by_planet_id": complete_by_pid,
+        "empire_in_flight": empire_in_flight,
+    }

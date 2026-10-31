@@ -76,7 +76,9 @@ class TestColonyAttemptsApi(unittest.TestCase):
         assert bridge._db is not None
         return bridge
 
-    def _exec(self, state: GameState, planned: PlannedAction, *, executed: bool, message: str, cmd: str = "colonize") -> dict:
+    def _exec(
+        self, state: GameState, planned: PlannedAction, *, executed: bool, message: str, cmd: str = "colonize"
+    ) -> dict:
         def _fake_exec(_client, _st, act, **_kw):
             return ExecutionResult(
                 executed=executed,
@@ -298,9 +300,7 @@ class TestColonyAttemptsApi(unittest.TestCase):
             message="Colony deleted",
         )
         with patch.object(self.bridge._live_executor, "execute_action", return_value=exec_res):
-            res = self.bridge.handle_command(
-                {"command": "abandon_colony", "planet_id": 202, "dry_run": False}
-            )
+            res = self.bridge.handle_command({"command": "abandon_colony", "planet_id": 202, "dry_run": False})
         self.assertTrue(res["ok"])
         self.assertTrue(res["executed"])
         self.assertFalse(self.bridge._last_buildings_fetched)

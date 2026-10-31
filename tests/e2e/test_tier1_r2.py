@@ -72,7 +72,15 @@ class TestTier1R2(unittest.TestCase):
         planets = _r2_default_planets(coords="03:115:07")
         gal = {
             (3, 115): [
-                {"position": 4, "name": "Sys3Target", "owner": "Sleeper3", "status_color": "yellow", "has_debris": False, "is_spacia": False, "spy_href": None},
+                {
+                    "position": 4,
+                    "name": "Sys3Target",
+                    "owner": "Sleeper3",
+                    "status_color": "yellow",
+                    "has_debris": False,
+                    "is_spacia": False,
+                    "spy_href": None,
+                },
             ]
         }
         srv = FakeSpaceInvasionServer(planets=planets, galaxy_systems=gal)
@@ -87,7 +95,15 @@ class TestTier1R2(unittest.TestCase):
     def test_r2a_t1_04_navigate_galaxy_persists_resolved_coords_not_01_001(self) -> None:
         gal = {
             (2, 385): [
-                {"position": 8, "name": "Outpost385", "owner": "Idle385", "status_color": "yellow", "has_debris": False, "is_spacia": False, "spy_href": None},
+                {
+                    "position": 8,
+                    "name": "Outpost385",
+                    "owner": "Idle385",
+                    "status_color": "yellow",
+                    "has_debris": False,
+                    "is_spacia": False,
+                    "spy_href": None,
+                },
             ]
         }
         srv = FakeSpaceInvasionServer(galaxy_systems=gal)
@@ -102,13 +118,69 @@ class TestTier1R2(unittest.TestCase):
     def test_r2a_t1_05_galaxy_color_and_spacia_classification(self) -> None:
         gal = {
             (2, 380): [
-                {"position": 2, "name": "YellowTarget", "owner": "Idle", "status_color": "yellow", "has_debris": False, "is_spacia": False, "spy_href": "indexInternal.es?action=internalFleet&mission=spio&gal=2&sun=380&pla=2"},
-                {"position": 4, "name": "Spacia World", "owner": "Spacia", "status_color": "yellow", "has_debris": True, "is_spacia": True, "spy_href": None},
-                {"position": 6, "name": "ActiveAZ", "owner": "Rival", "status_color": "light_red", "has_debris": False, "is_spacia": False, "spy_href": None},
-                {"position": 8, "name": "StrongAcct", "owner": "Titan", "status_color": "dark_red", "has_debris": False, "is_spacia": False, "spy_href": None},
-                {"position": 10, "name": "Vacation", "owner": "Vac", "status_color": "blue", "has_debris": False, "is_spacia": False, "spy_href": None},
-                {"position": 11, "name": "Ally", "owner": "Mate", "status_color": "green", "has_debris": False, "is_spacia": False, "spy_href": None},
-                {"position": 13, "name": "Ghost", "owner": "Spec", "status_color": "white", "has_debris": False, "is_spacia": False, "spy_href": None},
+                {
+                    "position": 2,
+                    "name": "YellowTarget",
+                    "owner": "Idle",
+                    "status_color": "yellow",
+                    "has_debris": False,
+                    "is_spacia": False,
+                    "spy_href": "indexInternal.es?action=internalFleet&mission=spio&gal=2&sun=380&pla=2",
+                },
+                {
+                    "position": 4,
+                    "name": "Spacia World",
+                    "owner": "Spacia",
+                    "status_color": "yellow",
+                    "has_debris": True,
+                    "is_spacia": True,
+                    "spy_href": None,
+                },
+                {
+                    "position": 6,
+                    "name": "ActiveAZ",
+                    "owner": "Rival",
+                    "status_color": "light_red",
+                    "has_debris": False,
+                    "is_spacia": False,
+                    "spy_href": None,
+                },
+                {
+                    "position": 8,
+                    "name": "StrongAcct",
+                    "owner": "Titan",
+                    "status_color": "dark_red",
+                    "has_debris": False,
+                    "is_spacia": False,
+                    "spy_href": None,
+                },
+                {
+                    "position": 10,
+                    "name": "Vacation",
+                    "owner": "Vac",
+                    "status_color": "blue",
+                    "has_debris": False,
+                    "is_spacia": False,
+                    "spy_href": None,
+                },
+                {
+                    "position": 11,
+                    "name": "Ally",
+                    "owner": "Mate",
+                    "status_color": "green",
+                    "has_debris": False,
+                    "is_spacia": False,
+                    "spy_href": None,
+                },
+                {
+                    "position": 13,
+                    "name": "Ghost",
+                    "owner": "Spec",
+                    "status_color": "white",
+                    "has_debris": False,
+                    "is_spacia": False,
+                    "spy_href": None,
+                },
             ]
         }
         srv = FakeSpaceInvasionServer(galaxy_systems=gal)
@@ -131,7 +203,9 @@ class TestTier1R2(unittest.TestCase):
             plan = h.api.send_command({"command": "plan"})["actions"]
             atk_targets = [a["target_name"] for a in plan if a["kind"] == "ATTACK"]
             for protected in ("02:380:06", "02:380:08", "02:380:10", "02:380:11", "02:380:13"):
-                self.assertFalse(any(protected in t for t in atk_targets), f"Protected slot {protected} recommended for attack")
+                self.assertFalse(
+                    any(protected in t for t in atk_targets), f"Protected slot {protected} recommended for attack"
+                )
 
     def test_r2a_t1_06_scan_galaxy_dry_run_makes_zero_server_views(self) -> None:
         srv = FakeSpaceInvasionServer()
@@ -165,7 +239,9 @@ class TestTier1R2(unittest.TestCase):
             haupt_views = [v for v in srv.page_view_log if v["frame"] == "F_Hauptframe"]
             self.assertEqual(len(haupt_views), 3)
             self.assertGreaterEqual(len(clock.sleep_calls), 2, f"Expected pacing sleeps: {clock.sleep_calls}")
-            self.assertGreaterEqual(sum(clock.sleep_calls), 1.4, f"Expected cumulative pacing sleep >=1.4s: {clock.sleep_calls}")
+            self.assertGreaterEqual(
+                sum(clock.sleep_calls), 1.4, f"Expected cumulative pacing sleep >=1.4s: {clock.sleep_calls}"
+            )
             deltas = [haupt_views[i]["ts"] - haupt_views[i - 1]["ts"] for i in range(1, len(haupt_views))]
             for d in deltas:
                 self.assertGreaterEqual(d, 0.70, f"Inter-request nav delta {d:.4f}s < 0.70s: {deltas}")
@@ -219,7 +295,11 @@ class TestTier1R2(unittest.TestCase):
             )
             self.assertIn(r_scan.status_code, (429, 503))
             self.assertTrue(r_scan.json().get("rate_limited"))
-            self.assertEqual(len(srv.page_view_log), views_before, "Cooldown made live requests to server instead of short-circuiting")
+            self.assertEqual(
+                len(srv.page_view_log),
+                views_before,
+                "Cooldown made live requests to server instead of short-circuiting",
+            )
 
     def test_r2b_t1_04_cooldown_expiry_recovers_without_ensure_session(self) -> None:
         clock = FakeClock()
@@ -310,13 +390,37 @@ class TestTier1R2(unittest.TestCase):
     def test_r2c_t1_01_multi_system_exploration_sweep_advances_systems(self) -> None:
         gal = {
             (2, 380): [
-                {"position": 12, "name": "Homeworld", "owner": "ventkx86", "status_color": "white", "has_debris": False, "is_spacia": False, "spy_href": None},
+                {
+                    "position": 12,
+                    "name": "Homeworld",
+                    "owner": "ventkx86",
+                    "status_color": "white",
+                    "has_debris": False,
+                    "is_spacia": False,
+                    "spy_href": None,
+                },
             ],
             (2, 381): [
-                {"position": 6, "name": "RichIdle381", "owner": "Idle381", "status_color": "yellow", "has_debris": False, "is_spacia": False, "spy_href": None},
+                {
+                    "position": 6,
+                    "name": "RichIdle381",
+                    "owner": "Idle381",
+                    "status_color": "yellow",
+                    "has_debris": False,
+                    "is_spacia": False,
+                    "spy_href": None,
+                },
             ],
             (2, 379): [
-                {"position": 5, "name": "RichIdle379", "owner": "Idle379", "status_color": "yellow", "has_debris": False, "is_spacia": False, "spy_href": None},
+                {
+                    "position": 5,
+                    "name": "RichIdle379",
+                    "owner": "Idle379",
+                    "status_color": "yellow",
+                    "has_debris": False,
+                    "is_spacia": False,
+                    "spy_href": None,
+                },
             ],
         }
         planets = _r2_default_planets()
@@ -333,7 +437,9 @@ class TestTier1R2(unittest.TestCase):
             plan = h.api.send_command({"command": "plan"})["actions"]
             scans = [a for a in plan if a["kind"] == "SCAN_GALAXY" and a["executable_now"]]
             self.assertGreater(len(scans), 0, f"Expected SCAN_GALAXY sweep candidate; got {plan}")
-            self.assertNotIn("02:380", scans[0]["target_name"], f"Scanner looped on already-scanned [02:380]: {scans[0]}")
+            self.assertNotIn(
+                "02:380", scans[0]["target_name"], f"Scanner looped on already-scanned [02:380]: {scans[0]}"
+            )
 
             # Execute planned scan via public commander tick & verify neighbor target discovered
             _st, act, res2, _nxt, _out = commander.run_commander_tick(
@@ -450,9 +556,7 @@ class TestTier1R2(unittest.TestCase):
         cfg = StrategyConfig(allow_raids=False, max_actions_per_hour=60)
         with E2ETestHarness(server=srv, config=cfg) as h:
             h.api.get_state(include_buildings=True)
-            h.api.send_command(
-                {"command": "update_config", "config": {"allow_raids": True, "max_actions_per_hour": 2}}
-            )
+            h.api.send_command({"command": "update_config", "config": {"allow_raids": True, "max_actions_per_hour": 2}})
             self.assertEqual(h.api.health()["remaining_hourly_actions"], 2)
 
             r1 = h.api.send_command({"command": "attack", "target_coords": "02:380:04", "dry_run": False})

@@ -224,22 +224,31 @@ class TestTier4Workflows(unittest.TestCase):
         ai_actions = plan_actions(empire, config=cfg_ai)
 
         # Asteroid respects astro_ok (no mines b1..b6) & hot tight colony emits 0-field s9
-        self.assertEqual([a for a in ai_actions if a.planet_id == 104 and a.kind == "BUILD" and a.target_id in (1, 2, 3, 4, 5, 6)], [])
-        self.assertGreater(len([a for a in ai_actions if a.planet_id == 103 and a.kind == "BUILD_SHIP" and a.target_id == 9]), 0)
+        self.assertEqual(
+            [a for a in ai_actions if a.planet_id == 104 and a.kind == "BUILD" and a.target_id in (1, 2, 3, 4, 5, 6)],
+            [],
+        )
+        self.assertGreater(
+            len([a for a in ai_actions if a.planet_id == 103 and a.kind == "BUILD_SHIP" and a.target_id == 9]), 0
+        )
         for act in ai_actions:
             _verify_eta_fields(self, act)
             exp = compute_action_eta(empire, act)
             self.assertAlmostEqual(float(act.wait_seconds), float(exp["wait_seconds"]), delta=1.0)
             self.assertAlmostEqual(float(act.duration_seconds), float(exp["duration_seconds"]), delta=1.0)
 
-        ev = evaluate_sequence_score(empire, [a for a in ai_actions if a.executable_now][:4], config=cfg_ai, horizon_hours=6.0)
+        ev = evaluate_sequence_score(
+            empire, [a for a in ai_actions if a.executable_now][:4], config=cfg_ai, horizon_hours=6.0
+        )
         self.assertTrue(ev.legal, f"Illegal planner sequence on 4-body empire: {ev.violations}")
 
         # Operator UI roundtrip priority -> ai_planner -> priority via Node vm against real HTTP server
         srv = FakeSpaceInvasionServer(speedup_factor=5.0)
         with E2ETestHarness(server=srv, config=cfg_prio) as h:
             h.api.get_state(include_buildings=True)
-            baseline_targets = [(a["kind"], a["target_id"]) for a in h.api.send_command({"command": "plan"})["actions"][:5]]
+            baseline_targets = [
+                (a["kind"], a["target_id"]) for a in h.api.send_command({"command": "plan"})["actions"][:5]
+            ]
             ui_res = run_ui_in_node(
                 h.base_url,
                 """
@@ -270,7 +279,9 @@ class TestTier4Workflows(unittest.TestCase):
 
             # Toggle back to priority leaves baseline outputs untouched
             h.api.send_command({"command": "update_config", "config": {"planner_mode": "priority"}})
-            restored_targets = [(a["kind"], a["target_id"]) for a in h.api.send_command({"command": "plan"})["actions"][:5]]
+            restored_targets = [
+                (a["kind"], a["target_id"]) for a in h.api.send_command({"command": "plan"})["actions"][:5]
+            ]
             self.assertEqual(restored_targets, baseline_targets)
 
     # T4-03: Blast Furnace Starvation, Pause (0%), Pig Iron Recovery & Hysteresis Resume (100%)
@@ -319,13 +330,20 @@ class TestTier4Workflows(unittest.TestCase):
                 for p in cell.get("pills", [])
                 if "is-blocked" in p.get("className", "") and "PIG" in p.get("text", "").upper()
             ]
-            self.assertGreater(len(blocked_pills), 0, f"Expected .is-blocked PIG pill on dashboard: {ui1['scenario']['dashRows']}")
+            self.assertGreater(
+                len(blocked_pills), 0, f"Expected .is-blocked PIG pill on dashboard: {ui1['scenario']['dashRows']}"
+            )
 
             # Phase 2: Execute throttle_building(2, 0) -> persists in SQLite & updates UI bf pill + Pig ETA unblocks
-            th0 = h.api.send_command({"command": "throttle_building", "building_id": 2, "percentage": 0, "dry_run": False})
+            th0 = h.api.send_command(
+                {"command": "throttle_building", "building_id": 2, "percentage": 0, "dry_run": False}
+            )
             self.assertTrue(th0["executed"])
             plan2 = h.api.send_command({"command": "plan", "refresh": True})["actions"]
-            b1_act = next((a for a in plan2 if a["kind"] in ("BUILD", "WAIT_RESOURCES") and a.get("target_id") == PIG_IRON_MINE), None)
+            b1_act = next(
+                (a for a in plan2 if a["kind"] in ("BUILD", "WAIT_RESOURCES") and a.get("target_id") == PIG_IRON_MINE),
+                None,
+            )
             self.assertIsNotNone(b1_act)
             assert b1_act is not None
             self.assertNotEqual(b1_act["wait_eta"], "—")
@@ -355,8 +373,12 @@ class TestTier4Workflows(unittest.TestCase):
             h.api.send_command({"command": "navigate", "action": "internalHome", "return_home": False})
             plan4 = h.api.send_command({"command": "plan", "refresh": True})["actions"]
             resume = next((a for a in plan4 if a["kind"] == "THROTTLE_BUILDING" and a.get("target_level") == 100), None)
-            self.assertIsNotNone(resume, f"Expected THROTTLE_BUILDING 100% once reserves healthy and Metal needed: {plan4}")
-            th100 = h.api.send_command({"command": "throttle_building", "building_id": 2, "percentage": 100, "dry_run": False})
+            self.assertIsNotNone(
+                resume, f"Expected THROTTLE_BUILDING 100% once reserves healthy and Metal needed: {plan4}"
+            )
+            th100 = h.api.send_command(
+                {"command": "throttle_building", "building_id": 2, "percentage": 100, "dry_run": False}
+            )
             self.assertTrue(th100["executed"])
             plan5 = h.api.send_command({"command": "plan", "refresh": True})["actions"]
             met_act = next((a for a in plan5 if a["cost"]["metal"] > 0), None)
@@ -406,17 +428,73 @@ class TestTier4Workflows(unittest.TestCase):
         }
         gal = {
             (2, 380): [
-                {"position": 4, "name": "IdlePrime", "owner": "SleepyOne", "status_color": "yellow", "has_debris": False, "is_spacia": False, "spy_href": None},
-                {"position": 6, "name": "ActiveRival", "owner": "PlayerX", "status_color": "light_red", "has_debris": False, "is_spacia": False, "spy_href": None},
-                {"position": 7, "name": "VacBlue", "owner": "VacP", "status_color": "blue", "has_debris": False, "is_spacia": False, "spy_href": None},
-                {"position": 8, "name": "AllyGreen", "owner": "Mate", "status_color": "green", "has_debris": False, "is_spacia": False, "spy_href": None},
-                {"position": 9, "name": "Spacia World", "owner": "Spacia", "status_color": "yellow", "has_debris": True, "is_spacia": True, "spy_href": None},
+                {
+                    "position": 4,
+                    "name": "IdlePrime",
+                    "owner": "SleepyOne",
+                    "status_color": "yellow",
+                    "has_debris": False,
+                    "is_spacia": False,
+                    "spy_href": None,
+                },
+                {
+                    "position": 6,
+                    "name": "ActiveRival",
+                    "owner": "PlayerX",
+                    "status_color": "light_red",
+                    "has_debris": False,
+                    "is_spacia": False,
+                    "spy_href": None,
+                },
+                {
+                    "position": 7,
+                    "name": "VacBlue",
+                    "owner": "VacP",
+                    "status_color": "blue",
+                    "has_debris": False,
+                    "is_spacia": False,
+                    "spy_href": None,
+                },
+                {
+                    "position": 8,
+                    "name": "AllyGreen",
+                    "owner": "Mate",
+                    "status_color": "green",
+                    "has_debris": False,
+                    "is_spacia": False,
+                    "spy_href": None,
+                },
+                {
+                    "position": 9,
+                    "name": "Spacia World",
+                    "owner": "Spacia",
+                    "status_color": "yellow",
+                    "has_debris": True,
+                    "is_spacia": True,
+                    "spy_href": None,
+                },
             ],
             (2, 381): [
-                {"position": 5, "name": "OuterIdle", "owner": "Idle381", "status_color": "yellow", "has_debris": False, "is_spacia": False, "spy_href": None},
+                {
+                    "position": 5,
+                    "name": "OuterIdle",
+                    "owner": "Idle381",
+                    "status_color": "yellow",
+                    "has_debris": False,
+                    "is_spacia": False,
+                    "spy_href": None,
+                },
             ],
             (2, 382): [
-                {"position": 7, "name": "RimIdle", "owner": "Idle382", "status_color": "yellow", "has_debris": True, "is_spacia": False, "spy_href": None},
+                {
+                    "position": 7,
+                    "name": "RimIdle",
+                    "owner": "Idle382",
+                    "status_color": "yellow",
+                    "has_debris": True,
+                    "is_spacia": False,
+                    "spy_href": None,
+                },
             ],
         }
         spy_reports = {
@@ -461,10 +539,18 @@ class TestTier4Workflows(unittest.TestCase):
 
             # 2) Sweep systems [02:380], [02:381], [02:382] via p_galaxy() fallback
             for sys_n in (380, 381, 382):
-                self.assertTrue(h.api.send_command({"command": "scan_galaxy", "galaxy": 2, "system": sys_n, "dry_run": False})["executed"])
+                self.assertTrue(
+                    h.api.send_command({"command": "scan_galaxy", "galaxy": 2, "system": sys_n, "dry_run": False})[
+                        "executed"
+                    ]
+                )
 
             # 3) Spy recon & Combat simulation (>= 1.4x with Stealth bomber first-strike)
-            self.assertTrue(h.api.send_command({"command": "spy", "target_coords": "02:380:04", "planet_id": 12476, "dry_run": False})["executed"])
+            self.assertTrue(
+                h.api.send_command(
+                    {"command": "spy", "target_coords": "02:380:04", "planet_id": 12476, "dry_run": False}
+                )["executed"]
+            )
             sync_res = h.api.send_command({"command": "sync_messages"})
             self.assertGreaterEqual(sync_res["synced_reports"], 1)
 
@@ -481,19 +567,29 @@ class TestTier4Workflows(unittest.TestCase):
             self.assertGreater(sim["stealth_first_strike_power"], 0.0)
 
             # 4) Live attack switches origin planet via newPlanet=12477, verifies raid_history + Bash 3/24h cap
-            atk1 = h.api.send_command({"command": "attack", "target_coords": "02:380:04", "planet_id": 12477, "dry_run": False})
+            atk1 = h.api.send_command(
+                {"command": "attack", "target_coords": "02:380:04", "planet_id": 12477, "dry_run": False}
+            )
             self.assertTrue(atk1["executed"])
             self.assertEqual(srv.launched_fleets[-1]["origin_planet_id"], 12477)
 
             for _ in range(3):
-                r_az = h.api.send_command({"command": "attack", "target_coords": "02:380:06", "planet_id": 12477, "dry_run": False})
+                r_az = h.api.send_command(
+                    {"command": "attack", "target_coords": "02:380:06", "planet_id": 12477, "dry_run": False}
+                )
                 self.assertTrue(r_az["executed"])
             # 4th attack on active light_red MUST be blocked; 4th on yellow/Spacia exempt!
-            blocked_az = h.api.send_command({"command": "attack", "target_coords": "02:380:06", "planet_id": 12477, "dry_run": False})
+            blocked_az = h.api.send_command(
+                {"command": "attack", "target_coords": "02:380:06", "planet_id": 12477, "dry_run": False}
+            )
             self.assertFalse(blocked_az["executed"])
             self.assertIn("bash", blocked_az["message"].lower())
             for _ in range(3):
-                self.assertTrue(h.api.send_command({"command": "attack", "target_coords": "02:380:04", "planet_id": 12477, "dry_run": False})["executed"])
+                self.assertTrue(
+                    h.api.send_command(
+                        {"command": "attack", "target_coords": "02:380:04", "planet_id": 12477, "dry_run": False}
+                    )["executed"]
+                )
 
             auto_ts = [v["ts"] for v in srv.page_view_log[initial_views:]]
             self.assertGreater(len(auto_ts), 24)
@@ -581,7 +677,9 @@ class TestTier4Workflows(unittest.TestCase):
             # Advance clock past cooldown & verify recovery
             clock.advance(65.0)
             srv.clear_throttle()
-            self.assertTrue(h.api.send_command({"command": "scan_galaxy", "galaxy": 2, "system": 381, "dry_run": False})["executed"])
+            self.assertTrue(
+                h.api.send_command({"command": "scan_galaxy", "galaxy": 2, "system": 381, "dry_run": False})["executed"]
+            )
             plan = h.api.send_command({"command": "plan"})["actions"]
             _verify_eta_fields(self, plan[0])
             self.assertEqual(len(h.ensure_session_calls), 0)
@@ -692,9 +790,17 @@ class TestTier4Workflows(unittest.TestCase):
                     "config": {"planner_mode": "ai_planner", "playstyle": "miner", "max_actions_per_hour": 25},
                 }
             )
-            self.assertTrue(h.api.send_command({"command": "throttle_building", "building_id": 2, "percentage": 0, "dry_run": False})["executed"])
-            self.assertTrue(h.api.send_command({"command": "scan_galaxy", "galaxy": 2, "system": 380, "dry_run": False})["executed"])
-            self.assertTrue(h.api.send_command({"command": "attack", "target_coords": "02:380:04", "dry_run": False})["executed"])
+            self.assertTrue(
+                h.api.send_command(
+                    {"command": "throttle_building", "building_id": 2, "percentage": 0, "dry_run": False}
+                )["executed"]
+            )
+            self.assertTrue(
+                h.api.send_command({"command": "scan_galaxy", "galaxy": 2, "system": 380, "dry_run": False})["executed"]
+            )
+            self.assertTrue(
+                h.api.send_command({"command": "attack", "target_coords": "02:380:04", "dry_run": False})["executed"]
+            )
             dash1 = requests.get(f"{h.base_url}/dashboard?refresh=0", timeout=5.0).json()
             self.assertTrue(dash1["ok"])
             self.assertIn("ranking", dash1)

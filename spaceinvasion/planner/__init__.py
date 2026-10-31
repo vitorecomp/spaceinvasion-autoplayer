@@ -5,7 +5,7 @@ from __future__ import annotations
 import importlib
 from types import ModuleType
 
-__all__ = ['ai', 'config_optimizer', 'eta', 'graph', 'heuristics']
+__all__ = ["ai", "config_optimizer", "eta", "graph", "heuristics"]
 
 
 def __getattr__(name: str) -> ModuleType:

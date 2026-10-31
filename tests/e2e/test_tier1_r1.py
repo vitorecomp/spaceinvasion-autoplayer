@@ -146,8 +146,20 @@ class TestTier1R1(unittest.TestCase):
         )
         multi = make_game_state(
             planets=(
-                make_planet(planet_id=10, coords="02:380:12", temperature=50, buildings={"b1": 5, "b2": 4, "b3": 4, "b4": 2, "b5": 8}, auto_offers=True),
-                make_planet(planet_id=11, coords="02:380:15", temperature=-110, buildings={"b1": 4, "b2": 3, "b3": 4, "b4": 2, "b5": 7}, auto_offers=True),
+                make_planet(
+                    planet_id=10,
+                    coords="02:380:12",
+                    temperature=50,
+                    buildings={"b1": 5, "b2": 4, "b3": 4, "b4": 2, "b5": 8},
+                    auto_offers=True,
+                ),
+                make_planet(
+                    planet_id=11,
+                    coords="02:380:15",
+                    temperature=-110,
+                    buildings={"b1": 4, "b2": 3, "b3": 4, "b4": 2, "b5": 7},
+                    auto_offers=True,
+                ),
             ),
             active_planet_id=10,
             researches={"r1": 2, "r2": 2},
@@ -167,7 +179,9 @@ class TestTier1R1(unittest.TestCase):
                 total_steps=11,
                 tasks=(
                     TutorialTask("Build a Small transport 1 / 2", "Small transport", 1, 1, 2, category="ship"),
-                    TutorialTask("Have a successful fight 0 / 1", "Have a successful fight", None, 0, 1, category="milestone"),
+                    TutorialTask(
+                        "Have a successful fight 0 / 1", "Have a successful fight", None, 0, 1, category="milestone"
+                    ),
                 ),
             ),
         )
@@ -271,8 +285,7 @@ class TestTier1R1(unittest.TestCase):
             plan_pri_before = h.api.send_command({"command": "plan"})
             self.assertTrue(plan_pri_before["ok"])
             sig_pri_before = [
-                (a["kind"], a["target_id"], a["target_level"], a["planet_id"])
-                for a in plan_pri_before["actions"]
+                (a["kind"], a["target_id"], a["target_level"], a["planet_id"]) for a in plan_pri_before["actions"]
             ]
 
             upd = h.api.send_command(
@@ -297,7 +310,9 @@ class TestTier1R1(unittest.TestCase):
 
             h.api.send_command({"command": "update_config", "config": {"planner_mode": "priority"}})
             plan_pri = h.api.send_command({"command": "plan"})["actions"]
-            expected_pri = [asdict(a) for a in plan_actions(h.api.get_state(include_buildings=True), config=StrategyConfig())]
+            expected_pri = [
+                asdict(a) for a in plan_actions(h.api.get_state(include_buildings=True), config=StrategyConfig())
+            ]
             self.assertEqual(
                 [(a["kind"], a["target_id"], a["planet_id"]) for a in plan_pri],
                 [(a["kind"], a["target_id"], a["planet_id"]) for a in expected_pri],
@@ -414,10 +429,7 @@ class TestTier1R1(unittest.TestCase):
         self.assertGreaterEqual(ev.final_state.planets[0].energy.net, 0)
 
     def test_r1_a2_t4_building_queue_fullness_and_global_research_slot(self) -> None:
-        full_queues = tuple(
-            QueueJob("building", "Pig iron mine", building_id=1, target_level=i)
-            for i in range(6, 11)
-        )
+        full_queues = tuple(QueueJob("building", "Pig iron mine", building_id=1, target_level=i) for i in range(6, 11))
         p = make_planet(
             buildings={"b1": 5, "b2": 4, "b3": 4, "b5": 8, "b7": 2, "b8": 2},
             resources=Resources(50_000, 50_000, 50_000, 20_000),
@@ -465,7 +477,16 @@ class TestTier1R1(unittest.TestCase):
         )
         actions = plan_actions(state, config=cfg)
         for act in actions:
-            if act.kind in ("RESEARCH", "BUILD_SHIP", "SHIP", "TUTORIAL_TASK", "WAIT_RESOURCES", "ATTACK", "SCAN_GALAXY", "ALERT_HOSTILE"):
+            if act.kind in (
+                "RESEARCH",
+                "BUILD_SHIP",
+                "SHIP",
+                "TUTORIAL_TASK",
+                "WAIT_RESOURCES",
+                "ATTACK",
+                "SCAN_GALAXY",
+                "ALERT_HOSTILE",
+            ):
                 self.assertFalse(act.executable_now, f"Expected executable_now=False for gated/advisory {act}")
                 self.assertIsNone(act.action_href, f"Expected action_href=None for {act}")
 
@@ -530,12 +551,13 @@ class TestTier1R1(unittest.TestCase):
             f"Expected executable ATTACK on rich yellow target when allow_raids=True; got {acts_raids}",
         )
         self.assertFalse(any(a.kind == "ATTACK" and a.executable_now for a in acts_no_raids))
-        raid_seq = (
-            [a for a in acts_raids if a.kind == "ATTACK" and a.executable_now][:1]
-            + [a for a in acts_raids if a.executable_now and a.kind != "ATTACK"][:3]
-        )
+        raid_seq = [a for a in acts_raids if a.kind == "ATTACK" and a.executable_now][:1] + [
+            a for a in acts_raids if a.executable_now and a.kind != "ATTACK"
+        ][:3]
         ev_raids = evaluate_sequence_score(state, raid_seq, config=cfg_raids)
-        ev_no_raids = evaluate_sequence_score(state, [a for a in acts_no_raids if a.executable_now][:3], config=cfg_no_raids)
+        ev_no_raids = evaluate_sequence_score(
+            state, [a for a in acts_no_raids if a.executable_now][:3], config=cfg_no_raids
+        )
         self.assertTrue(ev_raids.legal)
         self.assertGreater(ev_raids.total_score, ev_no_raids.total_score)
 
@@ -604,7 +626,15 @@ class TestTier1R1(unittest.TestCase):
                 total_steps=11,
                 tasks=(
                     TutorialTask("Increase your Pig iron mine level 0 / 2", "Pig iron mine", 1, 0, 2),
-                    TutorialTask("Upgrade your Energy technology 0 / 2", "Energy technology", None, 0, 2, category="research", research_id="r2"),
+                    TutorialTask(
+                        "Upgrade your Energy technology 0 / 2",
+                        "Energy technology",
+                        None,
+                        0,
+                        2,
+                        category="research",
+                        research_id="r2",
+                    ),
                 ),
             ),
         )

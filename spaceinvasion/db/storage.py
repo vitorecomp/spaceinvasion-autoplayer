@@ -61,12 +61,15 @@ def server_day_key(ts: Optional[float] = None) -> str:
     except (OSError, OverflowError, ValueError):
         return datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
 
+
 _RESOURCE_KEYS: tuple[str, ...] = ("pig_iron", "metal", "kryptonite", "spice")
 _EXTRA_SID_RE = re.compile(_LOG_SID_RE.pattern, _LOG_SID_RE.flags)
 
 
 def _sub_extra_sid(match: re.Match[str]) -> str:
     return _sub_log_sid_kv(match)
+
+
 _LOSS_OUTCOME_TOKENS: tuple[str, ...] = (
     "loss",
     "lost",
@@ -256,7 +259,11 @@ def _sanitize_obj(
         if val is None or tv is bool:
             return val
         if tv is int:
-            return val if -game_data.MAX_JSON_SAFE_INT <= val <= game_data.MAX_JSON_SAFE_INT else game_data.cap_json_int(val)
+            return (
+                val
+                if -game_data.MAX_JSON_SAFE_INT <= val <= game_data.MAX_JSON_SAFE_INT
+                else game_data.cap_json_int(val)
+            )
         if tv is str:
             return _sanitize_text(val)
         if tv is float:
@@ -526,6 +533,7 @@ def _is_win_outcome(outcome: str, loot_spice_eq: float) -> bool:
         return True
     return bool(s and any(tok in s for tok in _WIN_OUTCOME_TOKENS))
 
+
 def _stringify_keys(
     obj: Any,
     *,
@@ -551,18 +559,14 @@ def _stringify_keys(
                         out["[Truncated]"] = "[Truncated]"
                         break
                     sk = k if isinstance(k, str) else _raw_text(k, "<key>")
-                    out[sk] = _stringify_keys(
-                        v, _depth=_depth + 1, _seen=seen, _budget=budget
-                    )
+                    out[sk] = _stringify_keys(v, _depth=_depth + 1, _seen=seen, _budget=budget)
                 return out
             out_l: list[Any] = []
             for v in obj:
                 if budget[0] <= 0:
                     out_l.append("[Truncated]")
                     break
-                out_l.append(
-                    _stringify_keys(v, _depth=_depth + 1, _seen=seen, _budget=budget)
-                )
+                out_l.append(_stringify_keys(v, _depth=_depth + 1, _seen=seen, _budget=budget))
             return out_l
         finally:
             seen.discard(vid)
@@ -615,9 +619,7 @@ class GameDatabase:
         self._is_memory = False
         self.postgres_url: str = eff_dsn
         self.db_path = (
-            db_path
-            if (isinstance(db_path, Path) and not is_postgres_dsn(str(db_path)))
-            else Path("state") / "postgres"
+            db_path if (isinstance(db_path, Path) and not is_postgres_dsn(str(db_path))) else Path("state") / "postgres"
         )
         self._pg_backend: Any = PostgresPoolBackend(
             eff_dsn,
@@ -672,9 +674,7 @@ class GameDatabase:
         max_id = int(max_row["max_id"] or 0) if max_row is not None else 0
         if max_id <= 0:
             return
-        meta_row = self._conn.execute(
-            "SELECT value FROM meta WHERE key = 'reports_backfill_v2'"
-        ).fetchone()
+        meta_row = self._conn.execute("SELECT value FROM meta WHERE key = 'reports_backfill_v2'").fetchone()
         if meta_row is not None and str(meta_row["value"]) == str(max_id):
             return
 
@@ -736,7 +736,9 @@ class GameDatabase:
             srv_id_s = _sanitize_text(r["server_msg_id"] or reparsed.server_msg_id)[:64]
             dt_s = _sanitize_text(dt_orig or reparsed.msg_date_text)[:64]
             cat_s = _sanitize_text(reparsed.category or r["category"] or "other")[:64]
-            norm_c = normalize_coords(reparsed.coords) if reparsed.coords else normalize_coords(_raw_text(r["coords"], ""))
+            norm_c = (
+                normalize_coords(reparsed.coords) if reparsed.coords else normalize_coords(_raw_text(r["coords"], ""))
+            )
             clean_btxt = _sanitize_text(reparsed.body_text or btxt_orig)[:8000]
             pdata = reparsed.parsed_data if isinstance(reparsed.parsed_data, Mapping) else {}
 
@@ -991,12 +993,30 @@ class GameDatabase:
     @staticmethod
     def _parse_norm_gsp_fast(raw_c: Any) -> Optional[tuple[str, int, int, int]]:
         if type(raw_c) is str:
-            nc = raw_c if (len(raw_c) == 9 and raw_c[2] == ":" and raw_c[6] == ":" and raw_c[0:2].isdigit() and raw_c[3:6].isdigit() and raw_c[7:9].isdigit()) else normalize_coords(raw_c.strip())
+            nc = (
+                raw_c
+                if (
+                    len(raw_c) == 9
+                    and raw_c[2] == ":"
+                    and raw_c[6] == ":"
+                    and raw_c[0:2].isdigit()
+                    and raw_c[3:6].isdigit()
+                    and raw_c[7:9].isdigit()
+                )
+                else normalize_coords(raw_c.strip())
+            )
         else:
             nc = normalize_coords(_raw_text(raw_c, "").strip())
         if not nc:
             return None
-        if len(nc) == 9 and nc[2] == ":" and nc[6] == ":" and nc[0:2].isdigit() and nc[3:6].isdigit() and nc[7:9].isdigit():
+        if (
+            len(nc) == 9
+            and nc[2] == ":"
+            and nc[6] == ":"
+            and nc[0:2].isdigit()
+            and nc[3:6].isdigit()
+            and nc[7:9].isdigit()
+        ):
             return (nc, int(nc[0:2]), int(nc[3:6]), int(nc[7:9]))
         m = _NORM_GSP_RE.match(nc)
         if not m:
@@ -1140,9 +1160,7 @@ class GameDatabase:
         return touched_sectors
 
     def _load_discarded_colony_coords_locked(self) -> set[str]:
-        row = self._conn.execute(
-            "SELECT value FROM meta WHERE key = 'discarded_colony_coords' LIMIT 1"
-        ).fetchone()
+        row = self._conn.execute("SELECT value FROM meta WHERE key = 'discarded_colony_coords' LIMIT 1").fetchone()
         if row is None or not row[0]:
             return set()
         try:
@@ -1179,7 +1197,13 @@ class GameDatabase:
     def _refresh_colony_candidates_hot_locked(self, coords_iter: Iterable[str], now_ts: float) -> None:
         if not DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "colony_candidates_hot"):
             return
-        norm_coords = sorted({normalize_coords(_raw_text(c, "").strip()) for c in coords_iter if normalize_coords(_raw_text(c, "").strip())})
+        norm_coords = sorted(
+            {
+                normalize_coords(_raw_text(c, "").strip())
+                for c in coords_iter
+                if normalize_coords(_raw_text(c, "").strip())
+            }
+        )
         if not norm_coords:
             return
         ts_r = round(float(now_ts), 3)
@@ -1401,7 +1425,9 @@ class GameDatabase:
                 parsed = self._parse_norm_gsp_fast(r[0])
                 if parsed is not None:
                     own_coords.add(parsed[0])
-        if DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "spy_targets") and self._has_column_locked("spy_targets", "is_own_planet"):
+        if DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "spy_targets") and self._has_column_locked(
+            "spy_targets", "is_own_planet"
+        ):
             for r in cur.execute("SELECT coords FROM spy_targets WHERE is_own_planet = 1").fetchall():
                 parsed = self._parse_norm_gsp_fast(r[0])
                 if parsed is not None:
@@ -1564,9 +1590,7 @@ class GameDatabase:
                 owners_list.append(disp)
                 owner_counts[disp] = pcnt
             co_norm = {
-                nc: owner_display.get(ov.lower(), ov)
-                for nc, ov in sorted(coord_owner.items())
-                if nc not in spacia_set
+                nc: owner_display.get(ov.lower(), ov) for nc, ov in sorted(coord_owner.items()) if nc not in spacia_set
             }
             sec_params.append(
                 (
@@ -1632,10 +1656,11 @@ class GameDatabase:
             need_rebuild = hot_cnt < scan_cnt
             if not need_rebuild and hot_cnt == 0:
                 if (
-                    (DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "galaxy_slots")
-                     and self._conn.execute("SELECT 1 FROM galaxy_slots LIMIT 1").fetchone() is not None)
-                    or (DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "spy_targets")
-                        and self._conn.execute("SELECT 1 FROM spy_targets LIMIT 1").fetchone() is not None)
+                    DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "galaxy_slots")
+                    and self._conn.execute("SELECT 1 FROM galaxy_slots LIMIT 1").fetchone() is not None
+                ) or (
+                    DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "spy_targets")
+                    and self._conn.execute("SELECT 1 FROM spy_targets LIMIT 1").fetchone() is not None
                 ):
                     need_rebuild = True
             if need_rebuild:
@@ -1649,12 +1674,27 @@ class GameDatabase:
             if not has_any_hot:
                 need_rebuild = False
                 if (
-                    (DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "galaxy_slots")
-                     and self._conn.execute("SELECT 1 FROM galaxy_slots WHERE status_color = 'free' LIMIT 1").fetchone() is not None)
-                    or (DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "spy_targets")
-                        and self._conn.execute("SELECT 1 FROM spy_targets WHERE status_color = 'free' OR uninhabited_fields IS NOT NULL LIMIT 1").fetchone() is not None)
-                    or (DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "spy_reports")
-                        and self._conn.execute("SELECT 1 FROM spy_reports WHERE uninhabited_fields IS NOT NULL AND owner = '' AND is_spacia = 0 LIMIT 1").fetchone() is not None)
+                    (
+                        DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "galaxy_slots")
+                        and self._conn.execute(
+                            "SELECT 1 FROM galaxy_slots WHERE status_color = 'free' LIMIT 1"
+                        ).fetchone()
+                        is not None
+                    )
+                    or (
+                        DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "spy_targets")
+                        and self._conn.execute(
+                            "SELECT 1 FROM spy_targets WHERE status_color = 'free' OR uninhabited_fields IS NOT NULL LIMIT 1"
+                        ).fetchone()
+                        is not None
+                    )
+                    or (
+                        DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "spy_reports")
+                        and self._conn.execute(
+                            "SELECT 1 FROM spy_reports WHERE uninhabited_fields IS NOT NULL AND owner = '' AND is_spacia = 0 LIMIT 1"
+                        ).fetchone()
+                        is not None
+                    )
                 ):
                     need_rebuild = True
                 if need_rebuild:
@@ -1698,13 +1738,14 @@ class GameDatabase:
                 else:
                     elapsed = abs(now_ts - last_rank_ts)
                     changed_server = (
-                        (state.account_points is not None and _sql_optional_int(state.account_points) != last_rank["server_points"])
-                        or (state.account_rank is not None and _sql_optional_int(state.account_rank) != last_rank["server_rank"])
+                        state.account_points is not None
+                        and _sql_optional_int(state.account_points) != last_rank["server_points"]
+                    ) or (
+                        state.account_rank is not None
+                        and _sql_optional_int(state.account_rank) != last_rank["server_rank"]
                     )
                     est_pts_now = _safe_float(est.get("estimated_points"), 0.0)
-                    changed_est = int(round(est_pts_now)) != int(
-                        round(last_est_pts)
-                    )
+                    changed_est = int(round(est_pts_now)) != int(round(last_est_pts))
                     if changed_server or changed_est or elapsed >= rank_min_interval_seconds:
                         append_rank = True
 
@@ -2006,9 +2047,7 @@ class GameDatabase:
                     (cfg_json, now_ts, _sanitize_text(source or "sqlite")[:32]),
                 )
             self._save_meta_json_locked("strategy_config", cfg_dict, now_ts)
-            last_cfg = self._conn.execute(
-                "SELECT config_json FROM config_history ORDER BY id DESC LIMIT 1"
-            ).fetchone()
+            last_cfg = self._conn.execute("SELECT config_json FROM config_history ORDER BY id DESC LIMIT 1").fetchone()
             if last_cfg is None or last_cfg["config_json"] != cfg_json:
                 self._conn.execute(
                     "INSERT INTO config_history(ts, config_json) VALUES (?, ?)",
@@ -2019,9 +2058,7 @@ class GameDatabase:
     def load_strategy_config_snapshot(self) -> Optional[dict[str, Any]]:
         with self._lock:
             if DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "strategy_config_store"):
-                row = self._conn.execute(
-                    "SELECT config_json FROM strategy_config_store WHERE id = 1"
-                ).fetchone()
+                row = self._conn.execute("SELECT config_json FROM strategy_config_store WHERE id = 1").fetchone()
                 if row is not None:
                     raw_txt = _raw_text(row["config_json"], "").strip()
                     if raw_txt:
@@ -2061,9 +2098,7 @@ class GameDatabase:
         kind_s = _sanitize_text(action_kind or "").upper()[:32]
         pcoords_s = _sanitize_text(planet_coords or "")[:32]
         tname_s = _sanitize_text(target_name or "")[:120]
-        dkey_s = _sanitize_text(
-            dedupe_key or f"{cat_s}:{kind_s}:{pcoords_s}:{tname_s}:{title_s}"
-        )[:180]
+        dkey_s = _sanitize_text(dedupe_key or f"{cat_s}:{kind_s}:{pcoords_s}:{tname_s}:{title_s}")[:180]
         det_json = _json_dumps(_sanitize_obj(dict(details)) if isinstance(details, Mapping) else {})
 
         with self._lock:
@@ -2222,9 +2257,7 @@ class GameDatabase:
         with self._lock:
             if not DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "ui_notifications"):
                 return 0
-            row = self._conn.execute(
-                "SELECT COUNT(*) FROM ui_notifications WHERE status = 'unread'"
-            ).fetchone()
+            row = self._conn.execute("SELECT COUNT(*) FROM ui_notifications WHERE status = 'unread'").fetchone()
             return int(row[0]) if row is not None else 0
 
     def acknowledge_notification(
@@ -2398,8 +2431,7 @@ class GameDatabase:
             if row is None and DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "state_snapshots"):
                 cols = (
                     "id, ts, source, universe_id, user_id, nickname, active_planet_id, "
-                    "planet_count, planned_action_count"
-                    + (", state_json, plan_json" if include_payload else "")
+                    "planet_count, planned_action_count" + (", state_json, plan_json" if include_payload else "")
                 )
                 row = self._conn.execute(f"SELECT {cols} FROM state_snapshots ORDER BY id DESC LIMIT 1").fetchone()
         if row is None:
@@ -2433,8 +2465,7 @@ class GameDatabase:
                 return []
             cols = (
                 "id, ts, source, universe_id, user_id, nickname, active_planet_id, "
-                "planet_count, planned_action_count"
-                + (", state_json, plan_json" if include_payload else "")
+                "planet_count, planned_action_count" + (", state_json, plan_json" if include_payload else "")
             )
             rows = self._conn.execute(
                 f"SELECT {cols} FROM state_snapshots ORDER BY id DESC LIMIT ?",
@@ -2475,11 +2506,7 @@ class GameDatabase:
         if not rates:
             return
         now_ts = _safe_float(ts, time.time()) if ts is not None else time.time()
-        clean = {
-            game_data.safe_key(k): v_i
-            for k, v in rates.items()
-            if (v_i := _safe_optional_int(v)) is not None
-        }
+        clean = {game_data.safe_key(k): v_i for k, v in rates.items() if (v_i := _safe_optional_int(v)) is not None}
         with self._lock:
             self._conn.execute(
                 """
@@ -2496,9 +2523,7 @@ class GameDatabase:
 
     def get_all_economy_rates(self) -> dict[int, dict[str, int]]:
         with self._lock:
-            rows = self._conn.execute(
-                "SELECT planet_id, rates_json FROM economy_rates_cache"
-            ).fetchall()
+            rows = self._conn.execute("SELECT planet_id, rates_json FROM economy_rates_cache").fetchall()
         out: dict[int, dict[str, int]] = {}
         for row in rows:
             pid_raw = _safe_optional_int(row["planet_id"])
@@ -2634,7 +2659,9 @@ class GameDatabase:
         )
         sum_spy_count = sum(max(0, _safe_int(r["spy_count"], 0)) for r in all_rows)
         best_owner = next((_raw_text(r["owner"], "") for r in ranked if _raw_text(r["owner"], "").strip()), "")
-        best_pname = next((_raw_text(r["planet_name"], "") for r in ranked if _raw_text(r["planet_name"], "").strip()), "")
+        best_pname = next(
+            (_raw_text(r["planet_name"], "") for r in ranked if _raw_text(r["planet_name"], "").strip()), ""
+        )
 
         if norm_row is not None:
             self._conn.execute(
@@ -2891,11 +2918,7 @@ class GameDatabase:
         gal_i = _sql_int(parts[0], 0) if len(parts) >= 1 and parts[0].isdigit() else 0
         sys_i = _sql_int(parts[1], 0) if len(parts) >= 2 and parts[1].isdigit() else 0
         pos_fallback = _sql_int(getattr(slot, "position", 0), 0)
-        pos_i = (
-            _sql_int(parts[2], pos_fallback)
-            if len(parts) >= 3 and parts[2].isdigit()
-            else pos_fallback
-        )
+        pos_i = _sql_int(parts[2], pos_fallback) if len(parts) >= 3 and parts[2].isdigit() else pos_fallback
         scolor = _sanitize_text(getattr(slot, "status_color", "free") or "free")
         is_spacia = 1 if bool(getattr(slot, "is_spacia", False)) else 0
         is_inactive = 1 if (scolor == "yellow" or is_spacia) else 0
@@ -3045,10 +3068,7 @@ class GameDatabase:
     ) -> int:
         now_ts = round(_safe_float(ts, time.time()) if ts is not None else time.time(), 3)
         saved = 0
-        sig_coords = tuple(
-            normalize_coords(_raw_text(getattr(s, "coords", ""), "").strip())
-            for s in slots
-        )
+        sig_coords = tuple(normalize_coords(_raw_text(getattr(s, "coords", ""), "").strip()) for s in slots)
         with self._lock:
             append_hist = (
                 self._last_slot_history_sig is None
@@ -3091,7 +3111,9 @@ class GameDatabase:
                         slot_cmin = _sql_optional_int(getattr(slot, "colonize_min_fields", None))
                         slot_cmax = _sql_optional_int(getattr(slot, "colonize_max_fields", None))
                         slot_temp = _sql_optional_int(getattr(slot, "temperature", None))
-                        if slot_uf is not None or (slot_cmax is not None and self._has_column_locked("spy_targets", "colonize_max_fields")):
+                        if slot_uf is not None or (
+                            slot_cmax is not None and self._has_column_locked("spy_targets", "colonize_max_fields")
+                        ):
                             if self._has_column_locked("spy_targets", "colonize_max_fields"):
                                 self._conn.execute(
                                     """
@@ -3267,17 +3289,12 @@ class GameDatabase:
         now_ts = round(_safe_float(ts, time.time()) if ts is not None else time.time(), 3)
         occupied_count = sum(1 for s in slots if getattr(s, "status_color", "free") != "free")
         target_count = sum(
-            1
-            for s in slots
-            if getattr(s, "status_color", "") == "yellow" or bool(getattr(s, "is_spacia", False))
+            1 for s in slots if getattr(s, "status_color", "") == "yellow" or bool(getattr(s, "is_spacia", False))
         )
         free_count = sum(1 for s in slots if getattr(s, "status_color", "free") == "free")
         debris_count = sum(1 for s in slots if bool(getattr(s, "has_debris", False)))
         asteroid_count = sum(1 for s in slots if bool(getattr(s, "has_asteroid", False)))
-        sig_coords = tuple(
-            normalize_coords(_raw_text(getattr(s, "coords", ""), "").strip())
-            for s in slots
-        )
+        sig_coords = tuple(normalize_coords(_raw_text(getattr(s, "coords", ""), "").strip()) for s in slots)
         with self._lock:
             append_hist = (
                 self._last_slot_history_sig is None
@@ -3386,8 +3403,12 @@ class GameDatabase:
                         "is_spacia": bool(r["is_spacia"]),
                         "has_debris": bool(r["has_debris"]),
                         "last_scanned_ts": _safe_float(r["last_scanned_ts"], 0.0),
-                        "colonize_min_fields": _safe_optional_int(r["colonize_min_fields"]) if "colonize_min_fields" in rk else None,
-                        "colonize_max_fields": _safe_optional_int(r["colonize_max_fields"]) if "colonize_max_fields" in rk else None,
+                        "colonize_min_fields": _safe_optional_int(r["colonize_min_fields"])
+                        if "colonize_min_fields" in rk
+                        else None,
+                        "colonize_max_fields": _safe_optional_int(r["colonize_max_fields"])
+                        if "colonize_max_fields" in rk
+                        else None,
                         "temperature": _safe_optional_int(r["temperature"]) if "temperature" in rk else None,
                     }
                 )
@@ -3556,9 +3577,7 @@ class GameDatabase:
                                 opc_parsed = json.loads(opc_raw)
                                 if isinstance(opc_parsed, dict):
                                     opc_items = tuple(
-                                        (str(k).lower(), str(k), int(v))
-                                        for k, v in opc_parsed.items()
-                                        if int(v) > 0
+                                        (str(k).lower(), str(k), int(v)) for k, v in opc_parsed.items() if int(v) > 0
                                     )
                             except ValueError:
                                 pass
@@ -3940,22 +3959,14 @@ class GameDatabase:
                 if has_slot_cmax
                 else "coords, galaxy, system, position, owner, status_color, is_inactive, is_spacia, has_debris, NULL AS colonize_max_fields"
             )
-            slot_rows = (
-                self._conn.execute(f"SELECT {slot_cols} FROM galaxy_slots").fetchall()
-                if has_slots
-                else []
-            )
+            slot_rows = self._conn.execute(f"SELECT {slot_cols} FROM galaxy_slots").fetchall() if has_slots else []
             has_spy_cmax = has_spy and self._has_column_locked("spy_targets", "colonize_max_fields")
             spy_cols = (
                 "coords, owner, status_color, is_inactive, is_spacia, has_debris, uninhabited_fields, colonize_max_fields, is_own_planet, merged_into"
                 if has_spy_cmax
                 else "coords, owner, status_color, is_inactive, is_spacia, has_debris, uninhabited_fields, NULL AS colonize_max_fields, is_own_planet, merged_into"
             )
-            spy_rows = (
-                self._conn.execute(f"SELECT {spy_cols} FROM spy_targets").fetchall()
-                if has_spy
-                else []
-            )
+            spy_rows = self._conn.execute(f"SELECT {spy_cols} FROM spy_targets").fetchall() if has_spy else []
             norm_raids = self._query_norm_raid_rows_locked() if has_raids else []
             battle_rows = (
                 self._conn.execute(
@@ -4259,14 +4270,10 @@ class GameDatabase:
                 cur_sm["scan_count"] = max(cur_sm["scan_count"], sc_cnt)
                 cur_sm["hist_debris_max"] = max(cur_sm["hist_debris_max"], max_deb)
 
-        explored_systems = sum(
-            1 for sm in scan_meta.values() if _safe_float(sm.get("last_scanned_ts"), 0.0) > 0.0
-        )
+        explored_systems = sum(1 for sm in scan_meta.values() if _safe_float(sm.get("last_scanned_ts"), 0.0) > 0.0)
         total_systems = len(active_galaxies) * 400
         unscanned_systems = max(0, total_systems - explored_systems)
-        coverage_pct = (
-            round((explored_systems / total_systems) * 100.0, 2) if total_systems > 0 else 0.0
-        )
+        coverage_pct = round((explored_systems / total_systems) * 100.0, 2) if total_systems > 0 else 0.0
         universe_total_systems = eff_max_g * 400
         universe_explored_systems = len(universe_scanned_sectors)
         universe_coverage_pct = (
@@ -4444,7 +4451,9 @@ class GameDatabase:
         row_keys = set(r.keys())
         has_debris = bool(r["has_debris"]) if "has_debris" in row_keys else False
         blocked_until = _safe_float(r["blocked_until_ts"], 0.0) if "blocked_until_ts" in row_keys else 0.0
-        block_reason = _sanitize_text(r["block_reason"]) if ("block_reason" in row_keys and r["block_reason"] is not None) else ""
+        block_reason = (
+            _sanitize_text(r["block_reason"]) if ("block_reason" in row_keys and r["block_reason"] is not None) else ""
+        )
         bash_hits = game_data.cap_json_int(max(0, _safe_int(r["bash_hits"], 0))) if "bash_hits" in row_keys else 0
         last_blocked_ts = _safe_float(r["last_blocked_ts"], 0.0) if "last_blocked_ts" in row_keys else 0.0
         uninhabited_fields = (
@@ -4528,11 +4537,7 @@ class GameDatabase:
                     """
                 ).fetchall()
                 row = next(
-                    (
-                        r
-                        for r in all_rows
-                        if normalize_coords(_raw_text(r["coords"], "")) == norm_c
-                    ),
+                    (r for r in all_rows if normalize_coords(_raw_text(r["coords"], "")) == norm_c),
                     None,
                 )
         return self._row_to_spy_target_dict(row) if row is not None else None
@@ -4621,11 +4626,27 @@ class GameDatabase:
                     else None
                 )
                 if valid_rep is not None:
-                    v_owner = _sanitize_text(gs_row["owner"]) if gs_row is not None else _sanitize_text(valid_rep["owner"])
-                    v_pname = _sanitize_text(gs_row["planet_name"]) if gs_row is not None else _sanitize_text(valid_rep["planet_name"])
-                    v_is_spacia = int(bool(gs_row["is_spacia"])) if gs_row is not None else int(bool(valid_rep["is_spacia"]))
-                    v_status = _sanitize_text(gs_row["status_color"]) if gs_row is not None else ("yellow" if v_is_spacia else "light_red")
-                    v_inactive = int(bool(gs_row["is_inactive"])) if gs_row is not None else (1 if v_is_spacia or v_status == "yellow" else 0)
+                    v_owner = (
+                        _sanitize_text(gs_row["owner"]) if gs_row is not None else _sanitize_text(valid_rep["owner"])
+                    )
+                    v_pname = (
+                        _sanitize_text(gs_row["planet_name"])
+                        if gs_row is not None
+                        else _sanitize_text(valid_rep["planet_name"])
+                    )
+                    v_is_spacia = (
+                        int(bool(gs_row["is_spacia"])) if gs_row is not None else int(bool(valid_rep["is_spacia"]))
+                    )
+                    v_status = (
+                        _sanitize_text(gs_row["status_color"])
+                        if gs_row is not None
+                        else ("yellow" if v_is_spacia else "light_red")
+                    )
+                    v_inactive = (
+                        int(bool(gs_row["is_inactive"]))
+                        if gs_row is not None
+                        else (1 if v_is_spacia or v_status == "yellow" else 0)
+                    )
                     v_debris = int(bool(gs_row["has_debris"])) if gs_row is not None else 0
                     v_scanned = max(
                         _safe_float(gs_row["last_scanned_ts"], 0.0) if gs_row is not None else 0.0,
@@ -4865,10 +4886,16 @@ class GameDatabase:
             else:
                 self._spy_targets_cache_ver = db_ver
                 self._spy_targets_cache = {}
-            cmax_clause = "AND colonize_max_fields IS NULL" if self._has_column_locked("spy_targets", "colonize_max_fields") else ""
+            cmax_clause = (
+                "AND colonize_max_fields IS NULL"
+                if self._has_column_locked("spy_targets", "colonize_max_fields")
+                else ""
+            )
             own_filter = own_clause if self._has_column_locked("spy_targets", "is_own_planet") else ""
             merged_filter = "merged_into = ''" if self._has_column_locked("spy_targets", "merged_into") else "1=1"
-            uf_clause = "AND uninhabited_fields IS NULL" if self._has_column_locked("spy_targets", "uninhabited_fields") else ""
+            uf_clause = (
+                "AND uninhabited_fields IS NULL" if self._has_column_locked("spy_targets", "uninhabited_fields") else ""
+            )
             rows = self._conn.execute(
                 f"""
                 SELECT *
@@ -4952,7 +4979,7 @@ class GameDatabase:
             debris_lookup = self._build_debris_lookup_locked(debris_coords)
 
             def _debris_raw_sort_key(
-                entry: tuple[Optional[tuple[str, int, int, int]], str, float, Any]
+                entry: tuple[Optional[tuple[str, int, int, int]], str, float, Any],
             ) -> tuple[int, int, int, int, int, float]:
                 p_t, nc, ts_scan, _r = entry
                 d_tup = debris_lookup.get(nc)
@@ -5141,8 +5168,14 @@ class GameDatabase:
                 )
                 if cat_s == "battle_report":
                     saw_loot_or_recycle = True
-                    loot_obj = pdata.get("loot") if isinstance(pdata.get("loot"), Mapping) else (
-                        pdata.get("resources_mentioned") if isinstance(pdata.get("resources_mentioned"), Mapping) else {}
+                    loot_obj = (
+                        pdata.get("loot")
+                        if isinstance(pdata.get("loot"), Mapping)
+                        else (
+                            pdata.get("resources_mentioned")
+                            if isinstance(pdata.get("resources_mentioned"), Mapping)
+                            else {}
+                        )
                     )
                     deb_obj = pdata.get("debris") if isinstance(pdata.get("debris"), Mapping) else {}
                     b_pig = max(0, _sql_int(loot_obj.get("pig_iron"), 0))
@@ -5210,7 +5243,9 @@ class GameDatabase:
                 elif cat_s == "recycle_report":
                     saw_loot_or_recycle = True
                     harv_obj = pdata.get("harvested") if isinstance(pdata.get("harvested"), Mapping) else {}
-                    avail_obj = pdata.get("debris_available") if isinstance(pdata.get("debris_available"), Mapping) else {}
+                    avail_obj = (
+                        pdata.get("debris_available") if isinstance(pdata.get("debris_available"), Mapping) else {}
+                    )
                     h_pig = max(0, _sql_int(harv_obj.get("pig_iron"), 0))
                     h_met = max(0, _sql_int(harv_obj.get("metal"), 0))
                     h_kry = max(0, _sql_int(harv_obj.get("kryptonite"), 0))
@@ -5273,11 +5308,7 @@ class GameDatabase:
         ts: Optional[float] = None,
     ) -> int:
         """Record in SQLite that `msg_uids` were deleted from the in-game server inbox (never deletes DB rows)."""
-        clean_uids = [
-            _sanitize_text(u).strip()[:120]
-            for u in (msg_uids or ())
-            if _sanitize_text(u).strip()
-        ]
+        clean_uids = [_sanitize_text(u).strip()[:120] for u in (msg_uids or ()) if _sanitize_text(u).strip()]
         if not clean_uids:
             return 0
         now_ts = round(_safe_float(ts, time.time()) if ts is not None else time.time(), 3)
@@ -5572,7 +5603,9 @@ class GameDatabase:
             for k, v in raw.items():
                 nk = normalize_coords(_raw_text(k, "").strip())
                 if nk:
-                    cur_map[nk] = dict(v) if isinstance(v, Mapping) else {"discarded_ts": eff_now, "reason": "operator_discard"}
+                    cur_map[nk] = (
+                        dict(v) if isinstance(v, Mapping) else {"discarded_ts": eff_now, "reason": "operator_discard"}
+                    )
         clean_reason = _sanitize_text(reason or "operator_discard")[:160] or "operator_discard"
         entry = {"discarded_ts": eff_now, "reason": clean_reason}
         cur_map[norm_c] = entry
@@ -5711,9 +5744,7 @@ class GameDatabase:
 
         if hot_rows is not None:
             orig_nums = (
-                [min(999_999, int(x[:9])) for x in re.findall(r"\d+", norm_origin, re.ASCII)[:3]]
-                if norm_origin
-                else []
+                [min(999_999, int(x[:9])) for x in re.findall(r"\d+", norm_origin, re.ASCII)[:3]] if norm_origin else []
             )
             orig_valid = len(orig_nums) >= 3
             orig_g = orig_nums[0] if orig_valid else 0
@@ -5841,8 +5872,12 @@ class GameDatabase:
             merged[nc] = {
                 "coords": nc,
                 "uninhabited_fields": None,
-                "colonize_min_fields": _safe_optional_int(r["colonize_min_fields"]) if "colonize_min_fields" in rk_f else None,
-                "colonize_max_fields": _safe_optional_int(r["colonize_max_fields"]) if "colonize_max_fields" in rk_f else None,
+                "colonize_min_fields": _safe_optional_int(r["colonize_min_fields"])
+                if "colonize_min_fields" in rk_f
+                else None,
+                "colonize_max_fields": _safe_optional_int(r["colonize_max_fields"])
+                if "colonize_max_fields" in rk_f
+                else None,
                 "temperature": _safe_optional_int(r["temperature"]) if "temperature" in rk_f else None,
                 "last_spied_ts": 0.0,
                 "last_scanned_ts": _safe_float(r["last_scanned_ts"], 0.0),
@@ -6147,11 +6182,7 @@ class GameDatabase:
             tot_sp += sp
             order_w = 0.65 ** ((n - 1) - idx)
             ts_i = _safe_float(r["attacked_ts"], 0.0)
-            time_w = (
-                math.exp(-max(0.0, ref_ts - ts_i) / (3.0 * 86400.0))
-                if (ts_i > 0.0 and ref_ts > 0.0)
-                else 0.75
-            )
+            time_w = math.exp(-max(0.0, ref_ts - ts_i) / (3.0 * 86400.0)) if (ts_i > 0.0 and ref_ts > 0.0) else 0.75
             order_weights.append(order_w)
             combined_weights.append(order_w * time_w)
         weight_tot = sum(combined_weights)
@@ -6161,10 +6192,7 @@ class GameDatabase:
         else:
             weights = combined_weights
         weighted_sum = _safe_float(sum(w * sp for w, sp in zip(weights, sp_values)), 0.0)
-        avg_loot = {
-            rk: round(game_data.safe_big_ratio(tot_loot[rk], n, cap=1e200), 3)
-            for rk in _RESOURCE_KEYS
-        }
+        avg_loot = {rk: round(game_data.safe_big_ratio(tot_loot[rk], n, cap=1e200), 3) for rk in _RESOURCE_KEYS}
         tot_sp_safe = _safe_float(tot_sp, 0.0)
         avg_sp_safe = _safe_float(tot_sp_safe / n, 0.0)
         wt_sp_safe = _safe_float(weighted_sum / max(1e-12, weight_tot), 0.0)
@@ -6308,17 +6336,11 @@ class GameDatabase:
         }
 
         # 3. Galaxy scans & historical spy reports counts
-        gal_scans_count = int(
-            self._conn.execute("SELECT COUNT(*) FROM galaxy_scans").fetchone()[0]
-        )
-        spy_reports_count = int(
-            self._conn.execute("SELECT COUNT(*) FROM spy_reports").fetchone()[0]
-        )
+        gal_scans_count = int(self._conn.execute("SELECT COUNT(*) FROM galaxy_scans").fetchone()[0])
+        spy_reports_count = int(self._conn.execute("SELECT COUNT(*) FROM spy_reports").fetchone()[0])
 
         # 4. Planet snapshots summary (only fetch first & latest row per planet_id via window fn)
-        p_count = int(
-            self._conn.execute("SELECT COUNT(*) FROM planet_snapshots").fetchone()[0]
-        )
+        p_count = int(self._conn.execute("SELECT COUNT(*) FROM planet_snapshots").fetchone()[0])
         first_ts_val: Optional[float] = None
         latest_ts_val: Optional[float] = None
         if p_count > 0:
@@ -6377,9 +6399,7 @@ class GameDatabase:
             snap_info = {
                 "planet_id": pid,
                 "coords": _sanitize_text(_raw_text(r["coords"], "")),
-                "planet_type": _sanitize_text(
-                    normalize_planet_type(_raw_text(r["planet_type"], "normal") or "normal")
-                ),
+                "planet_type": _sanitize_text(normalize_planet_type(_raw_text(r["planet_type"], "normal") or "normal")),
                 "fields_used": game_data.cap_json_int(_safe_int(r["fields_used"], 0)),
                 "fields_max": game_data.cap_json_int(_safe_int(r["fields_max"], 0)),
                 "resources": res_dict,
@@ -6440,14 +6460,10 @@ class GameDatabase:
         rk_count = len(rk_rows)
         est_vals = [_safe_float(r["estimated_points"], 0.0) for r in rk_rows]
         sp_vals = [
-            game_data.cap_json_int(v)
-            for r in rk_rows
-            if (v := _safe_optional_int(r["server_points"])) is not None
+            game_data.cap_json_int(v) for r in rk_rows if (v := _safe_optional_int(r["server_points"])) is not None
         ]
         sr_vals = [
-            game_data.cap_json_int(v)
-            for r in rk_rows
-            if (v := _safe_optional_int(r["server_rank"])) is not None
+            game_data.cap_json_int(v) for r in rk_rows if (v := _safe_optional_int(r["server_rank"])) is not None
         ]
         pph_vals = [_safe_float(r["pts_per_hr"], 0.0) for r in rk_rows]
         spice_vals = [_safe_float(r["spice_value"], 0.0) for r in rk_rows]
@@ -6467,9 +6483,7 @@ class GameDatabase:
                     else None
                 ),
                 "server_rank": (
-                    game_data.cap_json_int(sr_v)
-                    if (sr_v := _safe_optional_int(r["server_rank"])) is not None
-                    else None
+                    game_data.cap_json_int(sr_v) if (sr_v := _safe_optional_int(r["server_rank"])) is not None else None
                 ),
                 "pts_per_hr": _safe_float(r["pts_per_hr"], 0.0),
                 "spice_value": _safe_float(r["spice_value"], 0.0),
@@ -6983,9 +6997,17 @@ class GameDatabase:
                         (norm_prio, dup_id),
                     ).fetchone()
                     if norm_pos == "bottom":
-                        new_rank = (_safe_int(band_ranks["max_r"], 1000) + 10) if band_ranks and band_ranks["max_r"] is not None else 1000
+                        new_rank = (
+                            (_safe_int(band_ranks["max_r"], 1000) + 10)
+                            if band_ranks and band_ranks["max_r"] is not None
+                            else 1000
+                        )
                     else:
-                        new_rank = (_safe_int(band_ranks["min_r"], 1000) - 10) if band_ranks and band_ranks["min_r"] is not None else 1000
+                        new_rank = (
+                            (_safe_int(band_ranks["min_r"], 1000) - 10)
+                            if band_ranks and band_ranks["min_r"] is not None
+                            else 1000
+                        )
                     self._conn.execute(
                         """
                         UPDATE manual_queue
@@ -7010,9 +7032,17 @@ class GameDatabase:
                 (norm_prio,),
             ).fetchone()
             if norm_pos == "bottom":
-                sort_rank = (_safe_int(band_ranks["max_r"], 1000) + 10) if band_ranks and band_ranks["max_r"] is not None else 1000
+                sort_rank = (
+                    (_safe_int(band_ranks["max_r"], 1000) + 10)
+                    if band_ranks and band_ranks["max_r"] is not None
+                    else 1000
+                )
             else:
-                sort_rank = (_safe_int(band_ranks["min_r"], 1000) - 10) if band_ranks and band_ranks["min_r"] is not None else 1000
+                sort_rank = (
+                    (_safe_int(band_ranks["min_r"], 1000) - 10)
+                    if band_ranks and band_ranks["min_r"] is not None
+                    else 1000
+                )
 
             cur = self._conn.execute(
                 """
@@ -7086,9 +7116,7 @@ class GameDatabase:
                 else self._normalize_queue_priority(row["priority"], "P1")
             )
             new_tlvl = (
-                _sql_optional_int(row["target_level"])
-                if target_level is ...
-                else _sql_optional_int(target_level)
+                _sql_optional_int(row["target_level"]) if target_level is ... else _sql_optional_int(target_level)
             )
             new_note = _sanitize_text(note)[:300] if note is not None else _sanitize_text(row["note"] or "")
 
@@ -7194,9 +7222,7 @@ class GameDatabase:
         now_ts = round(_safe_float(ts, time.time()) if ts is not None else time.time(), 3)
         rsn_s = _sanitize_text(reason)[:240]
         with self._lock:
-            pending_rows = self._conn.execute(
-                "SELECT id FROM manual_queue WHERE status = 'pending'"
-            ).fetchall()
+            pending_rows = self._conn.execute("SELECT id FROM manual_queue WHERE status = 'pending'").fetchall()
             if not pending_rows:
                 return 0
             self._conn.execute(
@@ -7282,7 +7308,12 @@ class GameDatabase:
                     if norm_tc and norm_r_tc != norm_tc:
                         continue
                 elif norm_kind == "SCAN_GALAXY":
-                    if norm_tc and norm_r_tc and not norm_r_tc.startswith(norm_tc[:6]) and not norm_tc.startswith(norm_r_tc[:6]):
+                    if (
+                        norm_tc
+                        and norm_r_tc
+                        and not norm_r_tc.startswith(norm_tc[:6])
+                        and not norm_tc.startswith(norm_r_tc[:6])
+                    ):
                         continue
                 matched = r
                 break
@@ -7320,7 +7351,12 @@ class GameDatabase:
                     )
                     self._conn.commit()
                     return qid
-            elif norm_kind == "BUILD_SHIP" and goal_lvl is not None and executed_qty is not None and int(executed_qty) > 0:
+            elif (
+                norm_kind == "BUILD_SHIP"
+                and goal_lvl is not None
+                and executed_qty is not None
+                and int(executed_qty) > 0
+            ):
                 rem = int(goal_lvl) - int(executed_qty)
                 if rem > 0:
                     self._conn.execute(
@@ -7527,26 +7563,16 @@ class GameDatabase:
         counts: dict[str, int] = {}
         with self._lock:
             existing_tables = {
-                str(r[0])
-                for r in self._conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
+                str(r[0]) for r in self._conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
             }
             all_cnts = self._pg_backend.fast_table_counts((*tables, "meta"), existing_tables)
             for tbl in tables:
                 counts[tbl] = all_cnts.get(tbl, 0)
             meta_row_cnt = all_cnts.get("meta", 0)
-            hot_counts = {
-                tbl: (meta_row_cnt if tbl == "meta" else counts.get(tbl, 0))
-                for tbl in HOT_TABLES
-            }
-            history_counts = {
-                tbl: counts.get(tbl, 0)
-                for tbl in HISTORY_TABLES
-            }
+            hot_counts = {tbl: (meta_row_cnt if tbl == "meta" else counts.get(tbl, 0)) for tbl in HOT_TABLES}
+            history_counts = {tbl: counts.get(tbl, 0) for tbl in HISTORY_TABLES}
             meta_keys = (
-                {
-                    _sanitize_text(_raw_text(r["key"], ""))
-                    for r in self._conn.execute("SELECT key FROM meta").fetchall()
-                }
+                {_sanitize_text(_raw_text(r["key"], "")) for r in self._conn.execute("SELECT key FROM meta").fetchall()}
                 if "meta" in existing_tables
                 else set()
             )
@@ -7634,9 +7660,7 @@ class GameDatabase:
         last_checked_ts = _safe_float(data.get("last_checked_ts"), 0.0)
         free_spins_rem = data.get("free_spins_remaining")
         free_spins_opt = (
-            game_data.cap_json_int(max(0, _safe_int(free_spins_rem, 0)))
-            if free_spins_rem is not None
-            else None
+            game_data.cap_json_int(max(0, _safe_int(free_spins_rem, 0))) if free_spins_rem is not None else None
         )
         last_reward = _sanitize_text(data.get("last_reward") or "").strip()[:160]
         total_activations = game_data.cap_json_int(max(0, _safe_int(data.get("total_activations"), 0)))
@@ -7679,9 +7703,7 @@ class GameDatabase:
         today = server_day_key(eff_now)
         cur = self.get_transmitter_status(now_ts=eff_now)
         checked_day = (
-            today
-            if (daily_bonus_checked is True or daily_bonus_collected is True)
-            else cur["daily_bonus_checked_day"]
+            today if (daily_bonus_checked is True or daily_bonus_collected is True) else cur["daily_bonus_checked_day"]
         )
         collected_day = today if daily_bonus_collected is True else cur["daily_bonus_collected_day"]
         if daily_bonus_available is not None:
@@ -7704,15 +7726,9 @@ class GameDatabase:
                 if free_spins_remaining is not None
                 else cur["free_spins_remaining"]
             ),
-            "last_reward": (
-                _sanitize_text(reward).strip()[:160]
-                if reward
-                else cur["last_reward"]
-            ),
+            "last_reward": (_sanitize_text(reward).strip()[:160] if reward else cur["last_reward"]),
             "total_activations": (
-                game_data.cap_json_int(int(cur["total_activations"]) + 1)
-                if activated
-                else cur["total_activations"]
+                game_data.cap_json_int(int(cur["total_activations"]) + 1) if activated else cur["total_activations"]
             ),
         }
         self.save_meta_json("transmitter_state", payload, ts=eff_now)
@@ -7774,9 +7790,7 @@ class GameDatabase:
                 "last_colonies_found": game_data.cap_json_int(max(0, _safe_int(data.get("last_colonies_found"), 0))),
                 "last_debris_found": game_data.cap_json_int(max(0, _safe_int(data.get("last_debris_found"), 0))),
                 "total_sweeps": game_data.cap_json_int(max(0, _safe_int(data.get("total_sweeps"), 0))),
-                "total_pages_scanned": game_data.cap_json_int(
-                    max(0, _safe_int(data.get("total_pages_scanned"), 0))
-                ),
+                "total_pages_scanned": game_data.cap_json_int(max(0, _safe_int(data.get("total_pages_scanned"), 0))),
                 "click_delay_seconds": round(
                     max(0.2, min(60.0, _safe_float(data.get("click_delay_seconds"), 1.5))),
                     3,
@@ -7873,7 +7887,11 @@ class GameDatabase:
                 if lvl_v <= 0:
                     continue
                 prev_s = merged_srv.get(canon_k)
-                if prev_s is None or lvl_v > int(prev_s.get("level", 0)) or (lvl_v == int(prev_s.get("level", 0)) and h_v and not prev_s.get("holder")):
+                if (
+                    prev_s is None
+                    or lvl_v > int(prev_s.get("level", 0))
+                    or (lvl_v == int(prev_s.get("level", 0)) and h_v and not prev_s.get("holder"))
+                ):
                     merged_srv[canon_k] = {"level": lvl_v, "holder": h_v, "coords": c_v}
                     srv_changed = True
         if srv_changed:
@@ -7972,7 +7990,12 @@ class GameDatabase:
                 holder = ""
                 holder_coords = ""
                 if univ_max > 0:
-                    if srv_lvl is not None and srv_lvl == univ_max and isinstance(srv_entry, Mapping) and srv_entry.get("holder"):
+                    if (
+                        srv_lvl is not None
+                        and srv_lvl == univ_max
+                        and isinstance(srv_entry, Mapping)
+                        and srv_entry.get("holder")
+                    ):
                         holder = str(srv_entry.get("holder") or "")
                         holder_coords = str(srv_entry.get("coords") or "")
                     elif obs_spied == univ_max and obs_spied > 0:
@@ -8046,9 +8069,8 @@ class GameDatabase:
                     )
                 )
 
-            if (
-                source != "auto_seed"
-                and DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "universe_research_max_history")
+            if source != "auto_seed" and DEFAULT_GAME_MIGRATION_RUNNER._table_exists(
+                self._conn, "universe_research_max_history"
             ):
                 clean_src = _sanitize_text(source or "refresh")[:32] or "refresh"
                 rec_json = _json_dumps(out_rows)
@@ -8494,21 +8516,17 @@ class GameDatabase:
         """Append a Config Optimizer run to history and optionally promote it to `config_optimizer_active`."""
         clean_result = _safe_json_dict(result)
         meta_obj = (
-            clean_result.get("meta_parameters")
-            if isinstance(clean_result.get("meta_parameters"), Mapping)
-            else {}
+            clean_result.get("meta_parameters") if isinstance(clean_result.get("meta_parameters"), Mapping) else {}
         )
-        summary_obj = (
-            clean_result.get("summary")
-            if isinstance(clean_result.get("summary"), Mapping)
-            else {}
-        )
+        summary_obj = clean_result.get("summary") if isinstance(clean_result.get("summary"), Mapping) else {}
         clean_params = _safe_json_dict(params) if params is not None else _safe_json_dict(meta_obj)
         clean_trigger = _sanitize_text(trigger_source or "manual").strip()[:64] or "manual"
         eff_elapsed = max(
             0.0,
             _safe_float(
-                elapsed_ms if (elapsed_ms is not None and _safe_float(elapsed_ms, 0.0) > 0.0) else clean_result.get("elapsed_ms", 0.0),
+                elapsed_ms
+                if (elapsed_ms is not None and _safe_float(elapsed_ms, 0.0) > 0.0)
+                else clean_result.get("elapsed_ms", 0.0),
                 0.0,
             ),
         )
@@ -8635,9 +8653,7 @@ class GameDatabase:
                 "run_id": game_data.cap_json_int(run_id) if run_id is not None else None,
                 "updated_ts": _safe_float(row["updated_ts"], 0.0),
                 "params": _safe_json_dict(row["params_json"]),
-                "reserved_floors": self._normalize_reserved_floors(
-                    _safe_json_dict(row["reserved_floors_json"])
-                ),
+                "reserved_floors": self._normalize_reserved_floors(_safe_json_dict(row["reserved_floors_json"])),
                 "result": result_dict,
             }
         )
@@ -8671,9 +8687,7 @@ class GameDatabase:
                         "ships_per_month": _safe_float(r["ships_per_month"], 0.0),
                         "limiting_factor": _sanitize_text(r["limiting_factor"] or ""),
                         "params": _safe_json_dict(r["params_json"]),
-                        "reserved_floors": self._normalize_reserved_floors(
-                            _safe_json_dict(r["reserved_floors_json"])
-                        ),
+                        "reserved_floors": self._normalize_reserved_floors(_safe_json_dict(r["reserved_floors_json"])),
                     }
                 )
             )
@@ -8712,9 +8726,7 @@ class GameDatabase:
                 """
             ).fetchone()
             floors = (
-                self._normalize_reserved_floors(_safe_json_dict(row["reserved_floors_json"]))
-                if row is not None
-                else {}
+                self._normalize_reserved_floors(_safe_json_dict(row["reserved_floors_json"])) if row is not None else {}
             )
             if pk and bk:
                 if lvl > 0:
@@ -8772,18 +8784,14 @@ class GameDatabase:
             if replace:
                 next_specs = self._normalize_planet_specializations(specializations)
             else:
-                next_specs = self._normalize_planet_specializations(
-                    params_dict.get("planet_specializations")
-                )
+                next_specs = self._normalize_planet_specializations(params_dict.get("planet_specializations"))
                 if isinstance(specializations, Mapping):
                     for raw_pk, raw_spec in specializations.items():
                         pk = _sanitize_text(raw_pk).strip()[:64]
                         if not pk:
                             continue
                         norm_raw = (
-                            _sanitize_text(raw_spec).strip().lower().replace(" ", "_")
-                            if raw_spec is not None
-                            else ""
+                            _sanitize_text(raw_spec).strip().lower().replace(" ", "_") if raw_spec is not None else ""
                         )
                         if not norm_raw or norm_raw == "auto":
                             next_specs.pop(pk, None)
@@ -8824,21 +8832,19 @@ class GameDatabase:
         """Append an AI-Planner path search run to history and optionally promote it to `ai_planner_active`."""
         clean_result = _safe_json_dict(result)
         meta_obj = (
-            clean_result.get("meta_parameters")
-            if isinstance(clean_result.get("meta_parameters"), Mapping)
-            else {}
+            clean_result.get("meta_parameters") if isinstance(clean_result.get("meta_parameters"), Mapping) else {}
         )
         summary_obj = (
-            _safe_json_dict(clean_result.get("summary"))
-            if isinstance(clean_result.get("summary"), Mapping)
-            else {}
+            _safe_json_dict(clean_result.get("summary")) if isinstance(clean_result.get("summary"), Mapping) else {}
         )
         clean_params = _safe_json_dict(params) if params is not None else _safe_json_dict(meta_obj)
         clean_trigger = _sanitize_text(trigger_source or "manual").strip()[:64] or "manual"
         eff_elapsed = max(
             0.0,
             _safe_float(
-                elapsed_ms if (elapsed_ms is not None and _safe_float(elapsed_ms, 0.0) > 0.0) else clean_result.get("elapsed_ms", 0.0),
+                elapsed_ms
+                if (elapsed_ms is not None and _safe_float(elapsed_ms, 0.0) > 0.0)
+                else clean_result.get("elapsed_ms", 0.0),
                 0.0,
             ),
         )
@@ -9046,9 +9052,7 @@ class GameDatabase:
         planet_id = max(0, _sql_int(src.get("planet_id"), 0))
         raw_coords = _raw_text(src.get("planet_coords") or src.get("coords"), "").strip()
         planet_coords = normalize_coords(raw_coords) if raw_coords else _sanitize_text(raw_coords)[:24]
-        blocked_bkey = self._normalize_building_key(
-            src.get("blocked_building_key") or src.get("building_key") or ""
-        )
+        blocked_bkey = self._normalize_building_key(src.get("blocked_building_key") or src.get("building_key") or "")
         blocked_tlvl = max(
             0,
             _sql_int(src.get("blocked_target_level", src.get("target_level", 0)), 0),
@@ -9057,7 +9061,11 @@ class GameDatabase:
         cand_bkey = self._normalize_building_key(src.get("candidate_building_key") or "")
         cand_lvl = max(0, _sql_int(src.get("candidate_level", 0), 0))
         raw_candidates = src.get("candidates")
-        if (not cand_bkey or cand_lvl <= 0) and isinstance(raw_candidates, Sequence) and not isinstance(raw_candidates, (str, bytes)):
+        if (
+            (not cand_bkey or cand_lvl <= 0)
+            and isinstance(raw_candidates, Sequence)
+            and not isinstance(raw_candidates, (str, bytes))
+        ):
             for c_item in raw_candidates:
                 if isinstance(c_item, Mapping):
                     ck = self._normalize_building_key(
@@ -9077,7 +9085,9 @@ class GameDatabase:
 
         status_in = _sanitize_text(src.get("status") or "pending").strip().lower()[:32] or "pending"
         decision_in = _sanitize_text(src.get("decision") or "").strip().lower()[:64]
-        now_ts = round(_safe_float(src.get("created_ts"), time.time()) if src.get("created_ts") is not None else time.time(), 3)
+        now_ts = round(
+            _safe_float(src.get("created_ts"), time.time()) if src.get("created_ts") is not None else time.time(), 3
+        )
         resolved_ts_in = _safe_optional_float(src.get("resolved_ts"))
 
         detail_dict: dict[str, Any] = {}
@@ -9323,9 +9333,7 @@ class GameDatabase:
         pid = _safe_int(planet_id, 0)
         now_ts = _safe_float(ts, time.time()) if ts is not None else time.time()
         with self._lock:
-            names = self._normalize_custom_planet_names_map(
-                self._load_meta_json_locked("custom_planet_names")
-            )
+            names = self._normalize_custom_planet_names_map(self._load_meta_json_locked("custom_planet_names"))
             if pid <= 0:
                 return dict(names)
             clean_name = self.sanitize_custom_planet_name(name)
@@ -9350,9 +9358,7 @@ class GameDatabase:
             names = (
                 {}
                 if replace
-                else self._normalize_custom_planet_names_map(
-                    self._load_meta_json_locked("custom_planet_names")
-                )
+                else self._normalize_custom_planet_names_map(self._load_meta_json_locked("custom_planet_names"))
             )
             if isinstance(updates, Mapping):
                 for raw_pid, raw_name in updates.items():
@@ -9404,14 +9410,8 @@ class GameDatabase:
         if cargo is None:
             return {"pig_iron": 0, "metal": 0, "kryptonite": 0, "spice": 0}
         if isinstance(cargo, Mapping):
-            return {
-                rk: game_data.cap_json_int(max(0, _safe_int(cargo.get(rk, 0), 0)))
-                for rk in _RESOURCE_KEYS
-            }
-        return {
-            rk: game_data.cap_json_int(max(0, _safe_int(getattr(cargo, rk, 0), 0)))
-            for rk in _RESOURCE_KEYS
-        }
+            return {rk: game_data.cap_json_int(max(0, _safe_int(cargo.get(rk, 0), 0))) for rk in _RESOURCE_KEYS}
+        return {rk: game_data.cap_json_int(max(0, _safe_int(getattr(cargo, rk, 0), 0))) for rk in _RESOURCE_KEYS}
 
     @classmethod
     def _normalize_transport_dispatch_entry(cls, raw: Any) -> Optional[dict[str, Any]]:
@@ -9510,10 +9510,7 @@ class GameDatabase:
                     prev["origin_coords"] == entry["origin_coords"]
                     and prev["dest_coords"] == entry["dest_coords"]
                     and prev["cargo"] == entry["cargo"]
-                    and (
-                        entry["source"] == "observed_outbound"
-                        or prev["source"] == entry["source"]
-                    )
+                    and (entry["source"] == "observed_outbound" or prev["source"] == entry["source"])
                 ):
                     if entry["ships"] and not prev["ships"]:
                         prev["ships"] = entry["ships"]
@@ -9743,12 +9740,14 @@ class GameDatabase:
                     need_backfill = False
                     if (
                         DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "battle_reports")
-                        and self._conn.execute("SELECT 1 FROM battle_reports WHERE ts > 0 LIMIT 1").fetchone() is not None
+                        and self._conn.execute("SELECT 1 FROM battle_reports WHERE ts > 0 LIMIT 1").fetchone()
+                        is not None
                     ):
                         need_backfill = True
                     elif (
                         DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "recycle_reports")
-                        and self._conn.execute("SELECT 1 FROM recycle_reports WHERE ts > 0 LIMIT 1").fetchone() is not None
+                        and self._conn.execute("SELECT 1 FROM recycle_reports WHERE ts > 0 LIMIT 1").fetchone()
+                        is not None
                     ):
                         need_backfill = True
                     if need_backfill:

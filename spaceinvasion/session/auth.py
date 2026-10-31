@@ -25,8 +25,7 @@ from spaceinvasion.session.http_pools import (
 BASE_URL = "https://spaceinvasion.bitmeup.com"
 DEFAULT_SESSIONS_DIR = Path(os.environ.get("SPACEINVASION_SESSIONS_DIR", "data/sessions"))
 DEFAULT_USER_AGENT = (
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 )
 
 LOGIN_ERROR_MESSAGES: dict[str, str] = {
@@ -178,22 +177,13 @@ def load_credentials(
     email = merged.get(f"{prefix}EMAIL", "").strip()
     password = merged.get(f"{prefix}PASSWORD", "")
     if not email or not password:
-        hint = (
-            f"Missing {prefix}EMAIL or {prefix}PASSWORD. "
-            f"Set them in {resolved_env} (see .env.example)."
-        )
+        hint = f"Missing {prefix}EMAIL or {prefix}PASSWORD. Set them in {resolved_env} (see .env.example)."
         raise ConfigurationError(hint)
 
-    locale = (
-        merged.get(f"{prefix}LOCALE")
-        or merged.get("SPACEINVASION_LOCALE")
-        or "en"
-    ).strip()
+    locale = (merged.get(f"{prefix}LOCALE") or merged.get("SPACEINVASION_LOCALE") or "en").strip()
     stay_raw = (
-        merged.get(f"{prefix}STAY_LOGGED_IN")
-        or merged.get("SPACEINVASION_STAY_LOGGED_IN")
-        or "1"
-    ).strip().lower()
+        (merged.get(f"{prefix}STAY_LOGGED_IN") or merged.get("SPACEINVASION_STAY_LOGGED_IN") or "1").strip().lower()
+    )
     stay_logged_in = stay_raw not in {"0", "false", "no", "off"}
     universe = (merged.get(f"{prefix}UNIVERSE") or "").strip() or None
     two_factor = (merged.get(f"{prefix}2FA_CODE") or "").strip() or None
@@ -266,14 +256,10 @@ def parse_login_tokens(html: str) -> LoginTokens:
     """Extract dynamic login field names and `sid` from the landing page HTML."""
     fields_match = _PORTAL_FIELDS_RE.search(html)
     if not fields_match:
-        raise SpaceInvasionAuthError(
-            "Could not find bitmeup.initPortalClient login field tokens on landing page."
-        )
+        raise SpaceInvasionAuthError("Could not find bitmeup.initPortalClient login field tokens on landing page.")
     fields = fields_match.group(2).split("|")
     if len(fields) != 3 or any(not part for part in fields):
-        raise SpaceInvasionAuthError(
-            f"Unexpected login token tuple length ({len(fields)}); expected 3 fields."
-        )
+        raise SpaceInvasionAuthError(f"Unexpected login token tuple length ({len(fields)}); expected 3 fields.")
 
     sid_match = _SID_RE.search(html)
     if not sid_match or not sid_match.group(2):
@@ -471,9 +457,7 @@ def extract_universes(html: str, base_url: str) -> tuple[UniverseOption, ...]:
                 acc_obj_m = re.search(r"\bacc\s*:\s*\{", item)
                 acc_str_m = re.search(r"\bacc\s*:\s*(['\"])(.*?)\1", item)
                 acc_bool_m = re.search(r"\bacc\s*:\s*(true)\b", item)
-                has_acc = bool(
-                    acc_obj_m or acc_bool_m or (acc_str_m and acc_str_m.group(2).strip())
-                )
+                has_acc = bool(acc_obj_m or acc_bool_m or (acc_str_m and acc_str_m.group(2).strip()))
                 sid_q = f"&sid={sid}" if sid else ""
                 launch_url = urljoin(base_url, f"?action=externalLogin&instance={uid}{sid_q}")
                 portal_options.append(
@@ -500,10 +484,7 @@ def extract_universes(html: str, base_url: str) -> tuple[UniverseOption, ...]:
             continue
         lower_href = href.lower()
         text = " ".join(anchor.get_text(" ", strip=True).split())
-        if any(
-            marker in lower_href
-            for marker in ("uni", "universe", "world", "play", "login", "game")
-        ):
+        if any(marker in lower_href for marker in ("uni", "universe", "world", "play", "login", "game")):
             abs_url = urljoin(base_url, href)
             label = text or abs_url
             key = (label, abs_url)
@@ -563,9 +544,7 @@ def load_session_cookies(
     try:
         raw = json.loads(cookie_path.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, ValueError) as exc:
-        raise ConfigurationError(
-            f"Failed to read session cookie file {cookie_path}: {type(exc).__name__}"
-        ) from exc
+        raise ConfigurationError(f"Failed to read session cookie file {cookie_path}: {type(exc).__name__}") from exc
     if not isinstance(raw, Mapping):
         raise ConfigurationError(f"Invalid session cookie format in {cookie_path}")
     sess = session or build_http_session()
@@ -588,11 +567,7 @@ def load_session_cookies(
                     expires=_safe_cookie_expires(item.get("expires")),
                 )
         raw_meta = raw.get("metadata", {})
-        metadata = (
-            {str(k): str(v) for k, v in raw_meta.items()}
-            if isinstance(raw_meta, Mapping)
-            else {}
-        )
+        metadata = {str(k): str(v) for k, v in raw_meta.items()} if isinstance(raw_meta, Mapping) else {}
         return sess, metadata
     except Exception:
         if session is None:
@@ -607,10 +582,7 @@ def build_http_session() -> requests.Session:
     session.headers.update(
         {
             "User-Agent": DEFAULT_USER_AGENT,
-            "Accept": (
-                "text/html,application/xhtml+xml,application/xml;q=0.9,"
-                "application/json;q=0.8,*/*;q=0.8"
-            ),
+            "Accept": ("text/html,application/xhtml+xml,application/xml;q=0.9,application/json;q=0.8,*/*;q=0.8"),
             "Accept-Language": "en-US,en;q=0.9",
         }
     )
@@ -621,9 +593,7 @@ def _assert_no_antibot(response: requests.Response) -> None:
     """Raise `AntiBotChallengeError` if response contains a CAPTCHA/anti-bot gate."""
     issue = detect_antibot_challenge(response.status_code, response.text)
     if issue:
-        raise AntiBotChallengeError(
-            f"{issue}. Stopping automation; please complete the check manually in a browser."
-        )
+        raise AntiBotChallengeError(f"{issue}. Stopping automation; please complete the check manually in a browser.")
 
 
 def _submit_login_post(
@@ -665,9 +635,7 @@ def _submit_login_post(
             parsed = response.json()
         except ValueError as exc:
             snippet = " ".join(response.text.split())[:200]
-            raise SpaceInvasionAuthError(
-                f"Expected JSON login response from /index.php, got: {snippet}"
-            ) from exc
+            raise SpaceInvasionAuthError(f"Expected JSON login response from /index.php, got: {snippet}") from exc
 
         if not isinstance(parsed, dict) or not isinstance(parsed.get("result"), dict):
             raise SpaceInvasionAuthError(
@@ -727,9 +695,7 @@ def login(
             _close_http_response(tpl_resp)
 
         code = creds.two_factor_code
-        result_obj = _submit_login_post(
-            sess, normalized_base, landing_url, tokens, creds, code, timeout
-        )
+        result_obj = _submit_login_post(sess, normalized_base, landing_url, tokens, creds, code, timeout)
 
         if result_obj.get("result") == "2fa":
             if not code and two_factor_provider is not None:
@@ -738,9 +704,7 @@ def login(
                 raise TwoFactorRequiredError(
                     "Account requires a 2FA code. Pass --2fa <code> or set SPACEINVASION_2FA_CODE."
                 )
-            result_obj = _submit_login_post(
-                sess, normalized_base, landing_url, tokens, creds, code, timeout
-            )
+            result_obj = _submit_login_post(sess, normalized_base, landing_url, tokens, creds, code, timeout)
 
         status = result_obj.get("result")
         if status != "ok":

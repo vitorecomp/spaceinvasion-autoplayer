@@ -120,9 +120,7 @@ class TestTokenAndAntibotParsing(unittest.TestCase):
 
     def test_detect_antibot_ignores_normal_page_and_flags_turnstile(self) -> None:
         self.assertIsNone(detect_antibot_challenge(200, SAMPLE_LANDING_HTML))
-        flagged = detect_antibot_challenge(
-            200, '<div class="cf-turnstile" data-sitekey="abc"></div>'
-        )
+        flagged = detect_antibot_challenge(200, '<div class="cf-turnstile" data-sitekey="abc"></div>')
         self.assertIsNotNone(flagged)
 
     def test_extract_universes_parses_start_portal_instances(self) -> None:
@@ -240,9 +238,7 @@ class TestLoginFlow(unittest.TestCase):
             sess.post = MagicMock(
                 side_effect=[
                     _mock_response(json_data={"result": {"result": "2fa"}}),
-                    _mock_response(
-                        json_data={"result": {"result": "ok", "login": "https://bitmeup.com/auth"}}
-                    ),
+                    _mock_response(json_data={"result": {"result": "ok", "login": "https://bitmeup.com/auth"}}),
                 ]
             )
 
@@ -266,9 +262,7 @@ class TestLoginFlow(unittest.TestCase):
                     _mock_response(text="tpl"),
                 ]
             )
-            sess.post = MagicMock(
-                return_value=_mock_response(json_data={"result": {"result": "2fa"}})
-            )
+            sess.post = MagicMock(return_value=_mock_response(json_data={"result": {"result": "2fa"}}))
             creds = Credentials(email="pilot@example.com", password="secret")
             with self.assertRaises(TwoFactorRequiredError):
                 login(creds=creds, session_dir=Path(tmp) / ".sessions", session=sess)
@@ -322,9 +316,7 @@ class TestLoginFlow(unittest.TestCase):
             )
             with unittest.mock.patch("spaceinvasion.session.auth.load_session_cookies") as mock_load:
                 mock_sess = MagicMock()
-                mock_sess.get.return_value = _mock_response(
-                    text=SAMPLE_PORTAL_HTML, url="https://bitmeup.com/portal"
-                )
+                mock_sess.get.return_value = _mock_response(text=SAMPLE_PORTAL_HTML, url="https://bitmeup.com/portal")
                 mock_load.return_value = (mock_sess, {"last_url": "https://bitmeup.com/portal"})
                 ok, url, title = verify_saved_session(session_dir=session_dir)
                 self.assertTrue(ok)
@@ -439,9 +431,7 @@ class TestLoginFlow(unittest.TestCase):
                 res = login(creds=creds, session_dir=sdir, base_url=base_url)
                 self.assertEqual(res.page_title, "BitMeUp Portal")
 
-                ok, checked_url, title = verify_saved_session(
-                    account="default", session_dir=sdir, base_url=base_url
-                )
+                ok, checked_url, title = verify_saved_session(account="default", session_dir=sdir, base_url=base_url)
                 self.assertTrue(ok)
                 self.assertIn("/portal", checked_url)
                 self.assertEqual(title, "BitMeUp Portal")
@@ -648,7 +638,7 @@ class TestLoginFlow(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tp = Path(tmp)
             corrupt = tp / "corrupt.json"
-            corrupt.write_text('{corrupt?password=FILE_BODY_SECRET', encoding="utf-8")
+            corrupt.write_text("{corrupt?password=FILE_BODY_SECRET", encoding="utf-8")
             with self.assertRaises(ConfigurationError) as ctx_bad:
                 load_session_cookies(corrupt)
             self.assertIsInstance(ctx_bad.exception, SpaceInvasionAuthError)
@@ -725,7 +715,9 @@ class TestLoginFlow(unittest.TestCase):
         </html>
         """
         self.assertIsNotNone(detect_antibot_challenge(200, visible_gate_html))
-        self.assertIsNotNone(detect_antibot_challenge(403, "<html><title>Just a moment...</title><body>Checking</body></html>"))
+        self.assertIsNotNone(
+            detect_antibot_challenge(403, "<html><title>Just a moment...</title><body>Checking</body></html>")
+        )
 
 
 if __name__ == "__main__":

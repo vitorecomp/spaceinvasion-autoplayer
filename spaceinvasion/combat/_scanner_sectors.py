@@ -98,11 +98,23 @@ def _ensure_sector_entry(sectors_data: dict[str, dict[str, Any]], gal: int, sys_
     entry = sectors_data.get(skey)
     if entry is None:
         entry = {
-            "galaxy": gal, "system": sys_num, "last_scanned_ts": 0.0, "scan_count": 0,
-            "occupied_count": 0, "target_count": 0, "inactive_count": 0, "spacia_count": 0,
-            "debris_count": 0, "free_count": 0, "prime_colony_free_count": 0,
-            "direct_raid_count": 0, "direct_recency_raid_score": 0.0, "direct_loot_spice_eq": 0.0,
-            "last_attacked_ts": 0.0, "owner_planet_counts": {}, "owner_display": {},
+            "galaxy": gal,
+            "system": sys_num,
+            "last_scanned_ts": 0.0,
+            "scan_count": 0,
+            "occupied_count": 0,
+            "target_count": 0,
+            "inactive_count": 0,
+            "spacia_count": 0,
+            "debris_count": 0,
+            "free_count": 0,
+            "prime_colony_free_count": 0,
+            "direct_raid_count": 0,
+            "direct_recency_raid_score": 0.0,
+            "direct_loot_spice_eq": 0.0,
+            "last_attacked_ts": 0.0,
+            "owner_planet_counts": {},
+            "owner_display": {},
         }
         sectors_data[skey] = entry
     return entry
@@ -117,7 +129,11 @@ def _ingest_sector_intel_mapping(
     raw_owner_stats = sector_intel.get("owner_raid_stats")
     if isinstance(raw_owner_stats, Mapping):
         for ok_raw, ov in raw_owner_stats.items():
-            if isinstance(ov, Mapping) and (disp := safe_key(ov.get("owner") or ok_raw).strip()) and disp.lower() != "spacia":
+            if (
+                isinstance(ov, Mapping)
+                and (disp := safe_key(ov.get("owner") or ok_raw).strip())
+                and disp.lower() != "spacia"
+            ):
                 owner_stats[disp.lower()] = {
                     "owner": disp,
                     "raid_count": max(0, coerce_int(ov.get("raid_count"), 0)),
@@ -129,7 +145,10 @@ def _ingest_sector_intel_mapping(
         for ok_raw, cnt_raw in raw_owner_counts.items():
             disp, cnt = safe_key(ok_raw).strip(), max(0, coerce_int(cnt_raw, 0))
             if disp and disp.lower() != "spacia" and cnt > 0:
-                cur_os = owner_stats.setdefault(disp.lower(), {"owner": disp, "raid_count": 0, "recency_raid_score": float(cnt), "loot_spice_eq": 0.0})
+                cur_os = owner_stats.setdefault(
+                    disp.lower(),
+                    {"owner": disp, "raid_count": 0, "recency_raid_score": float(cnt), "loot_spice_eq": 0.0},
+                )
                 cur_os["raid_count"] = max(int(cur_os["raid_count"]), cnt)
     raw_sectors = sector_intel.get("sectors")
     if not isinstance(raw_sectors, Mapping):
@@ -138,13 +157,26 @@ def _ingest_sector_intel_mapping(
         if not isinstance(sv, Mapping):
             continue
         pair = parse_gal_sys_pair(skey_raw)
-        gal, sys_num = coerce_int(sv.get("galaxy"), pair[0] if pair else 0), coerce_int(sv.get("system"), pair[1] if pair else 0)
+        gal, sys_num = (
+            coerce_int(sv.get("galaxy"), pair[0] if pair else 0),
+            coerce_int(sv.get("system"), pair[1] if pair else 0),
+        )
         if not (1 <= gal <= 14 and 1 <= sys_num <= n_sys):
             continue
         sec = _ensure_sector_entry(sectors_data, gal, sys_num)
         for fk in ("last_scanned_ts", "direct_recency_raid_score", "direct_loot_spice_eq", "last_attacked_ts"):
             sec[fk] = max(sec[fk], safe_finite_float(sv.get(fk), 0.0))
-        for ik in ("scan_count", "occupied_count", "target_count", "inactive_count", "spacia_count", "debris_count", "free_count", "prime_colony_free_count", "direct_raid_count"):
+        for ik in (
+            "scan_count",
+            "occupied_count",
+            "target_count",
+            "inactive_count",
+            "spacia_count",
+            "debris_count",
+            "free_count",
+            "prime_colony_free_count",
+            "direct_raid_count",
+        ):
             sec[ik] = max(sec[ik], coerce_int(sv.get(ik), 0))
         if isinstance(raw_op := sv.get("owner_planet_counts"), Mapping):
             for oname_raw, pcnt_raw in raw_op.items():
@@ -196,10 +228,15 @@ def _ingest_raid_targets(
         return coord_owner, coord_spacia
     per_sec_owner: dict[tuple[int, int], dict[str, set[str]]] = defaultdict(lambda: defaultdict(set))
     buckets: dict[str, dict[tuple[int, int], set[str]]] = {
-        k: defaultdict(set) for k in ("debris_count", "inactive_count", "spacia_count", "free_count", "prime_colony_free_count")
+        k: defaultdict(set)
+        for k in ("debris_count", "inactive_count", "spacia_count", "free_count", "prime_colony_free_count")
     }
     for trow in raid_targets:
-        if not isinstance(trow, Mapping) or bool(trow.get("is_own_planet", False)) or str(trow.get("merged_into") or "").strip():
+        if (
+            not isinstance(trow, Mapping)
+            or bool(trow.get("is_own_planet", False))
+            or str(trow.get("merged_into") or "").strip()
+        ):
             continue
         nc = normalize_coords(trow.get("coords") or trow.get("target_coords") or "")
         if not nc or nc in own_norm_coords or not (m_c := re.fullmatch(r"(\d{2}):(\d{3}):(\d{2})", nc, re.ASCII)):
@@ -271,18 +308,43 @@ def _ingest_raid_history_fallback(
     n_sys: int,
     eff_now: float,
 ) -> None:
-    raw_hist_rows = [r for r in (raid_history or ()) if isinstance(r, Mapping)] if isinstance(raid_history, Sequence) and not isinstance(raid_history, (str, bytes, bytearray)) else []
-    if not raw_hist_rows and isinstance(raid_stats, Mapping) and isinstance(rs_hist := raid_stats.get("history"), Sequence) and not isinstance(rs_hist, (str, bytes, bytearray)):
+    raw_hist_rows = (
+        [r for r in (raid_history or ()) if isinstance(r, Mapping)]
+        if isinstance(raid_history, Sequence) and not isinstance(raid_history, (str, bytes, bytearray))
+        else []
+    )
+    if (
+        not raw_hist_rows
+        and isinstance(raid_stats, Mapping)
+        and isinstance(rs_hist := raid_stats.get("history"), Sequence)
+        and not isinstance(rs_hist, (str, bytes, bytearray))
+    ):
         raw_hist_rows = [r for r in rs_hist if isinstance(r, Mapping)]
     if raw_hist_rows:
         for r in raw_hist_rows:
             nc = normalize_coords(r.get("target_coords") or r.get("coords") or "")
-            if not nc or nc in own_norm_coords or (pair := parse_gal_sys_pair(nc)) is None or not (1 <= pair[1] <= n_sys):
+            if (
+                not nc
+                or nc in own_norm_coords
+                or (pair := parse_gal_sys_pair(nc)) is None
+                or not (1 <= pair[1] <= n_sys)
+            ):
                 continue
-            rts = safe_finite_float(r.get("attacked_ts") if r.get("attacked_ts") is not None else (r.get("ts") if r.get("ts") is not None else r.get("timestamp")), eff_now)
+            rts = safe_finite_float(
+                r.get("attacked_ts")
+                if r.get("attacked_ts") is not None
+                else (r.get("ts") if r.get("ts") is not None else r.get("timestamp")),
+                eff_now,
+            )
             loot_sp = safe_finite_float(r.get("loot_spice_eq"), 0.0)
             if loot_sp <= 0.0 and isinstance(lmap := r.get("loot"), Mapping):
-                loot_sp = float(spice_equivalent(Resources(*(max(0, coerce_int(lmap.get(k), 0)) for k in ("pig_iron", "metal", "kryptonite", "spice")))))
+                loot_sp = float(
+                    spice_equivalent(
+                        Resources(
+                            *(max(0, coerce_int(lmap.get(k), 0)) for k in ("pig_iron", "metal", "kryptonite", "spice"))
+                        )
+                    )
+                )
             decay = 0.25 + 0.75 * math.exp(-max(0.0, eff_now - rts) / (7.0 * 86400.0))
             sec = _ensure_sector_entry(sectors_data, pair[0], pair[1])
             sec["direct_raid_count"] += 1
@@ -307,7 +369,9 @@ def _ingest_raid_history_fallback(
             _record_owner_raid(owner_stats, coord_owner, coord_spacia, nc, attempts, float(attempts) * 0.75, loot_sp)
 
 
-def _sector_distance(sys_num: int, same_gal_cols: tuple[int, ...], other_gal_cols: tuple[tuple[int, int], ...], n_sys: int) -> int:
+def _sector_distance(
+    sys_num: int, same_gal_cols: tuple[int, ...], other_gal_cols: tuple[tuple[int, int], ...], n_sys: int
+) -> int:
     best_d = 10**9
     for cs in same_gal_cols:
         delta = abs(sys_num - cs)
@@ -319,38 +383,79 @@ def _sector_distance(sys_num: int, same_gal_cols: tuple[int, ...], other_gal_col
 
 
 def _score_scanned_sector(
-    skey: str, gal: int, sys_num: int, dist: int, same_gal: bool, ring_offset: int,
-    sec: dict[str, Any], owner_stats: Mapping[str, Mapping[str, Any]],
-    near_score: float, eff_near_w: float, eff_attack_w: float, eff_fresh_s: float,
-    explore_first: bool, collect_colonies: bool, eff_now: float,
+    skey: str,
+    gal: int,
+    sys_num: int,
+    dist: int,
+    same_gal: bool,
+    ring_offset: int,
+    sec: dict[str, Any],
+    owner_stats: Mapping[str, Mapping[str, Any]],
+    near_score: float,
+    eff_near_w: float,
+    eff_attack_w: float,
+    eff_fresh_s: float,
+    explore_first: bool,
+    collect_colonies: bool,
+    eff_now: float,
 ) -> dict[str, Any]:
     last_ts = safe_finite_float(sec["last_scanned_ts"], 0.0)
     scanned = last_ts > 0.0
     age_s = round(max(0.0, eff_now - last_ts), 3) if scanned else None
     is_fresh = bool(scanned and age_s is not None and age_s < eff_fresh_s)
-    direct_raids, direct_recency, direct_loot = int(sec["direct_raid_count"]), float(sec["direct_recency_raid_score"]), float(sec["direct_loot_spice_eq"])
+    direct_raids, direct_recency, direct_loot = (
+        int(sec["direct_raid_count"]),
+        float(sec["direct_recency_raid_score"]),
+        float(sec["direct_loot_spice_eq"]),
+    )
     debris_cnt, inact_cnt, spacia_cnt = int(sec["debris_count"]), int(sec["inactive_count"]), int(sec["spacia_count"])
-    target_cnt, free_cnt, prime_free = max(int(sec["target_count"]), inact_cnt + spacia_cnt), int(sec["free_count"]), int(sec["prime_colony_free_count"])
+    target_cnt, free_cnt, prime_free = (
+        max(int(sec["target_count"]), inact_cnt + spacia_cnt),
+        int(sec["free_count"]),
+        int(sec["prime_colony_free_count"]),
+    )
     affinity_sig, owner_aff_raids, freq_owners = 0.0, 0, []
     if sec["owner_planet_counts"]:
         entries = sorted(
-            ((int(os_i["raid_count"]), float(os_i["loot_spice_eq"]), str(os_i["owner"] or sec["owner_display"].get(ok, ok)), int(pcnt))
-             for ok, pcnt in sec["owner_planet_counts"].items() if (os_i := owner_stats.get(ok)) is not None and int(os_i["raid_count"]) > 0),
+            (
+                (
+                    int(os_i["raid_count"]),
+                    float(os_i["loot_spice_eq"]),
+                    str(os_i["owner"] or sec["owner_display"].get(ok, ok)),
+                    int(pcnt),
+                )
+                for ok, pcnt in sec["owner_planet_counts"].items()
+                if (os_i := owner_stats.get(ok)) is not None and int(os_i["raid_count"]) > 0
+            ),
             key=lambda t: (-t[0], -t[1], t[2]),
         )
         for o_raids, o_loot, o_disp, pcnt in entries:
             owner_aff_raids += o_raids
-            affinity_sig += (math.log1p(float(o_raids)) + 0.25 * math.log1p(max(0.0, o_loot) / 10000.0)) * (1.0 + 0.35 * max(0, pcnt - 1))
+            affinity_sig += (math.log1p(float(o_raids)) + 0.25 * math.log1p(max(0.0, o_loot) / 10000.0)) * (
+                1.0 + 0.35 * max(0, pcnt - 1)
+            )
             freq_owners.append(f"{o_disp}({o_raids})")
-    attack_score = eff_attack_w * (1.6 * math.log1p(max(0.0, max(direct_recency, 0.6 * direct_raids))) + 0.35 * math.log1p(max(0.0, direct_loot) / 5000.0) + 1.4 * affinity_sig)
-    secondary_score = min(3.0, 1.25 * debris_cnt) + min(2.5, 0.55 * inact_cnt + 0.75 * spacia_cnt) + (min(1.8, 0.45 * prime_free + 0.10 * min(6, free_cnt)) if collect_colonies else 0.0)
+    attack_score = eff_attack_w * (
+        1.6 * math.log1p(max(0.0, max(direct_recency, 0.6 * direct_raids)))
+        + 0.35 * math.log1p(max(0.0, direct_loot) / 5000.0)
+        + 1.4 * affinity_sig
+    )
+    secondary_score = (
+        min(3.0, 1.25 * debris_cnt)
+        + min(2.5, 0.55 * inact_cnt + 0.75 * spacia_cnt)
+        + (min(1.8, 0.45 * prime_free + 0.10 * min(6, free_cnt)) if collect_colonies else 0.0)
+    )
     importance = 1.0 + near_score + attack_score + secondary_score
     staleness_factor = max(60.0, age_s if (scanned and age_s is not None) else (7.0 * 86400.0)) / 1800.0
     phase = "exploratory" if (explore_first and not scanned) else "targeted_refresh"
     if phase == "exploratory":
         reason = f"unscanned sector (dist {dist})"
     else:
-        tags = ["near d=" + str(dist) if (same_gal and dist <= 25 and eff_near_w > 0.0) else (f"d={dist}" if same_gal else f"cross-gal d={dist}")]
+        tags = [
+            "near d=" + str(dist)
+            if (same_gal and dist <= 25 and eff_near_w > 0.0)
+            else (f"d={dist}" if same_gal else f"cross-gal d={dist}")
+        ]
         if direct_raids > 0:
             tags.append(f"raided {direct_raids}x")
         if freq_owners:
@@ -364,14 +469,31 @@ def _score_scanned_sector(
         tags.append(f"age {format_age_short(age_s)}")
         reason = ", ".join(tags)
     return {
-        "sector": skey, "galaxy": gal, "system": sys_num, "phase": phase, "scanned": scanned, "is_fresh": is_fresh,
-        "score": round(importance * staleness_factor, 4), "importance": round(importance, 4),
-        "near_score": round(near_score, 4), "attack_score": round(attack_score, 4), "secondary_score": round(secondary_score, 4),
-        "staleness_factor": round(staleness_factor, 4), "distance": int(dist), "last_scanned_ts": round(last_ts, 3),
-        "age_seconds": age_s, "direct_raid_count": direct_raids, "direct_loot_spice_eq": round(direct_loot, 2),
-        "owner_affinity_raid_count": owner_aff_raids, "frequent_owners": freq_owners, "debris_count": debris_cnt,
-        "target_count": target_cnt, "free_count": free_cnt, "reason": reason,
-        "_same_gal": 0 if same_gal else 1, "_ring_offset": ring_offset,
+        "sector": skey,
+        "galaxy": gal,
+        "system": sys_num,
+        "phase": phase,
+        "scanned": scanned,
+        "is_fresh": is_fresh,
+        "score": round(importance * staleness_factor, 4),
+        "importance": round(importance, 4),
+        "near_score": round(near_score, 4),
+        "attack_score": round(attack_score, 4),
+        "secondary_score": round(secondary_score, 4),
+        "staleness_factor": round(staleness_factor, 4),
+        "distance": int(dist),
+        "last_scanned_ts": round(last_ts, 3),
+        "age_seconds": age_s,
+        "direct_raid_count": direct_raids,
+        "direct_loot_spice_eq": round(direct_loot, 2),
+        "owner_affinity_raid_count": owner_aff_raids,
+        "frequent_owners": freq_owners,
+        "debris_count": debris_cnt,
+        "target_count": target_cnt,
+        "free_count": free_cnt,
+        "reason": reason,
+        "_same_gal": 0 if same_gal else 1,
+        "_ring_offset": ring_offset,
     }
 
 
@@ -394,7 +516,11 @@ def score_galaxy_scan_sectors(
     now_ts: Optional[float] = None,
 ) -> list[dict[str, Any]]:
     """Score and rank galaxy solar systems ``(1..400)`` for 2-phase smart scanning."""
-    eff_now = safe_finite_float(now_ts, 0.0) or (safe_finite_float(sector_intel.get("now_ts"), 0.0) if isinstance(sector_intel, Mapping) else 0.0) or time.time()
+    eff_now = (
+        safe_finite_float(now_ts, 0.0)
+        or (safe_finite_float(sector_intel.get("now_ts"), 0.0) if isinstance(sector_intel, Mapping) else 0.0)
+        or time.time()
+    )
     n_sys = max(1, coerce_int(systems_per_galaxy, 400))
     eff_near_w = max(0.0, min(20.0, safe_finite_float(near_weight, 2.0)))
     eff_attack_w = max(0.0, min(20.0, safe_finite_float(attack_weight, 3.0)))
@@ -410,7 +536,17 @@ def score_galaxy_scan_sectors(
         _ingest_scanned_systems(scanned_systems, sectors_data, n_sys, eff_now)
     coord_owner, coord_spacia = _ingest_raid_targets(raid_targets, own_norm_coords, sectors_data, n_sys)
     if sector_intel is None:
-        _ingest_raid_history_fallback(raid_stats, raid_history, own_norm_coords, coord_owner, coord_spacia, sectors_data, owner_stats, n_sys, eff_now)
+        _ingest_raid_history_fallback(
+            raid_stats,
+            raid_history,
+            own_norm_coords,
+            coord_owner,
+            coord_spacia,
+            sectors_data,
+            owner_stats,
+            n_sys,
+            eff_now,
+        )
     eff_colonies = own_colonies or [(active_galaxies[0], 1)]
     colony_gal_set = {cg for cg, _ in eff_colonies}
     primary_sys_by_gal: dict[int, int] = {}
@@ -432,21 +568,87 @@ def score_galaxy_scan_sectors(
             ring_offset = (sys_num - anchor_sys) % n_sys
             if (sec := sectors_data.get(skey)) is None:
                 importance = 1.0 + near_score
-                reason = f"unscanned sector (dist {dist})" if explore_first else (f"near d={dist}, age never" if same_gal and dist <= 25 and eff_near_w > 0.0 else (f"d={dist}, age never" if same_gal else f"cross-gal d={dist}, age never"))
-                scored.append({
-                    "sector": skey, "galaxy": gal, "system": sys_num, "phase": "exploratory" if explore_first else "targeted_refresh",
-                    "scanned": False, "is_fresh": False, "score": round(importance * default_staleness, 4), "importance": round(importance, 4),
-                    "near_score": round(near_score, 4), "attack_score": 0.0, "secondary_score": 0.0, "staleness_factor": round(default_staleness, 4),
-                    "distance": dist, "last_scanned_ts": 0.0, "age_seconds": None, "direct_raid_count": 0, "direct_loot_spice_eq": 0.0,
-                    "owner_affinity_raid_count": 0, "frequent_owners": [], "debris_count": 0, "target_count": 0, "free_count": 0,
-                    "reason": reason, "_same_gal": 0 if same_gal else 1, "_ring_offset": ring_offset,
-                })
+                reason = (
+                    f"unscanned sector (dist {dist})"
+                    if explore_first
+                    else (
+                        f"near d={dist}, age never"
+                        if same_gal and dist <= 25 and eff_near_w > 0.0
+                        else (f"d={dist}, age never" if same_gal else f"cross-gal d={dist}, age never")
+                    )
+                )
+                scored.append(
+                    {
+                        "sector": skey,
+                        "galaxy": gal,
+                        "system": sys_num,
+                        "phase": "exploratory" if explore_first else "targeted_refresh",
+                        "scanned": False,
+                        "is_fresh": False,
+                        "score": round(importance * default_staleness, 4),
+                        "importance": round(importance, 4),
+                        "near_score": round(near_score, 4),
+                        "attack_score": 0.0,
+                        "secondary_score": 0.0,
+                        "staleness_factor": round(default_staleness, 4),
+                        "distance": dist,
+                        "last_scanned_ts": 0.0,
+                        "age_seconds": None,
+                        "direct_raid_count": 0,
+                        "direct_loot_spice_eq": 0.0,
+                        "owner_affinity_raid_count": 0,
+                        "frequent_owners": [],
+                        "debris_count": 0,
+                        "target_count": 0,
+                        "free_count": 0,
+                        "reason": reason,
+                        "_same_gal": 0 if same_gal else 1,
+                        "_ring_offset": ring_offset,
+                    }
+                )
             else:
-                scored.append(_score_scanned_sector(skey, gal, sys_num, dist, same_gal, ring_offset, sec, owner_stats, near_score, eff_near_w, eff_attack_w, eff_fresh_s, explore_first, collect_colonies, eff_now))
+                scored.append(
+                    _score_scanned_sector(
+                        skey,
+                        gal,
+                        sys_num,
+                        dist,
+                        same_gal,
+                        ring_offset,
+                        sec,
+                        owner_stats,
+                        near_score,
+                        eff_near_w,
+                        eff_attack_w,
+                        eff_fresh_s,
+                        explore_first,
+                        collect_colonies,
+                        eff_now,
+                    )
+                )
     scored.sort(
-        key=(lambda it: (0 if not it["scanned"] else (1 if not it["is_fresh"] else 2), it["_same_gal"] if not it["scanned"] else 0, it["distance"] if not it["scanned"] else -it["score"], it["_ring_offset"] if not it["scanned"] else -it["importance"], it["distance"], it["galaxy"], it["system"]))
-        if explore_first else
-        (lambda it: (0 if not it["is_fresh"] else 1, -it["score"], -it["importance"], it["distance"], it["galaxy"], it["system"]))
+        key=(
+            lambda it: (
+                0 if not it["scanned"] else (1 if not it["is_fresh"] else 2),
+                it["_same_gal"] if not it["scanned"] else 0,
+                it["distance"] if not it["scanned"] else -it["score"],
+                it["_ring_offset"] if not it["scanned"] else -it["importance"],
+                it["distance"],
+                it["galaxy"],
+                it["system"],
+            )
+        )
+        if explore_first
+        else (
+            lambda it: (
+                0 if not it["is_fresh"] else 1,
+                -it["score"],
+                -it["importance"],
+                it["distance"],
+                it["galaxy"],
+                it["system"],
+            )
+        )
     )
     for it in scored:
         it.pop("_same_gal", None)

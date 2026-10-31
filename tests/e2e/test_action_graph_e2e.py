@@ -61,11 +61,7 @@ def _make_two_colony_server(*, hostile: bool = False) -> FakeSpaceInvasionServer
             "building_queue": [],
         },
     }
-    hostile_alerts = (
-        ["Hostile attack fleet approaching [02:380:12]"]
-        if hostile
-        else []
-    )
+    hostile_alerts = ["Hostile attack fleet approaching [02:380:12]"] if hostile else []
     return FakeSpaceInvasionServer(
         planets=planets,
         researches={"r1": 1, "r2": 2, "r3": 2, "r4": 2},
@@ -280,12 +276,7 @@ class TestActionGraphEndToEnd(unittest.TestCase):
             kinds = [n["kind"] for n in ag_p0["nodes"]]
             self.assertIn("ALERT_HOSTILE", kinds)
             self.assertIn("ESCAPE_FLIGHT", kinds)
-            self.assertTrue(
-                any(
-                    e["primary_type"] == "priority_gate"
-                    for e in ag_p0["edges"]
-                )
-            )
+            self.assertTrue(any(e["primary_type"] == "priority_gate" for e in ag_p0["edges"]))
 
             # Invalid simulation input rejected with HTTP 400 + English feedback, active config untouched
             bad_resp = requests.post(

@@ -100,7 +100,7 @@ class TestTier1R3(unittest.TestCase):
         )
         eta = compute_action_eta(state, act)
         base_s = float(game_data.building_level_stats(1, 4)["base_time_s"])
-        expected_dur = base_s / ((3 + 1) * (2 ** 1) * 2.0)
+        expected_dur = base_s / ((3 + 1) * (2**1) * 2.0)
 
         self.assertEqual(eta["wait_hours"], 0.0)
         self.assertEqual(eta["wait_seconds"], 0.0)
@@ -174,7 +174,7 @@ class TestTier1R3(unittest.TestCase):
         eta = compute_action_eta(state, act)
         base_s = float(game_data.RESEARCH_BY_ID["r2"]["levels"][3]["base_time_s"])
         expected_no_micro = base_s / ((3 + 1) * 2.0)
-        wrong_with_micro = expected_no_micro / (2 ** 4)
+        wrong_with_micro = expected_no_micro / (2**4)
         self.assertAlmostEqual(eta["duration_seconds"], expected_no_micro, delta=0.5)
         self.assertGreater(eta["duration_seconds"], wrong_with_micro * 4.0)
 
@@ -200,7 +200,7 @@ class TestTier1R3(unittest.TestCase):
         )
         eta = compute_action_eta(state, act)
         base_s = float(game_data.SHIPS["small-transport"]["base_build_time_s"])
-        expected = (4 * base_s) / (5 * (2 ** 1) * 2.0)
+        expected = (4 * base_s) / (5 * (2**1) * 2.0)
         self.assertAlmostEqual(eta["duration_seconds"], expected, delta=0.2)
 
     def test_t1_r3a_05_instant_actions_zero_duration_and_escape_cargo_zero_wait(self) -> None:
@@ -208,10 +208,32 @@ class TestTier1R3(unittest.TestCase):
         p = make_planet(buildings={"b1": 4, "b2": 3, "b5": 7})
         state = make_game_state(planets=(p,))
         samples = [
-            PlannedAction("P2", "CLAIM_TUTORIAL", p.planet_id, p.coords, "Tutorial 1/11 Reward", "claim", executable_now=True),
-            PlannedAction("P1", "THROTTLE_BUILDING", p.planet_id, p.coords, "Blast furnace 0%", "pause", target_id=2, target_level=0, executable_now=True),
+            PlannedAction(
+                "P2", "CLAIM_TUTORIAL", p.planet_id, p.coords, "Tutorial 1/11 Reward", "claim", executable_now=True
+            ),
+            PlannedAction(
+                "P1",
+                "THROTTLE_BUILDING",
+                p.planet_id,
+                p.coords,
+                "Blast furnace 0%",
+                "pause",
+                target_id=2,
+                target_level=0,
+                executable_now=True,
+            ),
             PlannedAction("P2", "SCAN_GALAXY", p.planet_id, p.coords, "Galaxy [02:380]", "scan", executable_now=True),
-            PlannedAction("P0", "ESCAPE_FLIGHT", p.planet_id, p.coords, "Save -> 02:380:13", "save", cost=Resources(0, 5000, 3000, 2000), missing=Resources(), executable_now=True),
+            PlannedAction(
+                "P0",
+                "ESCAPE_FLIGHT",
+                p.planet_id,
+                p.coords,
+                "Save -> 02:380:13",
+                "save",
+                cost=Resources(0, 5000, 3000, 2000),
+                missing=Resources(),
+                executable_now=True,
+            ),
             PlannedAction("P2", "ATTACK", p.planet_id, p.coords, "02:380:04", "raid", executable_now=True),
             PlannedAction("P0", "ALERT_HOSTILE", p.planet_id, p.coords, "Incoming", "alert", executable_now=False),
         ]
@@ -233,8 +255,28 @@ class TestTier1R3(unittest.TestCase):
         p_half = make_planet(planet_id=2, buildings={"b3": 5, "b7": 2}, energy=EnergyBalance(500, 1000))
         state = make_game_state(planets=(p_ok, p_half), active_planet_id=1)
 
-        a_ok = PlannedAction("P2", "BUILD", 1, p_ok.coords, "Kryptonite mine", "wait", target_id=3, target_level=6, missing=Resources(0, 0, 1000, 0))
-        a_half = PlannedAction("P2", "BUILD", 2, p_half.coords, "Kryptonite mine", "wait", target_id=3, target_level=6, missing=Resources(0, 0, 1000, 0))
+        a_ok = PlannedAction(
+            "P2",
+            "BUILD",
+            1,
+            p_ok.coords,
+            "Kryptonite mine",
+            "wait",
+            target_id=3,
+            target_level=6,
+            missing=Resources(0, 0, 1000, 0),
+        )
+        a_half = PlannedAction(
+            "P2",
+            "BUILD",
+            2,
+            p_half.coords,
+            "Kryptonite mine",
+            "wait",
+            target_id=3,
+            target_level=6,
+            missing=Resources(0, 0, 1000, 0),
+        )
         e_ok = compute_action_eta(state, a_ok)
         e_half = compute_action_eta(state, a_half)
 
@@ -333,7 +375,11 @@ class TestTier1R3(unittest.TestCase):
             matched = 0
             for act in dash["plan"]:
                 _verify_eta_fields_present(self, act)
-                if act["kind"] in ("BUILD", "WAIT_RESOURCES") and act.get("target_id") in by_bid and act["planet_id"] == 12476:
+                if (
+                    act["kind"] in ("BUILD", "WAIT_RESOURCES")
+                    and act.get("target_id") in by_bid
+                    and act["planet_id"] == 12476
+                ):
                     row = by_bid[act["target_id"]]
                     if act["target_level"] == row["next_level"]:
                         self.assertEqual(act["duration_text"], row["build_time_text"])
@@ -390,9 +436,15 @@ class TestTier1R3(unittest.TestCase):
             dash_hdr = " ".join(info["dash_plan"]["headers"]).lower()
             ops_hdr = " ".join(info["ops_plan"]["headers"]).lower()
             self.assertIn("wait", dash_hdr, f"Dashboard headers missing Wait ETA: {info['dash_plan']['headers']}")
-            self.assertTrue("total" in dash_hdr or "eta" in dash_hdr, f"Dashboard headers missing Total ETA: {info['dash_plan']['headers']}")
+            self.assertTrue(
+                "total" in dash_hdr or "eta" in dash_hdr,
+                f"Dashboard headers missing Total ETA: {info['dash_plan']['headers']}",
+            )
             self.assertIn("wait", ops_hdr, f"Operations headers missing Wait ETA: {info['ops_plan']['headers']}")
-            self.assertTrue("total" in ops_hdr or "eta" in ops_hdr, f"Operations headers missing Total ETA: {info['ops_plan']['headers']}")
+            self.assertTrue(
+                "total" in ops_hdr or "eta" in ops_hdr,
+                f"Operations headers missing Total ETA: {info['ops_plan']['headers']}",
+            )
 
             self.assertTrue(info["has_cfg_planner_mode"], "Missing #cfg-planner_mode in #view-config")
             self.assertIn("priority", info["cfg_planner_mode_options"])
@@ -437,7 +489,11 @@ class TestTier1R3(unittest.TestCase):
             )
             self.assertEqual(res["errors"], [])
             th_count = res["htmlInspection"]["dash_plan"]["th_count"]
-            self.assertGreaterEqual(th_count, 6, f"Expected Wait ETA & Total ETA columns in dashboard table; headers={res['htmlInspection']['dash_plan']['headers']}")
+            self.assertGreaterEqual(
+                th_count,
+                6,
+                f"Expected Wait ETA & Total ETA columns in dashboard table; headers={res['htmlInspection']['dash_plan']['headers']}",
+            )
             for idx, row in enumerate(res["scenario"]["dashRows"]):
                 self.assertEqual(len(row), th_count)
                 row_txt = " ".join(c["text"] for c in row)
@@ -517,7 +573,13 @@ class TestTier1R3(unittest.TestCase):
         with E2ETestHarness(server=srv) as h:
             h.api.get_state(include_buildings=True)
             thr = h.api.send_command(
-                {"command": "throttle_building", "building_id": 2, "percentage": 0, "planet_id": 12476, "dry_run": False}
+                {
+                    "command": "throttle_building",
+                    "building_id": 2,
+                    "percentage": 0,
+                    "planet_id": 12476,
+                    "dry_run": False,
+                }
             )
             self.assertTrue(thr["executed"], thr)
             res = run_ui_in_node(
@@ -542,7 +604,11 @@ class TestTier1R3(unittest.TestCase):
                 for pill in cell.get("pills", [])
                 if "is-blocked" in pill.get("className", "")
             ]
-            self.assertGreaterEqual(len(blocked_pills), 1, f"Expected .eta-pill.is-blocked on b2=0% blocked action; rows={res['scenario']['planRows']}")
+            self.assertGreaterEqual(
+                len(blocked_pills),
+                1,
+                f"Expected .eta-pill.is-blocked on b2=0% blocked action; rows={res['scenario']['planRows']}",
+            )
             row_texts = " ".join(c["text"] for r in res["scenario"]["planRows"] for c in r)
             self.assertIn("—", row_texts)
             self.assertTrue("MET" in row_texts or "METAL" in row_texts.upper(), row_texts)
@@ -614,6 +680,8 @@ class TestTier1R3(unittest.TestCase):
                 f"Expected apiCommand timeout >= 15000ms; got delays={res['recordedTimeoutDelays']}",
             )
             sc = res["scenario"]
-            self.assertIn("ONLINE", sc["chromeText"], f"Rate limit incorrectly flipped Chrome offline: {sc['chromeText']}")
+            self.assertIn(
+                "ONLINE", sc["chromeText"], f"Rate limit incorrectly flipped Chrome offline: {sc['chromeText']}"
+            )
             self.assertFalse(sc["banner"]["hidden"])
             self.assertIn("is-warn", sc["banner"]["className"], f"Expected .is-warn cooldown banner: {sc['banner']}")

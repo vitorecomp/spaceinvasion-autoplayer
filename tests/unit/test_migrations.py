@@ -175,8 +175,7 @@ class TestDatabaseMigrationsAndVersioning(unittest.TestCase):
                 with self.assertRaises((OperationalError, DatabaseError)):
                     bad_runner.migrate(conn, is_memory=True, target_version=2)
                 tables = {
-                    str(r[0])
-                    for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+                    str(r[0]) for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
                 }
                 self.assertIn("sample_a", tables)
                 self.assertNotIn("partial_should_rollback", tables)
@@ -683,7 +682,9 @@ class TestDatabaseMigrationsAndVersioning(unittest.TestCase):
             try:
                 v13_spec = next(m for m in GAME_DB_MIGRATIONS if m.version == 13)
                 applied_v13 = next(
-                    m for m in db_v13.get_migration_status(include_events=False)["applied_migrations"] if m["version"] == 13
+                    m
+                    for m in db_v13.get_migration_status(include_events=False)["applied_migrations"]
+                    if m["version"] == 13
                 )
                 self.assertEqual(applied_v13["checksum"], v13_spec.checksum)
                 summ = db_v13.summary()
@@ -796,7 +797,9 @@ class TestDatabaseMigrationsAndVersioning(unittest.TestCase):
             try:
                 v14_spec = next(m for m in GAME_DB_MIGRATIONS if m.version == 14)
                 applied_v14 = next(
-                    m for m in db_v14.get_migration_status(include_events=False)["applied_migrations"] if m["version"] == 14
+                    m
+                    for m in db_v14.get_migration_status(include_events=False)["applied_migrations"]
+                    if m["version"] == 14
                 )
                 self.assertEqual(applied_v14["checksum"], v14_spec.checksum)
 

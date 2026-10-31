@@ -356,7 +356,19 @@ class TestTier5Adversarial(unittest.TestCase):
                 100.0,
                 (p0,),
                 active_planet_id=1,
-                research_offers=(ResearchOffer(2, "r2", "Energy technology", 0, 1, cost=Resources(), status_text="Active", can_research=False, active=True),),
+                research_offers=(
+                    ResearchOffer(
+                        2,
+                        "r2",
+                        "Energy technology",
+                        0,
+                        1,
+                        cost=Resources(),
+                        status_text="Active",
+                        can_research=False,
+                        active=True,
+                    ),
+                ),
             )
             cur_st = GameState(31, 1, "u", 110.0, (p0,), active_planet_id=1, research_offers=(), active_queues=())
             bridge = GameApiBridge(
@@ -485,7 +497,13 @@ class TestTier5Adversarial(unittest.TestCase):
                     "buildings": {"b1": 4, "b5": 8, "b9": 2},
                     "ships": {"s1": 10, "s4": 25},
                     "defense": {},
-                    "economy_rates": {"resource1": 100, "resource2": 100, "resource3": 100, "resource4": 100, "resource5": 100},
+                    "economy_rates": {
+                        "resource1": 100,
+                        "resource2": 100,
+                        "resource3": 100,
+                        "resource4": 100,
+                        "resource5": 100,
+                    },
                     "building_queue": [],
                 }
             },
@@ -500,7 +518,9 @@ class TestTier5Adversarial(unittest.TestCase):
                 ts=clock.time(),
             )
             for i in range(3):
-                h.bridge._db.record_raid("2:380:4", attacked_ts=clock.time() - 600 + i * 30, is_exempt=False, outcome="win")
+                h.bridge._db.record_raid(
+                    "2:380:4", attacked_ts=clock.time() - 600 + i * 30, is_exempt=False, outcome="win"
+                )
 
             blocked = h.api.send_command({"command": "attack", "target_coords": "02:380:04", "dry_run": False})
             self.assertFalse(blocked.get("executed", True))
@@ -563,7 +583,13 @@ class TestTier5Adversarial(unittest.TestCase):
                 "buildings": {"b1": 5, "b5": 8, "b8": 5, "b9": 1},
                 "ships": {},
                 "defense": {},
-                "economy_rates": {"resource1": 100, "resource2": 100, "resource3": 100, "resource4": 100, "resource5": 100},
+                "economy_rates": {
+                    "resource1": 100,
+                    "resource2": 100,
+                    "resource3": 100,
+                    "resource4": 100,
+                    "resource5": 100,
+                },
                 "building_queue": [],
             },
             12477: {
@@ -579,7 +605,13 @@ class TestTier5Adversarial(unittest.TestCase):
                 "buildings": {"b1": 4, "b5": 8, "b8": 1, "b9": 1},
                 "ships": {},
                 "defense": {},
-                "economy_rates": {"resource1": 100, "resource2": 100, "resource3": 100, "resource4": 100, "resource5": 100},
+                "economy_rates": {
+                    "resource1": 100,
+                    "resource2": 100,
+                    "resource3": 100,
+                    "resource4": 100,
+                    "resource5": 100,
+                },
                 "building_queue": [],
             },
         }
@@ -599,7 +631,9 @@ class TestTier5Adversarial(unittest.TestCase):
             r8_dry = h.api.send_command({"command": "research", "research_id": 8, "planet_id": 12477, "dry_run": True})
             self.assertFalse(r8_dry["action"]["executable_now"])
             views_before = len(srv.page_view_log)
-            r8_live = h.api.send_command({"command": "research", "research_id": 8, "planet_id": 12477, "dry_run": False})
+            r8_live = h.api.send_command(
+                {"command": "research", "research_id": 8, "planet_id": 12477, "dry_run": False}
+            )
             self.assertFalse(r8_live["executed"])
             self.assertEqual(len(srv.page_view_log), views_before)
 
@@ -613,7 +647,18 @@ class TestTier5Adversarial(unittest.TestCase):
             h.bridge._last_state = replace(
                 st0,
                 research_offers=(
-                    ResearchOffer(2, "r2", "Energy technology", 4, 5, Resources(0, 1600, 800, 0), False, "In research (Cancel)", None, active=True),
+                    ResearchOffer(
+                        2,
+                        "r2",
+                        "Energy technology",
+                        4,
+                        5,
+                        Resources(0, 1600, 800, 0),
+                        False,
+                        "In research (Cancel)",
+                        None,
+                        active=True,
+                    ),
                     next(o for o in st0.research_offers if o.research_id == 8),
                 ),
             )
@@ -680,7 +725,9 @@ class TestTier5Adversarial(unittest.TestCase):
     def test_adv_t5_05_ui_gann_recalc_concurrent_sync_and_mobile_css_floors(self) -> None:
         cfg = StrategyConfig(planner_mode="priority", ga_population_size=8, ga_generations=3)
         with E2ETestHarness(config=cfg) as h:
-            css_txt = re.sub(r"/\*.*?\*/", "", requests.get(f"{h.base_url}/styles.css", timeout=5.0).text, flags=re.DOTALL)
+            css_txt = re.sub(
+                r"/\*.*?\*/", "", requests.get(f"{h.base_url}/styles.css", timeout=5.0).text, flags=re.DOTALL
+            )
             self.assertRegex(css_txt, r"\.nav-title\s*\{[^}]*font-size\s*:\s*0\.86rem")
             self.assertRegex(css_txt, r"\.eta-pill\s*\{[^}]*font-size\s*:\s*0\.86rem")
             m_1100 = re.search(
@@ -819,16 +866,12 @@ class TestTier5Adversarial(unittest.TestCase):
             self.assertEqual(extracted.target_coords, "2:380:4")
             h.bridge._db.record_spy_report(extracted)
             with h.bridge._db._lock:
-                stored_rows = h.bridge._db._conn.execute(
-                    "SELECT coords FROM spy_targets ORDER BY coords"
-                ).fetchall()
+                stored_rows = h.bridge._db._conn.execute("SELECT coords FROM spy_targets ORDER BY coords").fetchall()
             self.assertIn("02:380:04", [str(r[0]) for r in stored_rows])
             self.assertNotIn("2:380:4", [str(r[0]) for r in stored_rows])
 
             # BUG-01: unpadded own-planet coords blocked for attack and spy.
-            res_own_atk = h.api.send_command(
-                {"command": "attack", "target_coords": "2:380:12", "dry_run": True}
-            )
+            res_own_atk = h.api.send_command({"command": "attack", "target_coords": "2:380:12", "dry_run": True})
             self.assertFalse(res_own_atk["executed"])
             self.assertIn("own planet", res_own_atk["message"].lower())
 
@@ -839,17 +882,13 @@ class TestTier5Adversarial(unittest.TestCase):
             self.assertIn("own planet", res_own_spy["message"].lower())
 
             # BUG-01: unpadded blue-shielded target blocked by normalized status lookup.
-            res_blue = h.api.send_command(
-                {"command": "attack", "target_coords": "2:380:5", "dry_run": True}
-            )
+            res_blue = h.api.send_command({"command": "attack", "target_coords": "2:380:5", "dry_run": True})
             self.assertFalse(res_blue["executed"])
             self.assertIn("blue", res_blue["message"].lower())
 
             # BUG-01: unpadded yellow inactive target stays bash-exempt through 4 consecutive raids.
             for idx in range(4):
-                res_raid = h.api.send_command(
-                    {"command": "attack", "target_coords": "2:380:4", "dry_run": False}
-                )
+                res_raid = h.api.send_command({"command": "attack", "target_coords": "2:380:4", "dry_run": False})
                 self.assertTrue(res_raid["executed"], f"Yellow raid {idx + 1} failed: {res_raid}")
             self.assertEqual(len(srv.launched_fleets), 4)
 
@@ -1047,7 +1086,9 @@ class TestTier5Adversarial(unittest.TestCase):
         )
         cfg_raid = StrategyConfig(planner_mode="priority", allow_raids=True)
         prio_acts = plan_actions(st_own, config=cfg_raid)
-        self.assertFalse(any(a.kind == "ATTACK" and ("01:010:01" in a.target_name or "1:10:1" in a.target_name) for a in prio_acts))
+        self.assertFalse(
+            any(a.kind == "ATTACK" and ("01:010:01" in a.target_name or "1:10:1" in a.target_name) for a in prio_acts)
+        )
 
         # Finding 3 + Finding 4 + Finding 5 across game_data, state, fleet, ranking, auth
         for cat in ("buildings", "research", "ships", "defense"):
@@ -1083,7 +1124,9 @@ class TestTier5Adversarial(unittest.TestCase):
             defense={"d1": 10**1_000_000},
         )
         st_huge = replace(
-            make_game_state(planets=[p_huge], active_planet_id=101, researches={"r1": 10**400, "r2": 10**400, "r8": 10**400}),
+            make_game_state(
+                planets=[p_huge], active_planet_id=101, researches={"r1": 10**400, "r2": 10**400, "r8": 10**400}
+            ),
             account_points=10**1_000_000,
         )
         self.assertIsNotNone(gs_corrupt)
@@ -1096,9 +1139,17 @@ class TestTier5Adversarial(unittest.TestCase):
         json.dumps({"evo": evo, "ov": ov, "sim": sim_m}, allow_nan=False)
 
         self.assertGreater(fleet_cargo_capacity({"s1": 10**400}, miner_spec_level=10**400), 0)
-        self.assertTrue(math.isfinite(simulate_raid_outcome({"s4": 10**1_000_000}, SpyReport("02:380:05", fleet={"s4": 10**400})).attacker_power))
+        self.assertTrue(
+            math.isfinite(
+                simulate_raid_outcome(
+                    {"s4": 10**1_000_000}, SpyReport("02:380:05", fleet={"s4": 10**400})
+                ).attacker_power
+            )
+        )
         self.assertIn("~1e", plan_escape_flight(p_huge, target_coords="01:010:02").reason)
-        unis = universes_from_portal_data("s", [{"id": 31, "name": "G", "speed": "", "flightSpeed": "bad"}], "https://example.test")
+        unis = universes_from_portal_data(
+            "s", [{"id": 31, "name": "G", "speed": "", "flightSpeed": "bad"}], "https://example.test"
+        )
         self.assertEqual(unis[0].speed, 1.0)
         self.assertEqual(unis[0].flight_speed, 1.0)
 
@@ -1113,7 +1164,9 @@ class TestTier5Adversarial(unittest.TestCase):
         self.assertEqual(_extract_spy_coords("[12:05:12] target 2:380:4 Pig iron 500"), "2:380:4")
         self.assertEqual(
             normalize_coords(
-                parse_spy_report_html("<html><body><div>[12:05:12] target 2:380:4</div><div>Pig iron 500</div></body></html>").target_coords
+                parse_spy_report_html(
+                    "<html><body><div>[12:05:12] target 2:380:4</div><div>Pig iron 500</div></body></html>"
+                ).target_coords
             ),
             "02:380:04",
         )
@@ -1138,7 +1191,9 @@ class TestTier5Adversarial(unittest.TestCase):
                 "building_queue": [],
             }
         }
-        srv = FakeSpaceInvasionServer(clock=clock, planets=planets, researches={"r1": 1, "r2": 4, "r3": 2, "r4": 4, "r7": 2})
+        srv = FakeSpaceInvasionServer(
+            clock=clock, planets=planets, researches={"r1": 1, "r2": 4, "r3": 2, "r4": 4, "r7": 2}
+        )
         cfg = StrategyConfig(planner_mode="priority", allow_raids=True)
         with E2ETestHarness(server=srv, clock=clock, config=cfg, max_actions_per_hour=50) as h:
             assert h.bridge._db is not None
@@ -1187,7 +1242,9 @@ class TestTier5Adversarial(unittest.TestCase):
             # GAP-03: zero-cost active research restored with real catalog cost after external cancel
             cur_st = h.bridge._last_state
             assert cur_st is not None
-            r2_zero = ResearchOffer(2, "r2", "Energy technology", 4, 5, Resources(), False, "In research (Cancel)", None, active=True)
+            r2_zero = ResearchOffer(
+                2, "r2", "Energy technology", 4, 5, Resources(), False, "In research (Cancel)", None, active=True
+            )
             h.bridge._last_state = replace(cur_st, research_offers=(r2_zero,))
             merged = h.bridge._merge_cached_offers(replace(cur_st, research_offers=(), active_queues=()))
             self.assertFalse(merged.research_offers[0].cost.is_zero())
@@ -1364,9 +1421,7 @@ class TestTier5Adversarial(unittest.TestCase):
                 buildings={"b1": 10**1_000_000, "b5": 5, "b8": 5, "b9": 10**1_000_000, "b10": 5},
                 ships={"s1": 10**1_000_000, "s4": 10**400},
                 defense={"d1": 10**1_000_000},
-                building_offers=(
-                    BuildingOffer(1, "Pig iron mine", 5, 6, Resources(10**400, 0, 0, 0), False, "Need"),
-                ),
+                building_offers=(BuildingOffer(1, "Pig iron mine", 5, 6, Resources(10**400, 0, 0, 0), False, "Need"),),
                 economy_rates={"resource1": 100, "resource2": 100, "resource3": 100, "resource4": 100},
             )
             raid_t = {
@@ -1388,7 +1443,17 @@ class TestTier5Adversarial(unittest.TestCase):
                 researches={"r1": 10**1_000_000, "r4": 5, "r5": 5, "r6": 5},
                 active_queues=(QueueJob("research", "Mining technology", target_level=10**5000),),
                 research_offers=(
-                    ResearchOffer(1, "r1", "Mining technology", 1, 10**5000, Resources(100, 0, 0, 0), True, "In research", active=True),
+                    ResearchOffer(
+                        1,
+                        "r1",
+                        "Mining technology",
+                        1,
+                        10**5000,
+                        Resources(100, 0, 0, 0),
+                        True,
+                        "In research",
+                        active=True,
+                    ),
                 ),
                 account_points=10**1_000_000,
                 account_rank=10**5000,
@@ -1413,13 +1478,23 @@ class TestTier5Adversarial(unittest.TestCase):
 
             with tempfile.TemporaryDirectory() as tmp_rk:
                 hp = Path(tmp_rk) / "rank_history.json"
-                hp.write_text('[{"ts": 1000.0, "estimated_points": NaN, "server_rank": Infinity, "server_points": 1e5000}]', encoding="utf-8")
+                hp.write_text(
+                    '[{"ts": 1000.0, "estimated_points": NaN, "server_rank": Infinity, "server_points": 1e5000}]',
+                    encoding="utf-8",
+                )
                 json.dumps(load_rank_history(hp), allow_nan=False)
                 snaps = record_rank_snapshot(hp, st_huge)
                 json.dumps(snaps, allow_nan=False)
                 evo = build_ranking_evolution(
                     st_huge,
-                    [{"ts": 1000.0, "estimated_points": float("nan"), "server_rank": float("inf"), "server_points": 10**5000}],
+                    [
+                        {
+                            "ts": 1000.0,
+                            "estimated_points": float("nan"),
+                            "server_rank": float("inf"),
+                            "server_points": 10**5000,
+                        }
+                    ],
                 )
                 json.dumps(evo, allow_nan=False)
 
@@ -1717,7 +1792,7 @@ class TestTier5Adversarial(unittest.TestCase):
         b_offers = parse_buildings_page(
             f'<div class="build-card b-{huge}"><span class="title">Mine (Level {huge})</span></div>'
             f'<table><tr><td><a href="indexInternal.es?action=internalDetail&type=building&id={huge}">Mine</a></td>'
-            f'<td>Required: 100 Pig iron</td>'
+            f"<td>Required: 100 Pig iron</td>"
             f'<td><a class="bau" href="indexInternal.es?action=internalBuildItem&buildingID={huge}#{huge}">Build level {huge}</a></td>'
             f"</tr></table>",
             {},
@@ -2143,7 +2218,10 @@ async (url) => {
                         with (
                             patch("spaceinvasion.session.browser.is_debug_port_open", return_value=False),
                             patch("spaceinvasion.session.browser.launch_chrome_with_debug_port", return_value=proc),
-                            patch("spaceinvasion.session.browser.attach_chrome_driver", side_effect=SpaceInvasionAuthError("attach fail")),
+                            patch(
+                                "spaceinvasion.session.browser.attach_chrome_driver",
+                                side_effect=SpaceInvasionAuthError("attach fail"),
+                            ),
                         ):
                             with self.assertRaises(SpaceInvasionAuthError):
                                 browser.open_browser_session(
@@ -2233,14 +2311,18 @@ async (url) => {
 
         # GAP-M5-03: direct commander & executor 10**5000 safety
         cmd_payload = commander._action_to_command_payload(
-            PlannedAction("P2", "BUILD_SHIP", 10**5000, "01:010:01", "Small transport", "Adv", target_id=1, target_level=10**5000),
+            PlannedAction(
+                "P2", "BUILD_SHIP", 10**5000, "01:010:01", "Small transport", "Adv", target_id=1, target_level=10**5000
+            ),
             dry_run=True,
         )
         json.dumps(cmd_payload, allow_nan=False)
         ex = ActionExecutor(dry_run=True)
         cl = MagicMock(spec=GameBrowserClient)
         cl.driver = MagicMock()
-        self.assertEqual(ex._select_planet_if_needed(cl, 10**5000, html="<select name='planet'></select>"), (False, None))
+        self.assertEqual(
+            ex._select_planet_if_needed(cl, 10**5000, html="<select name='planet'></select>"), (False, None)
+        )
 
     def test_adv_t5_17_m5_r7_ui_race_and_corrupt_pct_api_unicode_and_lifecycle_parity(self) -> None:
         import ast
@@ -2270,9 +2352,7 @@ async (url) => {
                     and node.func.value.id == "json"
                 ):
                     ok = any(
-                        kw.arg == "allow_nan"
-                        and isinstance(kw.value, ast.Constant)
-                        and kw.value.value is False
+                        kw.arg == "allow_nan" and isinstance(kw.value, ast.Constant) and kw.value.value is False
                         for kw in node.keywords
                     )
                     if not ok:
@@ -2417,7 +2497,10 @@ async (url, opts, fullUrl, nativeFetch) => {
             self.assertEqual(cfg_r8.playstyle, "bob's miner")
             self.assertEqual(cfg_r8.shipyard_targets["unit'1"], 5)
 
-        self.assertEqual(normalize_coords("\u0660\u0662:\u0663\u0668\u0660:\u0660\u0664"), "\u0660\u0662:\u0663\u0668\u0660:\u0660\u0664")
+        self.assertEqual(
+            normalize_coords("\u0660\u0662:\u0663\u0668\u0660:\u0660\u0664"),
+            "\u0660\u0662:\u0663\u0668\u0660:\u0660\u0664",
+        )
         gs_sup = game_state_from_dict(
             {
                 "planets": [
@@ -2606,19 +2689,45 @@ async (url, opts, fullUrl, nativeFetch) => {
         )
         gs_r9 = GameState(31, 1, "u", 1_700_000_000.0, (full_home, ast_p), active_planet_id=1)
         acts_prio = plan_actions(gs_r9, config=StrategyConfig(planner_mode="priority", allow_multi_planet=True))
-        self.assertEqual([a for a in acts_prio if a.planet_id == 99 and a.target_id in {1, 2, 3, 4, 5, 6, 8, 11, 12, 13, 14}], [])
+        self.assertEqual(
+            [a for a in acts_prio if a.planet_id == 99 and a.target_id in {1, 2, 3, 4, 5, 6, 8, 11, 12, 13, 14}], []
+        )
         self.assertEqual([a for a in acts_prio if a.planet_id == 1 and a.kind == "BUILD"], [])
 
         # 2. GAP-R9-03 & GAP-R9-04: Arabic-Indic parser parity + negative level clamp
         ar = "\u0660\u0662:\u0663\u0668\u0660:\u0660\u0664"
         self.assertEqual(_parse_coords_distance(ar, "02:380:05"), 100.0)
         self.assertEqual(parse_si_int("\u0662.\u0660\u0660\u0660"), 0)
-        self.assertEqual(parse_economy_rates('<select name="resource\u0662"><option selected value="80">80%</option></select>'), {})
-        self.assertEqual(extract_galaxy_system_coords('<input name="galaxy" value="\u0662"><input name="system" value="\u0663\u0668\u0660">', default=(9, 99)), (9, 99))
-        self.assertEqual(parse_galaxy_system_html('<table><tr><td class="pos">1</td><td>P</td></tr></table>', url="?galaxy=\u0662&system=\u0663\u0668\u0660")[0].coords, "01:001:01")
-        self.assertEqual(parse_spy_report_html(f"<div>Target [{ar}] Pig iron: \u0665\u0660\u0660</div>").resources.pig_iron, 0)
+        self.assertEqual(
+            parse_economy_rates('<select name="resource\u0662"><option selected value="80">80%</option></select>'), {}
+        )
+        self.assertEqual(
+            extract_galaxy_system_coords(
+                '<input name="galaxy" value="\u0662"><input name="system" value="\u0663\u0668\u0660">', default=(9, 99)
+            ),
+            (9, 99),
+        )
+        self.assertEqual(
+            parse_galaxy_system_html(
+                '<table><tr><td class="pos">1</td><td>P</td></tr></table>',
+                url="?galaxy=\u0662&system=\u0663\u0668\u0660",
+            )[0].coords,
+            "01:001:01",
+        )
+        self.assertEqual(
+            parse_spy_report_html(f"<div>Target [{ar}] Pig iron: \u0665\u0660\u0660</div>").resources.pig_iron, 0
+        )
         self.assertEqual(_coord_query_candidates(ar), (ar, [ar], None))
-        neg_gs = parse_planets_overview_json(json.dumps({"planets": [{"id": 1, "name": "P", "coords": "1:2:3", "fields": -5, "buildings": {"b1": {"level": -10}}}]}, allow_nan=False))
+        neg_gs = parse_planets_overview_json(
+            json.dumps(
+                {
+                    "planets": [
+                        {"id": 1, "name": "P", "coords": "1:2:3", "fields": -5, "buildings": {"b1": {"level": -10}}}
+                    ]
+                },
+                allow_nan=False,
+            )
+        )
         neg_p = neg_gs.active_planet()
         assert neg_p is not None
         self.assertEqual(neg_p.fields_used, 0)
@@ -2632,12 +2741,22 @@ async (url, opts, fullUrl, nativeFetch) => {
         with E2ETestHarness() as h:
             r0 = requests.post(
                 f"{h.base_url}/command",
-                json={"command": "simulate_combat", "attacker_ships": {"s4": 16}, "defender_ships": {"s4": 10}, "defender_researches": {"r8": 0, "r9": 0, "r10": 0}},
+                json={
+                    "command": "simulate_combat",
+                    "attacker_ships": {"s4": 16},
+                    "defender_ships": {"s4": 10},
+                    "defender_researches": {"r8": 0, "r9": 0, "r10": 0},
+                },
                 timeout=5,
             )
             r15 = requests.post(
                 f"{h.base_url}/command",
-                json={"command": "simulate_combat", "attacker_ships": {"s4": 16}, "defender_ships": {"s4": 10}, "defender_researches": {"r8": 15, "r9": 15, "r10": 15}},
+                json={
+                    "command": "simulate_combat",
+                    "attacker_ships": {"s4": 16},
+                    "defender_ships": {"s4": 10},
+                    "defender_researches": {"r8": 15, "r9": 15, "r10": 15},
+                },
                 timeout=5,
             )
             self.assertEqual(r0.status_code, 200)
@@ -2736,7 +2855,9 @@ async (url, opts, fullUrl, nativeFetch) => {
             energy=EnergyBalance(10, 160),
             buildings={"b9": 1},
             building_offers=(BuildingOffer(5, "Fusion plant", 0, 1, Resources(100, 100, 100, 100), True, "?b=5"),),
-            ship_offers=(UnitOffer("ship", SOLAR_CELLS_ID, "Solar cells", 0, Resources(0, 2000, 200, 400), True, "ship[9]"),),
+            ship_offers=(
+                UnitOffer("ship", SOLAR_CELLS_ID, "Solar cells", 0, Resources(0, 2000, 200, 400), True, "ship[9]"),
+            ),
         )
         self.assertEqual(full_cold.temperature, -110)
         self.assertEqual(full_cold.fields_remaining, 0)
@@ -2764,11 +2885,25 @@ async (url, opts, fullUrl, nativeFetch) => {
             1_700_000_000.0,
             (full_cold, raid_p),
             active_planet_id=1,
-            tutorial=TutorialStatus(1, 5, (TutorialTask("Build Fusion plant level 1", building_name="Fusion plant", building_id=5, current=0, target=1),), "", False),
+            tutorial=TutorialStatus(
+                1,
+                5,
+                (
+                    TutorialTask(
+                        "Build Fusion plant level 1", building_name="Fusion plant", building_id=5, current=0, target=1
+                    ),
+                ),
+                "",
+                False,
+            ),
         )
-        p_acts = plan_actions(st, config=StrategyConfig(planner_mode="priority", allow_multi_planet=True, allow_shipyard=True))
+        p_acts = plan_actions(
+            st, config=StrategyConfig(planner_mode="priority", allow_multi_planet=True, allow_shipyard=True)
+        )
         self.assertEqual([a for a in p_acts if a.kind == "BUILD"], [])
-        self.assertEqual([a for a in p_acts if a.planet_id == 2 and a.kind in ("BUILD", "BUILD_SHIP", "THROTTLE_BUILDING")], [])
+        self.assertEqual(
+            [a for a in p_acts if a.planet_id == 2 and a.kind in ("BUILD", "BUILD_SHIP", "THROTTLE_BUILDING")], []
+        )
 
         # 3. ActionExecutor max_actions_per_hour=0 + None fields + E2ETestHarness port=0 & health/bot_control scrubbing
         ex0 = ActionExecutor(dry_run=False, max_actions_per_hour=0)
@@ -2822,7 +2957,9 @@ async (url, opts, fullUrl, nativeFetch) => {
             building_offers=(
                 BuildingOffer(5, "Fusion plant", 0, 1, Resources(100, 50, 0, 0), True, "Build", "?b=5"),
                 BuildingOffer(11, "Pig iron warehouse", 0, 1, Resources(100, 50, 0, 0), True, "Build", "?b=11"),
-                BuildingOffer(19, "Galaxy scanner", 1, 2, Resources(20_000, 80_000, 40_000, 16_000), True, "Build", "?b=19"),
+                BuildingOffer(
+                    19, "Galaxy scanner", 1, 2, Resources(20_000, 80_000, 40_000, 16_000), True, "Build", "?b=19"
+                ),
             ),
         )
         st_ast = GameState(
@@ -2840,7 +2977,13 @@ async (url, opts, fullUrl, nativeFetch) => {
                 config=StrategyConfig(planner_mode=mode),
             )
             self.assertEqual(
-                [a for a in acts if a.kind == "THROTTLE_BUILDING" or a.target_id in (5, 11, 12, 13, 14) or (a.kind == "BUILD" and a.executable_now)],
+                [
+                    a
+                    for a in acts
+                    if a.kind == "THROTTLE_BUILDING"
+                    or a.target_id in (5, 11, 12, 13, 14)
+                    or (a.kind == "BUILD" and a.executable_now)
+                ],
                 [],
                 f"mode={mode} emitted illegal asteroid actions: {acts}",
             )
@@ -2869,7 +3012,9 @@ async (url, opts, fullUrl, nativeFetch) => {
             (raid_p,),
             active_planet_id=91,
             researches={"r2": 4, "r4": 4},
-            research_offers=(ResearchOffer(1, "r1", "Mining technology", 0, 1, Resources(1000, 0, 500, 0), True, "ready", "?r=1"),),
+            research_offers=(
+                ResearchOffer(1, "r1", "Mining technology", 0, 1, Resources(1000, 0, 500, 0), True, "ready", "?r=1"),
+            ),
         )
         for bad_step in (
             ("RESEARCH", 91, "r1"),
@@ -2884,7 +3029,11 @@ async (url, opts, fullUrl, nativeFetch) => {
             config=StrategyConfig(allow_research=True, allow_shipyard=True),
         )
         self.assertEqual(
-            [a for a in raid_acts if a.planet_id == 91 and a.kind in ("BUILD", "BUILD_SHIP", "THROTTLE_BUILDING") and a.executable_now],
+            [
+                a
+                for a in raid_acts
+                if a.planet_id == 91 and a.kind in ("BUILD", "BUILD_SHIP", "THROTTLE_BUILDING") and a.executable_now
+            ],
             [],
         )
 
@@ -2895,8 +3044,25 @@ async (url, opts, fullUrl, nativeFetch) => {
         self.assertEqual((cfg_f.merchant_mode, cfg_f.allow_raids, cfg_f.allow_pvp_in_az), (False, False, False))
 
         for dumped in (
-            json.dumps(_sanitize_cfg_json_tree({"p": Path("?sid=T5_CFG_SEC"), "bp": _BytesPath(), "err": RuntimeError("?sid=T5_CFG_ERR"), "obj": object()}), allow_nan=False),
-            _json_dumps({"p": Path("?sid=T5_ST_SEC"), "bp": _BytesPath(), "cplx": complex(1, 2), "m": MappingProxyType({"k": object()})}),
+            json.dumps(
+                _sanitize_cfg_json_tree(
+                    {
+                        "p": Path("?sid=T5_CFG_SEC"),
+                        "bp": _BytesPath(),
+                        "err": RuntimeError("?sid=T5_CFG_ERR"),
+                        "obj": object(),
+                    }
+                ),
+                allow_nan=False,
+            ),
+            _json_dumps(
+                {
+                    "p": Path("?sid=T5_ST_SEC"),
+                    "bp": _BytesPath(),
+                    "cplx": complex(1, 2),
+                    "m": MappingProxyType({"k": object()}),
+                }
+            ),
             str(redact_sensitive(Path("?sid=T5_LOG_SEC"))),
         ):
             for sec in ("T5_R11_BPATH_SEC", "T5_CFG_SEC", "T5_CFG_ERR", "T5_ST_SEC", "T5_LOG_SEC"):
@@ -2937,8 +3103,17 @@ async (url, opts, fullUrl, nativeFetch) => {
                     self.assertEqual(login_cli.main(argv), 0)
                 rendered = buf.getvalue()
                 for sec in (
-                    "T5_BACC_SEC", "T5_BPROF_SEC", "T5_BCOOK_SEC", "T5_BCN_SEC", "T5_BFINAL_SEC", "T5_BDBG_SEC",
-                    "T5_HACC_SEC", "T5_HLAND_SEC", "T5_HFINAL_SEC", "T5_HCOOK_SEC", "T5_HCN_SEC",
+                    "T5_BACC_SEC",
+                    "T5_BPROF_SEC",
+                    "T5_BCOOK_SEC",
+                    "T5_BCN_SEC",
+                    "T5_BFINAL_SEC",
+                    "T5_BDBG_SEC",
+                    "T5_HACC_SEC",
+                    "T5_HLAND_SEC",
+                    "T5_HFINAL_SEC",
+                    "T5_HCOOK_SEC",
+                    "T5_HCN_SEC",
                 ):
                     self.assertNotIn(sec, rendered)
         self.assertIn("sid=T5_BFINAL_SEC", b_res.final_url)
@@ -2969,7 +3144,11 @@ async (url, opts, fullUrl, nativeFetch) => {
                 coords="01:001:04",
                 planet_type="normal",
                 buildings={"b7": 8},
-                building_offers=(BuildingOffer(19, "Galaxy scanner", 0, 1, Resources(10_000, 40_000, 20_000, 8_000), True, "Build", "?b=19"),),
+                building_offers=(
+                    BuildingOffer(
+                        19, "Galaxy scanner", 0, 1, Resources(10_000, 40_000, 20_000, 8_000), True, "Build", "?b=19"
+                    ),
+                ),
             )
             st_mix = GameState(31, 1, "u", 1000.0, (ast_p, raid_p, norm_p), active_planet_id=92)
             for bid_bad, pid_bad in ((5, 92), (1, 91), (19, 93)):
@@ -3039,7 +3218,9 @@ async (url, opts, fullUrl, nativeFetch) => {
             storage=Resources(100_000, 100_000, 100_000, 100_000),
             energy=EnergyBalance(500, 100),
             buildings={"b7": 1, "b9": 1},
-            building_offers=(BuildingOffer(7, "Development center", 1, 2, Resources(400, 120, 200, 0), True, "Build", "?b=7"),),
+            building_offers=(
+                BuildingOffer(7, "Development center", 1, 2, Resources(400, 120, 200, 0), True, "Build", "?b=7"),
+            ),
             ship_offers=(UnitOffer("ship", 4, "Small fighter", 0, Resources(3000, 1000, 0, 0), True, "ship[4]"),),
         )
         ast_nolab = PlanetState(
@@ -3065,7 +3246,9 @@ async (url, opts, fullUrl, nativeFetch) => {
             reward_text=10**5000,  # type: ignore[arg-type]
             can_complete=False,
         )
-        r_offer = ResearchOffer(1, "r1", "Mining technology", 0, 1, Resources(200, 100, 100, 0), True, "Research", "?r=1")
+        r_offer = ResearchOffer(
+            1, "r1", "Mining technology", 0, 1, Resources(200, 100, 100, 0), True, "Research", "?r=1"
+        )
         for planet_obj in (raid_p, ast_nolab):
             st_x = GameState(
                 31,
@@ -3188,7 +3371,9 @@ async (url, opts, fullUrl, nativeFetch) => {
                 UnitOffer("ship", 9, "Solar cells", 0, Resources(0, 2000, 200, 400), True, "ship[9]"),
             ),
         )
-        r2_offer = ResearchOffer(2, "r2", "Energy technology", 0, 1, Resources(0, 400, 800, 400), True, "Research", "?r=2")
+        r2_offer = ResearchOffer(
+            2, "r2", "Energy technology", 0, 1, Resources(0, 400, 800, 400), True, "Research", "?r=2"
+        )
         tut_r_s = TutorialStatus(
             4,
             11,
@@ -3252,7 +3437,9 @@ async (url, opts, fullUrl, nativeFetch) => {
         tut_b8 = TutorialStatus(3, 11, (TutorialTask("Build Research lab 0/1", "Research lab", 8, 0, 1, "building"),))
         st_multi = GameState(31, 1, "u", 1000.0, (raid_p, norm_p), active_planet_id=962, tutorial=tut_b8)
         multi_acts = plan_actions(st_multi, config=StrategyConfig(planner_mode="priority", allow_multi_planet=True))
-        self.assertTrue(any(a.planet_id == 963 and a.kind == "BUILD" and a.target_id == 8 and a.executable_now for a in multi_acts))
+        self.assertTrue(
+            any(a.planet_id == 963 and a.kind == "BUILD" and a.target_id == 8 and a.executable_now for a in multi_acts)
+        )
 
         ast_p = PlanetState(
             planet_id=964,
@@ -3277,7 +3464,9 @@ async (url, opts, fullUrl, nativeFetch) => {
             ),
         )
         ast_acts = plan_actions(
-            GameState(31, 1, "u", 1000.0, (ast_p,), active_planet_id=964, tutorial=tut_ast, research_offers=(r2_offer,)),
+            GameState(
+                31, 1, "u", 1000.0, (ast_p,), active_planet_id=964, tutorial=tut_ast, research_offers=(r2_offer,)
+            ),
             config=StrategyConfig(planner_mode="priority", allow_multi_planet=False),
         )
         self.assertEqual([(a.kind, a.target_id) for a in ast_acts], [("WAIT_RESOURCES", 7)])
@@ -3407,7 +3596,9 @@ async (url, opts, fullUrl, nativeFetch) => {
             storage=Resources(100_000, 100_000, 100_000, 100_000),
             energy=EnergyBalance(500, 100),
             buildings={"b1": 4},
-            building_offers=(BuildingOffer(1, "Pig iron mine", 5, 6, Resources(100, 100, 0, 0), True, "Build", "?b=1"),),
+            building_offers=(
+                BuildingOffer(1, "Pig iron mine", 5, 6, Resources(100, 100, 0, 0), True, "Build", "?b=1"),
+            ),
             ship_offers=(UnitOffer("ship", 4, "Small fighter", 0, Resources(3000, 1000, 0, 0), True, "ship[4]"),),
         )
         st = GameState(
@@ -3417,7 +3608,9 @@ async (url, opts, fullUrl, nativeFetch) => {
             time.time(),
             (raid_p, ast_p, norm_p),
             active_planet_id=972,
-            research_offers=(ResearchOffer(2, "r2", "Energy technology", 0, 1, Resources(500, 500, 0, 0), True, "Research", "?r=2"),),
+            research_offers=(
+                ResearchOffer(2, "r2", "Energy technology", 0, 1, Resources(500, 500, 0, 0), True, "Research", "?r=2"),
+            ),
             unread_messages={"spio": 2},
         )
 
@@ -3474,7 +3667,7 @@ async (url, opts, fullUrl, nativeFetch) => {
             dag_exc: BaseException = RuntimeError("Bearer T5_R14_DAG_SEC")
             for _ in range(20):
                 dag_exc = RuntimeError(dag_exc, dag_exc, dag_exc, dag_exc)
-            h.bridge._bot_control["ue_json"] = '%22password%22%3A%22T5_R14_UE_PW%22'
+            h.bridge._bot_control["ue_json"] = "%22password%22%3A%22T5_R14_UE_PW%22"
             h.bridge._bot_control["esc_json"] = '\\"password\\":\\"T5_R14_ESC_PW\\"'
             h.bridge._bot_control["cyc"] = cyc_d
             h.bridge._bot_control["dag"] = dag_exc

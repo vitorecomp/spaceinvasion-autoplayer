@@ -184,8 +184,12 @@ class TestHarnessSelf(unittest.TestCase):
             auto_offers=True,
         )
         state = make_game_state(planets=(cold, warm), researches={"r1": 5}, speedup_factor=1.0)
-        act_cold = PlannedAction("P2", "BUILD", 101, "02:380:15", "Spice mine", "test", target_id=4, target_level=5, executable_now=True)
-        act_warm = PlannedAction("P2", "BUILD", 102, "02:380:02", "Spice mine", "test", target_id=4, target_level=5, executable_now=True)
+        act_cold = PlannedAction(
+            "P2", "BUILD", 101, "02:380:15", "Spice mine", "test", target_id=4, target_level=5, executable_now=True
+        )
+        act_warm = PlannedAction(
+            "P2", "BUILD", 102, "02:380:02", "Spice mine", "test", target_id=4, target_level=5, executable_now=True
+        )
 
         eval_cold = evaluate_sequence_score(state, [act_cold], config=StrategyConfig())
         eval_warm = evaluate_sequence_score(state, [act_warm], config=StrategyConfig())
@@ -194,9 +198,21 @@ class TestHarnessSelf(unittest.TestCase):
         self.assertGreater(eval_cold.final_income_spice_eq, eval_warm.final_income_spice_eq)
 
         # Illegal asteroid mine detected as violation
-        astro = make_planet(planet_id=200, coords="02:380:05", planet_type="asteroid", fields_max=30, buildings={"b7": 2})
+        astro = make_planet(
+            planet_id=200, coords="02:380:05", planet_type="asteroid", fields_max=30, buildings={"b7": 2}
+        )
         astro_state = make_game_state(planets=(astro,))
-        bad_act = PlannedAction("P2", "BUILD", 200, "02:380:05", "Pig iron mine", "illegal", target_id=1, target_level=1, executable_now=True)
+        bad_act = PlannedAction(
+            "P2",
+            "BUILD",
+            200,
+            "02:380:05",
+            "Pig iron mine",
+            "illegal",
+            target_id=1,
+            target_level=1,
+            executable_now=True,
+        )
         eval_bad = evaluate_sequence_score(astro_state, [bad_act])
         self.assertFalse(eval_bad.legal)
         self.assertGreaterEqual(len(eval_bad.violations), 1)
@@ -243,7 +259,9 @@ class TestHarnessSelf(unittest.TestCase):
                 before_views = h.api.health()["page_views_last_60s"]
                 h.page_limiter.record_view(1)
                 self.assertEqual(h.api.health()["page_views_last_60s"], before_views + 1)
-            h.api.send_command({"command": "update_config", "config": {"playstyle": "miner", "max_actions_per_hour": 19}})
+            h.api.send_command(
+                {"command": "update_config", "config": {"playstyle": "miner", "max_actions_per_hour": 19}}
+            )
             h.api.send_command({"command": "scan_galaxy", "galaxy": 2, "system": 381, "dry_run": False})
             port_before = h.port
             h.restart_bridge()

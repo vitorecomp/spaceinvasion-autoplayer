@@ -434,9 +434,7 @@ class FakeSpaceInvasionServer:
                 "<html><body><div>Session expired. Please log in again.</div></body></html>",
             )
 
-        if self.inject_antibot and (
-            self.inject_antibot_on_action is None or self.inject_antibot_on_action == action
-        ):
+        if self.inject_antibot and (self.inject_antibot_on_action is None or self.inject_antibot_on_action == action):
             if self.inject_antibot == "turnstile":
                 return (
                     "https://spaceinvasion.bitmeup.com/cdn-cgi/challenge",
@@ -490,7 +488,9 @@ class FakeSpaceInvasionServer:
             with self._render_counter_lock:
                 self._active_renders -= 1
 
-    def _render_frame_inner(self, frame_id: str, url: str, form_data: Optional[dict[str, Any]] = None) -> tuple[str, str]:
+    def _render_frame_inner(
+        self, frame_id: str, url: str, form_data: Optional[dict[str, Any]] = None
+    ) -> tuple[str, str]:
         if self.render_yield_s > 0.0:
             _real_time.sleep(self.render_yield_s)
         parsed = urlparse(url)
@@ -530,10 +530,7 @@ class FakeSpaceInvasionServer:
                 ("internalFleet", "Fleet commands"),
                 ("internalUniverse", "Overview"),
             ]
-            nav_links = " ".join(
-                f'<a href="indexInternal.es?action={act}{sq_amp}">{lbl}</a>'
-                for act, lbl in nav_items
-            )
+            nav_links = " ".join(f'<a href="indexInternal.es?action={act}{sq_amp}">{lbl}</a>' for act, lbl in nav_items)
             gal_link = '<a href="#" onclick="p_galaxy()">Galaxy</a>'
             html = (
                 f"<html><body>"
@@ -562,7 +559,9 @@ class FakeSpaceInvasionServer:
                 self.action_log.append({"action": "claim_tutorial", "step": self.tutorial["step"]})
 
             ap = self._active_planet()
-            newbie_html = "<div>Up to 10.000 points,no attacks can be launched on you!</div>" if self.newbie_protection else ""
+            newbie_html = (
+                "<div>Up to 10.000 points,no attacks can be launched on you!</div>" if self.newbie_protection else ""
+            )
             alerts_html = "".join(
                 f'<div class="attack-alert" id="attack_alert_{i}">{msg}</div>'
                 for i, msg in enumerate(self.hostile_alerts, start=1)
@@ -572,9 +571,7 @@ class FakeSpaceInvasionServer:
                 step = self.tutorial.get("step", 1)
                 total = self.tutorial.get("total_steps", 11)
                 disp = "" if self.tutorial.get("displayed", True) else ' style="display:none"'
-                tasks_html = " ".join(
-                    str(t.get("description") or "") for t in (self.tutorial.get("tasks") or [])
-                )
+                tasks_html = " ".join(str(t.get("description") or "") for t in (self.tutorial.get("tasks") or []))
                 reward_txt = self.tutorial.get("reward_text", "")
                 claim_form = ""
                 if self.tutorial.get("can_complete"):
@@ -584,10 +581,10 @@ class FakeSpaceInvasionServer:
                         '<input type="submit" value="Mission complete"/></form>'
                     )
                 tut_html = (
-                    f'<div>Tutorial {step} / {total}</div>'
+                    f"<div>Tutorial {step} / {total}</div>"
                     '<a id="tutorial.show" href="#">Show</a>'
                     f'<div id="tutorial.text"{disp}>{tasks_html} '
-                    f'You receive the following resources: {reward_txt} {claim_form}</div>'
+                    f"You receive the following resources: {reward_txt} {claim_form}</div>"
                 )
             q_html = ""
             if ap.get("building_queue"):
@@ -627,7 +624,7 @@ class FakeSpaceInvasionServer:
                         if edelta >= 0:
                             ap["energy"]["produced"] += edelta
                         else:
-                            ap["energy"]["used"] += (-edelta)
+                            ap["energy"]["used"] += -edelta
                     else:
                         bname = (game_data.BUILDING_BY_ID.get(bid) or {}).get("name", f"Building {bid}")
                         ap.setdefault("building_queue", []).append(
@@ -680,8 +677,12 @@ class FakeSpaceInvasionServer:
                     res[2] = max(0, res[2] - int(cost.get("kryptonite", 0)) * qty)
                     res[3] = max(0, res[3] - int(cost.get("spice", 0)) * qty)
                     ap.setdefault("ships", {})[skey] = int(ap["ships"].get(skey, 0)) + qty
-                    self.action_log.append({"action": "build_ship", "planet_id": ap["planet_id"], "sid": sid_num, "qty": qty})
-                return f"indexInternal.es?action=internalWeaponFactory{sq_amp}", self._render_weapon_factory_html(ap, sq_amp)
+                    self.action_log.append(
+                        {"action": "build_ship", "planet_id": ap["planet_id"], "sid": sid_num, "qty": qty}
+                    )
+                return f"indexInternal.es?action=internalWeaponFactory{sq_amp}", self._render_weapon_factory_html(
+                    ap, sq_amp
+                )
 
         if action == "internalBuildings":
             ap = self._active_planet()
@@ -715,18 +716,10 @@ class FakeSpaceInvasionServer:
             def_sys = int(parts[1]) if len(parts) >= 2 else 1
             fd = form_data or {}
             raw_gal = (
-                fd.get("galaxy")
-                or fd.get("gal")
-                or qs.get("galaxy", [None])[0]
-                or qs.get("gal", [None])[0]
-                or def_gal
+                fd.get("galaxy") or fd.get("gal") or qs.get("galaxy", [None])[0] or qs.get("gal", [None])[0] or def_gal
             )
             raw_sys = (
-                fd.get("system")
-                or fd.get("sun")
-                or qs.get("system", [None])[0]
-                or qs.get("sun", [None])[0]
-                or def_sys
+                fd.get("system") or fd.get("sun") or qs.get("system", [None])[0] or qs.get("sun", [None])[0] or def_sys
             )
             gal = max(1, int(raw_gal))
             sys_num = max(1, int(raw_sys))
@@ -768,7 +761,9 @@ class FakeSpaceInvasionServer:
         switcher = self._planet_switcher_html("internalBuildings")
         q_items = ap.get("building_queue") or []
         q_rows = "".join(f"<tr><td>{q['name']} (Level {q['target_level']})</td></tr>" for q in q_items)
-        q_table = f'<table class="ecoshadow"><tr><td>Construction queue ( {len(q_items)} Elements )</td></tr>{q_rows}</table>'
+        q_table = (
+            f'<table class="ecoshadow"><tr><td>Construction queue ( {len(q_items)} Elements )</td></tr>{q_rows}</table>'
+        )
         if built_msg:
             q_table += f"<div>{built_msg}</div>"
 
@@ -783,11 +778,11 @@ class FakeSpaceInvasionServer:
                 if o.get("can_build", False):
                     act_html = f'<a class="bau" href="indexInternal.es?action=internalBuildItem&buildingID={bid}{sq_amp}">Build level {o["target_level"]}</a>'
                 else:
-                    act_html = f'<span>{o.get("status_text", "Not enough resources")}</span>'
+                    act_html = f"<span>{o.get('status_text', 'Not enough resources')}</span>"
                 cards.append(
                     f'<div class="ecoshadow build-card b-{bid}">'
                     f'<a href="indexInternal.es?action=internalDetail&type=building&id={bid}{sq_amp}">{name}</a> '
-                    f'Required: {cost_str} {act_html}</div>'
+                    f"Required: {cost_str} {act_html}</div>"
                 )
         else:
             res = ap["resources"]
@@ -800,7 +795,9 @@ class FakeSpaceInvasionServer:
                 cost = game_data.building_cost(bid, nxt)
                 if not cost:
                     continue
-                unmet = game_data.missing_prerequisites("buildings", bid, buildings=ap["buildings"], researches=self.researches)
+                unmet = game_data.missing_prerequisites(
+                    "buildings", bid, buildings=ap["buildings"], researches=self.researches
+                )
                 cost_str = (
                     f"{_fmt_dot_int(cost.get('pig_iron', 0))} Pig iron "
                     f"{_fmt_dot_int(cost.get('metal', 0))} Metal "
@@ -822,7 +819,7 @@ class FakeSpaceInvasionServer:
                 cards.append(
                     f'<div class="ecoshadow build-card b-{bid}">'
                     f'<a href="indexInternal.es?action=internalDetail&type=building&id={bid}{sq_amp}">{info["name"]}</a> '
-                    f'Required: {cost_str} {act_html}</div>'
+                    f"Required: {cost_str} {act_html}</div>"
                 )
         return "", f"<html><body>{switcher}{q_table}{''.join(cards)}</body></html>"
 
@@ -844,10 +841,10 @@ class FakeSpaceInvasionServer:
                 if o.get("can_research", False):
                     act_html = f'<a class="bau" href="indexInternal.es?action=internalBuildItem&researchID={rid}{sq_amp}">Research level {o["target_level"]}</a>'
                 else:
-                    act_html = f'<span>{o.get("status_text", "Not enough resources")}</span>'
+                    act_html = f"<span>{o.get('status_text', 'Not enough resources')}</span>"
                 cards.append(
                     f'<table><tr><td><a href="indexInternal.es?action=internalDetail&type=research&id={rid}{sq_amp}">{o["name"]}</a> '
-                    f'Required: {cost_str} {act_html}</td></tr></table>'
+                    f"Required: {cost_str} {act_html}</td></tr></table>"
                 )
         else:
             for rkey, info in game_data.RESEARCH_BY_ID.items():
@@ -857,7 +854,9 @@ class FakeSpaceInvasionServer:
                 c = ((info.get("levels") or {}).get(nxt) or {}).get("cost") or {}
                 if not c:
                     continue
-                unmet = game_data.missing_prerequisites("research", rkey, buildings=ap["buildings"], researches=self.researches)
+                unmet = game_data.missing_prerequisites(
+                    "research", rkey, buildings=ap["buildings"], researches=self.researches
+                )
                 cost_str = (
                     f"{_fmt_dot_int(c.get('pig_iron', 0))} Pig iron "
                     f"{_fmt_dot_int(c.get('metal', 0))} Metal "
@@ -878,7 +877,7 @@ class FakeSpaceInvasionServer:
                     act_html = "<span>Not enough resources</span>"
                 cards.append(
                     f'<table><tr><td><a href="indexInternal.es?action=internalDetail&type=research&id={rid}{sq_amp}">{info["name"]}</a> '
-                    f'Required: {cost_str} {act_html}</td></tr></table>'
+                    f"Required: {cost_str} {act_html}</td></tr></table>"
                 )
         extra = f"<div>{active_msg}</div>" if active_msg else ""
         return "", f"<html><body>{switcher}{extra}{''.join(cards)}</body></html>"
@@ -893,10 +892,14 @@ class FakeSpaceInvasionServer:
                 sid_num = int(o["unit_id"])
                 c = o["cost"]
                 cost_str = f"{_fmt_dot_int(c[0])} Pig iron {_fmt_dot_int(c[1])} Metal {_fmt_dot_int(c[2])} Kryptonite {_fmt_dot_int(c[3])} Spice"
-                inp_html = f'<input type="text" name="ship[{sid_num}]" value="0"/>' if o.get("can_build", True) else "<span>Locked</span>"
+                inp_html = (
+                    f'<input type="text" name="ship[{sid_num}]" value="0"/>'
+                    if o.get("can_build", True)
+                    else "<span>Locked</span>"
+                )
                 cards.append(
                     f'<table><tr><td><a href="indexInternal.es?action=internalDetail&type=ship&id={sid_num}{sq_amp}">{o["name"]}</a> '
-                    f'Available: {o.get("owned", 0)} Required: {cost_str} {inp_html}</td></tr></table>'
+                    f"Available: {o.get('owned', 0)} Required: {cost_str} {inp_html}</td></tr></table>"
                 )
         else:
             for skey, slug in game_data.SHIP_SLUG_BY_KEY.items():
@@ -904,7 +907,9 @@ class FakeSpaceInvasionServer:
                 info = game_data.SHIPS.get(slug) or {}
                 c = info.get("base_cost") or {}
                 owned = int((ap.get("ships") or {}).get(skey, 0))
-                unmet = game_data.missing_prerequisites("ships", slug, buildings=ap["buildings"], researches=self.researches)
+                unmet = game_data.missing_prerequisites(
+                    "ships", slug, buildings=ap["buildings"], researches=self.researches
+                )
                 cost_str = (
                     f"{_fmt_dot_int(c.get('pig_iron', 0))} Pig iron "
                     f"{_fmt_dot_int(c.get('metal', 0))} Metal "
@@ -917,10 +922,14 @@ class FakeSpaceInvasionServer:
                     and res[2] >= c.get("kryptonite", 0)
                     and res[3] >= c.get("spice", 0)
                 )
-                inp_html = f'<input type="text" name="ship[{sid_num}]" value="0"/>' if (not unmet and afford) else "<span>Locked / insufficient</span>"
+                inp_html = (
+                    f'<input type="text" name="ship[{sid_num}]" value="0"/>'
+                    if (not unmet and afford)
+                    else "<span>Locked / insufficient</span>"
+                )
                 cards.append(
                     f'<table><tr><td><a href="indexInternal.es?action=internalDetail&type=ship&id={sid_num}{sq_amp}">{info.get("name", slug)}</a> '
-                    f'Available: {owned} Required: {cost_str} {inp_html}</td></tr></table>'
+                    f"Available: {owned} Required: {cost_str} {inp_html}</td></tr></table>"
                 )
         return (
             f"<html><body>{switcher}"
@@ -937,7 +946,7 @@ class FakeSpaceInvasionServer:
             rk = f"resource{i}"
             cur = int(rates.get(rk, 100))
             opts = "".join(
-                f'<option value="{pct}"{" selected=\"selected\"" if pct == cur else ""}>{pct}%</option>'
+                f'<option value="{pct}"{' selected="selected"' if pct == cur else ""}>{pct}%</option>'
                 for pct in range(100, -1, -10)
             )
             selects.append(f'<select name="{rk}">{opts}</select>')
@@ -988,18 +997,18 @@ class FakeSpaceInvasionServer:
                     trs.append(
                         f'<tr class="galaxy_{color}">'
                         f'<td><img src="p.png" alt="planet"/></td>'
-                        f'<td>[{pos:02d}]</td>'
+                        f"<td>[{pos:02d}]</td>"
                         f'<td><span class="galaxy_{color}">{s["name"]}</span>{debris}</td>'
-                        f'<td>{s["owner"]}</td>'
-                        f'<td>{spy}</td></tr>'
+                        f"<td>{s['owner']}</td>"
+                        f"<td>{spy}</td></tr>"
                     )
                 else:
                     trs.append(
                         f'<tr class="galaxy_{color}">'
-                        f'<td>{pos}</td>'
+                        f"<td>{pos}</td>"
                         f'<td><span class="galaxy_{color}">{s["name"]}</span>{debris}</td>'
-                        f'<td>{s["owner"]}</td>'
-                        f'<td>{spy}</td></tr>'
+                        f"<td>{s['owner']}</td>"
+                        f"<td>{spy}</td></tr>"
                     )
             else:
                 if self.galaxy_layout == "icon_table":
@@ -1032,10 +1041,10 @@ class FakeSpaceInvasionServer:
             f'<a class="origin-planet-link" href="indexInternal.es?action=internalFleet&newPlanet={pid}{sq_amp}">{p["coords"]} {p["name"]}</a>'
             for pid, p in self.planets.items()
         )
-        fav_opts = "".join(
-            f'<option value="{p["coords"]}">Fav {p["name"]}</option>'
-            for p in self.planets.values()
-        ) + '<option value="02:380:04">Fav IdlePrime</option>'
+        fav_opts = (
+            "".join(f'<option value="{p["coords"]}">Fav {p["name"]}</option>' for p in self.planets.values())
+            + '<option value="02:380:04">Fav IdlePrime</option>'
+        )
         fav_form = (
             f'<form id="fav_form" action="indexInternal.es?action=internalFleet{sq_amp}" method="POST">'
             f'<select name="planet">{fav_opts}</select>'
@@ -1324,10 +1333,7 @@ class FakeWebElement:
 
     def find_elements(self, by: str, value: str) -> list[FakeWebElement]:
         self._assert_fresh()
-        return [
-            FakeWebElement(self._driver, self._frame_id, self._gen_id, t)
-            for t in _find_tags(self._tag, by, value)
-        ]
+        return [FakeWebElement(self._driver, self._frame_id, self._gen_id, t) for t in _find_tags(self._tag, by, value)]
 
     def clear(self) -> None:
         self._assert_fresh()
@@ -1410,16 +1416,20 @@ class FakeWebElement:
                 return
             href = str(self._tag.get("href") or "")
             if href and href != "#" and not href.startswith("javascript:"):
-                target_frame = "F_Hauptframe" if self._frame_id in ("F_Navi", "F_Hauptframe") else (self._frame_id or "F_Hauptframe")
+                target_frame = (
+                    "F_Hauptframe"
+                    if self._frame_id in ("F_Navi", "F_Hauptframe")
+                    else (self._frame_id or "F_Hauptframe")
+                )
                 self._driver._navigate_frame(target_frame, href)
             return
 
-        if (tag_name == "input" and str(self._tag.get("type") or "").lower() == "submit") or (
-            tag_name == "button"
-        ):
+        if (tag_name == "input" and str(self._tag.get("type") or "").lower() == "submit") or (tag_name == "button"):
             form = self._tag.find_parent("form")
             if form is not None:
-                form_action = str(form.get("action") or (frame.url if frame else "indexInternal.es?action=internalHome"))
+                form_action = str(
+                    form.get("action") or (frame.url if frame else "indexInternal.es?action=internalHome")
+                )
                 data: dict[str, Any] = {}
                 for inp in form.find_all("input"):
                     itype = str(inp.get("type") or "text").lower()
@@ -1572,7 +1582,9 @@ class FakeDriver:
             if ".submit(" in text:
                 form_tag = el._tag if el._tag.name == "form" else el._tag.find_parent("form")
                 if form_tag is not None:
-                    form_action = str(form_tag.get("action") or (frame.url if frame else "indexInternal.es?action=internalHome"))
+                    form_action = str(
+                        form_tag.get("action") or (frame.url if frame else "indexInternal.es?action=internalHome")
+                    )
                     data: dict[str, Any] = {}
                     for inp in form_tag.find_all("input"):
                         iname = str(inp.get("name") or "")
@@ -1680,7 +1692,9 @@ class FakeDriver:
                 return False
             return bool(frame.window_vars.get(m_bool_win.group(1)))
 
-        m_ret_win = re.search(r"return\s+(?:\(\s*)?window\.([A-Za-z0-9_$]+)(?:\s*\|\|\s*['\"]([^'\"]*)['\"])?\s*\)?", text)
+        m_ret_win = re.search(
+            r"return\s+(?:\(\s*)?window\.([A-Za-z0-9_$]+)(?:\s*\|\|\s*['\"]([^'\"]*)['\"])?\s*\)?", text
+        )
         if m_ret_win:
             if frame is None:
                 return m_ret_win.group(2) if m_ret_win.group(2) is not None else None
@@ -1721,8 +1735,7 @@ class E2ETestHarness:
         self.patch_clocks = patch_clocks
         self.executor_max_limiter_wait: Optional[float] = (
             float(executor_max_limiter_wait)
-            if isinstance(executor_max_limiter_wait, (int, float))
-            and not isinstance(executor_max_limiter_wait, bool)
+            if isinstance(executor_max_limiter_wait, (int, float)) and not isinstance(executor_max_limiter_wait, bool)
             else None
         )
 
@@ -1751,7 +1764,15 @@ class E2ETestHarness:
         }
         chosen_limiter = self.page_limiter
         if self.bridge is not None:
-            for attr_name in ("limiter", "_limiter", "page_view_limiter", "_page_view_limiter", "page_limiter", "_page_limiter", "rate_limiter"):
+            for attr_name in (
+                "limiter",
+                "_limiter",
+                "page_view_limiter",
+                "_page_view_limiter",
+                "page_limiter",
+                "_page_limiter",
+                "rate_limiter",
+            ):
                 lim = getattr(self.bridge, attr_name, None)
                 if lim is not None:
                     chosen_limiter = lim
@@ -1773,7 +1794,15 @@ class E2ETestHarness:
     def _sync_bridge_limiter_clock(self) -> None:
         if self.bridge is None or not self.patch_clocks:
             return
-        for attr_name in ("limiter", "_limiter", "page_view_limiter", "_page_view_limiter", "page_limiter", "_page_limiter", "rate_limiter"):
+        for attr_name in (
+            "limiter",
+            "_limiter",
+            "page_view_limiter",
+            "_page_view_limiter",
+            "page_limiter",
+            "_page_limiter",
+            "rate_limiter",
+        ):
             lim = getattr(self.bridge, attr_name, None)
             if lim is not None and hasattr(lim, "_clock"):
                 lim._clock = self.clock.monotonic
@@ -1791,7 +1820,12 @@ class E2ETestHarness:
         return dict(resp.json())
 
     def _start_bridge_and_server(self) -> None:
-        assert self.config_path is not None and self.log_dir is not None and self.db_path is not None and self.env_file is not None
+        assert (
+            self.config_path is not None
+            and self.log_dir is not None
+            and self.db_path is not None
+            and self.env_file is not None
+        )
         bridge_sig = inspect.signature(GameApiBridge.__init__)
         bridge_kwargs: dict[str, Any] = {
             "debug_port": 0,
@@ -1811,10 +1845,7 @@ class E2ETestHarness:
             bridge_kwargs["page_limiter"] = self.page_limiter
         if "executor_max_limiter_wait" in bridge_sig.parameters:
             bridge_kwargs["executor_max_limiter_wait"] = self.executor_max_limiter_wait
-        elif (
-            self.executor_max_limiter_wait is not None
-            and "max_limiter_wait" in bridge_sig.parameters
-        ):
+        elif self.executor_max_limiter_wait is not None and "max_limiter_wait" in bridge_sig.parameters:
             bridge_kwargs["max_limiter_wait"] = self.executor_max_limiter_wait
         self.bridge = GameApiBridge(**bridge_kwargs)
         self._sync_bridge_limiter_clock()
@@ -2007,11 +2038,7 @@ def inspect_ui_html(html_text: str) -> dict[str, Any]:
             sub = _walk(n)
             if not any(s.get("attrs", {}).get("id") == tbody_id for s in sub):
                 continue
-            ths = [
-                " ".join(_text(s).split())
-                for s in sub
-                if s.get("tag") == "th"
-            ]
+            ths = [" ".join(_text(s).split()) for s in sub if s.get("tag") == "th"]
             tbody = next(s for s in sub if s.get("attrs", {}).get("id") == tbody_id)
             tbody_sub = _walk(tbody)
             placeholder_colspans = [

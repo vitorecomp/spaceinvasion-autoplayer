@@ -26,6 +26,7 @@ class _DatabaseLike(Protocol):
     _lock: Any
     _conn: Any
 
+
 VALID_DB_BACKENDS: frozenset[str] = frozenset({"postgres"})
 DEFAULT_DB_BACKEND: str = "postgres"
 DEFAULT_COMPOSE_FILENAME = "docker-compose.yml"
@@ -103,7 +104,9 @@ def redact_db_url(url_or_path: Any) -> str:
         parsed = urlparse(txt)
         if parsed.password:
             user_part = f"{parsed.username}:***" if parsed.username else "***"
-            host_part = parsed.hostname if parsed.hostname is not None else ("" if is_unix_socket_dsn(txt) else "127.0.0.1")
+            host_part = (
+                parsed.hostname if parsed.hostname is not None else ("" if is_unix_socket_dsn(txt) else "127.0.0.1")
+            )
             if parsed.port:
                 host_part = f"{host_part}:{parsed.port}"
             netloc = f"{user_part}@{host_part}"
