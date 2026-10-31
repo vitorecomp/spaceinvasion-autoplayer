@@ -634,9 +634,9 @@ describe("Persistent Console Store (useSyncExternalStore + localStorage)", () =>
     const html = renderToString(<App disableInitialFetch />);
     expect(html).toContain('id="view-stage"');
 
-    // Strict 2-SVG invariant (#gann-radial-svg + #rnk-chart)
+    // Only active page (dashboard) mounts during SSR -> 1 SVG (#gann-radial-svg), <= 2 strict invariant
     const svgMatches = [...html.matchAll(/<svg\b[^>]*>/gi)].map((m) => m[0]);
-    expect(svgMatches.length).toBe(2);
+    expect(svgMatches.length).toBe(1);
     const nonChartSvgs = svgMatches.filter((tag) => !tag.includes('id="rnk-chart"'));
     expect(nonChartSvgs.length).toBe(1);
     expect(nonChartSvgs[0]).toContain('id="gann-radial-svg"');
