@@ -1,29 +1,19 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useState } from "react";
+import { feedbackKindForError } from "../../api/httpClient";
 import {
-  feedbackKindForError } from "../../api/httpClient";
-import { SortableTh } from "../../components/SortableTh";
-import { useActivePage,
+  useActivePage,
   useApiOnline,
   useConsoleActions,
   useDashboard,
 } from "../../store";
-import {
-  durationToSeconds,
-  useTableSort,
-  type SortColumnMap,
-} from "../../hooks/useTableSort";
-import { UniverseResearchMaxRow } from "../../types/api";
+import type { UniverseResearchMaxRow } from "../../types/api";
 import { clampPct, finiteNum, fmtInt } from "../../utils/formatters";
+import { RankingForecastTables } from "./RankingForecastTables";
+import { RankingUniverseResearchCard } from "./RankingUniverseResearchCard";
 import { RankTrajectorySvg } from "./RankTrajectorySvg";
 
 export interface RankingViewProps {
   hidden?: boolean;
-}
-
-function fmtSignedDeltaInt(val: number): string {
-  const rounded = Math.round(val);
-  const clean = rounded === 0 ? 0 : rounded;
-  return `${clean >= 0 ? "+" : ""}${fmtInt(clean)}`;
 }
 
 export const RankingView: React.FC<RankingViewProps> = ({ hidden }) => {
@@ -204,90 +194,6 @@ export const RankingView: React.FC<RankingViewProps> = ({ hidden }) => {
     localUniRows ??
     (Array.isArray(dashboard?.universe_research_max) ? dashboard!.universe_research_max! : []);
 
-  const horizonSortCols = useMemo<
-    SortColumnMap<
-      Record<string, any>,
-      "horizon" | "steady" | "steadyAz" | "reinvested" | "reinvestedAz"
-    >
-  >(
-    () => ({
-      horizon: (row) => durationToSeconds(row.label) ?? (String(row.label || "").trim() || null),
-      steady: {
-        accessor: (row) => finiteNum(row.steady_points, null),
-        defaultDirection: "desc",
-      },
-      steadyAz: (row) => String(row.steady_az || "").trim() || null,
-      reinvested: {
-        accessor: (row) => finiteNum(row.compound_points, null),
-        defaultDirection: "desc",
-      },
-      reinvestedAz: (row) => String(row.compound_az || "").trim() || null,
-    }),
-    []
-  );
-
-  const milestoneSortCols = useMemo<
-    SortColumnMap<
-      Record<string, any>,
-      "milestone" | "remaining" | "steadyEta" | "compoundEta"
-    >
-  >(
-    () => ({
-      milestone: (m) => finiteNum(m.target_points, null) ?? (String(m.label || "").trim() || null),
-      remaining: (m) => finiteNum(m.missing_points, null),
-      steadyEta: (m) => durationToSeconds(m.steady_eta),
-      compoundEta: (m) => durationToSeconds(m.compound_eta),
-    }),
-    []
-  );
-
-  const uniSortCols = useMemo<
-    SortColumnMap<
-      UniverseResearchMaxRow,
-      "research" | "ownLevel" | "uniMax" | "gap" | "holder" | "catalogCap"
-    >
-  >(
-    () => ({
-      research: (r) => String(r.name || r.key || r.research_key || ""),
-      ownLevel: {
-        accessor: (r) => Math.max(0, Math.round(finiteNum(r.own_level, 0))),
-        defaultDirection: "desc",
-      },
-      uniMax: {
-        accessor: (r) => Math.max(0, Math.round(finiteNum(r.universe_max_level, 0))),
-        defaultDirection: "desc",
-      },
-      gap: {
-        accessor: (r) => {
-          const ownLvl = Math.max(0, Math.round(finiteNum(r.own_level, 0)));
-          const uniMax = Math.max(0, Math.round(finiteNum(r.universe_max_level, 0)));
-          return Math.max(0, Math.round(finiteNum(r.gap_to_max, Math.max(0, uniMax - ownLvl))));
-        },
-        defaultDirection: "desc",
-      },
-      holder: (r) => {
-        const ownLvl = Math.max(0, Math.round(finiteNum(r.own_level, 0)));
-        const uniMax = Math.max(0, Math.round(finiteNum(r.universe_max_level, 0)));
-        if (r.holder) {
-          return r.holder_coords ? `${r.holder} [${r.holder_coords}]` : String(r.holder);
-        }
-        return uniMax > 0 && ownLvl >= uniMax ? "You" : null;
-      },
-      catalogCap: {
-        accessor: (r) => {
-          const cap = finiteNum(r.catalog_max_level, null);
-          return cap !== null && cap > 0 ? cap : null;
-        },
-        defaultDirection: "desc",
-      },
-    }),
-    []
-  );
-
-  const horizonSort = useTableSort(horizons, horizonSortCols);
-  const milestoneSort = useTableSort(milestones, milestoneSortCols);
-  const uniSort = useTableSort(uniRows, uniSortCols);
-
   return (
     <section
       id="view-ranking"
@@ -360,273 +266,14 @@ export const RankingView: React.FC<RankingViewProps> = ({ hidden }) => {
               </p>
             </div>
 
-            <div className="ranking-tables-stack">
-              <div className="table-wrap">
-                <table>
-                  <thead>
-                    <tr>
-                      <SortableTh
-                        label="Horizon"
-                        sortKey="horizon"
-                        activeKey={horizonSort.sortKey}
-                        direction={horizonSort.sortDirection}
-                        onSort={horizonSort.requestSort}
-                      />
-                      <SortableTh
-                        label="Steady"
-                        sortKey="steady"
-                        activeKey={horizonSort.sortKey}
-                        direction={horizonSort.sortDirection}
-                        onSort={horizonSort.requestSort}
-                        align="right"
-                      />
-                      <SortableTh
-                        label="AZ"
-                        sortKey="steadyAz"
-                        activeKey={horizonSort.sortKey}
-                        direction={horizonSort.sortDirection}
-                        onSort={horizonSort.requestSort}
-                        align="right"
-                      />
-                      <SortableTh
-                        label="Reinvested"
-                        sortKey="reinvested"
-                        activeKey={horizonSort.sortKey}
-                        direction={horizonSort.sortDirection}
-                        onSort={horizonSort.requestSort}
-                        align="right"
-                      />
-                      <SortableTh
-                        label="AZ"
-                        sortKey="reinvestedAz"
-                        activeKey={horizonSort.sortKey}
-                        direction={horizonSort.sortDirection}
-                        onSort={horizonSort.requestSort}
-                        align="right"
-                      />
-                    </tr>
-                  </thead>
-                  <tbody id="rnk-horizons-tbody">
-                    {horizonSort.sortedRows.length === 0 ? (
-                      <tr>
-                        <td colSpan={5} className="empty-cell">
-                          Waiting for ranking forecast...
-                        </td>
-                      </tr>
-                    ) : (
-                      horizonSort.sortedRows.map((row, idx) => {
-                        const sp = finiteNum(row.steady_points, null);
-                        const sd = finiteNum(row.steady_delta, null);
-                        const cp = finiteNum(row.compound_points, null);
-                        const cd = finiteNum(row.compound_delta, null);
-                        return (
-                          <tr key={row.label || idx}>
-                            <td>{String(row.label || "—")}</td>
-                            <td className="col-right tabular">
-                              {sp !== null && sd !== null
-                                ? `${fmtInt(Math.round(sp))} (${fmtSignedDeltaInt(sd)})`
-                                : "—"}
-                            </td>
-                            <td className="col-right tabular">{String(row.steady_az || "—")}</td>
-                            <td className="col-right tabular">
-                              {cp !== null && cd !== null
-                                ? `${fmtInt(Math.round(cp))} (${fmtSignedDeltaInt(cd)})`
-                                : "—"}
-                            </td>
-                            <td className="col-right tabular">{String(row.compound_az || "—")}</td>
-                          </tr>
-                        );
-                      })
-                    )}
-                  </tbody>
-                </table>
-              </div>
-
-              <div className="table-wrap">
-                <table>
-                  <thead>
-                    <tr>
-                      <SortableTh
-                        label="Next Milestone"
-                        sortKey="milestone"
-                        activeKey={milestoneSort.sortKey}
-                        direction={milestoneSort.sortDirection}
-                        onSort={milestoneSort.requestSort}
-                      />
-                      <SortableTh
-                        label="Remaining"
-                        sortKey="remaining"
-                        activeKey={milestoneSort.sortKey}
-                        direction={milestoneSort.sortDirection}
-                        onSort={milestoneSort.requestSort}
-                        align="right"
-                      />
-                      <SortableTh
-                        label="Steady ETA"
-                        sortKey="steadyEta"
-                        activeKey={milestoneSort.sortKey}
-                        direction={milestoneSort.sortDirection}
-                        onSort={milestoneSort.requestSort}
-                        align="right"
-                      />
-                      <SortableTh
-                        label="Compound ETA"
-                        sortKey="compoundEta"
-                        activeKey={milestoneSort.sortKey}
-                        direction={milestoneSort.sortDirection}
-                        onSort={milestoneSort.requestSort}
-                        align="right"
-                      />
-                    </tr>
-                  </thead>
-                  <tbody id="rnk-milestones-tbody">
-                    {milestoneSort.sortedRows.length === 0 ? (
-                      <tr>
-                        <td colSpan={4} className="empty-cell">
-                          Calculating milestones...
-                        </td>
-                      </tr>
-                    ) : (
-                      milestoneSort.sortedRows.map((m, idx) => {
-                        const tgtPts = finiteNum(m.target_points, null);
-                        const missPts = finiteNum(m.missing_points, null);
-                        return (
-                          <tr key={m.label || idx}>
-                            <td>{`${m.label} (${tgtPts !== null ? fmtInt(tgtPts) : "—"})`}</td>
-                            <td className="col-right tabular">
-                              {missPts !== null ? `+${fmtInt(Math.round(missPts))}` : "—"}
-                            </td>
-                            <td className="col-right tabular">{String(m.steady_eta || "—")}</td>
-                            <td className="col-right tabular">{String(m.compound_eta || "—")}</td>
-                          </tr>
-                        );
-                      })
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            </div>
+            <RankingForecastTables horizons={horizons} milestones={milestones} />
           </div>
 
-          <div className="ranking-chart-card">
-            <div className="card-subhead">
-              <h3>Universe Max Research Levels</h3>
-              <button
-                type="button"
-                className="btn btn-secondary btn-sm"
-                id="btn-sync-universe-research"
-                onClick={handleSyncUniverseResearch}
-                disabled={syncingUniRes}
-              >
-                {syncingUniRes ? "Syncing..." : "Sync Records"}
-              </button>
-            </div>
-            <div className="table-wrap table-scroll">
-              <table id="universe-research-max-table">
-                <thead>
-                  <tr>
-                    <SortableTh
-                      label="Research"
-                      sortKey="research"
-                      activeKey={uniSort.sortKey}
-                      direction={uniSort.sortDirection}
-                      onSort={uniSort.requestSort}
-                    />
-                    <SortableTh
-                      label="Your Level"
-                      sortKey="ownLevel"
-                      activeKey={uniSort.sortKey}
-                      direction={uniSort.sortDirection}
-                      onSort={uniSort.requestSort}
-                      align="right"
-                    />
-                    <SortableTh
-                      label="Universe Max"
-                      sortKey="uniMax"
-                      activeKey={uniSort.sortKey}
-                      direction={uniSort.sortDirection}
-                      onSort={uniSort.requestSort}
-                      align="right"
-                    />
-                    <SortableTh
-                      label="Delta / Gap"
-                      sortKey="gap"
-                      activeKey={uniSort.sortKey}
-                      direction={uniSort.sortDirection}
-                      onSort={uniSort.requestSort}
-                      align="right"
-                    />
-                    <SortableTh
-                      label="Record Holder"
-                      sortKey="holder"
-                      activeKey={uniSort.sortKey}
-                      direction={uniSort.sortDirection}
-                      onSort={uniSort.requestSort}
-                    />
-                    <SortableTh
-                      label="Catalog Cap"
-                      sortKey="catalogCap"
-                      activeKey={uniSort.sortKey}
-                      direction={uniSort.sortDirection}
-                      onSort={uniSort.requestSort}
-                      align="right"
-                    />
-                  </tr>
-                </thead>
-                <tbody id="universe-research-max-tbody">
-                  {uniSort.sortedRows.length === 0 ? (
-                    <tr>
-                      <td colSpan={6} className="empty-cell">
-                        Click Sync Records to load universe max research levels.
-                      </td>
-                    </tr>
-                  ) : (
-                    uniSort.sortedRows.map((r) => {
-                      const rKey = String(r.key || r.research_key || `r${r.research_id}`);
-                      const ownLvl = Math.max(0, Math.round(finiteNum(r.own_level, 0)));
-                      const uniMax = Math.max(0, Math.round(finiteNum(r.universe_max_level, 0)));
-                      const gap = Math.max(
-                        0,
-                        Math.round(finiteNum(r.gap_to_max, Math.max(0, uniMax - ownLvl)))
-                      );
-                      const catCap = finiteNum(r.catalog_max_level, null);
-                      const holderTxt = r.holder
-                        ? r.holder_coords
-                          ? `${r.holder} [${r.holder_coords}]`
-                          : String(r.holder)
-                        : uniMax > 0 && ownLvl >= uniMax
-                          ? "You"
-                          : "—";
-
-                      return (
-                        <tr key={rKey}>
-                          <td>
-                            {`${r.name} `}
-                            <span className="action-sub tabular">{`(${rKey})`}</span>
-                          </td>
-                          <td className="col-right tabular">{`L${fmtInt(ownLvl)}`}</td>
-                          <td className="col-right tabular">{`L${fmtInt(uniMax)}`}</td>
-                          <td className="col-right tabular">
-                            {gap <= 0 && uniMax > 0 ? (
-                              <span className="status-word">LEADER (0)</span>
-                            ) : gap > 0 ? (
-                              <span className="status-word is-warn">{`-${fmtInt(gap)} lvls`}</span>
-                            ) : (
-                              "0"
-                            )}
-                          </td>
-                          <td>{holderTxt}</td>
-                          <td className="col-right tabular">
-                            {catCap !== null && catCap > 0 ? `L${fmtInt(catCap)}` : "Uncapped"}
-                          </td>
-                        </tr>
-                      );
-                    })
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </div>
+          <RankingUniverseResearchCard
+            uniRows={uniRows}
+            syncingUniRes={syncingUniRes}
+            onSyncUniverseResearch={handleSyncUniverseResearch}
+          />
         </div>
       </article>
     </section>

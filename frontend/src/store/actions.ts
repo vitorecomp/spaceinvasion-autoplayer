@@ -12,16 +12,11 @@ import {
   FeedbackKind,
   NotificationsState,
   PageKey,
-  PlannerJobsStatusPayload,
 } from "../types/api";
-import { buildClientFallbackActionGraph, selectActivePlanet } from "./fallbackActionGraph";
+import { buildClientFallbackActionGraph } from "./fallbackActionGraph";
 import { normalizePageKey } from "./persistence";
-import {
-  ConsoleActions,
-  ConsoleStore,
-  SectorQueuePreviewOverrides,
-  UiPrefs,
-} from "./types";
+import { createViewRefreshActions } from "./refreshActions";
+import { ConsoleActions, ConsoleStore, UiPrefs } from "./types";
 
 export interface CreateConsoleActionsOptions {
   shouldPersist: boolean;
@@ -43,13 +38,6 @@ export function createConsoleActions(
     server_boot_id: null,
   };
   const seenHelpSigs = new Set<string>();
-  let sectorsReqSeq = 0;
-  let inFlightSectorsCount = 0;
-  let coloniesReqSeq = 0;
-  let inFlightColoniesCount = 0;
-  let inFlightBuildingsEta: { key: string; promise: Promise<void> } | null = null;
-  let inFlightCombat: { key: string; promise: Promise<boolean> } | null = null;
-  let sectorPreview: SectorQueuePreviewOverrides | null = null;
 
   const setDashboard: React.Dispatch<React.SetStateAction<DashboardPayload | null>> = (next) => {
     store.setDashboard(next);
@@ -91,6 +79,10 @@ export function createConsoleActions(
     }
   };
 
+  const refreshers = createViewRefreshActions(store, showFeedback, (loadOpts) =>
+    loadDashboard(loadOpts)
+  );
+
   const setApiStatus = (online: boolean, note = "") => {
     const snap = store.getSnapshot();
     const rt = store.getRuntimeSnapshot();
@@ -107,8 +99,7 @@ export function createConsoleActions(
         showFeedback(`Reconnected to Game API :${port}.`, "ok", { autoHideMs: 3200 });
       }
     } else {
-      const nextAttempts = rt.reconnectAttempts + 1;
-      store.setRuntime({ reconnectAttempts: nextAttempts });
+      store.setRuntime({ reconnectAttempts: rt.reconnectAttempts + 1 });
       showFeedback(
         `API offline (${note || "connection lost"}) — auto-reconnecting every 1.2s...`,
         "warn"
@@ -179,21 +170,14 @@ export function createConsoleActions(
     }));
   };
 
-  const bumpDashboardSeq = () => {
-    const next = store.setRuntime((prev) => ({ ...prev, dashboardSeq: prev.dashboardSeq + 1 }));
-    return next.dashboardSeq;
-  };
+  const bumpDashboardSeq = () =>
+    store.setRuntime((prev) => ({ ...prev, dashboardSeq: prev.dashboardSeq + 1 })).dashboardSeq;
 
-  const bumpAgSimSeq = () => {
-    const next = store.setRuntime((prev) => ({ ...prev, agSimSeq: prev.agSimSeq + 1 }));
-    return next.agSimSeq;
-  };
+  const bumpAgSimSeq = () =>
+    store.setRuntime((prev) => ({ ...prev, agSimSeq: prev.agSimSeq + 1 })).agSimSeq;
 
   const bumpConfigHydration = () => {
-    store.setRuntime((prev) => ({
-      ...prev,
-      configHydrationTick: prev.configHydrationTick + 1,
-    }));
+    store.setRuntime((prev) => ({ ...prev, configHydrationTick: prev.configHydrationTick + 1 }));
   };
 
   const setSimPopulatedOnce = (value: boolean) => {
@@ -202,61 +186,6 @@ export function createConsoleActions(
 
   const setNowEpochSec = (epochSec: number) => {
     store.setRuntime({ nowEpochSec: epochSec });
-  };
-
-  const setBuildingsEtaData = (data: Record<string, any> | null) => {
-    store.setBuildingsEtaData(data);
-  };
-
-  const setCombatData = (data: Record<string, any> | null) => {
-    store.setCombatData(data);
-  };
-
-  const setSectorsData = (data: Record<string, any> | null) => {
-    store.setSectorsData(data);
-  };
-
-  const setEspData = (data: Record<string, any> | null) => {
-    store.setEspData(data);
-  };
-
-  const setColonyData = (data: Record<string, any> | null) => {
-    store.setColonyData(data);
-  };
-
-  const setAtkData = (data: Record<string, any> | null) => {
-    store.setAtkData(data);
-  };
-
-  const setRecData = (data: Record<string, any> | null) => {
-    store.setRecData(data);
-  };
-
-  const setActionGraphData = (data: Record<string, any> | null) => {
-    store.setActionGraphData(data);
-  };
-
-  const setPlannerJobsStatus = (status: PlannerJobsStatusPayload | null) => {
-    store.setPlannerJobsStatus(status);
-  };
-
-  const setLastOptimizerSummary = (summary: Record<string, any> | null) => {
-    store.setLastOptimizerSummary(summary);
-  };
-
-  const refreshPlannerJobsStatus = async (): Promise<PlannerJobsStatusPayload | null> => {
-    try {
-      const res = await rawApiCommand<PlannerJobsStatusPayload>({
-        command: "planner_jobs_status",
-      });
-      if (res && typeof res === "object") {
-        setPlannerJobsStatus(res);
-        return res;
-      }
-    } catch {
-      // Tolerate older servers or offline fallback
-    }
-    return null;
   };
 
   const applyVersionSnapshot = (vData: Record<string, any> | null | undefined): boolean => {
@@ -275,9 +204,7 @@ export function createConsoleActions(
         uiVersions.server_boot_id &&
         vData.server_boot_id !== uiVersions.server_boot_id
     );
-    if (store.getSnapshot().dashboard?.bot_control?.captcha_blocked) {
-      return false;
-    }
+    if (store.getSnapshot().dashboard?.bot_control?.captcha_blocked) return false;
     if (codeChanged || bootChanged) {
       store.flushPersistence(true);
       showFeedback(
@@ -286,196 +213,18 @@ export function createConsoleActions(
           : "Game API restarted — hot-reloading console...",
         "ok"
       );
-      if (typeof window !== "undefined") {
-        setTimeout(() => window.location.reload(), 120);
-      }
+      if (typeof window !== "undefined") setTimeout(() => window.location.reload(), 120);
       return true;
     }
     if (vData.css_version && vData.css_version !== uiVersions.css_version) {
       uiVersions.css_version = vData.css_version;
       if (typeof document !== "undefined") {
         const link = document.getElementById("ui-stylesheet") as HTMLLinkElement | null;
-        if (link) {
-          link.href = `/styles.css?v=${encodeURIComponent(vData.css_version)}`;
-        }
+        if (link) link.href = `/styles.css?v=${encodeURIComponent(vData.css_version)}`;
       }
       showFeedback("Hot-reloaded styles.css live.", "ok", { autoHideMs: 2600 });
     }
     return false;
-  };
-
-  const refreshBuildingsEtaForSelectedPlanet = async (forceRefresh = false) => {
-    const snap = store.getSnapshot();
-    const planet = selectActivePlanet(snap.dashboard, snap.selectedPlanetId);
-    if (!planet) return;
-    const reqKey = `${planet.planet_id}:${forceRefresh ? "1" : "0"}`;
-    if (inFlightBuildingsEta?.key === reqKey) {
-      return inFlightBuildingsEta.promise;
-    }
-    const reqPromise = (async () => {
-      try {
-        const res = await rawApiCommand({
-          command: "buildings_eta",
-          planet_id: planet.planet_id,
-          refresh: forceRefresh,
-        });
-        if (res.buildings_eta) {
-          setBuildingsEtaData(res.buildings_eta);
-        }
-      } catch {
-        // Non-fatal during offline fallback
-      } finally {
-        if (inFlightBuildingsEta?.promise === reqPromise) {
-          inFlightBuildingsEta = null;
-        }
-      }
-    })();
-    inFlightBuildingsEta = { key: reqKey, promise: reqPromise };
-    return reqPromise;
-  };
-
-  const refreshCombatForSelectedPlanet = async ({
-    refresh = false,
-  }: { refresh?: boolean } = {}): Promise<boolean> => {
-    const snap = store.getSnapshot();
-    const planet = selectActivePlanet(snap.dashboard, snap.selectedPlanetId);
-    if (!planet) return false;
-    const reqKey = `${planet.planet_id}:${refresh ? "1" : "0"}`;
-    if (inFlightCombat?.key === reqKey) {
-      return inFlightCombat.promise;
-    }
-    const reqPromise = (async (): Promise<boolean> => {
-      try {
-        const res = await rawApiCommand({
-          command: "combat_overview",
-          planet_id: planet.planet_id,
-          refresh,
-        });
-        if (res.combat) {
-          setCombatData(res.combat);
-        }
-        return true;
-      } catch (err: any) {
-        if (refresh || isRateLimitError(err)) {
-          showFeedback(`Shipyard refresh failed: ${err.message}`, feedbackKindForError(err));
-        }
-        return false;
-      } finally {
-        if (inFlightCombat?.promise === reqPromise) {
-          inFlightCombat = null;
-        }
-      }
-    })();
-    inFlightCombat = { key: reqKey, promise: reqPromise };
-    return reqPromise;
-  };
-
-  const refreshSectorsView = async (
-    galaxyOverride?: number,
-    includeUnscannedOverride?: boolean,
-    previewOverride?: SectorQueuePreviewOverrides | null,
-    refreshOpts?: { background?: boolean }
-  ) => {
-    if (refreshOpts?.background && inFlightSectorsCount > 0) return;
-    if (previewOverride !== undefined) {
-      sectorPreview = previewOverride;
-    }
-    const reqSeq = ++sectorsReqSeq;
-    inFlightSectorsCount += 1;
-    try {
-      const snap = store.getSnapshot();
-      const gal =
-        galaxyOverride !== undefined
-          ? galaxyOverride
-          : Math.max(0, Math.round(safeFiniteNumber(snap.uiPrefs.sectorGalaxy, 0) ?? 0));
-      const curFilter = String(snap.uiPrefs.sectorFilter || "all");
-      const incUnscanned =
-        includeUnscannedOverride !== undefined
-          ? includeUnscannedOverride
-          : gal > 0 || curFilter === "unscanned";
-      const planet = selectActivePlanet(snap.dashboard, snap.selectedPlanetId);
-      const payload: Record<string, any> = {
-        command: "scanned_sectors",
-        limit: 5600,
-        include_unscanned: incUnscanned,
-      };
-      if (gal > 0) payload.galaxy = gal;
-      if (planet?.planet_id) payload.planet_id = planet.planet_id;
-      if (sectorPreview) {
-        if (typeof sectorPreview.refresh_pct === "number") {
-          payload.preview_refresh_pct = sectorPreview.refresh_pct;
-        }
-        if (typeof sectorPreview.sweep_pages === "number") {
-          payload.preview_sweep_pages = sectorPreview.sweep_pages;
-        }
-        if (typeof sectorPreview.all_galaxies === "boolean") {
-          payload.preview_all_galaxies = sectorPreview.all_galaxies;
-        }
-      }
-      const data = await rawApiCommand(payload);
-      if (reqSeq !== sectorsReqSeq) return;
-      if (
-        data &&
-        (Array.isArray(data.sectors) ||
-          Array.isArray(data.scan_queue) ||
-          (data.summary && typeof data.summary === "object"))
-      ) {
-        setSectorsData(data);
-      }
-    } catch (err: any) {
-      if (reqSeq !== sectorsReqSeq) return;
-      showFeedback(`Scanned sectors load failed: ${err.message}`, feedbackKindForError(err));
-    } finally {
-      inFlightSectorsCount = Math.max(0, inFlightSectorsCount - 1);
-    }
-  };
-
-  const refreshEspionageView = async () => {
-    try {
-      const data = await rawApiCommand({ command: "espionage_intel", limit: 200 });
-      if (data && typeof data === "object") setEspData(data);
-    } catch (err: any) {
-      showFeedback(`Espionage data load failed: ${err.message}`, feedbackKindForError(err));
-    }
-  };
-
-  const refreshColoniesView = async (refreshOpts?: { background?: boolean }) => {
-    if (refreshOpts?.background && inFlightColoniesCount > 0) return;
-    const reqSeq = ++coloniesReqSeq;
-    inFlightColoniesCount += 1;
-    try {
-      const data = await rawApiCommand({ command: "colony_candidates", limit: 1000 });
-      if (reqSeq !== coloniesReqSeq) return;
-      if (data && typeof data === "object") setColonyData(data);
-    } catch (err: any) {
-      if (reqSeq !== coloniesReqSeq) return;
-      showFeedback(`Colony grading load failed: ${err.message}`, feedbackKindForError(err));
-    } finally {
-      inFlightColoniesCount = Math.max(0, inFlightColoniesCount - 1);
-    }
-  };
-
-  const refreshAttacksView = async () => {
-    try {
-      const data = await rawApiCommand({ command: "attack_results", limit: 200 });
-      if (data && typeof data === "object") setAtkData(data);
-    } catch (err: any) {
-      showFeedback(`Attack results load failed: ${err.message}`, feedbackKindForError(err));
-    }
-  };
-
-  const refreshRecyclersView = async (categoryOverride?: string) => {
-    try {
-      const cat = categoryOverride ?? store.getSnapshot().uiPrefs.emailCatFilter ?? "all";
-      const data = await rawApiCommand({
-        command: "recycler_results",
-        category: cat,
-        limit: 200,
-      });
-      if (data && typeof data === "object") setRecData(data);
-    } catch (err: any) {
-      showFeedback(`Recycler and email load failed: ${err.message}`, feedbackKindForError(err));
-    }
   };
 
   const loadDashboard = async ({
@@ -532,37 +281,29 @@ export function createConsoleActions(
         : null;
 
       store.setState(
-        (prev) => {
-          const nextPrefs =
+        (prev) => ({
+          ...prev,
+          dashboard: nextDash,
+          uiPrefs:
             prev.uiPrefs.modeOverride === modeVal
               ? prev.uiPrefs
-              : { ...prev.uiPrefs, modeOverride: modeVal };
-
-          const nextBuildingsEta =
+              : { ...prev.uiPrefs, modeOverride: modeVal },
+          lastOptimizerSummary: nextDash.optimizer_summary || prev.lastOptimizerSummary,
+          plannerJobsStatus: incomingJobsStatus || prev.plannerJobsStatus,
+          buildingsEtaData:
             nextDash.buildings_eta &&
             (!prev.selectedPlanetId ||
               prev.selectedPlanetId === nextDash.buildings_eta.planet?.planet_id)
               ? nextDash.buildings_eta
-              : prev.buildingsEtaData;
-
-          const nextCombat =
+              : prev.buildingsEtaData,
+          combatData:
             nextDash.combat &&
             (!prev.selectedPlanetId || prev.selectedPlanetId === nextDash.combat.planet_id)
               ? nextDash.combat
-              : prev.combatData;
-
-          return {
-            ...prev,
-            dashboard: nextDash,
-            uiPrefs: nextPrefs,
-            lastOptimizerSummary: nextDash.optimizer_summary || prev.lastOptimizerSummary,
-            plannerJobsStatus: incomingJobsStatus || prev.plannerJobsStatus,
-            buildingsEtaData: nextBuildingsEta,
-            combatData: nextCombat,
-            actionGraphData: shouldPatchActionGraph ? nextActionGraph : prev.actionGraphData,
-            lastHydratedAt: Date.now(),
-          };
-        },
+              : prev.combatData,
+          actionGraphData: shouldPatchActionGraph ? nextActionGraph : prev.actionGraphData,
+          lastHydratedAt: Date.now(),
+        }),
         { persist: true }
       );
 
@@ -584,30 +325,29 @@ export function createConsoleActions(
       const afterSnap = store.getSnapshot();
       const curPage = afterSnap.activePage;
       if (curPage === "sectors") {
-        void refreshSectorsView(undefined, undefined, undefined, { background: true });
+        void refreshers.refreshSectorsView(undefined, undefined, undefined, { background: true });
       } else if (curPage === "espionage") {
-        void refreshEspionageView();
+        void refreshers.refreshEspionageView();
       } else if (curPage === "colonies") {
-        void refreshColoniesView({ background: true });
+        void refreshers.refreshColoniesView({ background: true });
       } else if (curPage === "attacks") {
-        void refreshAttacksView();
+        void refreshers.refreshAttacksView();
       } else if (curPage === "recyclers") {
-        void refreshRecyclersView();
+        void refreshers.refreshRecyclersView();
       } else if (curPage === "buildings" || (curPage as string) === "research") {
         if (
           !nextDash.buildings_eta ||
           (afterSnap.selectedPlanetId &&
             afterSnap.selectedPlanetId !== nextDash.buildings_eta.planet?.planet_id)
         ) {
-          void refreshBuildingsEtaForSelectedPlanet(false);
+          void refreshers.refreshBuildingsEtaForSelectedPlanet(false);
         }
       } else if (curPage === "combat") {
         if (
           !nextDash.combat ||
-          (afterSnap.selectedPlanetId &&
-            afterSnap.selectedPlanetId !== nextDash.combat.planet_id)
+          (afterSnap.selectedPlanetId && afterSnap.selectedPlanetId !== nextDash.combat.planet_id)
         ) {
-          void refreshCombatForSelectedPlanet({ refresh: false });
+          void refreshers.refreshCombatForSelectedPlanet({ refresh: false });
         }
       }
 
@@ -625,7 +365,6 @@ export function createConsoleActions(
             : prev.agHydrationTick,
         };
       });
-
       return true;
     } catch (err: any) {
       if (reqSeq !== store.getRuntimeSnapshot().dashboardSeq) return false;
@@ -656,9 +395,7 @@ export function createConsoleActions(
       if (applyVersionSnapshot(vData)) return;
       const wasOffline = !store.getSnapshot().apiOnline;
       setApiStatus(true);
-      if (wasOffline) {
-        await loadDashboard({ refresh: false, preserveConfig: true });
-      }
+      if (wasOffline) await loadDashboard({ refresh: false, preserveConfig: true });
     } catch (err: any) {
       const msg = err?.name === "AbortError" ? "timeout" : err?.message || "unreachable";
       setApiStatus(false, msg);
@@ -695,30 +432,27 @@ export function createConsoleActions(
     }
 
     if (target === "buildings" || (target as string) === "research") {
-      void refreshBuildingsEtaForSelectedPlanet();
+      void refreshers.refreshBuildingsEtaForSelectedPlanet();
     } else if (target === "combat") {
-      void refreshCombatForSelectedPlanet({ refresh: false });
+      void refreshers.refreshCombatForSelectedPlanet({ refresh: false });
     } else if ((target as string) === "fleet-control") {
-      if (!opts.disableInitialFetch) {
-        void loadDashboard({ refresh: false, preserveConfig: true });
-      }
+      if (!opts.disableInitialFetch) void loadDashboard({ refresh: false, preserveConfig: true });
     } else if (target === "sectors") {
-      void refreshSectorsView();
+      void refreshers.refreshSectorsView();
     } else if (target === "espionage") {
-      void refreshEspionageView();
+      void refreshers.refreshEspionageView();
     } else if (target === "colonies") {
-      void refreshColoniesView();
+      void refreshers.refreshColoniesView();
     } else if (target === "attacks") {
-      void refreshAttacksView();
+      void refreshers.refreshAttacksView();
     } else if (target === "recyclers") {
-      void refreshRecyclersView();
+      void refreshers.refreshRecyclersView();
     } else if (target === "action-graph") {
       const snap = store.getSnapshot();
       if (!snap.actionGraphData) {
-        if (snap.dashboard?.action_graph) {
-          setActionGraphData(snap.dashboard.action_graph);
-        } else if (snap.dashboard) {
-          setActionGraphData(buildClientFallbackActionGraph(snap.dashboard));
+        if (snap.dashboard?.action_graph) store.setActionGraphData(snap.dashboard.action_graph);
+        else if (snap.dashboard) {
+          store.setActionGraphData(buildClientFallbackActionGraph(snap.dashboard));
         }
       }
     }
@@ -730,14 +464,10 @@ export function createConsoleActions(
     store.setSelectedPlanetId(pid);
     const snap = store.getSnapshot();
     if (snap.dashboard) {
-      void refreshBuildingsEtaForSelectedPlanet();
-      if (snap.activePage === "combat") {
-        void refreshCombatForSelectedPlanet({ refresh: false });
-      } else if (snap.activePage === "sectors") {
-        void refreshSectorsView();
-      } else if (snap.activePage === "colonies") {
-        void refreshColoniesView();
-      }
+      void refreshers.refreshBuildingsEtaForSelectedPlanet();
+      if (snap.activePage === "combat") void refreshers.refreshCombatForSelectedPlanet({ refresh: false });
+      else if (snap.activePage === "sectors") void refreshers.refreshSectorsView();
+      else if (snap.activePage === "colonies") void refreshers.refreshColoniesView();
     }
   };
 
@@ -765,20 +495,12 @@ export function createConsoleActions(
   };
 
   const openNotificationCenter = async () => {
-    store.setRuntime({
-      notifCenterOpen: true,
-      nowEpochSec: Math.floor(Date.now() / 1000),
-    });
+    store.setRuntime({ notifCenterOpen: true, nowEpochSec: Math.floor(Date.now() / 1000) });
     await refreshNotificationCenter();
   };
 
-  const closeNotificationCenter = () => {
-    store.setRuntime({ notifCenterOpen: false });
-  };
-
-  const closeHelpPopupOnly = () => {
-    store.setRuntime({ activeHelpNotif: null });
-  };
+  const closeNotificationCenter = () => store.setRuntime({ notifCenterOpen: false });
+  const closeHelpPopupOnly = () => store.setRuntime({ activeHelpNotif: null });
 
   const ackActiveHelpPopup = async (targetStatus: "read" | "dismissed") => {
     const activeHelp = store.getRuntimeSnapshot().activeHelpNotif;
@@ -786,79 +508,9 @@ export function createConsoleActions(
     closeHelpPopupOnly();
     if (!nid || nid <= 0) return;
     try {
-      await rawApiCommand({
-        command: "notification_ack",
-        notification_id: nid,
-        status: targetStatus,
-      });
+      await rawApiCommand({ command: "notification_ack", notification_id: nid, status: targetStatus });
     } catch (err: any) {
       showFeedback(`Failed updating notification: ${err.message}`, feedbackKindForError(err));
-    }
-  };
-
-  const toggleBlastFurnaceRate = async (targetPct: number) => {
-    const snap = store.getSnapshot();
-    const planet = selectActivePlanet(snap.dashboard, snap.selectedPlanetId);
-    if (!planet) return;
-    try {
-      showFeedback(`Setting Blast furnace to ${targetPct}% on [${planet.coords}]...`, "ok");
-      const res = await rawApiCommand({
-        command: "throttle_building",
-        building_id: 2,
-        percentage: Number(targetPct),
-        planet_id: planet.planet_id,
-        dry_run: false,
-      });
-      showFeedback(res.message || `Blast furnace set to ${targetPct}%.`, "ok");
-      await loadDashboard({ refresh: false, force: true });
-      await refreshBuildingsEtaForSelectedPlanet(false);
-    } catch (err: any) {
-      showFeedback(`Throttle failed: ${err.message}`, feedbackKindForError(err));
-    }
-  };
-
-  const syncAllInboxFolders = async () => {
-    try {
-      showFeedback(
-        "Syncing all in-game message folders (Espionage, Battle, Fleet, User, Alliance, System)...",
-        "ok"
-      );
-      const res = await rawApiCommand({ command: "sync_messages" });
-      const fc = res.folder_counts || {};
-      const folderSummary = Object.entries(fc)
-        .map(([k, v]: [string, any]) => `${k}:${safeFiniteNumber(v?.total, 0) ?? 0}`)
-        .join(" · ");
-      const archived = Math.round(safeFiniteNumber(res.archived_messages, 0) ?? 0);
-      const spyCnt = Math.round(safeFiniteNumber(res.synced_reports, 0) ?? 0);
-      const delNote = res.deleted_in_game ? "deleted in-game" : "stored in SQLite";
-      showFeedback(
-        `Inbox sync complete: ${archived} archived (${spyCnt} spy) — ${delNote}${folderSummary ? ` [${folderSummary}]` : ""}.`,
-        "ok"
-      );
-      await loadDashboard({ refresh: false, force: true });
-      const curPage = store.getSnapshot().activePage;
-      if (curPage === "espionage") await refreshEspionageView();
-      else if (curPage === "colonies") await refreshColoniesView();
-      else if (curPage === "attacks") await refreshAttacksView();
-      else if (curPage === "recyclers") await refreshRecyclersView();
-    } catch (err: any) {
-      showFeedback(`Inbox sync failed: ${err.message}`, feedbackKindForError(err));
-    }
-  };
-
-  const enqueueManualCommand = async (
-    payload: Record<string, any>
-  ): Promise<Record<string, any> | null> => {
-    try {
-      const res = await rawApiCommand({ command: "queue_add", ...payload });
-      showFeedback(res.message || "Command pinned to priority queue.", "ok", {
-        autoHideMs: 4200,
-      });
-      await loadDashboard({ refresh: false, force: true });
-      return res;
-    } catch (err: any) {
-      showFeedback(`Queue add failed: ${err.message}`, feedbackKindForError(err));
-      return null;
     }
   };
 
@@ -889,37 +541,27 @@ export function createConsoleActions(
     bumpConfigHydration,
     setSimPopulatedOnce,
     setNowEpochSec,
-    setBuildingsEtaData,
-    refreshBuildingsEtaForSelectedPlanet,
-    setCombatData,
-    refreshCombatForSelectedPlanet,
-    setSectorsData,
-    refreshSectorsView,
-    setEspData,
-    refreshEspionageView,
-    setColonyData,
-    refreshColoniesView,
-    setAtkData,
-    refreshAttacksView,
-    setRecData,
-    refreshRecyclersView,
-    setActionGraphData,
-    setPlannerJobsStatus,
-    refreshPlannerJobsStatus,
+    setBuildingsEtaData: (d) => store.setBuildingsEtaData(d),
+    setCombatData: (d) => store.setCombatData(d),
+    setSectorsData: (d) => store.setSectorsData(d),
+    setEspData: (d) => store.setEspData(d),
+    setColonyData: (d) => store.setColonyData(d),
+    setAtkData: (d) => store.setAtkData(d),
+    setRecData: (d) => store.setRecData(d),
+    setActionGraphData: (d) => store.setActionGraphData(d),
+    setPlannerJobsStatus: (s) => store.setPlannerJobsStatus(s),
+    setLastOptimizerSummary: (s) => store.setLastOptimizerSummary(s),
+    ...refreshers,
     setAgSimDirty,
     setAgSimRunning,
     setConfigDirty,
     setConfigSaving,
-    setLastOptimizerSummary,
     syncNotificationsPayload,
     openNotificationCenter,
     closeNotificationCenter,
     refreshNotificationCenter,
     ackActiveHelpPopup,
     closeHelpPopupOnly,
-    toggleBlastFurnaceRate,
-    syncAllInboxFolders,
-    enqueueManualCommand,
     cleanup,
   };
 }

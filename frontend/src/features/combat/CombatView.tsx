@@ -1,23 +1,18 @@
 import React, { useMemo, useState } from "react";
+import { feedbackKindForError } from "../../api/httpClient";
 import {
-  feedbackKindForError } from "../../api/httpClient";
-import { SortableTh } from "../../components/SortableTh";
-import { useActivePage,
+  useActivePage,
   useActivePlanet,
   useCombatData,
   useConsoleActions,
   useDashboard,
   useUiPrefs,
 } from "../../store";
-import {
-  coordsSortKey,
-  useTableSort,
-  type SortColumnMap,
-} from "../../hooks/useTableSort";
 import { finiteNum, fmtInt } from "../../utils/formatters";
+import { CombatShipyardPane } from "./CombatShipyardPane";
 import { CombatSimulator } from "./CombatSimulator";
+import { CombatTargetsPane } from "./CombatTargetsPane";
 import { EscapeFlightPane } from "./EscapeFlightPane";
-import { dispatchPopulateSimEvent } from "./simEvents";
 
 export interface CombatViewProps {
   hidden?: boolean;
@@ -78,67 +73,11 @@ export const CombatView: React.FC<CombatViewProps> = ({ hidden }) => {
       const coords = String(t?.coords || t?.target_coords || "");
       return Boolean(coords) && !ownCoords.has(coords) && t?.status_color !== "free";
     });
-  }, [dashboard?.db_summary?.spy_targets, dashboard?.state?.planets, dashboard?.state?.raid_targets]);
-
-  const shipSortCols = useMemo<
-    SortColumnMap<Record<string, any>, "name" | "owned" | "atkShd" | "cargo">
-  >(
-    () => ({
-      name: (s) => String(s.name || s.key || ""),
-      owned: { accessor: (s) => finiteNum(s.owned, 0), defaultDirection: "desc" },
-      atkShd: {
-        accessor: (s) => finiteNum(s.attack, 0) + finiteNum(s.shield, 0),
-        defaultDirection: "desc",
-      },
-      cargo: { accessor: (s) => finiteNum(s.cargo, 0), defaultDirection: "desc" },
-    }),
-    []
-  );
-
-  const defSortCols = useMemo<
-    SortColumnMap<Record<string, any>, "name" | "owned" | "atkShd" | "hull">
-  >(
-    () => ({
-      name: (d) => String(d.name || d.key || ""),
-      owned: { accessor: (d) => finiteNum(d.owned, 0), defaultDirection: "desc" },
-      atkShd: {
-        accessor: (d) => finiteNum(d.attack, 0) + finiteNum(d.shield, 0),
-        defaultDirection: "desc",
-      },
-      hull: { accessor: (d) => finiteNum(d.hull, 0), defaultDirection: "desc" },
-    }),
-    []
-  );
-
-  const raidTargetSortCols = useMemo<
-    SortColumnMap<Record<string, any>, "coords" | "owner" | "type" | "loot">
-  >(
-    () => ({
-      coords: (t) => coordsSortKey(t.coords || t.target_coords),
-      owner: (t) => [t.planet_name, t.owner].filter(Boolean).join(" · ") || null,
-      type: (t) => {
-        const color = String(t.status_color || "yellow");
-        return t.is_spacia ? "SPACIA" : color === "yellow" ? "INACTIVE" : color.toUpperCase();
-      },
-      loot: {
-        accessor: (t) => {
-          const r = t.resources || t;
-          const total =
-            finiteNum(r.pig_iron, 0) +
-            finiteNum(r.metal, 0) +
-            finiteNum(r.kryptonite, 0) +
-            finiteNum(r.spice, 0);
-          return total > 0 ? total : null;
-        },
-        defaultDirection: "desc",
-      },
-    }),
-    []
-  );
-
-  const shipSort = useTableSort(ships, shipSortCols);
-  const defSort = useTableSort(defenses, defSortCols);
-  const raidTargetSort = useTableSort(raidTargets, raidTargetSortCols);
+  }, [
+    dashboard?.db_summary?.spy_targets,
+    dashboard?.state?.planets,
+    dashboard?.state?.raid_targets,
+  ]);
 
   const handleNavJump = async (action: string) => {
     try {
@@ -235,7 +174,9 @@ export const CombatView: React.FC<CombatViewProps> = ({ hidden }) => {
         <div className="kpi-card">
           <span className="kpi-label tabular">Attack Zone &amp; Bash</span>
           <strong className="kpi-value tabular" id="cmb-az-val">
-            {cmb ? `${az.label || "AZ —"} (${cmb.newbie_protected ? "Newbie Shield" : "Open"})` : "AZ —"}
+            {cmb
+              ? `${az.label || "AZ —"} (${cmb.newbie_protected ? "Newbie Shield" : "Open"})`
+              : "AZ —"}
           </strong>
           <span className="kpi-sub tabular" id="cmb-az-rule">
             {cmb
@@ -355,280 +296,24 @@ export const CombatView: React.FC<CombatViewProps> = ({ hidden }) => {
             </div>
           </div>
 
-          <div className="combat-subpane" id="cmb-pane-ships" hidden={subTab !== "ships"}>
-            <div className="table-wrap table-scroll">
-              <table>
-                <thead>
-                  <tr>
-                    <SortableTh
-                      label="Ship Class"
-                      sortKey="name"
-                      activeKey={shipSort.sortKey}
-                      direction={shipSort.sortDirection}
-                      onSort={shipSort.requestSort}
-                    />
-                    <SortableTh
-                      label="Owned"
-                      sortKey="owned"
-                      activeKey={shipSort.sortKey}
-                      direction={shipSort.sortDirection}
-                      onSort={shipSort.requestSort}
-                      align="right"
-                    />
-                    <SortableTh
-                      label="ATK / SHD"
-                      sortKey="atkShd"
-                      activeKey={shipSort.sortKey}
-                      direction={shipSort.sortDirection}
-                      onSort={shipSort.requestSort}
-                      align="right"
-                    />
-                    <SortableTh
-                      label="Cargo"
-                      sortKey="cargo"
-                      activeKey={shipSort.sortKey}
-                      direction={shipSort.sortDirection}
-                      onSort={shipSort.requestSort}
-                      align="right"
-                    />
-                    <th className="col-right">Order</th>
-                  </tr>
-                </thead>
-                <tbody id="cmb-ships-tbody" data-testid="combat-shipyard-tbody">
-                  {shipSort.sortedRows.length === 0 ? (
-                    <tr>
-                      <td colSpan={5} className="empty-cell">
-                        No shipyard telemetry yet.
-                      </td>
-                    </tr>
-                  ) : (
-                    shipSort.sortedRows.map((s) => {
-                      const uid = Number(s.unit_id);
-                      const offer = offersById.get(uid);
-                      return (
-                        <tr key={s.key || uid}>
-                          <td>
-                            {`${s.name} `}
-                            <span className="action-sub tabular">{`(${s.key})`}</span>
-                          </td>
-                          <td className="col-right tabular">{fmtInt(s.owned)}</td>
-                          <td className="col-right tabular">
-                            {`${fmtInt(s.attack)} / ${fmtInt(s.shield)}`}
-                          </td>
-                          <td className="col-right tabular">{fmtInt(s.cargo)}</td>
-                          <td className="col-right">
-                            <div className="row-actions-wrap">
-                              <input
-                                type="number"
-                                min={1}
-                                value={shipQtys[uid] ?? "1"}
-                                onChange={(e) =>
-                                  setShipQtys((prev) => ({ ...prev, [uid]: e.target.value }))
-                                }
-                                className="qty-inline"
-                                aria-label={`Order quantity for ${s.name}`}
-                              />
-                              {offer && offer.can_build && (
-                                <button
-                                  type="button"
-                                  className="btn btn-primary btn-sm"
-                                  onClick={() => handleBuildShip(s)}
-                                >
-                                  Build
-                                </button>
-                              )}
-                              <button
-                                type="button"
-                                className="btn btn-secondary btn-sm"
-                                title={`Add ${s.name} order to P1 priority queue`}
-                                aria-label={`Add ${s.name} order to P1 priority queue`}
-                                onClick={() => handleQueueShip(s)}
-                              >
-                                + Queue
-                              </button>
-                            </div>
-                          </td>
-                        </tr>
-                      );
-                    })
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </div>
+          <CombatShipyardPane
+            subTab={subTab}
+            ships={ships}
+            defenses={defenses}
+            offersById={offersById}
+            shipQtys={shipQtys}
+            onChangeShipQty={(uid, value) =>
+              setShipQtys((prev) => ({ ...prev, [uid]: value }))
+            }
+            onBuildShip={handleBuildShip}
+            onQueueShip={handleQueueShip}
+          />
 
-          <div className="combat-subpane" id="cmb-pane-defense" hidden={subTab !== "defense"}>
-            <div className="table-wrap table-scroll">
-              <table>
-                <thead>
-                  <tr>
-                    <SortableTh
-                      label="Defense Structure"
-                      sortKey="name"
-                      activeKey={defSort.sortKey}
-                      direction={defSort.sortDirection}
-                      onSort={defSort.requestSort}
-                    />
-                    <SortableTh
-                      label="Owned"
-                      sortKey="owned"
-                      activeKey={defSort.sortKey}
-                      direction={defSort.sortDirection}
-                      onSort={defSort.requestSort}
-                      align="right"
-                    />
-                    <SortableTh
-                      label="ATK / SHD"
-                      sortKey="atkShd"
-                      activeKey={defSort.sortKey}
-                      direction={defSort.sortDirection}
-                      onSort={defSort.requestSort}
-                      align="right"
-                    />
-                    <SortableTh
-                      label="Hull"
-                      sortKey="hull"
-                      activeKey={defSort.sortKey}
-                      direction={defSort.sortDirection}
-                      onSort={defSort.requestSort}
-                      align="right"
-                    />
-                  </tr>
-                </thead>
-                <tbody id="cmb-def-tbody">
-                  {defSort.sortedRows.length === 0 ? (
-                    <tr>
-                      <td colSpan={4} className="empty-cell">
-                        No defense data.
-                      </td>
-                    </tr>
-                  ) : (
-                    defSort.sortedRows.map((d) => (
-                      <tr key={d.key || d.name}>
-                        <td>{`${d.name} (${d.key})`}</td>
-                        <td className="col-right tabular">{fmtInt(d.owned)}</td>
-                        <td className="col-right tabular">
-                          {`${fmtInt(d.attack)} / ${fmtInt(d.shield)}`}
-                        </td>
-                        <td className="col-right tabular">{fmtInt(d.hull)}</td>
-                      </tr>
-                    ))
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </div>
-
-          <div className="combat-subpane" id="cmb-pane-targets" hidden={subTab !== "targets"}>
-            <div className="table-wrap table-scroll">
-              <table>
-                <thead>
-                  <tr>
-                    <SortableTh
-                      label="Coords"
-                      sortKey="coords"
-                      activeKey={raidTargetSort.sortKey}
-                      direction={raidTargetSort.sortDirection}
-                      onSort={raidTargetSort.requestSort}
-                    />
-                    <SortableTh
-                      label="Planet / Owner"
-                      sortKey="owner"
-                      activeKey={raidTargetSort.sortKey}
-                      direction={raidTargetSort.sortDirection}
-                      onSort={raidTargetSort.requestSort}
-                    />
-                    <SortableTh
-                      label="Type"
-                      sortKey="type"
-                      activeKey={raidTargetSort.sortKey}
-                      direction={raidTargetSort.sortDirection}
-                      onSort={raidTargetSort.requestSort}
-                    />
-                    <SortableTh
-                      label="Loot (SpEq)"
-                      sortKey="loot"
-                      activeKey={raidTargetSort.sortKey}
-                      direction={raidTargetSort.sortDirection}
-                      onSort={raidTargetSort.requestSort}
-                      align="right"
-                    />
-                    <th className="col-right">Ops</th>
-                  </tr>
-                </thead>
-                <tbody id="cmb-targets-tbody">
-                  {raidTargetSort.sortedRows.length === 0 ? (
-                    <tr>
-                      <td colSpan={5} className="empty-cell">
-                        Click &quot;Scan Galaxy&quot; to populate yellow inactive &amp; Spacia targets.
-                      </td>
-                    </tr>
-                  ) : (
-                    raidTargetSort.sortedRows.map((t) => {
-                      const coords = String(t.coords || t.target_coords || "—");
-                      const resMap = t.resources || t;
-                      const color = String(t.status_color || "yellow");
-                      const totalRes =
-                        finiteNum(resMap.pig_iron, 0) +
-                        finiteNum(resMap.metal, 0) +
-                        finiteNum(resMap.kryptonite, 0) +
-                        finiteNum(resMap.spice, 0);
-                      return (
-                        <tr key={coords}>
-                          <td className="tabular">{coords}</td>
-                          <td>
-                            {[t.planet_name, t.owner].filter(Boolean).join(" · ") || "Unknown"}
-                          </td>
-                          <td>
-                            <span
-                              className={`status-word${color === "yellow" || t.is_spacia ? "" : " is-warn"}`}
-                            >
-                              {t.is_spacia
-                                ? "SPACIA"
-                                : color === "yellow"
-                                  ? "INACTIVE"
-                                  : color.toUpperCase()}
-                            </span>
-                          </td>
-                          <td className="col-right tabular">
-                            {Number.isFinite(totalRes)
-                              ? totalRes > 0
-                                ? fmtInt(totalRes)
-                                : "Unspied"
-                              : "—"}
-                          </td>
-                          <td className="col-right">
-                            <div className="row-actions">
-                              <button
-                                type="button"
-                                className="btn btn-secondary btn-sm"
-                                onClick={() =>
-                                  dispatchPopulateSimEvent({
-                                    defense: t.defense || {},
-                                    fleet: t.fleet || {},
-                                    totalLoot: totalRes,
-                                  })
-                                }
-                              >
-                                Sim
-                              </button>
-                              <button
-                                type="button"
-                                className="btn btn-primary btn-sm"
-                                onClick={() => handleAttackTarget(coords)}
-                              >
-                                Attack
-                              </button>
-                            </div>
-                          </td>
-                        </tr>
-                      );
-                    })
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </div>
+          <CombatTargetsPane
+            hidden={subTab !== "targets"}
+            raidTargets={raidTargets}
+            onAttackTarget={handleAttackTarget}
+          />
 
           <EscapeFlightPane hidden={subTab !== "escape"} cmb={cmb} />
         </article>
