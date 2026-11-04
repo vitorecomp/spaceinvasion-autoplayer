@@ -663,9 +663,44 @@ export const CONFIG_GROUPS: ConfigGroupSpec[] = [
   },
 ];
 
+export const EXTRA_STRATEGY_SETTING_SPECS: Record<string, ConfigItemSpec> = {
+  ai_resource_spare_pct: {
+    key: "ai_resource_spare_pct",
+    id: "cfg-ai_resource_spare_pct",
+    title: "AI Spare Resource Budget (%)",
+    boundsLabel: "default: 10% · 0–90%",
+    description:
+      "Soft-reserve percentage of rolling hourly empire income set aside for Fleet Planner ship-unlock/combat research and autonomous shipyard hull production while AI-Planner guides buildings and economy research. Urgent 0-count replacements for Spy probes (s10) and transports (s1/s2) remain exempt so scouting and hauling never stall. Accepts floats from 0 to 90%.",
+    control: "number",
+    defaultValue: 10,
+    min: 0,
+    max: 90,
+    step: 1,
+  },
+};
+
 export const CONFIG_ITEM_BY_KEY: Record<string, ConfigItemSpec> = Object.fromEntries(
   CONFIG_GROUPS.flatMap((g) => g.items.map((item) => [item.key, item]))
 );
+
+export const STRATEGY_SETTING_BY_KEY: Record<string, ConfigItemSpec> = {
+  ...CONFIG_ITEM_BY_KEY,
+  ...EXTRA_STRATEGY_SETTING_SPECS,
+};
+
+export function getStrategySettingSpec(key: string): ConfigItemSpec {
+  const known = STRATEGY_SETTING_BY_KEY[key];
+  if (known) return known;
+  return {
+    key,
+    id: `cfg-${key}`,
+    title: key,
+    boundsLabel: "config parameter",
+    description: `Configures the ${key} strategy setting persisted to StrategyConfig in SQLite.`,
+    control: "number",
+    defaultValue: "",
+  };
+}
 
 export const CONFIG_BOOL_KEYS: string[] = CONFIG_GROUPS.flatMap((g) =>
   g.items.filter((i) => i.control === "checkbox").map((i) => i.key)

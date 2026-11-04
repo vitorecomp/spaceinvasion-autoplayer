@@ -1,8 +1,7 @@
 import React from "react";
 import type { ActionGraphTabKey } from "../../types/api";
-import { ActionGraphParamRow } from "./ActionGraphParamRow";
+import { SchemaSettingField } from "../config/SchemaSettingField";
 import { AG_BOOL_FIELDS, AG_NUM_DEFAULTS } from "./heuristicsDraft";
-import { getStrategyParamDoc } from "./paramDocs";
 import { ColonyGateInfo, normalizeUiPlannerMode } from "./plannerHelpers";
 
 export interface HeuristicsParamPanelProps {
@@ -21,27 +20,32 @@ export interface HeuristicsParamPanelProps {
   onApplySim: () => void;
 }
 
-const CORE_THRESHOLD_FIELDS = [
-  ["storage_warn_ratio", 0.1, 0.99, 0.05],
-  ["blast_pig_iron_max_share", 0.1, 1.0, 0.05],
-  ["combat_safety_margin", 1.0, 1000.0, 0.1],
-  ["raid_min_loot_spice_eq", 0, undefined, 100],
-  ["attack_min_res_per_hour", 0, undefined, 100],
-  ["recycle_min_res_per_hour", 0, undefined, 100],
-  ["hot_planet_solar_temp_threshold", -273, 1000, 5],
-  ["min_free_fields_warning", 1, 1000, 1],
-  ["min_colony_fields", 50, 600, 10],
-  ["max_planets", 1, 50, 1],
+const CORE_THRESHOLD_KEYS = [
+  "storage_warn_ratio",
+  "blast_pig_iron_max_share",
+  "combat_safety_margin",
+  "raid_min_loot_spice_eq",
+  "attack_min_res_per_hour",
+  "recycle_min_res_per_hour",
+  "hot_planet_solar_temp_threshold",
+  "min_free_fields_warning",
+  "min_colony_fields",
+  "max_planets",
 ] as const;
 
-const SCOPE_PACING_FIELDS = [
-  ["fleet_save_fuel_reserve_spice", 0, undefined, 50],
-  ["action_batch_interval_seconds", 5, 86400, 5],
-  ["galaxy_scan_click_delay_seconds", 0.2, 60, 0.1],
-  ["galaxy_scan_click_jitter_seconds", 0, 30, 0.1],
-  ["max_actions_per_hour", 1, 100000, 1],
-  ["reserved_spy_slots", 0, 10, 1],
+const SCOPE_PACING_KEYS = [
+  "fleet_save_fuel_reserve_spice",
+  "action_batch_interval_seconds",
+  "galaxy_scan_click_delay_seconds",
+  "galaxy_scan_click_jitter_seconds",
+  "max_actions_per_hour",
+  "reserved_spy_slots",
 ] as const;
+
+const HEURISTICS_PLANNER_MODE_OPTIONS = [
+  { value: "priority", label: "priority — Rule-Based Heuristic" },
+  { value: "ai_planner", label: "ai_planner — AI-Planner (W-Week NPV)" },
+];
 
 export const HeuristicsParamPanel: React.FC<HeuristicsParamPanelProps> = ({
   agSimDirty,
@@ -59,7 +63,6 @@ export const HeuristicsParamPanel: React.FC<HeuristicsParamPanelProps> = ({
   onApplySim,
 }) => {
   const draftModeNorm = normalizeUiPlannerMode(draftValues.planner_mode);
-  const knownPlaystyles = ["fleeter", "hybrid", "miner"];
   const curPlaystyle = String(draftValues.playstyle || "fleeter");
 
   return (
@@ -117,42 +120,25 @@ export const HeuristicsParamPanel: React.FC<HeuristicsParamPanelProps> = ({
               </p>
             </div>
             <div className="ag-param-list">
-              <ActionGraphParamRow
-                doc={getStrategyParamDoc("planner_mode")}
-                htmlFor="ag-cfg-planner_mode"
-                layout="stack"
-              >
-                <select
-                  id="ag-cfg-planner_mode"
-                  value={draftModeNorm}
-                  onChange={(e) => onModeSelectChange(normalizeUiPlannerMode(e.target.value))}
-                >
-                  <option value="priority">priority — Rule-Based Heuristic</option>
-                  <option value="ai_planner">ai_planner — AI-Planner (W-Week NPV)</option>
-                </select>
-              </ActionGraphParamRow>
-
-              <ActionGraphParamRow
-                doc={getStrategyParamDoc("playstyle")}
-                htmlFor="ag-cfg-playstyle"
-                layout="stack"
-              >
-                <select
-                  id="ag-cfg-playstyle"
-                  value={curPlaystyle}
-                  onChange={(e) => {
-                    onDraftChange("playstyle", e.target.value);
-                    onImmediateSim();
-                  }}
-                >
-                  <option value="fleeter">fleeter — Combat &amp; Techs</option>
-                  <option value="hybrid">hybrid — Balanced</option>
-                  <option value="miner">miner — Economy ROI</option>
-                  {!knownPlaystyles.includes(curPlaystyle) && curPlaystyle ? (
-                    <option value={curPlaystyle}>{curPlaystyle}</option>
-                  ) : null}
-                </select>
-              </ActionGraphParamRow>
+              <SchemaSettingField
+                variant="panel"
+                idPrefix="ag-cfg"
+                settingKey="planner_mode"
+                value={draftModeNorm}
+                options={HEURISTICS_PLANNER_MODE_OPTIONS}
+                onChange={(val) => onModeSelectChange(normalizeUiPlannerMode(val))}
+              />
+              <SchemaSettingField
+                variant="panel"
+                idPrefix="ag-cfg"
+                settingKey="playstyle"
+                value={curPlaystyle}
+                includeUnknownOption
+                onChange={(val) => {
+                  onDraftChange("playstyle", val);
+                  onImmediateSim();
+                }}
+              />
             </div>
           </div>
 
@@ -203,26 +189,18 @@ export const HeuristicsParamPanel: React.FC<HeuristicsParamPanelProps> = ({
               </p>
             </div>
             <div className="ag-param-list">
-              {CORE_THRESHOLD_FIELDS.map(([key, minV, maxV, stepV]) => (
-                <ActionGraphParamRow
+              {CORE_THRESHOLD_KEYS.map((key) => (
+                <SchemaSettingField
                   key={key}
-                  doc={getStrategyParamDoc(key)}
-                  htmlFor={`ag-cfg-${key}`}
-                  layout="inline"
-                >
-                  <input
-                    type="number"
-                    id={`ag-cfg-${key}`}
-                    min={minV}
-                    max={maxV}
-                    step={stepV}
-                    value={String(draftValues[key] ?? AG_NUM_DEFAULTS[key])}
-                    onChange={(e) => {
-                      onDraftChange(key, e.target.value);
-                      onDebouncedSim();
-                    }}
-                  />
-                </ActionGraphParamRow>
+                  variant="panel"
+                  idPrefix="ag-cfg"
+                  settingKey={key}
+                  value={draftValues[key] ?? AG_NUM_DEFAULTS[key]}
+                  onChange={(val) => {
+                    onDraftChange(key, val);
+                    onDebouncedSim();
+                  }}
+                />
               ))}
             </div>
           </div>
@@ -238,26 +216,18 @@ export const HeuristicsParamPanel: React.FC<HeuristicsParamPanelProps> = ({
               </p>
             </div>
             <div className="ag-param-list">
-              {SCOPE_PACING_FIELDS.map(([key, minV, maxV, stepV]) => (
-                <ActionGraphParamRow
+              {SCOPE_PACING_KEYS.map((key) => (
+                <SchemaSettingField
                   key={key}
-                  doc={getStrategyParamDoc(key)}
-                  htmlFor={`ag-cfg-${key}`}
-                  layout="inline"
-                >
-                  <input
-                    type="number"
-                    id={`ag-cfg-${key}`}
-                    min={minV}
-                    max={maxV}
-                    step={stepV}
-                    value={String(draftValues[key] ?? AG_NUM_DEFAULTS[key])}
-                    onChange={(e) => {
-                      onDraftChange(key, e.target.value);
-                      onDebouncedSim();
-                    }}
-                  />
-                </ActionGraphParamRow>
+                  variant="panel"
+                  idPrefix="ag-cfg"
+                  settingKey={key}
+                  value={draftValues[key] ?? AG_NUM_DEFAULTS[key]}
+                  onChange={(val) => {
+                    onDraftChange(key, val);
+                    onDebouncedSim();
+                  }}
+                />
               ))}
             </div>
           </div>
@@ -272,23 +242,17 @@ export const HeuristicsParamPanel: React.FC<HeuristicsParamPanelProps> = ({
             </div>
             <div className="ag-param-list">
               {AG_BOOL_FIELDS.map((bKey) => (
-                <ActionGraphParamRow
+                <SchemaSettingField
                   key={bKey}
-                  doc={getStrategyParamDoc(bKey)}
-                  htmlFor={`ag-cfg-${bKey}`}
-                  layout="toggle"
-                >
-                  <input
-                    type="checkbox"
-                    className="config-checkbox"
-                    id={`ag-cfg-${bKey}`}
-                    checked={Boolean(draftValues[bKey])}
-                    onChange={(e) => {
-                      onDraftChange(bKey, e.target.checked);
-                      onImmediateSim();
-                    }}
-                  />
-                </ActionGraphParamRow>
+                  variant="panel"
+                  idPrefix="ag-cfg"
+                  settingKey={bKey}
+                  value={Boolean(draftValues[bKey])}
+                  onChange={(checked) => {
+                    onDraftChange(bKey, checked);
+                    onImmediateSim();
+                  }}
+                />
               ))}
             </div>
           </div>

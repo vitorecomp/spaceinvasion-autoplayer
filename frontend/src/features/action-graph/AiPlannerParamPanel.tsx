@@ -2,7 +2,7 @@ import React from "react";
 import { safeFiniteNumber } from "../../api/httpClient";
 import type { PlannerJobState } from "../../types/api";
 import { fmtInt } from "../../utils/formatters";
-import { ActionGraphParamRow } from "./ActionGraphParamRow";
+import { SchemaSettingField } from "../config/SchemaSettingField";
 import {
   AI_PLANNER_GROUP_SUBTITLES,
   AI_PLANNER_PARAM_DOCS,
@@ -75,23 +75,19 @@ export const AiPlannerParamPanel: React.FC<AiPlannerParamPanelProps> = ({
     stepV?: number,
     placeholder?: string
   ) => (
-    <ActionGraphParamRow
+    <SchemaSettingField
       key={key}
+      variant="panel"
+      idPrefix="ai-param"
       doc={AI_PLANNER_PARAM_DOCS[key]}
-      htmlFor={`ai-param-${key}`}
-      layout="inline"
-    >
-      <input
-        type="number"
-        id={`ai-param-${key}`}
-        min={minV}
-        max={maxV}
-        step={stepV}
-        placeholder={placeholder}
-        value={draft[key]}
-        onChange={(e) => onUpdateDraft((prev) => ({ ...prev, [key]: e.target.value }))}
-      />
-    </ActionGraphParamRow>
+      control="number"
+      min={minV}
+      max={maxV}
+      step={stepV}
+      placeholder={placeholder}
+      value={draft[key]}
+      onChange={(val) => onUpdateDraft((prev) => ({ ...prev, [key]: String(val) }))}
+    />
   );
 
   return (
@@ -157,30 +153,26 @@ export const AiPlannerParamPanel: React.FC<AiPlannerParamPanelProps> = ({
             </div>
             <div className="ag-param-list">
               {(["pig_iron", "metal", "kryptonite", "spice"] as const).map((rk) => (
-                <ActionGraphParamRow
+                <SchemaSettingField
                   key={rk}
+                  variant="panel"
+                  id={`ai-param-spare-${rk}`}
                   doc={AI_PLANNER_SPARE_DOCS[rk]}
-                  htmlFor={`ai-param-spare-${rk}`}
-                  layout="inline"
-                >
-                  <input
-                    type="number"
-                    id={`ai-param-spare-${rk}`}
-                    min={0}
-                    max={100}
-                    step={1}
-                    value={draft.resource_spare_percent[rk]}
-                    onChange={(e) =>
-                      onUpdateDraft((prev) => ({
-                        ...prev,
-                        resource_spare_percent: {
-                          ...prev.resource_spare_percent,
-                          [rk]: e.target.value,
-                        },
-                      }))
-                    }
-                  />
-                </ActionGraphParamRow>
+                  control="number"
+                  min={0}
+                  max={100}
+                  step={1}
+                  value={draft.resource_spare_percent[rk]}
+                  onChange={(val) =>
+                    onUpdateDraft((prev) => ({
+                      ...prev,
+                      resource_spare_percent: {
+                        ...prev.resource_spare_percent,
+                        [rk]: String(val),
+                      },
+                    }))
+                  }
+                />
               ))}
             </div>
           </div>
@@ -201,22 +193,17 @@ export const AiPlannerParamPanel: React.FC<AiPlannerParamPanelProps> = ({
             <div className="ag-param-list">
               {renderNumericField("fleet_command_center_level", 0, 50, 1, "Auto")}
               {renderNumericField("attacks_per_day", 0, undefined, 1, "Auto")}
-              <ActionGraphParamRow
+              <SchemaSettingField
+                variant="panel"
+                idPrefix="ai-param"
                 doc={AI_PLANNER_PARAM_DOCS.pad_generic_colonies}
-                htmlFor="ai-param-pad_generic_colonies"
-                layout="toggle"
+                control="checkbox"
                 titleOverride={`Pad < ${gate.maxPlanets}/${gate.maxPlanets} Missing Slots in Preview (${gate.coloniesOwned}/${gate.maxPlanets} Owned)`}
-              >
-                <input
-                  type="checkbox"
-                  className="config-checkbox"
-                  id="ai-param-pad_generic_colonies"
-                  checked={draft.pad_generic_colonies}
-                  onChange={(e) =>
-                    onUpdateDraft((prev) => ({ ...prev, pad_generic_colonies: e.target.checked }))
-                  }
-                />
-              </ActionGraphParamRow>
+                value={draft.pad_generic_colonies}
+                onChange={(checked) =>
+                  onUpdateDraft((prev) => ({ ...prev, pad_generic_colonies: Boolean(checked) }))
+                }
+              />
             </div>
           </div>
         </div>

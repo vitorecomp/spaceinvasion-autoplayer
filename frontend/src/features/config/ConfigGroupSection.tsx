@@ -2,6 +2,7 @@ import React from "react";
 import type { PlanetData } from "../../types/api";
 import type { ConfigGroupSpec } from "./configSchema";
 import { formatGalaxyCoverageText } from "./configFormHelpers";
+import { SchemaSettingField } from "./SchemaSettingField";
 
 export interface RuntimeExecutionSectionProps {
   modeVal: string;
@@ -123,94 +124,20 @@ export const ConfigGroupSection: React.FC<ConfigGroupSectionProps> = ({
     </div>
     <div className="config-list">
       {group.items.map((item) => (
-        <div key={item.id} className="config-item">
-          <div className="config-item-info">
-            <div className="config-item-head">
-              <label className="config-item-label" htmlFor={item.id}>
-                {item.title}
-              </label>
-              <code className="config-item-key tabular">{item.key}</code>
-              <span className="config-item-bounds tabular">{item.boundsLabel}</span>
-            </div>
-            <p className="config-item-desc">{item.description}</p>
-          </div>
-          <div className="config-item-control">
-            {item.control === "select" ? (
-              <select
-                id={item.id}
-                value={String(formValues[item.key] ?? item.defaultValue ?? "")}
-                onChange={(e) => onFieldChange(item.key, e.target.value)}
-                onInput={(e) =>
-                  onFieldChange(item.key, (e.target as HTMLSelectElement).value)
-                }
-              >
-                {(item.options || []).map((opt) => (
-                  <option key={opt.value} value={opt.value}>
-                    {opt.label}
-                  </option>
-                ))}
-              </select>
-            ) : item.control === "planet-select" ? (
-              <select
-                id={item.id}
-                value={String(formValues[item.key] ?? "0")}
-                onChange={(e) => onFieldChange(item.key, e.target.value)}
-                onInput={(e) =>
-                  onFieldChange(item.key, (e.target as HTMLSelectElement).value)
-                }
-              >
-                <option value="0">
-                  0 — Auto (Active / Closest Colony with Probes)
-                </option>
-                {nonRaidPlanets.map((p) => (
-                  <option key={p.planet_id} value={String(p.planet_id)}>
-                    {`${p.name || "Colony"} [${p.coords || "--"}] (#${p.planet_id} · s10: ${p.ships?.s10 ?? 0})`}
-                  </option>
-                ))}
-                {!hasSavedPlanetOption ? (
-                  <option value={String(savedSpyPid)}>
-                    {`Colony #${savedSpyPid} (Saved)`}
-                  </option>
-                ) : null}
-              </select>
-            ) : item.control === "checkbox" ? (
-              <input
-                type="checkbox"
-                className="config-checkbox"
-                id={item.id}
-                checked={Boolean(formValues[item.key])}
-                onChange={(e) => onFieldChange(item.key, e.target.checked)}
-              />
-            ) : item.control === "text-seed" ? (
-              <input
-                type="text"
-                inputMode="numeric"
-                className="config-seed-input"
-                id={item.id}
-                placeholder={item.placeholder || "Auto"}
-                value={String(formValues[item.key] ?? "")}
-                onChange={(e) => onFieldChange(item.key, e.target.value)}
-                onInput={(e) =>
-                  onFieldChange(item.key, (e.target as HTMLInputElement).value)
-                }
-              />
-            ) : (
-              <input
-                type="number"
-                id={item.id}
-                min={item.min}
-                max={item.max}
-                step={item.step}
-                placeholder={item.placeholder}
-                value={String(formValues[item.key] ?? item.defaultValue ?? "")}
-                onChange={(e) => onFieldChange(item.key, e.target.value)}
-                onInput={(e) =>
-                  onFieldChange(item.key, (e.target as HTMLInputElement).value)
-                }
-              />
-            )}
-          </div>
-        </div>
+        <SchemaSettingField
+          key={item.id}
+          variant="config"
+          idPrefix="cfg"
+          spec={item}
+          value={formValues[item.key]}
+          emitOnInput
+          planetSelectContext={
+            item.control === "planet-select"
+              ? { nonRaidPlanets, savedSpyPid, hasSavedPlanetOption }
+              : undefined
+          }
+          onChange={(val) => onFieldChange(item.key, val)}
+        />
       ))}
     </div>
   </section>

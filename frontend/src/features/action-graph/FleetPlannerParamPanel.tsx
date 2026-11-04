@@ -1,13 +1,12 @@
 import React from "react";
 import { safeFiniteNumber } from "../../api/httpClient";
-import { ActionGraphParamRow } from "./ActionGraphParamRow";
+import { SchemaSettingField } from "../config/SchemaSettingField";
 import type { FleetDraftState } from "./fleetPlannerHelpers";
 import {
   FLEET_PLANNER_GROUP_SUBTITLES,
   FLEET_RESEARCH_OPTIONS,
   getFleetResearchDoc,
   getShipyardHullDoc,
-  getStrategyParamDoc,
 } from "./paramDocs";
 
 export type FleetParamTab = "combat" | "logistics" | "scanner" | "shipyard";
@@ -31,34 +30,28 @@ export interface FleetPlannerParamPanelProps {
   onApply: () => void;
 }
 
-const COMBAT_NUM_SPECS = [
-  ["combat_safety_margin", 1, 10, 0.05],
-  ["raid_min_loot_spice_eq", 0, 10000000, 100],
-  ["fleet_save_fuel_reserve_spice", 0, 10000000, 50],
-  ["ai_resource_spare_pct", 0, 90, 1],
+const COMBAT_NUM_KEYS = [
+  "combat_safety_margin",
+  "raid_min_loot_spice_eq",
+  "fleet_save_fuel_reserve_spice",
+  "ai_resource_spare_pct",
 ] as const;
 
-const LOGISTICS_NUM_SPECS = [
-  ["min_colony_fields", 50, 500, 5],
-  ["max_planets", 1, 20, 1],
+const LOGISTICS_NUM_KEYS = ["min_colony_fields", "max_planets"] as const;
+
+const SCANNER_NUM_KEYS = [
+  "galaxy_sweep_interval_seconds",
+  "galaxy_sweep_pages",
+  "galaxy_scan_click_delay_seconds",
+  "galaxy_scan_click_jitter_seconds",
+  "galaxy_scan_refresh_pct",
+  "reserved_spy_slots",
+  "galaxy_scan_near_weight",
+  "galaxy_scan_attack_weight",
+  "spy_dispatch_planet_id",
 ] as const;
 
-const SCANNER_NUM_SPECS = [
-  ["galaxy_sweep_interval_seconds", 10, 86400, 10],
-  ["galaxy_sweep_pages", 1, 400, 5],
-  ["galaxy_scan_click_delay_seconds", 0.1, 30, 0.1],
-  ["galaxy_scan_click_jitter_seconds", 0, 20, 0.1],
-  ["galaxy_scan_refresh_pct", 0, 100, 1],
-  ["reserved_spy_slots", 0, 20, 1],
-  ["galaxy_scan_near_weight", 0, 10, 0.05],
-  ["galaxy_scan_attack_weight", 0, 10, 0.05],
-  ["spy_dispatch_planet_id", 0, undefined, 1],
-] as const;
-
-const HARVEST_NUM_SPECS = [
-  ["attack_min_res_per_hour", 0, 1000000000000, 100],
-  ["recycle_min_res_per_hour", 0, 1000000000000, 100],
-] as const;
+const HARVEST_NUM_KEYS = ["attack_min_res_per_hour", "recycle_min_res_per_hour"] as const;
 
 export const FleetPlannerParamPanel: React.FC<FleetPlannerParamPanelProps> = ({
   draft,
@@ -79,39 +72,26 @@ export const FleetPlannerParamPanel: React.FC<FleetPlannerParamPanelProps> = ({
   onApply,
 }) => {
   const renderToggleRow = (bKey: string) => (
-    <ActionGraphParamRow
+    <SchemaSettingField
       key={bKey}
-      doc={getStrategyParamDoc(bKey)}
-      htmlFor={`flt-cfg-${bKey}`}
-      layout="toggle"
-    >
-      <input
-        id={`flt-cfg-${bKey}`}
-        type="checkbox"
-        className="config-checkbox"
-        checked={Boolean(draft.booleans[bKey])}
-        onChange={(e) => onBoolChange(bKey, e.target.checked)}
-      />
-    </ActionGraphParamRow>
+      variant="panel"
+      idPrefix="flt-cfg"
+      settingKey={bKey}
+      value={Boolean(draft.booleans[bKey])}
+      onChange={(checked) => onBoolChange(bKey, Boolean(checked))}
+    />
   );
 
-  const renderNumberRow = ([key, minV, maxV, stepV]: readonly [string, number, number | undefined, number]) => (
-    <ActionGraphParamRow
+  const renderNumberRow = (key: string) => (
+    <SchemaSettingField
       key={key}
-      doc={getStrategyParamDoc(key)}
-      htmlFor={`flt-cfg-${key}`}
-      layout="inline"
-    >
-      <input
-        id={`flt-cfg-${key}`}
-        type="number"
-        min={minV}
-        max={maxV}
-        step={stepV}
-        value={draft.numbers[key]}
-        onChange={(e) => onNumChange(key, e.target.value)}
-      />
-    </ActionGraphParamRow>
+      variant="panel"
+      idPrefix="flt-cfg"
+      settingKey={key}
+      control="number"
+      value={draft.numbers[key]}
+      onChange={(val) => onNumChange(key, String(val))}
+    />
   );
 
   return (
@@ -159,7 +139,7 @@ export const FleetPlannerParamPanel: React.FC<FleetPlannerParamPanelProps> = ({
             </div>
             <div className="ag-param-list">
               {(["allow_raids", "allow_pvp_in_az", "allow_fleetsave"] as const).map(renderToggleRow)}
-              {COMBAT_NUM_SPECS.map(renderNumberRow)}
+              {COMBAT_NUM_KEYS.map(renderNumberRow)}
             </div>
           </div>
         </div>
@@ -171,8 +151,10 @@ export const FleetPlannerParamPanel: React.FC<FleetPlannerParamPanelProps> = ({
               <p className="ag-param-group-sub">{FLEET_PLANNER_GROUP_SUBTITLES.logistics}</p>
             </div>
             <div className="ag-param-list">
-              {(["allow_colonize", "allow_transport", "allow_transmitter"] as const).map(renderToggleRow)}
-              {LOGISTICS_NUM_SPECS.map(renderNumberRow)}
+              {(["allow_colonize", "allow_transport", "allow_transmitter"] as const).map(
+                renderToggleRow
+              )}
+              {LOGISTICS_NUM_KEYS.map(renderNumberRow)}
             </div>
           </div>
         </div>
@@ -193,7 +175,7 @@ export const FleetPlannerParamPanel: React.FC<FleetPlannerParamPanelProps> = ({
                   "spy_reserved_slots_only",
                 ] as const
               ).map(renderToggleRow)}
-              {SCANNER_NUM_SPECS.map(renderNumberRow)}
+              {SCANNER_NUM_KEYS.map(renderNumberRow)}
             </div>
           </div>
         </div>
@@ -202,9 +184,11 @@ export const FleetPlannerParamPanel: React.FC<FleetPlannerParamPanelProps> = ({
           <div className="ag-param-group" id="flt-harvest-rph-group">
             <div className="ag-param-group-head">
               <h3>Attack &amp; Recycle Min Yield (res/h)</h3>
-              <p className="ag-param-group-sub">{FLEET_PLANNER_GROUP_SUBTITLES.harvestThresholds}</p>
+              <p className="ag-param-group-sub">
+                {FLEET_PLANNER_GROUP_SUBTITLES.harvestThresholds}
+              </p>
             </div>
-            <div className="ag-param-list">{HARVEST_NUM_SPECS.map(renderNumberRow)}</div>
+            <div className="ag-param-list">{HARVEST_NUM_KEYS.map(renderNumberRow)}</div>
           </div>
 
           <div className="ag-param-group">
@@ -215,25 +199,21 @@ export const FleetPlannerParamPanel: React.FC<FleetPlannerParamPanelProps> = ({
             <div className="ag-param-list">
               {renderToggleRow("allow_fleet_research")}
               {FLEET_RESEARCH_OPTIONS.map((opt) => (
-                <ActionGraphParamRow
+                <SchemaSettingField
                   key={`flt-res-${opt.key}`}
+                  variant="panel"
+                  id={`flt-research-${opt.key}`}
                   doc={getFleetResearchDoc(
                     opt.key,
                     safeFiniteNumber(liveResearches[opt.key], null)
                   )}
-                  htmlFor={`flt-research-${opt.key}`}
-                  layout="inline"
-                >
-                  <input
-                    id={`flt-research-${opt.key}`}
-                    type="number"
-                    min={0}
-                    max={100}
-                    step={1}
-                    value={draft.fleet_research_targets[opt.key] ?? "0"}
-                    onChange={(e) => onFleetResearchTargetChange(opt.key, e.target.value)}
-                  />
-                </ActionGraphParamRow>
+                  control="number"
+                  min={0}
+                  max={100}
+                  step={1}
+                  value={draft.fleet_research_targets[opt.key] ?? "0"}
+                  onChange={(val) => onFleetResearchTargetChange(opt.key, String(val))}
+                />
               ))}
             </div>
           </div>
@@ -246,22 +226,18 @@ export const FleetPlannerParamPanel: React.FC<FleetPlannerParamPanelProps> = ({
             <div className="ag-param-list">
               {renderToggleRow("allow_shipyard")}
               {Object.keys(draft.shipyard_targets).map((slug) => (
-                <ActionGraphParamRow
+                <SchemaSettingField
                   key={`flt-ship-${slug}`}
+                  variant="panel"
+                  id={`flt-shipyard-${slug}`}
                   doc={getShipyardHullDoc(slug)}
-                  htmlFor={`flt-shipyard-${slug}`}
-                  layout="inline"
-                >
-                  <input
-                    id={`flt-shipyard-${slug}`}
-                    type="number"
-                    min={0}
-                    max={9999999}
-                    step={1}
-                    value={draft.shipyard_targets[slug] ?? "0"}
-                    onChange={(e) => onShipyardTargetChange(slug, e.target.value)}
-                  />
-                </ActionGraphParamRow>
+                  control="number"
+                  min={0}
+                  max={9999999}
+                  step={1}
+                  value={draft.shipyard_targets[slug] ?? "0"}
+                  onChange={(val) => onShipyardTargetChange(slug, String(val))}
+                />
               ))}
             </div>
           </div>

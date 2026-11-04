@@ -1,7 +1,7 @@
 import React from "react";
 import { safeFiniteNumber } from "../../api/httpClient";
 import type { PlannerJobState } from "../../types/api";
-import { ActionGraphParamRow } from "./ActionGraphParamRow";
+import { SchemaSettingField } from "../config/SchemaSettingField";
 import {
   CONFIG_OPTIMIZER_GROUP_SUBTITLES,
   CONFIG_OPTIMIZER_MIN_FLEET_DOCS,
@@ -33,6 +33,42 @@ export interface ConfigOptimizerParamPanelProps {
   onRunOptimizer: () => void;
 }
 
+type CoNumberKey =
+  | "production_month_days"
+  | "research_percent_of_universe_max"
+  | "warehouse_hours_of_production"
+  | "min_warehouse_level"
+  | "central_planet_slot"
+  | "central_planet_min_warehouse_level"
+  | "specialization_switch_threshold_pct"
+  | "ga_population_size"
+  | "ga_generations"
+  | "ga_random_seed";
+
+const CO_OBJECTIVE_NUMBERS: ReadonlyArray<
+  readonly [CoNumberKey, number | undefined, number | undefined, number]
+> = [
+  ["production_month_days", 1, 365, 1],
+  ["research_percent_of_universe_max", 0, 200, 5],
+  ["warehouse_hours_of_production", 0, 720, 1],
+  ["min_warehouse_level", 0, 60, 1],
+  ["central_planet_slot", 1, 50, 1],
+  ["central_planet_min_warehouse_level", 0, 50, 1],
+];
+
+const CO_GA_NUMBERS: ReadonlyArray<
+  readonly [CoNumberKey, number | undefined, number | undefined, number]
+> = [
+  ["ga_population_size", 4, 1000, 10],
+  ["ga_generations", 1, 1000, 10],
+  ["ga_random_seed", undefined, undefined, 1],
+];
+
+const TARGET_SHIP_SELECT_OPTIONS = SHIP_OPTIONS.map((s) => ({
+  value: s.key,
+  label: `${s.key} — ${s.name}`,
+}));
+
 export const ConfigOptimizerParamPanel: React.FC<ConfigOptimizerParamPanelProps> = ({
   draft,
   draftDirty,
@@ -49,6 +85,26 @@ export const ConfigOptimizerParamPanel: React.FC<ConfigOptimizerParamPanelProps>
   onOpenYearlyGraph,
   onRunOptimizer,
 }) => {
+  const renderNumberField = ([key, minV, maxV, stepV]: readonly [
+    CoNumberKey,
+    number | undefined,
+    number | undefined,
+    number,
+  ]) => (
+    <SchemaSettingField
+      key={key}
+      variant="panel"
+      idPrefix="co-param"
+      doc={CONFIG_OPTIMIZER_PARAM_DOCS[key]}
+      control="number"
+      min={minV}
+      max={maxV}
+      step={stepV}
+      value={draft[key]}
+      onChange={(val) => onPatchDraft((prev) => ({ ...prev, [key]: String(val) }))}
+    />
+  );
+
   return (
     <aside
       className="hud-window ag-control-panel"
@@ -99,160 +155,28 @@ export const ConfigOptimizerParamPanel: React.FC<ConfigOptimizerParamPanelProps>
               <p className="ag-param-group-sub">{CONFIG_OPTIMIZER_GROUP_SUBTITLES.objective}</p>
             </div>
             <div className="ag-param-list">
-              <ActionGraphParamRow
+              <SchemaSettingField
+                variant="panel"
+                idPrefix="co-param"
                 doc={CONFIG_OPTIMIZER_PARAM_DOCS.target_ship_key}
-                htmlFor="co-param-target_ship_key"
-                layout="stack"
-              >
-                <select
-                  id="co-param-target_ship_key"
-                  value={draft.target_ship_key}
-                  onChange={(e) => {
-                    const val = e.target.value;
-                    onPatchDraft((prev) => ({ ...prev, target_ship_key: val }));
-                  }}
-                >
-                  {SHIP_OPTIONS.map((s) => (
-                    <option key={s.key} value={s.key}>
-                      {`${s.key} — ${s.name}`}
-                    </option>
-                  ))}
-                </select>
-              </ActionGraphParamRow>
-
-              <ActionGraphParamRow
-                doc={CONFIG_OPTIMIZER_PARAM_DOCS.production_month_days}
-                htmlFor="co-param-production_month_days"
-                layout="inline"
-              >
-                <input
-                  type="number"
-                  id="co-param-production_month_days"
-                  min={1}
-                  max={365}
-                  step={1}
-                  value={draft.production_month_days}
-                  onChange={(e) => {
-                    const val = e.target.value;
-                    onPatchDraft((prev) => ({ ...prev, production_month_days: val }));
-                  }}
-                />
-              </ActionGraphParamRow>
-
-              <ActionGraphParamRow
-                doc={CONFIG_OPTIMIZER_PARAM_DOCS.research_percent_of_universe_max}
-                htmlFor="co-param-research_percent_of_universe_max"
-                layout="inline"
-              >
-                <input
-                  type="number"
-                  id="co-param-research_percent_of_universe_max"
-                  min={0}
-                  max={200}
-                  step={5}
-                  value={draft.research_percent_of_universe_max}
-                  onChange={(e) => {
-                    const val = e.target.value;
-                    onPatchDraft((prev) => ({ ...prev, research_percent_of_universe_max: val }));
-                  }}
-                />
-              </ActionGraphParamRow>
-
-              <ActionGraphParamRow
-                doc={CONFIG_OPTIMIZER_PARAM_DOCS.warehouse_hours_of_production}
-                htmlFor="co-param-warehouse_hours_of_production"
-                layout="inline"
-              >
-                <input
-                  type="number"
-                  id="co-param-warehouse_hours_of_production"
-                  min={0}
-                  max={720}
-                  step={1}
-                  value={draft.warehouse_hours_of_production}
-                  onChange={(e) => {
-                    const val = e.target.value;
-                    onPatchDraft((prev) => ({ ...prev, warehouse_hours_of_production: val }));
-                  }}
-                />
-              </ActionGraphParamRow>
-
-              <ActionGraphParamRow
-                doc={CONFIG_OPTIMIZER_PARAM_DOCS.min_warehouse_level}
-                htmlFor="co-param-min_warehouse_level"
-                layout="inline"
-              >
-                <input
-                  type="number"
-                  id="co-param-min_warehouse_level"
-                  min={0}
-                  max={60}
-                  step={1}
-                  value={draft.min_warehouse_level}
-                  onChange={(e) => {
-                    const val = e.target.value;
-                    onPatchDraft((prev) => ({ ...prev, min_warehouse_level: val }));
-                  }}
-                />
-              </ActionGraphParamRow>
-
-              <ActionGraphParamRow
-                doc={CONFIG_OPTIMIZER_PARAM_DOCS.central_planet_slot}
-                htmlFor="co-param-central_planet_slot"
-                layout="inline"
-              >
-                <input
-                  type="number"
-                  id="co-param-central_planet_slot"
-                  min={1}
-                  max={50}
-                  step={1}
-                  value={draft.central_planet_slot}
-                  onChange={(e) => {
-                    const val = e.target.value;
-                    onPatchDraft((prev) => ({ ...prev, central_planet_slot: val }));
-                  }}
-                />
-              </ActionGraphParamRow>
-
-              <ActionGraphParamRow
-                doc={CONFIG_OPTIMIZER_PARAM_DOCS.central_planet_min_warehouse_level}
-                htmlFor="co-param-central_planet_min_warehouse_level"
-                layout="inline"
-              >
-                <input
-                  type="number"
-                  id="co-param-central_planet_min_warehouse_level"
-                  min={0}
-                  max={50}
-                  step={1}
-                  value={draft.central_planet_min_warehouse_level}
-                  onChange={(e) => {
-                    const val = e.target.value;
-                    onPatchDraft((prev) => ({
-                      ...prev,
-                      central_planet_min_warehouse_level: val,
-                    }));
-                  }}
-                />
-              </ActionGraphParamRow>
-
-              <ActionGraphParamRow
+                control="select"
+                options={TARGET_SHIP_SELECT_OPTIONS}
+                value={draft.target_ship_key}
+                onChange={(val) =>
+                  onPatchDraft((prev) => ({ ...prev, target_ship_key: String(val) }))
+                }
+              />
+              {CO_OBJECTIVE_NUMBERS.map(renderNumberField)}
+              <SchemaSettingField
+                variant="panel"
+                idPrefix="co-param"
                 doc={CONFIG_OPTIMIZER_PARAM_DOCS.allow_demolition}
-                htmlFor="co-param-allow_demolition"
-                layout="toggle"
-              >
-                <input
-                  type="checkbox"
-                  className="config-checkbox"
-                  id="co-param-allow_demolition"
-                  checked={draft.allow_demolition}
-                  onChange={(e) => {
-                    const checked = e.target.checked;
-                    onPatchDraft((prev) => ({ ...prev, allow_demolition: checked }));
-                  }}
-                />
-              </ActionGraphParamRow>
+                control="checkbox"
+                value={draft.allow_demolition}
+                onChange={(checked) =>
+                  onPatchDraft((prev) => ({ ...prev, allow_demolition: Boolean(checked) }))
+                }
+              />
             </div>
           </div>
 
@@ -262,47 +186,20 @@ export const ConfigOptimizerParamPanel: React.FC<ConfigOptimizerParamPanelProps>
               <p className="ag-param-group-sub">{CONFIG_OPTIMIZER_GROUP_SUBTITLES.stability}</p>
             </div>
             <div className="ag-param-list">
-              <ActionGraphParamRow
+              <SchemaSettingField
+                variant="panel"
+                idPrefix="co-param"
                 doc={CONFIG_OPTIMIZER_PARAM_DOCS.preserve_previous_specializations}
-                htmlFor="co-param-preserve_previous_specializations"
-                layout="toggle"
-              >
-                <input
-                  type="checkbox"
-                  className="config-checkbox"
-                  id="co-param-preserve_previous_specializations"
-                  checked={draft.preserve_previous_specializations}
-                  onChange={(e) => {
-                    const checked = e.target.checked;
-                    onPatchDraft((prev) => ({
-                      ...prev,
-                      preserve_previous_specializations: checked,
-                    }));
-                  }}
-                />
-              </ActionGraphParamRow>
-
-              <ActionGraphParamRow
-                doc={CONFIG_OPTIMIZER_PARAM_DOCS.specialization_switch_threshold_pct}
-                htmlFor="co-param-specialization_switch_threshold_pct"
-                layout="inline"
-              >
-                <input
-                  type="number"
-                  id="co-param-specialization_switch_threshold_pct"
-                  min={0}
-                  max={25}
-                  step={0.1}
-                  value={draft.specialization_switch_threshold_pct}
-                  onChange={(e) => {
-                    const val = e.target.value;
-                    onPatchDraft((prev) => ({
-                      ...prev,
-                      specialization_switch_threshold_pct: val,
-                    }));
-                  }}
-                />
-              </ActionGraphParamRow>
+                control="checkbox"
+                value={draft.preserve_previous_specializations}
+                onChange={(checked) =>
+                  onPatchDraft((prev) => ({
+                    ...prev,
+                    preserve_previous_specializations: Boolean(checked),
+                  }))
+                }
+              />
+              {renderNumberField(["specialization_switch_threshold_pct", 0, 25, 0.1])}
             </div>
           </div>
 
@@ -313,31 +210,26 @@ export const ConfigOptimizerParamPanel: React.FC<ConfigOptimizerParamPanelProps>
             </div>
             <div className="ag-param-list">
               {(["s2", "s10", "s11"] as const).map((sk) => (
-                <ActionGraphParamRow
+                <SchemaSettingField
                   key={sk}
+                  variant="panel"
+                  id={`co-param-min_fleet-${sk}`}
                   doc={CONFIG_OPTIMIZER_MIN_FLEET_DOCS[sk]}
-                  htmlFor={`co-param-min_fleet-${sk}`}
-                  layout="inline"
-                >
-                  <input
-                    type="number"
-                    id={`co-param-min_fleet-${sk}`}
-                    min={0}
-                    max={10000}
-                    step={1}
-                    value={draft.min_fleet_per_planet[sk] ?? "10"}
-                    onChange={(e) => {
-                      const val = e.target.value;
-                      onPatchDraft((prev) => ({
-                        ...prev,
-                        min_fleet_per_planet: {
-                          ...prev.min_fleet_per_planet,
-                          [sk]: val,
-                        },
-                      }));
-                    }}
-                  />
-                </ActionGraphParamRow>
+                  control="number"
+                  min={0}
+                  max={10000}
+                  step={1}
+                  value={draft.min_fleet_per_planet[sk] ?? "10"}
+                  onChange={(val) =>
+                    onPatchDraft((prev) => ({
+                      ...prev,
+                      min_fleet_per_planet: {
+                        ...prev.min_fleet_per_planet,
+                        [sk]: String(val),
+                      },
+                    }))
+                  }
+                />
               ))}
             </div>
           </div>
@@ -348,23 +240,17 @@ export const ConfigOptimizerParamPanel: React.FC<ConfigOptimizerParamPanelProps>
               <p className="ag-param-group-sub">{CONFIG_OPTIMIZER_GROUP_SUBTITLES.previewScope}</p>
             </div>
             <div className="ag-param-list">
-              <ActionGraphParamRow
+              <SchemaSettingField
+                variant="panel"
+                idPrefix="co-param"
                 doc={CONFIG_OPTIMIZER_PARAM_DOCS.pad_generic_colonies}
-                htmlFor="co-param-pad_generic_colonies"
-                layout="toggle"
+                control="checkbox"
                 titleOverride={`Pad < ${gate.maxPlanets}/${gate.maxPlanets} Missing Slots (${gate.coloniesOwned}/${gate.maxPlanets} Owned)`}
-              >
-                <input
-                  type="checkbox"
-                  className="config-checkbox"
-                  id="co-param-pad_generic_colonies"
-                  checked={draft.pad_generic_colonies}
-                  onChange={(e) => {
-                    const checked = e.target.checked;
-                    onPatchDraft((prev) => ({ ...prev, pad_generic_colonies: checked }));
-                  }}
-                />
-              </ActionGraphParamRow>
+                value={draft.pad_generic_colonies}
+                onChange={(checked) =>
+                  onPatchDraft((prev) => ({ ...prev, pad_generic_colonies: Boolean(checked) }))
+                }
+              />
             </div>
           </div>
         </div>
@@ -379,31 +265,26 @@ export const ConfigOptimizerParamPanel: React.FC<ConfigOptimizerParamPanelProps>
             </div>
             <div className="ag-param-list">
               {OPTIMIZED_BUILDING_KEYS.map((bk) => (
-                <ActionGraphParamRow
+                <SchemaSettingField
                   key={bk}
+                  variant="panel"
+                  id={`co-param-opt_max-${bk}`}
                   doc={CONFIG_OPTIMIZER_OPT_MAX_DOCS[bk]}
-                  htmlFor={`co-param-opt_max-${bk}`}
-                  layout="inline"
-                >
-                  <input
-                    type="number"
-                    id={`co-param-opt_max-${bk}`}
-                    min={1}
-                    max={100}
-                    step={1}
-                    value={draft.optimized_building_max_levels[bk] ?? "100"}
-                    onChange={(e) => {
-                      const val = e.target.value;
-                      onPatchDraft((prev) => ({
-                        ...prev,
-                        optimized_building_max_levels: {
-                          ...prev.optimized_building_max_levels,
-                          [bk]: val,
-                        },
-                      }));
-                    }}
-                  />
-                </ActionGraphParamRow>
+                  control="number"
+                  min={1}
+                  max={100}
+                  step={1}
+                  value={draft.optimized_building_max_levels[bk] ?? "100"}
+                  onChange={(val) =>
+                    onPatchDraft((prev) => ({
+                      ...prev,
+                      optimized_building_max_levels: {
+                        ...prev.optimized_building_max_levels,
+                        [bk]: String(val),
+                      },
+                    }))
+                  }
+                />
               ))}
             </div>
           </div>
@@ -415,31 +296,26 @@ export const ConfigOptimizerParamPanel: React.FC<ConfigOptimizerParamPanelProps>
             </div>
             <div className="ag-param-list">
               {MISC_BUILDING_KEYS.map((bk) => (
-                <ActionGraphParamRow
+                <SchemaSettingField
                   key={bk}
+                  variant="panel"
+                  id={`co-param-misc-${bk}`}
                   doc={getConfigOptimizerMiscDoc(bk)}
-                  htmlFor={`co-param-misc-${bk}`}
-                  layout="inline"
-                >
-                  <input
-                    type="number"
-                    id={`co-param-misc-${bk}`}
-                    min={0}
-                    max={100}
-                    step={1}
-                    value={draft.misc_building_levels[bk] ?? "0"}
-                    onChange={(e) => {
-                      const val = e.target.value;
-                      onPatchDraft((prev) => ({
-                        ...prev,
-                        misc_building_levels: {
-                          ...prev.misc_building_levels,
-                          [bk]: val,
-                        },
-                      }));
-                    }}
-                  />
-                </ActionGraphParamRow>
+                  control="number"
+                  min={0}
+                  max={100}
+                  step={1}
+                  value={draft.misc_building_levels[bk] ?? "0"}
+                  onChange={(val) =>
+                    onPatchDraft((prev) => ({
+                      ...prev,
+                      misc_building_levels: {
+                        ...prev.misc_building_levels,
+                        [bk]: String(val),
+                      },
+                    }))
+                  }
+                />
               ))}
             </div>
           </div>
@@ -449,62 +325,7 @@ export const ConfigOptimizerParamPanel: React.FC<ConfigOptimizerParamPanelProps>
               <h3>GA Search Settings</h3>
               <p className="ag-param-group-sub">{CONFIG_OPTIMIZER_GROUP_SUBTITLES.gaSearch}</p>
             </div>
-            <div className="ag-param-list">
-              <ActionGraphParamRow
-                doc={CONFIG_OPTIMIZER_PARAM_DOCS.ga_population_size}
-                htmlFor="co-param-ga_population_size"
-                layout="inline"
-              >
-                <input
-                  type="number"
-                  id="co-param-ga_population_size"
-                  min={4}
-                  max={1000}
-                  step={10}
-                  value={draft.ga_population_size}
-                  onChange={(e) => {
-                    const val = e.target.value;
-                    onPatchDraft((prev) => ({ ...prev, ga_population_size: val }));
-                  }}
-                />
-              </ActionGraphParamRow>
-
-              <ActionGraphParamRow
-                doc={CONFIG_OPTIMIZER_PARAM_DOCS.ga_generations}
-                htmlFor="co-param-ga_generations"
-                layout="inline"
-              >
-                <input
-                  type="number"
-                  id="co-param-ga_generations"
-                  min={1}
-                  max={1000}
-                  step={10}
-                  value={draft.ga_generations}
-                  onChange={(e) => {
-                    const val = e.target.value;
-                    onPatchDraft((prev) => ({ ...prev, ga_generations: val }));
-                  }}
-                />
-              </ActionGraphParamRow>
-
-              <ActionGraphParamRow
-                doc={CONFIG_OPTIMIZER_PARAM_DOCS.ga_random_seed}
-                htmlFor="co-param-ga_random_seed"
-                layout="inline"
-              >
-                <input
-                  type="number"
-                  id="co-param-ga_random_seed"
-                  step={1}
-                  value={draft.ga_random_seed}
-                  onChange={(e) => {
-                    const val = e.target.value;
-                    onPatchDraft((prev) => ({ ...prev, ga_random_seed: val }));
-                  }}
-                />
-              </ActionGraphParamRow>
-            </div>
+            <div className="ag-param-list">{CO_GA_NUMBERS.map(renderNumberField)}</div>
           </div>
         </div>
       </div>
