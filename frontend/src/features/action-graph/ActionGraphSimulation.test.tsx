@@ -2,7 +2,7 @@ import React from "react";
 import { act, cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FeedbackBanner } from "../../components/layout/FeedbackBanner";
-import { ConsoleProvider, useConsole } from "../../context/ConsoleContext";
+import { ConsoleProvider, useConsoleActions, useGaCalc } from "../../store";
 import { ConfigView } from "../config";
 import { ActionGraphView } from "./ActionGraphView";
 import {
@@ -290,10 +290,12 @@ describe("ActionGraph simulation preview, roundtrip revert, explicit apply, erro
   });
 
   it("refcounts concurrent beginGaCalc / endGaCalc operations cleanly without underflow or deadlock", async () => {
-    let ctxRef: ReturnType<typeof useConsole> | null = null;
+    let actionsRef: ReturnType<typeof useConsoleActions> | null = null;
+    let gaRef: ReturnType<typeof useGaCalc> | null = null;
     const Driver: React.FC = () => {
-      ctxRef = useConsole();
-      return <div data-testid="ga-count">{ctxRef.gaCalcCount}</div>;
+      actionsRef = useConsoleActions();
+      gaRef = useGaCalc();
+      return <div data-testid="ga-count">{gaRef.gaCalcCount}</div>;
     };
 
     const { getByTestId } = render(
@@ -305,28 +307,28 @@ describe("ActionGraph simulation preview, roundtrip revert, explicit apply, erro
     expect(getByTestId("ga-count").textContent).toBe("0");
 
     act(() => {
-      ctxRef!.beginGaCalc();
+      actionsRef!.beginGaCalc();
     });
     expect(getByTestId("ga-count").textContent).toBe("1");
-    expect(ctxRef!.gaCalculating).toBe(true);
+    expect(gaRef!.gaCalculating).toBe(true);
 
     act(() => {
-      ctxRef!.beginGaCalc();
+      actionsRef!.beginGaCalc();
     });
     expect(getByTestId("ga-count").textContent).toBe("2");
 
     act(() => {
-      ctxRef!.endGaCalc();
+      actionsRef!.endGaCalc();
     });
     expect(getByTestId("ga-count").textContent).toBe("1");
-    expect(ctxRef!.gaCalculating).toBe(true);
+    expect(gaRef!.gaCalculating).toBe(true);
 
     act(() => {
-      ctxRef!.endGaCalc();
+      actionsRef!.endGaCalc();
       // Extra endGaCalc must clamp cleanly at 0 (no underflow)
-      ctxRef!.endGaCalc();
+      actionsRef!.endGaCalc();
     });
     expect(getByTestId("ga-count").textContent).toBe("0");
-    expect(ctxRef!.gaCalculating).toBe(false);
+    expect(gaRef!.gaCalculating).toBe(false);
   });
 });

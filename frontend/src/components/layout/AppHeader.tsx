@@ -1,6 +1,16 @@
 import React from "react";
-import { feedbackKindForError, safeFiniteNumber } from "../../api/httpClient";
-import { useConsole } from "../../context/ConsoleContext";
+import {
+  feedbackKindForError,
+  safeFiniteNumber } from "../../api/httpClient";
+import { useActiveHelpNotif,
+  useActivePage,
+  useActivePlanet,
+  useBuildingsEtaData,
+  useConsoleActions,
+  useDashboard,
+  useNotifCenterOpen,
+  useNotifications,
+} from "../../store";
 import { PAGE_TITLES } from "../../types/api";
 
 function fmtClock(tsSec: unknown): string {
@@ -30,18 +40,18 @@ export function computeSelectedBlastFurnacePct(
 }
 
 export const AppHeader: React.FC = () => {
+  const dashboard = useDashboard();
+  const activePage = useActivePage();
+  const activePlanet = useActivePlanet();
+  const buildingsEtaData = useBuildingsEtaData();
+  const notifications = useNotifications();
+  const notifCenterOpen = useNotifCenterOpen();
+  const activeHelpNotif = useActiveHelpNotif();
   const {
-    dashboard,
     setDashboard,
-    activePage,
     setActivePage,
-    activePlanet,
     setSelectedPlanetId,
-    buildingsEtaData,
-    notifications,
-    notifCenterOpen,
     openNotificationCenter,
-    activeHelpNotif,
     ackActiveHelpPopup,
     apiCommand,
     loadDashboard,
@@ -49,7 +59,7 @@ export const AppHeader: React.FC = () => {
     bumpDashboardSeq,
     refreshSectorsView,
     showFeedback,
-  } = useConsole();
+  } = useConsoleActions();
   const [scanToggling, setScanToggling] = React.useState(false);
 
   const gs = dashboard?.state || {};

@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AppHeader } from "../../components/layout/AppHeader";
 import { AppSidebar } from "../../components/layout/AppSidebar";
 import { FeedbackBanner } from "../../components/layout/FeedbackBanner";
-import { ConsoleProvider, useConsole } from "../../context/ConsoleContext";
+import { ConsoleProvider, useConsoleActions, useDashboard } from "../../store";
 import { ConfigView } from "./ConfigView";
 import {
   createBaseDashboard,
@@ -96,10 +96,12 @@ describe("ConfigView dirty guards, mid-save poll protection, rate-limit resilien
   it("guards in-flight config save against concurrent dashboard polls even when configDirty=false and preserves DOM on save error", async () => {
     const serverDash = createBaseDashboard();
     let resolveSave: ((r: Response) => void) | null = null;
-    let ctxRef: ReturnType<typeof useConsole> | null = null;
+    let actionsRef: ReturnType<typeof useConsoleActions> | null = null;
+    let dashRef: ReturnType<typeof useDashboard> = null;
 
     const Driver: React.FC = () => {
-      ctxRef = useConsole();
+      actionsRef = useConsoleActions();
+      dashRef = useDashboard();
       return null;
     };
 
@@ -124,14 +126,14 @@ describe("ConfigView dirty guards, mid-save poll protection, rate-limit resilien
     );
 
     await waitFor(() => {
-      expect(ctxRef?.dashboard).not.toBeNull();
+      expect(dashRef).not.toBeNull();
     });
 
     const modeSel = container.querySelector("#cfg-planner_mode") as HTMLSelectElement;
     fireEvent.change(modeSel, { target: { value: "ai_planner" } });
 
     // Clear configDirty artificially to exercise the configSaving > 0 mid-save poll guard
-    ctxRef!.setConfigDirty(false);
+    actionsRef!.setConfigDirty(false);
     fireEvent.click(container.querySelector("#btn-save-config")!);
 
     await waitFor(() => {
@@ -139,7 +141,7 @@ describe("ConfigView dirty guards, mid-save poll protection, rate-limit resilien
     });
 
     // Concurrent poll returns server 'priority' while save is still in-flight
-    await ctxRef!.loadDashboard({ refresh: false, preserveConfig: true, force: true });
+    await actionsRef!.loadDashboard({ refresh: false, preserveConfig: true, force: true });
     expect(modeSel.value).toBe("ai_planner");
 
     // Save fails -> error banner shown and user's selection remains intact
@@ -181,9 +183,11 @@ describe("ConfigView dirty guards, mid-save poll protection, rate-limit resilien
       },
     });
 
-    let ctxRef: ReturnType<typeof useConsole> | null = null;
+    let actionsRef: ReturnType<typeof useConsoleActions> | null = null;
+    let dashRef: ReturnType<typeof useDashboard> = null;
     const Driver: React.FC = () => {
-      ctxRef = useConsole();
+      actionsRef = useConsoleActions();
+      dashRef = useDashboard();
       return null;
     };
 
@@ -196,13 +200,13 @@ describe("ConfigView dirty guards, mid-save poll protection, rate-limit resilien
     );
 
     await waitFor(() => {
-      expect(ctxRef?.dashboard).not.toBeNull();
+      expect(dashRef).not.toBeNull();
     });
 
     try {
-      await ctxRef!.apiCommand({ command: "scan_galaxy", dry_run: false });
+      await actionsRef!.apiCommand({ command: "scan_galaxy", dry_run: false });
     } catch (err: any) {
-      ctxRef!.showFeedback(err.message, "warn");
+      actionsRef!.showFeedback(err.message, "warn");
     }
 
     await waitFor(() => {

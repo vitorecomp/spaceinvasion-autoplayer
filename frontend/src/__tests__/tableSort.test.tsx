@@ -1,7 +1,7 @@
 import React, { useEffect } from "react";
 import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ConsoleProvider, useConsole } from "../context/ConsoleContext";
+import { ConsoleProvider, useConsoleActions } from "../store";
 import {
   compareSortValues,
   coordsSortKey,
@@ -228,7 +228,7 @@ const SORT_DASHBOARD: DashboardPayload = {
 };
 
 function ActivatePage({ page }: { page: string }) {
-  const { setActivePage } = useConsole();
+  const { setActivePage } = useConsoleActions();
   useEffect(() => {
     setActivePage(page as any);
   }, [page, setActivePage]);
