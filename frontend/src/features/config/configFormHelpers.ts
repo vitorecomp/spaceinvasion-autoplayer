@@ -28,7 +28,6 @@ export function buildFormStateFromConfig(
     spy_dispatch_planet_id: String(
       Math.max(0, Math.round(safeFiniteNumber(cfg?.spy_dispatch_planet_id, 0) ?? 0))
     ),
-    ga_seed: cfg?.ga_seed != null ? String(cfg.ga_seed) : "",
   };
   for (const bKey of CONFIG_BOOL_KEYS) {
     const defItem = CONFIG_GROUPS.flatMap((g) => g.items).find((i) => i.key === bKey);
@@ -108,20 +107,6 @@ export function collectConfigSavePayload(formValues: Record<string, any>): {
       const parsed = safeFiniteNumber(raw, null);
       payload[numField] = parsed !== null ? parsed : raw;
     }
-  }
-
-  const seedInp = readEl("cfg-ga_seed");
-  const rawSeed = seedInp
-    ? String(seedInp.value ?? "").trim()
-    : String(formValues.ga_seed ?? "").trim();
-  syncedForm.ga_seed = seedInp ? String(seedInp.value ?? "") : String(formValues.ga_seed ?? "");
-  if (rawSeed === "") {
-    payload.ga_seed = null;
-  } else if (/^-?\d+$/.test(rawSeed)) {
-    const parsedSeed = Number(rawSeed);
-    payload.ga_seed = Number.isSafeInteger(parsedSeed) ? parsedSeed : rawSeed;
-  } else {
-    payload.ga_seed = rawSeed;
   }
 
   return { syncedForm, payload, plannerModeVal };

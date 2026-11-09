@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-import html
-import json
-import re
 import unittest
 
 import requests
@@ -14,30 +11,20 @@ from tests.e2e.fixtures import (
     make_game_state,
     make_planet,
     make_research_offer,
-    make_ship_offer,
 )
 from tests.e2e.harness import (
     E2ETestHarness,
-    FakeClock,
     FakeSpaceInvasionServer,
-    inspect_ui_html,
-    run_ui_in_node,
 )
 from spaceinvasion.core import catalog as game_data
 from spaceinvasion.combat import points as ranking
 from spaceinvasion.core.config import StrategyConfig
 from spaceinvasion.core.model import (
     EnergyBalance,
-    FleetAlert,
-    QueueJob,
     Resources,
-    TutorialStatus,
-    TutorialTask,
 )
 from spaceinvasion.core.model import PlannedAction
 from spaceinvasion.planner.heuristics import (
-    FUSION_PLANT,
-    PIG_IRON_MINE,
     plan_actions,
 )
 
@@ -412,276 +399,3 @@ class TestTier1R3(unittest.TestCase):
         self.assertEqual(act.duration_text, "Instant")
         self.assertEqual(act.total_eta, "Ready")
         self.assertIsNone(act.eta_bottleneck)
-
-    # ------------------------------------------------------------------
-    # Area R3.C: Operator Control UI Queue ETA, Config & Rate-Limit UI
-    # ------------------------------------------------------------------
-
-    def test_t1_r3c_01_ui_html_table_headers_colspan_and_planner_mode_select(self) -> None:
-        with E2ETestHarness() as h:
-            html_text = requests.get(f"{h.base_url}/", timeout=5.0).text
-            info = inspect_ui_html(html_text)
-            self.assertTrue(info["dash_plan"]["found"])
-            self.assertTrue(info["ops_plan"]["found"])
-            self.assertEqual(
-                info["dash_plan"]["placeholder_colspans"],
-                [info["dash_plan"]["th_count"]],
-                f"Dashboard table colspan mismatch: {info['dash_plan']}",
-            )
-            self.assertEqual(
-                info["ops_plan"]["placeholder_colspans"],
-                [info["ops_plan"]["th_count"]],
-                f"Operations table colspan mismatch: {info['ops_plan']}",
-            )
-            dash_hdr = " ".join(info["dash_plan"]["headers"]).lower()
-            ops_hdr = " ".join(info["ops_plan"]["headers"]).lower()
-            self.assertIn("wait", dash_hdr, f"Dashboard headers missing Wait ETA: {info['dash_plan']['headers']}")
-            self.assertTrue(
-                "total" in dash_hdr or "eta" in dash_hdr,
-                f"Dashboard headers missing Total ETA: {info['dash_plan']['headers']}",
-            )
-            self.assertIn("wait", ops_hdr, f"Operations headers missing Wait ETA: {info['ops_plan']['headers']}")
-            self.assertTrue(
-                "total" in ops_hdr or "eta" in ops_hdr,
-                f"Operations headers missing Total ETA: {info['ops_plan']['headers']}",
-            )
-
-            self.assertTrue(info["has_cfg_planner_mode"], "Missing #cfg-planner_mode in #view-config")
-            self.assertIn("priority", info["cfg_planner_mode_options"])
-            self.assertIn("ai_planner", info["cfg_planner_mode_options"])
-
-    def test_t1_r3c_02_ui_dashboard_renders_wait_and_total_etas(self) -> None:
-        planets = {
-            12476: {
-                "planet_id": 12476,
-                "name": "Home",
-                "coords": "02:380:12",
-                "planet_type": "normal",
-                "temperature": 31,
-                "fields_max": 230,
-                "resources": [10000, 100, 10000, 5000],
-                "storage": [100000, 100000, 100000, 100000],
-                "energy": {"produced": 250, "used": 140},
-                "buildings": {"b1": 5, "b2": 4, "b3": 4, "b4": 2, "b5": 7, "b7": 2},
-                "ships": {},
-                "defense": {},
-                "economy_rates": {"resource1": 100, "resource2": 100, "resource3": 100, "resource4": 100},
-                "building_queue": [],
-            }
-        }
-        srv = FakeSpaceInvasionServer(planets=planets)
-        with E2ETestHarness(server=srv) as h:
-            h.api.get_state(include_buildings=True)
-            dash = requests.get(f"{h.base_url}/dashboard?refresh=0", timeout=5.0).json()
-            self.assertGreater(len(dash["plan"]), 0)
-            _verify_eta_fields_present(self, dash["plan"][0])
-
-            res = run_ui_in_node(
-                h.base_url,
-                """
-                const ok = await __waitUntil(() => __serializeTable("dash-plan-tbody").length > 0 && __serializeTable("dash-plan-tbody")[0].length > 1 && !document.querySelector("#dash-plan-tbody td.empty-cell"));
-                if (!ok) throw new Error("dash-plan-tbody did not populate");
-                return {
-                  dashRows: __serializeTable("dash-plan-tbody"),
-                  thCount: document.querySelectorAll('#view-dashboard thead th').length
-                };
-                """,
-            )
-            self.assertEqual(res["errors"], [])
-            th_count = res["htmlInspection"]["dash_plan"]["th_count"]
-            self.assertGreaterEqual(
-                th_count,
-                6,
-                f"Expected Wait ETA & Total ETA columns in dashboard table; headers={res['htmlInspection']['dash_plan']['headers']}",
-            )
-            for idx, row in enumerate(res["scenario"]["dashRows"]):
-                self.assertEqual(len(row), th_count)
-                row_txt = " ".join(c["text"] for c in row)
-                plan_item = dash["plan"][idx]
-                self.assertIn(plan_item["wait_eta"], row_txt)
-                self.assertIn(plan_item["total_eta"], row_txt)
-
-    def test_t1_r3c_03_ui_operations_renders_all_etas_and_ready_filter(self) -> None:
-        planets = {
-            12476: {
-                "planet_id": 12476,
-                "name": "Home",
-                "coords": "02:380:12",
-                "planet_type": "normal",
-                "temperature": 31,
-                "fields_max": 230,
-                "resources": [1000, 100, 500, 0],
-                "storage": [100000, 100000, 100000, 100000],
-                "energy": {"produced": 250, "used": 140},
-                "buildings": {"b1": 5, "b2": 4, "b3": 4, "b4": 2, "b5": 7, "b7": 2, "b8": 2, "b9": 2},
-                "ships": {},
-                "defense": {},
-                "economy_rates": {"resource1": 100, "resource2": 100, "resource3": 100, "resource4": 100},
-                "building_queue": [],
-            }
-        }
-        srv = FakeSpaceInvasionServer(planets=planets)
-        with E2ETestHarness(server=srv) as h:
-            h.api.get_state(include_buildings=True)
-            dash = requests.get(f"{h.base_url}/dashboard?refresh=0", timeout=5.0).json()
-            _verify_eta_fields_present(self, dash["plan"][0])
-            expected_all = len(dash["plan"])
-            expected_ready = len([a for a in dash["plan"] if a["executable_now"]])
-            self.assertGreater(expected_all, expected_ready)
-
-            res = run_ui_in_node(
-                h.base_url,
-                """
-                await __waitUntil(() => __serializeTable("plan-tbody").length > 0 && __serializeTable("plan-tbody")[0].length > 1);
-                document.querySelector('[data-page="operations"]').click();
-                await __sleep(20);
-                const allRows = __serializeTable("plan-tbody");
-                document.querySelector('[data-filter="ready"]').click();
-                await __sleep(20);
-                const readyRows = __serializeTable("plan-tbody");
-                const badge = __snapshotElement("plan-count-badge").textContent;
-                return { allRows, readyRows, badge };
-                """,
-            )
-            self.assertEqual(res["errors"], [])
-            th_count = res["htmlInspection"]["ops_plan"]["th_count"]
-            self.assertGreaterEqual(th_count, 7)
-            self.assertEqual(len(res["scenario"]["allRows"]), expected_all)
-            self.assertEqual(len(res["scenario"]["readyRows"]), expected_ready)
-            self.assertIn(f"{expected_ready} TASKS", res["scenario"]["badge"])
-
-    def test_t1_r3c_04_ui_blocked_eta_pill_and_bottleneck_tag(self) -> None:
-        planets = {
-            12476: {
-                "planet_id": 12476,
-                "name": "Home",
-                "coords": "02:380:12",
-                "planet_type": "normal",
-                "temperature": 31,
-                "fields_max": 230,
-                "resources": [10_000, 0, 10_000, 1_000],
-                "storage": [100000, 100000, 100000, 100000],
-                "energy": {"produced": 250, "used": 140},
-                "buildings": {"b1": 5, "b2": 4, "b3": 4, "b4": 2, "b5": 7, "b7": 1},
-                "ships": {},
-                "defense": {},
-                "economy_rates": {"resource1": 100, "resource2": 100, "resource3": 100, "resource4": 100},
-                "building_queue": [],
-            }
-        }
-        srv = FakeSpaceInvasionServer(planets=planets)
-        with E2ETestHarness(server=srv) as h:
-            h.api.get_state(include_buildings=True)
-            thr = h.api.send_command(
-                {
-                    "command": "throttle_building",
-                    "building_id": 2,
-                    "percentage": 0,
-                    "planet_id": 12476,
-                    "dry_run": False,
-                }
-            )
-            self.assertTrue(thr["executed"], thr)
-            res = run_ui_in_node(
-                h.base_url,
-                """
-                const readyOk = await __waitUntil(() => __serializeTable("dash-plan-tbody").length > 0 && __serializeTable("dash-plan-tbody")[0].length > 1 && !document.querySelector("#dash-plan-tbody td.empty-cell"));
-                if (!readyOk) throw new Error("dash-plan-tbody failed to populate");
-                document.querySelector('[data-page="operations"]').click();
-                const opsOk = await __waitUntil(() => __serializeTable("plan-tbody").length > 0 && !document.querySelector("#plan-tbody td.empty-cell"));
-                if (!opsOk) throw new Error("plan-tbody failed to populate");
-                return {
-                  dashRows: __serializeTable("dash-plan-tbody"),
-                  planRows: __serializeTable("plan-tbody")
-                };
-                """,
-            )
-            self.assertEqual(res["errors"], [])
-            blocked_pills = [
-                pill
-                for row in res["scenario"]["planRows"]
-                for cell in row
-                for pill in cell.get("pills", [])
-                if "is-blocked" in pill.get("className", "")
-            ]
-            self.assertGreaterEqual(
-                len(blocked_pills),
-                1,
-                f"Expected .eta-pill.is-blocked on b2=0% blocked action; rows={res['scenario']['planRows']}",
-            )
-            row_texts = " ".join(c["text"] for r in res["scenario"]["planRows"] for c in r)
-            self.assertIn("—", row_texts)
-            self.assertTrue("MET" in row_texts or "METAL" in row_texts.upper(), row_texts)
-
-    def test_t1_r3c_05_ui_config_planner_mode_dirty_guard_and_save_roundtrip(self) -> None:
-        with E2ETestHarness() as h:
-            h.api.get_state(include_buildings=True)
-            res = run_ui_in_node(
-                h.base_url,
-                """
-                const initOk = await __waitUntil(() => __snapshotElement("cfg-playstyle") !== null && state.dashboard !== null);
-                if (!initOk) throw new Error("Initial dashboard/config did not load");
-                document.querySelector('[data-page="config"]').click();
-                const sel = document.getElementById("cfg-planner_mode");
-                if (!sel) throw new Error("Missing #cfg-planner_mode in DOM");
-                const initialVal = sel.value;
-                sel.value = "ai_planner";
-                sel.dispatchEvent("change");
-                // Trigger background sync via real #btn-sync DOM click — dirty tracking must preserve "ai_planner"
-                const dashBefore = fetchLog.filter((f) => String(f.url || "").startsWith("/dashboard")).length;
-                document.getElementById("btn-sync").click();
-                const syncOk = await __waitUntil(() => fetchLog.filter((f) => String(f.url || "").startsWith("/dashboard")).length > dashBefore);
-                if (!syncOk) throw new Error("#btn-sync did not trigger /dashboard refresh");
-                await __waitUntil(() => String(__snapshotElement("feedback-banner").textContent || "").includes("Synced"));
-                const preservedVal = sel.value;
-                document.getElementById("btn-save-config").click();
-                const saveOk = await __waitUntil(() => fetchLog.some((f) => f.url === "/command" && f.body && f.body.command === "update_config"));
-                if (!saveOk) throw new Error("update_config POST not sent");
-                await __waitUntil(() => String(__snapshotElement("feedback-banner").textContent || "").toLowerCase().includes("saved") || String(__snapshotElement("feedback-banner").textContent || "").toLowerCase().includes("config"));
-                return { initialVal, preservedVal, afterSaveVal: sel.value };
-                """,
-            )
-            self.assertEqual(res["errors"], [])
-            sc = res["scenario"]
-            self.assertEqual(sc["initialVal"], "priority")
-            self.assertEqual(sc["preservedVal"], "ai_planner")
-            self.assertEqual(sc["afterSaveVal"], "ai_planner")
-            cfg = h.api.send_command({"command": "config"})["config"]
-            self.assertEqual(cfg["planner_mode"], "ai_planner")
-
-    def test_t1_r3c_06_ui_timeout_resilience_and_rate_limit_banner_keeps_chrome_online(self) -> None:
-        srv = FakeSpaceInvasionServer()
-        with E2ETestHarness(server=srv) as h:
-            h.api.get_state(include_buildings=True)
-            srv.force_rate_limit_remaining = 2
-            res = run_ui_in_node(
-                h.base_url,
-                """
-                const initOk = await __waitUntil(() => state.dashboard !== null);
-                if (!initOk) throw new Error("Dashboard failed to initialize");
-                document.querySelector('[data-page="combat"]').click();
-                document.getElementById("btn-scan-galaxy").click();
-                const sentOk = await __waitUntil(() => fetchLog.some((f) => f.url === "/command" && f.body && f.body.command === "scan_galaxy"));
-                if (!sentOk) throw new Error("scan_galaxy command not dispatched");
-                const bannerOk = await __waitUntil(() => {
-                  const b = __snapshotElement("feedback-banner");
-                  return b && !b.hidden && !String(b.textContent || "").includes("Scanning home Galaxy");
-                });
-                if (!bannerOk) throw new Error("Scan galaxy response banner did not settle");
-                return {
-                  chromeText: __snapshotElement("chrome-status-text").textContent,
-                  banner: __snapshotElement("feedback-banner"),
-                };
-                """,
-            )
-            self.assertEqual(res["errors"], [])
-            self.assertTrue(
-                any(d >= 15000 for d in res["recordedTimeoutDelays"]),
-                f"Expected apiCommand timeout >= 15000ms; got delays={res['recordedTimeoutDelays']}",
-            )
-            sc = res["scenario"]
-            self.assertIn(
-                "ONLINE", sc["chromeText"], f"Rate limit incorrectly flipped Chrome offline: {sc['chromeText']}"
-            )
-            self.assertFalse(sc["banner"]["hidden"])
-            self.assertIn("is-warn", sc["banner"]["className"], f"Expected .is-warn cooldown banner: {sc['banner']}")

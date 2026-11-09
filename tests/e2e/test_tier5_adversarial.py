@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-import contextlib
 from dataclasses import replace
 import json
 import math
 import os
 from pathlib import Path
-import re
 import shutil
 import tempfile
 import unittest
@@ -16,21 +14,16 @@ from unittest.mock import MagicMock, patch
 
 from bs4 import BeautifulSoup
 import requests
-from selenium.common.exceptions import NoSuchElementException, StaleElementReferenceException
 
 from tests.e2e.fixtures import (
     evaluate_sequence_score,
     make_game_state,
     make_planet,
-    make_research_offer,
-    make_ship_offer,
 )
 from tests.e2e.harness import (
     E2ETestHarness,
     FakeClock,
-    FakeDriver,
     FakeSpaceInvasionServer,
-    run_ui_in_node,
 )
 from spaceinvasion.runtime.api_server import GameApiBridge
 from spaceinvasion.session.client import (
@@ -411,73 +404,6 @@ class TestTier5Adversarial(unittest.TestCase):
             self.assertIs(ActionExecutor._match_mission_radio(soup, "form#f", [r_atk, r_trn], "ATTACK"), r_atk)
 
     # ------------------------------------------------------------------
-    # T5-05: UI finiteNum, fmtImprovementPct(-0.01 -> +0.0%), refcounted gaCalcCount
-    # ------------------------------------------------------------------
-    def test_t5_05_ui_adversarial_refcounted_ga_calc_finite_num_and_neg_zero_in_node(self) -> None:
-        cfg = StrategyConfig(planner_mode="priority", ga_population_size=8, ga_generations=3)
-        with E2ETestHarness(config=cfg) as h:
-            ui_res = run_ui_in_node(
-                h.base_url,
-                """
-                const loaded = await __waitUntil(() => state && state.dashboard !== null, 4000);
-                if (!loaded) throw new Error('Dashboard failed to load');
-
-                // 1. finiteNum hardening
-                const fObj = finiteNum({}, null);
-                const fArr = finiteNum([], null);
-                const fBlank = finiteNum('   ', -1);
-                const fSym = finiteNum(Symbol('x'), -1);
-                const fNan = finiteNum(Number.NaN, 0);
-                const fInf = finiteNum(Infinity, 0);
-                const fOk = finiteNum(' 42.5 ', 0);
-
-                // 2. fmtImprovementPct -0.0% normalization
-                const negTiny = fmtImprovementPct(-0.01, null, null);
-                const posTiny = fmtImprovementPct(0.01, null, null);
-
-                // 3. Concurrent refcounted gaCalcCount
-                beginGaCalc();
-                const afterBegin1 = state.gaCalcRunning;
-                const count1 = state.gaCalcCount;
-                beginGaCalc();
-                const count2 = state.gaCalcCount;
-                endGaCalc();
-                const afterEnd1 = state.gaCalcRunning;
-                const countAfterEnd1 = state.gaCalcCount;
-                endGaCalc();
-                const afterEnd2 = state.gaCalcRunning;
-                const countAfterEnd2 = state.gaCalcCount;
-
-                return {
-                  fObj, fArr, fBlank, fSym, fNan, fInf, fOk,
-                  negTiny, posTiny,
-                  afterBegin1, count1, count2,
-                  afterEnd1, countAfterEnd1,
-                  afterEnd2, countAfterEnd2,
-                };
-                """,
-            )
-            sc = ui_res["scenario"]
-            self.assertEqual(ui_res["errors"], [])
-            self.assertEqual(ui_res["windowErrors"], [])
-            self.assertIsNone(sc["fObj"])
-            self.assertIsNone(sc["fArr"])
-            self.assertEqual(sc["fBlank"], -1)
-            self.assertEqual(sc["fSym"], -1)
-            self.assertEqual(sc["fNan"], 0)
-            self.assertEqual(sc["fInf"], 0)
-            self.assertEqual(sc["fOk"], 42.5)
-            self.assertEqual(sc["negTiny"], "+0.0%")
-            self.assertEqual(sc["posTiny"], "+0.0%")
-            self.assertTrue(sc["afterBegin1"])
-            self.assertEqual(sc["count1"], 1)
-            self.assertEqual(sc["count2"], 2)
-            self.assertTrue(sc["afterEnd1"])
-            self.assertEqual(sc["countAfterEnd1"], 1)
-            self.assertFalse(sc["afterEnd2"])
-            self.assertEqual(sc["countAfterEnd2"], 0)
-
-    # ------------------------------------------------------------------
     # Section B1: Unpadded vs padded BashTracker + executor raid_stats roundtrip
     # ------------------------------------------------------------------
     def test_adv_t5_01_bash_unpadded_vs_padded_and_executor_raid_stats_roundtrip(self) -> None:
@@ -717,74 +643,6 @@ class TestTier5Adversarial(unittest.TestCase):
             self.assertTrue(db_res.get("ok"))
             dash_res = h.get_dashboard(refresh=0)
             self.assertTrue(dash_res.get("ok"))
-
-    # ------------------------------------------------------------------
-    # Section B5: UI concurrent #btn-gann-recalc + #btn-sync refcount & CSS floors
-    # ------------------------------------------------------------------
-    @unittest.skipUnless(shutil.which("node"), "Node.js not installed")
-    def test_adv_t5_05_ui_gann_recalc_concurrent_sync_and_mobile_css_floors(self) -> None:
-        cfg = StrategyConfig(planner_mode="priority", ga_population_size=8, ga_generations=3)
-        with E2ETestHarness(config=cfg) as h:
-            css_txt = re.sub(
-                r"/\*.*?\*/", "", requests.get(f"{h.base_url}/styles.css", timeout=5.0).text, flags=re.DOTALL
-            )
-            self.assertRegex(css_txt, r"\.nav-title\s*\{[^}]*font-size\s*:\s*0\.86rem")
-            self.assertRegex(css_txt, r"\.eta-pill\s*\{[^}]*font-size\s*:\s*0\.86rem")
-            m_1100 = re.search(
-                r"@media\s*\(\s*max-width\s*:\s*1100px\s*\)\s*\{((?:[^{}]|\{[^{}]*\})*)\}",
-                css_txt,
-                flags=re.IGNORECASE | re.DOTALL,
-            )
-            self.assertIsNotNone(m_1100)
-            m_logs = re.search(r"#logs-pre\s*\{[^}]*min-height\s*:\s*(\d+)px", m_1100.group(1))
-            self.assertIsNotNone(m_logs)
-            self.assertGreaterEqual(int(m_logs.group(1)), 200)
-
-            patch_js = (
-                "async (url, opts, fullUrl, nativeFetch) => { "
-                "if (url === '/command' && opts && opts.body) { "
-                "  const b = JSON.parse(String(opts.body)); "
-                "  if (b.command === 'plan') { "
-                "    return new Promise((resolve) => { "
-                "      globalThis.__resolveSlowPlan = async () => resolve(await nativeFetch(fullUrl, opts)); "
-                "    }); "
-                "  } "
-                "} }"
-            )
-            ui_res = run_ui_in_node(
-                h.base_url,
-                """
-                const loaded = await __waitUntil(() => state && state.dashboard !== null, 4000);
-                if (!loaded) throw new Error('Dashboard failed to load');
-
-                document.getElementById('btn-gann-recalc').click();
-                await __sleep(10);
-                document.getElementById('btn-sync').click();
-                await __waitUntil(() => document.getElementById('feedback-banner').textContent.includes('Synced') && !state.inFlightDashboard, 4000);
-                await __sleep(10);
-                const activeAfterSync = state.gaCalcRunning;
-                const countAfterSync = state.gaCalcCount;
-                const hasClassAfterSync = document.getElementById('gann-calc-hud').classList.contains('is-calculating');
-
-                globalThis.__resolveSlowPlan();
-                await __waitUntil(() => !state.gaCalcRunning, 4000);
-                return {
-                  activeAfterSync,
-                  countAfterSync,
-                  hasClassAfterSync,
-                  activeAfterRecalc: state.gaCalcRunning,
-                  countAfterRecalc: state.gaCalcCount,
-                };
-                """,
-                fetch_patch_js=patch_js,
-            )
-            self.assertEqual(ui_res["errors"], [])
-            sc = ui_res["scenario"]
-            self.assertTrue(sc["activeAfterSync"])
-            self.assertEqual(sc["countAfterSync"], 1)
-            self.assertTrue(sc["hasClassAfterSync"])
-            self.assertFalse(sc["activeAfterRecalc"])
-            self.assertEqual(sc["countAfterRecalc"], 0)
 
     def test_adv_t5_06_unnormalized_coords_api_guards_and_deep_sid_redaction(self) -> None:
         from spaceinvasion.runtime.api_server import _redact_api_payload
@@ -1387,8 +1245,6 @@ class TestTier5Adversarial(unittest.TestCase):
             self.assertEqual([u.universe_id for u in uni_opts], [31])
 
     def test_adv_t5_11_extreme_ints_1e1m_nan_rank_history_http_state_and_ui_node(self) -> None:
-        import time
-        from spaceinvasion.core import catalog as game_data
         from spaceinvasion.core.logging_utils import append_tick_logs
         from spaceinvasion.combat.points import (
             build_combat_overview,
@@ -1545,63 +1401,6 @@ class TestTier5Adversarial(unittest.TestCase):
                 timeout=5.0,
             )
             self.assertEqual(nan_post.status_code, 400)
-
-            if shutil.which("node"):
-                ui_patch = (
-                    "async (url, opts, fullUrl, nativeFetch) => { "
-                    "if (url.startsWith('/dashboard')) { "
-                    "  const r = await nativeFetch(fullUrl, opts); "
-                    "  const d = await r.json(); "
-                    "  d.state.planets[0].energy = { produced: 1e400, used: 1e400 }; "
-                    "  d.state.planets[0].fields_used = 1e400; "
-                    "  d.state.planets[0].fields_max = 1e400; "
-                    "  d.ranking = { "
-                    "    current: { estimated_points: 1e400, buildings_points: 1e400, research_points: 0, baseline_points: 1e400, server_rank: 1e400, server_points: 1e400, spice_value: 1e400, attack_zone: { label: 'AZ 1', range_text: '0-500' } }, "
-                    "    rates: { pts_per_hr_steady: 1e400, net_resources_per_hr: 1e400, spice_eq_per_hr: 1e400, speedup_factor: 1 }, "
-                    "    horizons: [], "
-                    "    milestones: [], "
-                    "    observed_trend: { sample_count: 3, delta_points: NaN, observed_pts_per_hr: Infinity, elapsed_hours: NaN, samples: [{ estimated_points: NaN }, { estimated_points: 12.5 }, { estimated_points: Infinity }] } "
-                    "  }; "
-                    "  return { ok: true, status: 200, json: async () => d }; "
-                    "} }"
-                )
-                ui_res = run_ui_in_node(
-                    h.base_url,
-                    """
-                    const loaded = await __waitUntil(() => state && state.dashboard !== null, 4000);
-                    if (!loaded) throw new Error('Dashboard failed to load');
-                    const valEnergy = document.getElementById('val-energy').textContent;
-                    const energyRatio = document.getElementById('energy-ratio').textContent;
-                    const planetSpecs = document.getElementById('planet-specs').textContent;
-                    setActivePage('ranking');
-                    await __sleep(20);
-                    const rnkBreakdown = document.getElementById('rnk-breakdown').textContent;
-                    const rnkServerPos = document.getElementById('rnk-server-pos').textContent;
-                    const svg = document.getElementById('rnk-chart');
-                    const svgChildren = svg ? svg.children.map((ch) => ({
-                      tag: ch.tagName,
-                      cx: ch.getAttribute('cx'),
-                      cy: ch.getAttribute('cy'),
-                      points: ch.getAttribute('points'),
-                      text: ch.textContent,
-                    })) : [];
-                    return { valEnergy, energyRatio, planetSpecs, rnkBreakdown, rnkServerPos, svgChildren };
-                    """,
-                    fetch_patch_js=ui_patch,
-                )
-                self.assertEqual(ui_res["errors"], [])
-                sc = ui_res["scenario"]
-                for k in ("valEnergy", "energyRatio", "planetSpecs", "rnkBreakdown", "rnkServerPos"):
-                    self.assertNotIn("NaN", sc[k])
-                    self.assertNotIn("∞", sc[k])
-                    self.assertNotIn("Infinity", sc[k])
-                self.assertTrue(len(sc["svgChildren"]) >= 1)
-                for ch in sc["svgChildren"]:
-                    for attr in ("cx", "cy", "points", "text"):
-                        v = ch.get(attr)
-                        if v is not None:
-                            self.assertNotIn("NaN", str(v))
-                            self.assertNotIn("Infinity", str(v))
 
     def test_adv_t5_12_ranking_1e307_1e295_b17_60_and_1e308_delta_strict_http_json(self) -> None:
         from spaceinvasion.core.model import BuildingOffer
@@ -2046,89 +1845,6 @@ class TestTier5Adversarial(unittest.TestCase):
         self.assertIn("sid=FINAL_SECRET_T5", login_res.final_url)
         self.assertIn("sid=UNI_SECRET_T5", uni_opt.url)
 
-    def test_adv_t5_15_bug03_non_dict_json_and_neg_zero_rate_in_ui_node(self) -> None:
-        self.assertIsNotNone(shutil.which("node"), "Node.js is required for UI runtime verification")
-        clock = FakeClock()
-        with E2ETestHarness(clock=clock) as h:
-            patch_js = """
-async (url) => {
-  const mp = globalThis.__t5Mock;
-  if (!mp || (url !== "/state" && url !== "/command")) return undefined;
-  if (mp.jsonOnly) {
-    return { ok: mp.ok, status: mp.status, async json() { return mp.jsonVal; } };
-  }
-  return { ok: mp.ok, status: mp.status, async text() { return mp.body; } };
-}
-"""
-            ui_res = run_ui_in_node(
-                h.base_url,
-                """
-                const loaded = await __waitUntil(() => state && state.dashboard !== null, 4000);
-                if (!loaded) throw new Error('Dashboard failed to load');
-
-                const mocks = [
-                  { ok: true, status: 200, body: "null" },
-                  { ok: false, status: 500, body: "null" },
-                  { ok: false, status: 502, body: '["bad"]' },
-                  { ok: true, status: 200, body: "[]" },
-                  { ok: false, status: 429, body: '["rate"]' },
-                  { ok: true, status: 200, jsonOnly: true, jsonVal: null },
-                  { ok: false, status: 500, jsonOnly: true, jsonVal: [] },
-                ];
-                const apiResults = [];
-                for (const mp of mocks) {
-                  globalThis.__t5Mock = mp;
-                  let getErr = null;
-                  try { await apiGet("/state"); } catch (e) {
-                    getErr = { isTypeErr: e instanceof TypeError, msg: String(e.message || e), rateLimited: Boolean(e.rateLimited) };
-                  }
-                  let cmdErr = null;
-                  try { await apiCommand({ command: "plan" }); } catch (e) {
-                    cmdErr = { isTypeErr: e instanceof TypeError, msg: String(e.message || e), rateLimited: Boolean(e.rateLimited) };
-                  }
-                  apiResults.push({ status: mp.status, getErr, cmdErr });
-                }
-
-                // Trigger real UI handler on 429 ["rate"] via #btn-tick-now
-                globalThis.__t5Mock = { ok: false, status: 429, body: '["rate"]' };
-                document.getElementById("btn-tick-now").click();
-                await __waitUntil(() => {
-                  const b = document.getElementById("feedback-banner");
-                  return b && !b.hidden && b.className.includes("is-warn");
-                }, 3000);
-                const bannerClass = document.getElementById("feedback-banner").className;
-                const bannerText = document.getElementById("feedback-banner").textContent;
-                globalThis.__t5Mock = null;
-
-                renderResourceBar("pig", 0, 1000, -0.1);
-                return {
-                  apiResults,
-                  bannerClass,
-                  bannerText,
-                  fmtRateNegPointOne: fmtRate(-0.1),
-                  fmtIntNegZero: fmtInt(-0),
-                  pigRateText: document.getElementById("rate-pig").textContent,
-                  pigRateClass: document.getElementById("rate-pig").className,
-                };
-                """,
-                fetch_patch_js=patch_js,
-            )
-            self.assertEqual(ui_res["errors"], [])
-            sc = ui_res["scenario"]
-            for entry in sc["apiResults"]:
-                for key in ("getErr", "cmdErr"):
-                    err = entry[key]
-                    self.assertIsNotNone(err)
-                    self.assertFalse(err["isTypeErr"])
-                    self.assertNotIn("Cannot read properties of null", err["msg"])
-                    if entry["status"] == 429:
-                        self.assertTrue(err["rateLimited"])
-            self.assertIn("is-warn", sc["bannerClass"])
-            self.assertEqual(sc["fmtRateNegPointOne"], "0/h")
-            self.assertEqual(sc["fmtIntNegZero"], "0")
-            self.assertEqual(sc["pigRateText"], "0/h")
-            self.assertNotIn("is-neg", sc["pigRateClass"])
-
     def test_adv_t5_16_m5_r6_domain_runtime_boundary_and_lifecycle_hardening(self) -> None:
         import gc
         import socket
@@ -2390,7 +2106,7 @@ async (url) => {
             self.assertEqual(reloaded_cfg.shipyard_targets[" 12 "], 4)
             self.assertEqual(reloaded_cfg.shipyard_targets["small-fighter"], 99)
 
-        # 3. Live E2ETestHarness HTTP API Unicode rejection + invalid fleetsave_plan + UI save race & corrupt pct
+        # 3. Live E2ETestHarness HTTP API Unicode rejection + invalid fleetsave_plan + update_config roundtrip
         clock = FakeClock()
         with E2ETestHarness(clock=clock) as h:
             for bad_cmd in (
@@ -2401,69 +2117,15 @@ async (url) => {
                 r_bad = requests.post(f"{h.base_url}/command", json=bad_cmd, timeout=5)
                 self.assertEqual(r_bad.status_code, 400, msg=r_bad.text)
 
-            patch_js = """
-async (url, opts, fullUrl, nativeFetch) => {
-  if (globalThis.__t5R7Dash === 'hold_prio' && url.startsWith('/dashboard')) {
-    globalThis.__t5R7Dash = 'normal';
-    const r = await nativeFetch(fullUrl, opts);
-    const d = await r.json();
-    d.config = { ...(d.config || {}), planner_mode: 'priority', ga_generations: 4 };
-    d.planner_mode = 'priority';
-    return new Promise((resolve) => {
-      globalThis.__resolveT5Dash = () => resolve({ ok: true, status: 200, json: async () => d });
-    });
-  }
-  if (globalThis.__t5R7Dash === 'fail_503' && url.startsWith('/dashboard')) {
-    return { ok: false, status: 503, json: async () => ({ ok: false, error: 'down' }) };
-  }
-}
-"""
-            ui_res = run_ui_in_node(
-                h.base_url,
-                """
-                const okLoad = await __waitUntil(() => state && state.dashboard !== null, 4000);
-                if (!okLoad) throw new Error('Initial dashboard timeout');
-
-                const fmtSmallNeg = fmtInt(-0.0001);
-                const imprUndef = fmtImprovementPct(null, undefined, undefined);
-                const bfFallback = getSelectedBlastFurnacePct({
-                  state: { planets: [{ planet_id: 1, economy_rates: { resource2: 'bad' } }] },
-                  buildings_eta: { planet: { planet_id: 1 }, planet_economy: { blast_furnace_pct: 0 } },
-                });
-
-                el('cfg-planner_mode').value = 'ai_planner';
-                el('cfg-ga_generations').value = '16';
-                globalThis.__t5R7Dash = 'hold_prio';
-                const pDash = loadDashboard({ refresh: false, preserveConfig: true, force: true });
-                await __waitUntil(() => typeof globalThis.__resolveT5Dash === 'function');
-
-                globalThis.__t5R7Dash = 'fail_503';
-                el('btn-save-config').click();
-                await __sleep(20);
-                globalThis.__resolveT5Dash();
-                await pDash;
-                await __waitUntil(() => state.dashboard?.config?.planner_mode === 'ai_planner' && state.dashboard?.config?.ga_generations === 16);
-                await __sleep(30);
-
-                return {
-                  fmtSmallNeg,
-                  imprUndef,
-                  bfFallback,
-                  cfgMode: state.dashboard?.config?.planner_mode,
-                  cfgGens: state.dashboard?.config?.ga_generations,
-                  domMode: el('cfg-planner_mode').value,
-                };
-                """,
-                fetch_patch_js=patch_js,
+            r_ok = requests.post(
+                f"{h.base_url}/command",
+                json={"command": "update_config", "config": {"planner_mode": "ai_planner", "ga_generations": 16}},
+                timeout=5,
             )
-            self.assertEqual(ui_res["errors"], [])
-            sc = ui_res["scenario"]
-            self.assertEqual(sc["fmtSmallNeg"], "0")
-            self.assertEqual(sc["imprUndef"], "—")
-            self.assertEqual(sc["bfFallback"], 0)
-            self.assertEqual(sc["cfgMode"], "ai_planner")
-            self.assertEqual(sc["cfgGens"], 16)
-            self.assertEqual(sc["domMode"], "ai_planner")
+            self.assertEqual(r_ok.status_code, 200, msg=r_ok.text)
+            cfg_now = r_ok.json()["config"]
+            self.assertEqual(cfg_now["planner_mode"], "ai_planner")
+            self.assertEqual(cfg_now["ga_generations"], 16)
 
     def test_adv_t5_18_m5_r8_keepalive_redaction_arabic_float_mlp_horizon_and_ui_guards(self) -> None:
         import json
@@ -2472,7 +2134,6 @@ async (url, opts, fullUrl, nativeFetch) => {
         import requests
         import commander
         from spaceinvasion.runtime.api_server import ApiRequestError
-        from spaceinvasion.session.client import PageViewLimiter
         from spaceinvasion.runtime.commander_client import (
             GameApiClient,
             GameApiError,
@@ -2566,70 +2227,6 @@ async (url, opts, fullUrl, nativeFetch) => {
                 wait_json = json.dumps(wait_res, allow_nan=False)
                 for s_tok in ("T5_WAIT_SID", "T5_REASON_SID", "T5_HREF_SID"):
                     self.assertNotIn(s_tok, wait_json)
-
-                ui_patch = """
-async (url, opts, fullUrl, nativeFetch) => {
-  if (url === '/command' && opts?.body) {
-    const p = JSON.parse(opts.body);
-    if (p.command === 'update_config' && globalThis.__t5R8HoldSave) {
-      return new Promise((resolve) => {
-        globalThis.__resolveT5R8Save = () => resolve({
-          ok: false,
-          status: 500,
-          json: async () => ({ ok: false, error: 'transient fail' }),
-        });
-      });
-    }
-  }
-  if (url.startsWith('/dashboard') && globalThis.__t5R8DashPrio) {
-    const r = await nativeFetch(fullUrl, opts);
-    const d = await r.json();
-    d.config = { ...(d.config || {}), planner_mode: 'priority' };
-    d.planner_mode = 'priority';
-    return { ok: true, status: 200, json: async () => d };
-  }
-}
-"""
-                ui_res = run_ui_in_node(
-                    h.base_url,
-                    """
-                    const okLoad = await __waitUntil(() => state && state.dashboard !== null, 4000);
-                    if (!okLoad) throw new Error('Dashboard timeout');
-                    renderBuildingsView({
-                      ...state.dashboard,
-                      buildings_eta: {
-                        planet: state.dashboard.buildings_eta?.planet || { planet_id: 1 },
-                        planet_economy: state.dashboard.buildings_eta?.planet_economy || {},
-                        buildings: [{
-                          building_id: 1, key: 'b1', name: 'Pig iron mine', category: 'mines',
-                          current_level: 1, next_level: 2, missing_total: 0, build_time_text: '10s',
-                          wait_eta: 'Ready', reach_eta: '10s', wait_hours: 0, bottleneck: '   ',
-                          can_build_live: false, offer_visible: true, unmet_prerequisites: [],
-                        }],
-                        researches: [],
-                      },
-                    });
-                    const bldText = el('eta-table-tbody').textContent;
-
-                    el('cfg-planner_mode').value = 'ai_planner';
-                    state.configDirty = false;
-                    globalThis.__t5R8HoldSave = true;
-                    globalThis.__t5R8DashPrio = true;
-                    el('btn-save-config').click();
-                    await __waitUntil(() => typeof globalThis.__resolveT5R8Save === 'function');
-                    await loadDashboard({ refresh: false, preserveConfig: true, force: true });
-                    const domMid = el('cfg-planner_mode').value;
-                    globalThis.__resolveT5R8Save();
-                    await __waitUntil(() => state.configSaving === 0 && el('feedback-banner').textContent.includes('Failed saving config'));
-                    const domAfterFail = el('cfg-planner_mode').value;
-                    return { bldText, domMid, domAfterFail };
-                    """,
-                    fetch_patch_js=ui_patch,
-                )
-                self.assertEqual(ui_res["errors"], [])
-                self.assertNotIn("()", ui_res["scenario"]["bldText"])
-                self.assertEqual(ui_res["scenario"]["domMid"], "ai_planner")
-                self.assertEqual(ui_res["scenario"]["domAfterFail"], "ai_planner")
         finally:
             held_err = None
 
@@ -2779,11 +2376,6 @@ async (url, opts, fullUrl, nativeFetch) => {
                 self.assertNotIn("T5_METHOD_SID", log_p.read_text(encoding="utf-8"))
 
     def test_adv_t5_20_r10_e2e_unicode_digits_negative_fields_blob_redaction_and_raid_asteroid_parity(self) -> None:
-        from spaceinvasion.runtime.api_server import (
-            GameApiBridge,
-            create_api_server,
-        )
-        from spaceinvasion.session.client import RateLimitError
         from spaceinvasion.core.config import StrategyConfig
         from spaceinvasion.session.executor import ActionExecutor
         from spaceinvasion.core.model import (

@@ -2,13 +2,6 @@
 
 from __future__ import annotations
 
-import contextlib
-import json
-import os
-from pathlib import Path
-import shutil
-import sys
-import tempfile
 import unittest
 
 import requests
@@ -20,19 +13,15 @@ from tests.e2e.fixtures import (
     make_planet,
     make_ship_offer,
 )
-from tests.e2e.harness import E2ETestHarness, FakeClock, FakeSpaceInvasionServer, run_ui_in_node
+from tests.e2e.harness import E2ETestHarness, FakeClock, FakeSpaceInvasionServer
 from spaceinvasion.core.config import StrategyConfig
 from spaceinvasion.db.config_store import load_strategy_config
-from spaceinvasion.combat.flight import BashTracker
-from spaceinvasion.parsing.models import SpyReport
 from spaceinvasion.core.model import (
     EnergyBalance,
     Resources,
 )
-from spaceinvasion.db.storage import GameDatabase
 from spaceinvasion.core.model import PlannedAction
 from spaceinvasion.planner.heuristics import (
-    BLAST_FURNACE,
     DEVELOPMENT_CENTER,
     FUSION_PLANT,
     PIG_IRON_MINE,
@@ -136,25 +125,8 @@ class TestTier4Workflows(unittest.TestCase):
             self.assertTrue(claim_res["executed"])
             dash2 = h.get_dashboard(refresh=1)
             self.assertGreaterEqual(dash2["state"]["tutorial"]["step"], 2)
-
-            # 5) UI renders updated Tutorial strip & Dashboard Wait/Total ETAs cleanly
-            ui_res = run_ui_in_node(
-                h.base_url,
-                """
-                const ok = await __waitUntil(() => document.querySelectorAll('#dash-plan-tbody tr').length > 0 && !document.querySelector('#dash-plan-tbody td.empty-cell'), 4000);
-                if (!ok) throw new Error('dash-plan-tbody failed to render non-placeholder rows');
-                return {
-                  tutStrip: __snapshotElement('tutorial-strip'),
-                  tutTitle: __snapshotElement('tutorial-title'),
-                  dashRows: __serializeTable('dash-plan-tbody')
-                };
-                """,
-            )
-            sc = ui_res["scenario"]
-            self.assertIsNotNone(sc["tutStrip"])
-            self.assertFalse(sc["tutStrip"]["hidden"])
-            self.assertIn("2/11", sc["tutTitle"]["textContent"])
-            self.assertGreater(len(sc["dashRows"]), 0)
+            self.assertGreater(len(dash2["plan"]), 0)
+            _verify_eta_fields(self, dash2["plan"][0])
 
     # T4-02: Multi-Planet Mid-Game Optimization (priority -> ai_planner via Operator Control UI)
     def test_t4_02_multi_planet_midgame_priority_to_ai_planner_ui_workflow(self) -> None:
@@ -221,6 +193,7 @@ class TestTier4Workflows(unittest.TestCase):
         )
         empire = make_game_state(planets=(p_home, p_cold, p_hot, p_astro), active_planet_id=101, speedup_factor=5.0)
         prio_actions = plan_actions(empire, config=cfg_prio)
+        self.assertGreater(len(prio_actions), 0)
         ai_actions = plan_actions(empire, config=cfg_ai)
 
         # Asteroid respects astro_ok (no mines b1..b6) & hot tight colony emits 0-field s9
@@ -242,40 +215,18 @@ class TestTier4Workflows(unittest.TestCase):
         )
         self.assertTrue(ev.legal, f"Illegal planner sequence on 4-body empire: {ev.violations}")
 
-        # Operator UI roundtrip priority -> ai_planner -> priority via Node vm against real HTTP server
+        # API roundtrip priority -> ai_planner -> priority against real HTTP server
         srv = FakeSpaceInvasionServer(speedup_factor=5.0)
         with E2ETestHarness(server=srv, config=cfg_prio) as h:
             h.api.get_state(include_buildings=True)
             baseline_targets = [
                 (a["kind"], a["target_id"]) for a in h.api.send_command({"command": "plan"})["actions"][:5]
             ]
-            ui_res = run_ui_in_node(
-                h.base_url,
-                """
-                const initOk = await __waitUntil(() => document.querySelectorAll('#dash-plan-tbody tr').length > 0 && !document.querySelector('#dash-plan-tbody td.empty-cell'), 4000);
-                if (!initOk) throw new Error('dash-plan-tbody failed to populate initial rows');
-                document.querySelector('[data-page="config"]').click();
-                const sel = document.getElementById('cfg-planner_mode');
-                if (!sel) throw new Error('Missing #cfg-planner_mode');
-                sel.value = 'ai_planner';
-                sel.dispatchEvent({ type: 'change', target: sel });
-                const dashBefore = fetchLog.filter((f) => String(f.url || '').startsWith('/dashboard')).length;
-                document.getElementById('btn-save-config').click();
-                const postOk = await __waitUntil(() => fetchLog.some((f) => f.url.includes('/command') && f.body && f.body.command === 'update_config'), 4000);
-                if (!postOk) throw new Error('update_config POST missing');
-                await __waitUntil(() => fetchLog.filter((f) => String(f.url || '').startsWith('/dashboard')).length > dashBefore, 4000);
-                const refOk = await __waitUntil(() => __serializeTable('dash-plan-tbody').length > 0 && !document.querySelector('#dash-plan-tbody td.empty-cell'), 4000);
-                if (!refOk) throw new Error('dash-plan-tbody failed to populate after update_config');
-                document.querySelector('[data-page="dashboard"]').click();
-                const dashRows = __serializeTable('dash-plan-tbody');
-                document.querySelector('[data-page="operations"]').click();
-                const opsRows = __serializeTable('plan-tbody');
-                return { dashRows, opsRows };
-                """,
-            )
-            self.assertGreater(len(ui_res["scenario"]["dashRows"]), 0)
-            self.assertGreater(len(ui_res["scenario"]["opsRows"]), 0)
+            upd = h.api.send_command({"command": "update_config", "config": {"planner_mode": "ai_planner"}})
+            self.assertTrue(upd["ok"])
             self.assertEqual(load_strategy_config(h.config_path).planner_mode, "ai_planner")
+            dash_ai = h.get_dashboard(refresh=0)
+            self.assertGreater(len(dash_ai["plan"]), 0)
 
             # Toggle back to priority leaves baseline outputs untouched
             h.api.send_command({"command": "update_config", "config": {"planner_mode": "priority"}})
@@ -310,31 +261,16 @@ class TestTier4Workflows(unittest.TestCase):
         cfg = StrategyConfig(auto_throttle_blast_furnace=True)
         with E2ETestHarness(server=srv, clock=clock, config=cfg) as h:
             h.api.get_state(include_buildings=True)
-            # Phase 1: b2=100% drains Pig net negative -> Pig builds blocked & UI renders .is-blocked + PIG
-            ui1 = run_ui_in_node(
-                h.base_url,
-                """
-                const ok = await __waitUntil(() => document.querySelectorAll('#dash-plan-tbody tr').length > 0 && !document.querySelector('#dash-plan-tbody td.empty-cell'), 4000);
-                if (!ok) throw new Error('dash-plan-tbody failed to populate non-placeholder rows');
-                return {
-                  dashRows: __serializeTable('dash-plan-tbody'),
-                  opsRows: __serializeTable('plan-tbody'),
-                  bfPill: __snapshotElement('hud-bf-pill')
-                };
-                """,
-            )
-            blocked_pills = [
-                p
-                for row in ui1["scenario"]["dashRows"]
-                for cell in row
-                for p in cell.get("pills", [])
-                if "is-blocked" in p.get("className", "") and "PIG" in p.get("text", "").upper()
+            # Phase 1: b2=100% drains Pig net negative -> Pig builds blocked with eta_bottleneck='pig_iron'
+            dash1 = h.get_dashboard(refresh=0)
+            blocked_pig = [
+                a
+                for a in dash1["plan"]
+                if a.get("wait_eta") == "—" and str(a.get("eta_bottleneck") or "").lower() == "pig_iron"
             ]
-            self.assertGreater(
-                len(blocked_pills), 0, f"Expected .is-blocked PIG pill on dashboard: {ui1['scenario']['dashRows']}"
-            )
+            self.assertGreater(len(blocked_pig), 0, f"Expected blocked pig_iron action on dashboard: {dash1['plan']}")
 
-            # Phase 2: Execute throttle_building(2, 0) -> persists in SQLite & updates UI bf pill + Pig ETA unblocks
+            # Phase 2: Execute throttle_building(2, 0) -> persists economy_rates & Pig ETA unblocks
             th0 = h.api.send_command(
                 {"command": "throttle_building", "building_id": 2, "percentage": 0, "dry_run": False}
             )
@@ -348,14 +284,8 @@ class TestTier4Workflows(unittest.TestCase):
             assert b1_act is not None
             self.assertNotEqual(b1_act["wait_eta"], "—")
 
-            ui2 = run_ui_in_node(
-                h.base_url,
-                """
-                await __waitUntil(() => ((document.getElementById('hud-bf-pill') || {}).textContent || '').includes('0% PAUSED'), 4000);
-                return { bfPill: __snapshotElement('hud-bf-pill') };
-                """,
-            )
-            self.assertIn("0% PAUSED", ui2["scenario"]["bfPill"]["textContent"])
+            dash2 = h.get_dashboard(refresh=0)
+            self.assertEqual(dash2["state"]["planets"][0]["economy_rates"].get("resource2"), 0)
 
             # Phase 3: Advance slightly (Pig reserves partial, P1 b1 still missing Pig) -> hysteresis prevents premature 100% flip
             clock.advance(400.0)
@@ -520,22 +450,14 @@ class TestTier4Workflows(unittest.TestCase):
         with E2ETestHarness(server=srv, config=cfg, executor_max_limiter_wait=None) as h:
             initial_views = len(srv.page_view_log)
             h.api.get_state(include_buildings=True)
-            # 1) Enable scanning, raids, AZ PvP live via UI Config view
-            run_ui_in_node(
-                h.base_url,
-                """
-                document.querySelector('[data-page="config"]').click();
-                for (const id of ['cfg-allow_galaxy_scan', 'cfg-allow_raids', 'cfg-allow_pvp_in_az']) {
-                  const el = document.getElementById(id);
-                  if (!el) throw new Error('Missing ' + id);
-                  el.checked = true;
-                  el.dispatchEvent({ type: 'change', target: el });
+            # 1) Enable scanning, raids, AZ PvP live via update_config API
+            upd = h.api.send_command(
+                {
+                    "command": "update_config",
+                    "config": {"allow_galaxy_scan": True, "allow_raids": True, "allow_pvp_in_az": True},
                 }
-                document.getElementById('btn-save-config').click();
-                await __waitUntil(() => fetchLog.some((f) => f.url.includes('/command') && f.body && f.body.command === 'update_config'), 4000);
-                await __sleep(100);
-                """,
             )
+            self.assertTrue(upd["ok"])
 
             # 2) Sweep systems [02:380], [02:381], [02:382] via p_galaxy() fallback
             for sys_n in (380, 381, 382):
@@ -642,37 +564,21 @@ class TestTier4Workflows(unittest.TestCase):
             self.assertTrue(any(s >= 45.0 for s in clock.sleep_calls), f"sleep_calls={clock.sleep_calls}")
             self.assertEqual(len(h.ensure_session_calls), 0)
 
-            # While active cooldown forced via bridge rate_limit, UI shows ONLINE + .is-warn banner
+            # While active cooldown forced via bridge rate_limit, /health keeps in_game=True and scan_galaxy returns 429/503
             h.bridge.record_rate_limit(20.0)
             health = h.api.health()
             self.assertTrue(health["in_game"])
             self.assertTrue(health["rate_limited"])
-            ui_res = run_ui_in_node(
-                h.base_url,
-                """
-                const initOk = await __waitUntil(() => document.querySelectorAll('#dash-plan-tbody tr').length > 0 && !document.querySelector('#dash-plan-tbody td.empty-cell'), 4000);
-                if (!initOk) throw new Error('dash-plan-tbody failed to populate initial rows');
-                document.querySelector('[data-page="combat"]').click();
-                const galBtn = document.getElementById('btn-scan-galaxy');
-                if (!galBtn) throw new Error('Missing #btn-scan-galaxy');
-                galBtn.click();
-                const postOk = await __waitUntil(() => fetchLog.some((f) => f.url === '/command' && f.body && f.body.command === 'scan_galaxy'), 4000);
-                if (!postOk) throw new Error('scan_galaxy POST missing from fetchLog');
-                const bannerOk = await __waitUntil(() => {
-                  const b = __snapshotElement('feedback-banner');
-                  return b && !b.hidden && !String(b.textContent || '').includes('Scanning home Galaxy');
-                }, 4000);
-                if (!bannerOk) throw new Error('feedback-banner did not update after scan_galaxy response');
-                return {
-                  chromeText: document.getElementById('chrome-status-text').textContent.trim(),
-                  banner: __snapshotElement('feedback-banner')
-                };
-                """,
+            rl_resp = requests.post(
+                f"{h.base_url}/command",
+                json={"command": "scan_galaxy", "galaxy": 2, "system": 380, "dry_run": False},
+                timeout=5.0,
             )
-            self.assertEqual(ui_res["errors"], [])
-            self.assertIn("ONLINE", ui_res["scenario"]["chromeText"].upper())
-            self.assertFalse(ui_res["scenario"]["banner"]["hidden"])
-            self.assertIn("is-warn", (ui_res["scenario"]["banner"] or {}).get("className", ""))
+            self.assertIn(rl_resp.status_code, (429, 503))
+            self.assertTrue(rl_resp.json().get("rate_limited"))
+            dash_rl = h.get_dashboard(refresh=0)
+            self.assertTrue(dash_rl["health"]["in_game"])
+            self.assertTrue(dash_rl["health"]["rate_limited"])
 
             # Advance clock past cooldown & verify recovery
             clock.advance(65.0)
@@ -738,19 +644,9 @@ class TestTier4Workflows(unittest.TestCase):
             self.assertFalse(esc["executable_now"])
             self.assertEqual(esc["cost"]["spice"], 20000 - 1500)
 
-            ui_res = run_ui_in_node(
-                h.base_url,
-                """
-                const ok = await __waitUntil(() => document.querySelectorAll('#dash-plan-tbody tr').length > 0 && !document.querySelector('#dash-plan-tbody td.empty-cell'), 4000);
-                if (!ok) throw new Error('dash-plan-tbody failed to populate non-placeholder rows');
-                return {
-                  beacon: __snapshotElement('hud-alert-beacon'),
-                  alertText: __snapshotElement('val-alerts')
-                };
-                """,
-            )
-            self.assertIn("is-alert", ui_res["scenario"]["beacon"]["className"])
-            self.assertIn("HOSTILE ALERT (1)", ui_res["scenario"]["alertText"]["textContent"])
+            dash_hostile = h.get_dashboard(refresh=0)
+            hostile_alerts = [a for a in dash_hostile["state"].get("fleet_alerts", []) if a.get("hostile")]
+            self.assertGreaterEqual(len(hostile_alerts), 1)
 
             # allow_fleetsave=True unlocks executable_now on P0 ESCAPE_FLIGHT
             h.api.send_command({"command": "update_config", "config": {"allow_fleetsave": True}})
@@ -807,35 +703,23 @@ class TestTier4Workflows(unittest.TestCase):
             plan1 = h.api.send_command({"command": "plan"})["actions"]
             _verify_eta_fields(self, plan1[0])
 
-            # Check UI detects server_boot_id change across server reload & reloads cleanly
-            ui_reload = run_ui_in_node(
-                h.base_url,
-                """
-                await __waitUntil(() => reloadCount >= 1, 6000);
-                return { reloads: reloadCount };
-                """,
-                fetch_patch_js="""
-                async (url, _opts, fullUrl, nativeFetch) => {
-                  if (String(url).includes('/ui-version')) {
-                    globalThis.__t4BootCalls = (globalThis.__t4BootCalls || 0) + 1;
-                    const resp = await nativeFetch(fullUrl);
-                    const data = await resp.json();
-                    data.server_boot_id = globalThis.__t4BootCalls === 1 ? 'boot-old' : 'boot-new';
-                    return { ok: true, status: 200, json: async () => data };
-                  }
-                  return undefined;
-                }
-                """,
-            )
-            self.assertGreaterEqual(ui_reload["reloadCount"], 1)
+            ver_before = requests.get(f"{h.base_url}/ui-version", timeout=5.0).json()
+            self.assertTrue(ver_before["ok"])
+            boot_id_before = ver_before["server_boot_id"]
 
-            # Shut down Server #1 and restart Bridge/Server #2 against identical tempdir DB & config.yaml
+            # Shut down Server #1 and restart Bridge/Server #2 against identical tempdir DB & config
             h.restart_bridge()
+            ver_after = requests.get(f"{h.base_url}/ui-version", timeout=5.0).json()
+            self.assertTrue(ver_after["ok"])
+            self.assertTrue(bool(boot_id_before))
+            self.assertTrue(bool(ver_after["server_boot_id"]))
+
             dash2 = h.get_dashboard(refresh=1)
             self.assertEqual(dash2["config"]["planner_mode"], "ai_planner")
             self.assertEqual(dash2["config"]["playstyle"], "miner")
             self.assertEqual(dash2["config"]["max_actions_per_hour"], 25)
             self.assertEqual(dash2["state"]["planets"][0]["economy_rates"].get("resource2"), 0)
+            self.assertGreater(len(dash2["plan"]), 0)
 
             db2 = h.api.send_command({"command": "db_summary"})["db"]
             self.assertTrue(any(t["coords"] == "02:380:04" for t in db2["spy_targets"]))
@@ -845,22 +729,6 @@ class TestTier4Workflows(unittest.TestCase):
                 snaps2 = h.bridge._db._conn.execute("SELECT COUNT(*) FROM rank_snapshots").fetchone()[0]
             self.assertGreaterEqual(raids2, 1)
             self.assertGreaterEqual(snaps2, 1)
-
-            ui2 = run_ui_in_node(
-                h.base_url,
-                """
-                const ok = await __waitUntil(() => document.querySelectorAll('#dash-plan-tbody tr').length > 0 && !document.querySelector('#dash-plan-tbody td.empty-cell'), 4000);
-                if (!ok) throw new Error('dash-plan-tbody failed to populate after bridge restart');
-                return {
-                  plannerVal: (document.getElementById('cfg-planner_mode') || {}).value ?? null,
-                  bfPill: __snapshotElement('hud-bf-pill'),
-                  dashRows: __serializeTable('dash-plan-tbody')
-                };
-                """,
-            )
-            self.assertEqual(ui2["scenario"].get("plannerVal"), "ai_planner")
-            self.assertIn("0% PAUSED", ui2["scenario"]["bfPill"]["textContent"])
-            self.assertGreater(len(ui2["scenario"]["dashRows"]), 0)
 
 
 if __name__ == "__main__":

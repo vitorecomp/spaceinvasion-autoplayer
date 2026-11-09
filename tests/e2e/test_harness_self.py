@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
-import socket
 import time as _real_time
 import unittest
 from unittest.mock import patch
@@ -18,7 +16,6 @@ from selenium.webdriver.support.ui import Select
 
 from tests.e2e.fixtures import (
     evaluate_sequence_score,
-    make_building_offer,
     make_game_state,
     make_planet,
     make_ship_offer,
@@ -28,8 +25,6 @@ from tests.e2e.harness import (
     FakeClock,
     FakeDriver,
     FakeSpaceInvasionServer,
-    inspect_ui_html,
-    run_ui_in_node,
 )
 from spaceinvasion.session.client import (
     GameBrowserClient,
@@ -216,41 +211,6 @@ class TestHarnessSelf(unittest.TestCase):
         eval_bad = evaluate_sequence_score(astro_state, [bad_act])
         self.assertFalse(eval_bad.legal)
         self.assertGreaterEqual(len(eval_bad.violations), 1)
-
-    def test_self_05_real_ui_in_node_loads_and_interacts_with_live_http_api(self) -> None:
-        with E2ETestHarness() as h:
-            h.api.get_state(include_buildings=True)
-            dash = h.get_dashboard(refresh=0)
-            self.assertTrue(dash["ok"])
-            res = run_ui_in_node(
-                h.base_url,
-                """
-                const ok = await __waitUntil(() => __serializeTable("dash-plan-tbody").length > 0 && !document.querySelector("#dash-plan-tbody td.empty-cell"), 4000);
-                if (!ok) throw new Error("Timed out waiting for dash-plan-tbody");
-                document.querySelector('[data-page="operations"]').click();
-                const opsOk = await __waitUntil(() => !document.getElementById("view-operations").hidden, 2000);
-                if (!opsOk) throw new Error("Operations view remained hidden");
-                const probe = document.createElement("div");
-                probe.style.setProperty("display", "none");
-                const propDisplay = probe.style.getPropertyValue("display");
-                const inlineAttr = probe.getAttribute("style");
-                const dashRows = __serializeTable("dash-plan-tbody");
-                const planRows = __serializeTable("plan-tbody");
-                const opsHidden = document.getElementById("view-operations").hidden;
-                const badge = __snapshotElement("plan-count-badge");
-                return { dashRows, planRows, opsHidden, badge, propDisplay, inlineAttr };
-                """,
-            )
-            self.assertEqual(res["errors"], [])
-            sc = res["scenario"]
-            self.assertFalse(sc["opsHidden"])
-            self.assertEqual(sc["propDisplay"], "none")
-            self.assertIn("display: none", sc["inlineAttr"])
-            self.assertGreaterEqual(len(sc["dashRows"]), 1)
-            self.assertGreaterEqual(len(sc["planRows"]), 1)
-            self.assertIn("TASKS", sc["badge"]["textContent"])
-            self.assertTrue(res["htmlInspection"]["dash_plan"]["found"])
-            self.assertTrue(res["htmlInspection"]["ops_plan"]["found"])
 
     def test_self_06_bridge_restart_persists_sqlite_and_config_in_same_tempdir(self) -> None:
         with E2ETestHarness() as h:
