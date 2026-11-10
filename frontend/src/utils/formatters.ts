@@ -1,3 +1,4 @@
+import { consoleStore } from "../store/consoleStore";
 import type { DashboardPayload, PlanetData, ResourceBundle } from "../types/api";
 
 export function finiteNum(val: unknown): number | null;
@@ -246,7 +247,7 @@ export function activePlanetFrom(
   const fallbackSelected =
     selectedPlanetId !== undefined
       ? selectedPlanetId
-      : finiteNum((globalThis as any)?.state?.selectedPlanetId, null);
+      : finiteNum(consoleStore.getSnapshot().selectedPlanetId, null);
   const targetId = fallbackSelected || gs.active_planet_id;
   return gs.planets.find((p) => p.planet_id === targetId) || gs.planets[0] || null;
 }
@@ -258,11 +259,12 @@ export function getSelectedBlastFurnacePct(
 ): number {
   const planet = activePlanetFrom(dash, selectedPlanetId);
   let eta = dash?.buildings_eta || null;
-  const globalDash = (globalThis as any)?.state?.dashboard;
+  const storeSnap = consoleStore.getSnapshot();
+  const globalDash = storeSnap.dashboard;
   const cachedEta =
     buildingsEtaOverride !== undefined
       ? buildingsEtaOverride
-      : (globalThis as any)?.state?.buildingsEtaData ?? null;
+      : storeSnap.buildingsEtaData ?? null;
   if (dash && dash !== globalDash && dash.buildings_eta) {
     eta = dash.buildings_eta;
   } else if (cachedEta && planet && cachedEta.planet?.planet_id === planet.planet_id) {

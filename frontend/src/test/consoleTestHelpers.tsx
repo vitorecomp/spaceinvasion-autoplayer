@@ -3,8 +3,8 @@ import { vi } from "vitest";
 import {
   ConsoleProvider,
   resetConsoleStore,
-  useConsole,
-} from "../context/ConsoleContext";
+  useConsoleActions,
+} from "../store";
 import { setConsoleStorePersistenceForTests } from "../store/consoleStore";
 import type { DashboardPayload } from "../types/api";
 
@@ -276,7 +276,7 @@ export const SeededConsole: React.FC<{
       setRecData,
       setActivePage,
       syncNotificationsPayload,
-    } = useConsole();
+    } = useConsoleActions();
 
     useEffect(() => {
       setDashboard(dashboard);

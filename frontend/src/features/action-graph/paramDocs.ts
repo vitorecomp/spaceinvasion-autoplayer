@@ -1,4 +1,4 @@
-import { CONFIG_ITEM_BY_KEY } from "../config/configSchema";
+import { getStrategySettingSpec } from "../config/configSchema";
 import { BUILDING_NAMES, SHIP_OPTIONS } from "./plannerHelpers";
 
 export interface ActionGraphParamDoc {
@@ -8,33 +8,13 @@ export interface ActionGraphParamDoc {
   description: string;
 }
 
-const EXTRA_STRATEGY_PARAM_DOCS: Record<string, ActionGraphParamDoc> = {
-  ai_resource_spare_pct: {
-    title: "AI Spare Resource Budget (%)",
-    paramKey: "ai_resource_spare_pct",
-    boundsLabel: "default: 10% · 0–90%",
-    description:
-      "Soft-reserve percentage of rolling hourly empire income set aside for Fleet Planner ship-unlock/combat research and autonomous shipyard hull production while AI-Planner guides buildings and economy research. Urgent 0-count replacements for Spy probes (s10) and transports (s1/s2) remain exempt so scouting and hauling never stall. Accepts floats from 0 to 90%.",
-  },
-};
-
 export function getStrategyParamDoc(key: string): ActionGraphParamDoc {
-  const fromConfig = CONFIG_ITEM_BY_KEY[key];
-  if (fromConfig) {
-    return {
-      title: fromConfig.title,
-      paramKey: fromConfig.key,
-      boundsLabel: fromConfig.boundsLabel,
-      description: fromConfig.description,
-    };
-  }
-  const extra = EXTRA_STRATEGY_PARAM_DOCS[key];
-  if (extra) return extra;
+  const spec = getStrategySettingSpec(key);
   return {
-    title: key,
-    paramKey: key,
-    boundsLabel: "config parameter",
-    description: `Configures the ${key} strategy setting persisted to StrategyConfig in SQLite.`,
+    title: spec.title,
+    paramKey: spec.key,
+    boundsLabel: spec.boundsLabel,
+    description: spec.description,
   };
 }
 

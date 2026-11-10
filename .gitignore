@@ -60,10 +60,13 @@ dist/
 .coverage
 htmlcov/
 
-# Frontend Node / Vite build caches & temporary bundles
+# Frontend Node / Vite build caches & generated UI bundle (Decision D7; icons stay tracked)
 frontend/node_modules/
 frontend/.vite/
 frontend/dist/
+spaceinvasion/ui/app.js
+spaceinvasion/ui/styles.css
+spaceinvasion/ui/index.html
 
 # Editor / OS
 .DS_Store

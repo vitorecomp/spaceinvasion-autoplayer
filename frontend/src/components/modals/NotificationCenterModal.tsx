@@ -1,6 +1,12 @@
 import React from "react";
-import { feedbackKindForError, safeFiniteNumber } from "../../api/httpClient";
-import { useConsole } from "../../context/ConsoleContext";
+import {
+  feedbackKindForError,
+  safeFiniteNumber } from "../../api/httpClient";
+import { useConsoleActions,
+  useNotifCenterOpen,
+  useNotifications,
+  useUiPrefs,
+} from "../../store";
 import { copyNotificationCode, formatNotificationCode } from "./notificationId";
 
 function formatNotifAge(tsVal: unknown): string {
@@ -14,16 +20,16 @@ function formatNotifAge(tsVal: unknown): string {
 }
 
 export const NotificationCenterModal: React.FC = () => {
+  const notifications = useNotifications();
+  const notifCenterOpen = useNotifCenterOpen();
+  const uiPrefs = useUiPrefs();
   const {
-    notifications,
-    notifCenterOpen,
     closeNotificationCenter,
     refreshNotificationCenter,
-    uiPrefs,
     setUiPref,
     apiCommand,
     showFeedback,
-  } = useConsole();
+  } = useConsoleActions();
 
   const items = Array.isArray(notifications.items) ? notifications.items : [];
   const curFilter = uiPrefs.notifFilter || "active";

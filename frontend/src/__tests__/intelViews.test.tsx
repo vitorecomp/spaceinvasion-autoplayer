@@ -1,7 +1,7 @@
 import React, { useEffect } from "react";
 import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ConsoleProvider, useConsole } from "../context/ConsoleContext";
+import { ConsoleProvider, useConsoleActions } from "../store";
 import { DashboardPayload } from "../types/api";
 import { CombatView } from "../features/combat";
 import { SectorsView } from "../features/sectors";
@@ -197,7 +197,7 @@ const SeedState: React.FC<Omit<SeedHarnessProps, "children">> = ({
     setColonyData,
     setAtkData,
     setRecData,
-  } = useConsole();
+  } = useConsoleActions();
 
   useEffect(() => {
     setDashboard(SAMPLE_DASHBOARD);

@@ -1,7 +1,7 @@
 import React, { useEffect } from "react";
 import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ConsoleProvider, useConsole } from "../context/ConsoleContext";
+import { ConsoleProvider, useConsoleActions } from "../store";
 import { CombatView } from "../features/combat";
 import {
   FleetControlView,
@@ -89,7 +89,7 @@ function makeDashboard(
 }
 
 const InitPage: React.FC<{ page: string; children: React.ReactNode }> = ({ page, children }) => {
-  const { setActivePage, loadDashboard } = useConsole();
+  const { setActivePage, loadDashboard } = useConsoleActions();
   useEffect(() => {
     setActivePage(page as any);
     loadDashboard({ refresh: false, force: true });

@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { feedbackKindForError } from "../../api/httpClient";
-import { useConsole } from "../../context/ConsoleContext";
+import { useConsoleActions, useSelectedPlanetId } from "../../store";
 import { finiteNum, fmtInt } from "../../utils/formatters";
 import { SIM_POPULATE_EVENT, SimPopulateTarget } from "./simEvents";
 
@@ -77,7 +77,8 @@ function ownedAtkMapFrom(cmb: Record<string, any> | null): Record<AtkKey, string
 }
 
 export const CombatSimulator: React.FC<CombatSimulatorProps> = ({ cmb }) => {
-  const { apiCommand, showFeedback, selectedPlanetId } = useConsole();
+  const selectedPlanetId = useSelectedPlanetId();
+  const { apiCommand, showFeedback, getRuntime, setSimPopulatedOnce } = useConsoleActions();
   const [inputs, setInputs] = useState<SimInputs>(INITIAL_INPUTS);
   const [result, setResult] = useState<SimResultState>(INITIAL_RESULT);
   const populatedPlanetRef = useRef<number | null | undefined>(undefined);
@@ -156,22 +157,21 @@ export const CombatSimulator: React.FC<CombatSimulatorProps> = ({ cmb }) => {
 
   // Auto-populate attacker ships once per planet when stationed ships arrive
   useEffect(() => {
-    const legacySt = (globalThis as any)?.state;
     const ships = Array.isArray(cmb?.ships) ? cmb!.ships : [];
     const hasOwned = ships.some((s: any) => Number(s?.owned) > 0);
     if (
       hasOwned &&
       populatedPlanetRef.current === undefined &&
-      !(legacySt && legacySt.simPopulatedOnce)
+      !getRuntime().simPopulatedOnce
     ) {
       populatedPlanetRef.current = selectedPlanetId;
-      if (legacySt) legacySt.simPopulatedOnce = true;
+      setSimPopulatedOnce(true);
       setInputs((prev) => ({
         ...prev,
         atk: ownedAtkMapFrom(cmb),
       }));
     }
-  }, [cmb, selectedPlanetId]);
+  }, [cmb, getRuntime, selectedPlanetId, setSimPopulatedOnce]);
 
   // Listen for cross-view / target-row "Sim" button populate events
   useEffect(() => {

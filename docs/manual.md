@@ -1,156 +1,113 @@
-# System Reference & Operator Documentation
+# SpaceInvasion Autoplayer — Operator & System Manual
 
-Complete operational, configuration, API, and workflow guide for `spaceinvasion-autoplayer`.
+Operational handbook for installing, running, monitoring, backing up, and verifying `spaceinvasion-autoplayer` in both **Docker/Podman** and **Host** modes.
 
 ---
 
-## 1. Quick Start & CLI Entrypoints
+## 1. Prerequisites & Credentials
 
-### 1.1 Environment Setup
-```bash
-python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt
-cp .env.example .env
-cp config.example.yaml config.yaml
+- **PostgreSQL 16** (managed automatically via `docker-compose.yml` / Podman in both Docker and Host modes).
+- **Python 3.12+** (`.venv/` for Host mode and local verification).
+- **Node.js 22+** (only required in Host mode for `npm --prefix frontend run build` and Vitest; built inside `docker/Containerfile.backend` in Docker mode).
+- **Credentials (`.env`)**: Copy `.env.example` to git-ignored `.env`:
+
+```env
+SPACEINVASION_EMAIL=you@example.com
+SPACEINVASION_PASSWORD=your-password
+SPACEINVASION_UNIVERSE=RETRO
 ```
 
-### 1.2 Authentication & Stack Supervision
-| Command | Purpose |
-|---|---|
-| `.venv/bin/python3 bin/login.py` | Launches detached Chrome (`127.0.0.1:9222`) and authenticates into BitMeUp / SpaceInvasion Classic (pausing cleanly if 2FA or CAPTCHA user input is required). |
-| `./starter.sh` | **Recommended production launcher**: Runs `bin/run_stack.py --live` under an auto-restarting bash supervisor (`5s -> 60s` exponential backoff on crashes; immediate halt on exit code `2` anti-bot/CAPTCHA). |
-| `./starter.sh --dry-run` | Runs the supervised stack in dry-run observation mode (plans and logs actions without clicking in-game). |
-| `.venv/bin/python3 bin/run_stack.py --live` | Starts/verifies Chrome `:9222`, hot-reloading `bin/game_api.py` (`127.0.0.1:8787`), and hot-reloading `bin/commander.py --loop --live`. |
-| `.venv/bin/python3 bin/game_api.py --reload` | Runs only the HTTP JSON Bridge and Web Operator Console (`http://127.0.0.1:8787/`). |
-| `.venv/bin/python3 bin/commander.py --once` | Executes a single dry-run planning/inspection tick via HTTP (`--live` to execute). |
-| `.venv/bin/python3 bin/advisor.py` | Prints offline strategy, ETA, and economy diagnostics. |
-| `.venv/bin/python3 scripts/sync_wiki_data.py` | Refreshes `spaceinvasion/game_data.py` from the SpaceInvasion Classic Wiki catalog. |
+Never commit `.env`, `.sessions/`, `.browser_profile/`, `data/`, `state/`, or `logs/`.
 
 ---
 
-## 2. `StrategyConfig` Reference (`config.yaml`)
+## 2. Running the Stack
 
-All 30 strategy and optimizer fields in `spaceinvasion/config.py` can be configured in `config.yaml` (seeded from `config.example.yaml`) or simulated/applied live from the **Action Graph** right-side panel (`#ag-control-panel`):
+### Mode A: Docker / Podman Compose (5 Containers)
 
-### 2.1 Planner & Evolutionary Optimizer (`ga_nn`)
-| Key | Type | Default | Description |
-|---|---|---|---|
-| `planner_mode` | `str` | `"priority"` | Active decision engine: `"priority"` (heuristic `P0`–`P3`) or `"ga_nn"` (Genetic Algorithm + Neural Value Network). |
-| `playstyle` | `str` | `"miner"` | Objective weighting profile: `"miner"`, `"hybrid"`, or `"fleeter"`. |
-| `ga_population_size` | `int` | `24` | Candidate chromosomes per generation (`4..200`). |
-| `ga_generations` | `int` | `12` | Evolutionary + online MLP training generations per tick (`1..100`). |
-| `ga_horizon_steps` | `int` | `6` | Forward lookahead genes per chromosome (`1..20`). |
-| `ga_mutation_rate` | `float` | `0.25` | Per-gene mutation probability (`0.0..1.0`). |
-| `ga_nn_weight` | `float` | `0.35` | Blend weight for `NeuralValueNetwork` terminal evaluation (`0.0..1.0`). |
-| `ga_seed` | `int \| null` | `null` | Fixed RNG seed for deterministic optimization (`null` for live entropy). |
-
-### 2.2 Pacing, Safety & Automation Gates
-| Key | Type | Default | Description |
-|---|---|---|---|
-| `action_batch_interval_seconds` | `int` | `120` | Minimum interval between automated batch wakeups (`5..86400`), paired with exact build/queue completion timers. |
-| `max_actions_per_hour` | `int` | `60` | Safety ceiling on executed actions per rolling hour. |
-| `auto_escape_flight` | `bool` | `true` | Automatically pack resources (`Spice -> Metal -> Kryptonite -> Pig iron`) and launch `ESCAPE_FLIGHT` on hostile `P0` incoming attacks. |
-| `escape_fuel_reserve_spice` | `int` | `500` | Spice kept on colony to pay escape-flight fuel. |
-| `auto_claim_tutorial` | `bool` | `true` | Claim completed tutorial steps when warehouse headroom prevents overflow. |
-| `prioritize_tutorial` | `bool` | `true` | Prioritize tutorial milestone tasks (Steps `1`–`11`). |
-
-### 2.3 Economy, Energy & Infrastructure Policy
-| Key | Type | Default | Description |
-|---|---|---|---|
-| `forbid_planetary_solar` | `bool` | `true` | Never build `Thermosolar plant` (`b6`) or `Solar cells` (`s9`) on normal planets; demolish existing planetary `b6 -> L0` once `Fusion plant` (`b5`) covers energy. |
-| `auto_throttle_blast_furnace` | `bool` | `true` | Automatically adjust `Blast furnace` (`b2`) slider in `internalEconomy` (including `0%` pause when energy is negative or when Metal storage is full while Pig iron has free space). |
-| `merchant_mode` | `bool` | `false` | Optimize pure mine extraction assuming external `6:2.5:3:1` Merchant trades instead of local smelting. |
-| `energy_buffer` | `int` | `10` | Target net energy reserve before scheduling mine upgrades. |
-| `warehouse_fill_trigger` | `float` | `0.85` | Stockpile fill ratio (`0.10..1.00`) that triggers `P1` warehouse expansion (`b11`–`b14`). |
-| `min_free_fields_warning` | `int` | `8` | Remaining building-field threshold triggering compact-infrastructure rules. |
-| `allow_research` | `bool` | `true` | Permit automated `RESEARCH` actions (`r1`–`r16`). |
-| `allow_shipyard` | `bool` | `true` | Permit automated `BUILD_SHIP` construction toward `shipyard_targets`. |
-| `shipyard_targets` | `dict[str,int]` | `{...}` | Desired per-colony ship counts keyed by ship slug (e.g., `small-transport`, `small-fighter`, `spy-probe`, `recycler`, `colony-ship`). |
-
-### 2.4 Reconnaissance, Raiding & Colonization
-| Key | Type | Default | Description |
-|---|---|---|---|
-| `allow_galaxy_scan` | `bool` | `true` | Scan neighboring solar systems (`scan_radius_systems`) to discover yellow inactives, `Spacia`, debris fields, and open colony slots. |
-| `scan_radius_systems` | `int` | `15` | +/- solar-system scan radius around each owned colony. |
-| `allow_spy` | `bool` | `true` | Dispatch `Spy probe` (`s10`) recon missions to unspied/stale farm candidates. |
-| `allow_raids` | `bool` | `false` | Dispatch `ATTACK` raids when `1:1` combat simulation predicts `>= min_combat_power_ratio` victory and positive loot. |
-| `min_combat_power_ratio` | `float` | `1.4` | Minimum simulated attacker-to-defender combat power ratio required to launch a raid. |
-| `min_raid_spice_value` | `float` | `2000.0` | Minimum expected plunder in `SpiceEq` required to justify a fleet slot. |
-| `allow_colonize` | `bool` | `true` | Dispatch `Colony ship` (`s8`) missions to top-graded uninhabited slots (`>= min_colony_fields`). |
-| `min_colony_fields` | `int` | `300` | Minimum estimated/spied planet field capacity required for automated colonization (`50..500`). |
-
----
-
-## 3. HTTP JSON Bridge Reference (`http://127.0.0.1:8787`)
-
-### 3.1 `GET` Endpoints
-| Route | Query Params | Description |
-|---|---|---|
-| `GET /` | — | Serves the `SpaceInvasion Control` Web Operator Console (`spaceinvasion/ui/`). |
-| `GET /health` | — | Bridge liveness, Chrome port `9222` status, in-game state, per-minute page-view counter (`24/min` budget), batch interval, and `bot_control` pause/CAPTCHA flags. |
-| `GET /ui-version` | — | SHA-256 asset fingerprint of `index.html`, `styles.css`, and `app.js` for live UI reload detection. |
-| `GET /state` | `refresh=0\|1`, `include_buildings=0\|1`, `planet_id=<int>` | Returns sanitized `GameState` JSON (colonies, resources, energy, queues, offers, fleet alerts, tutorial progress). |
-| `GET /dashboard` | `refresh=0\|1`, `planet_id=<int>` | Consolidated operator payload: `state`, `plan`, memoized `action_graph`, `buildings_eta`, `combat_overview`, `ranking_evolution`, `manual_queue`, `db_summary`, `config`, and redacted log tails (`< 15ms` warm median). |
-
-### 3.2 `POST /command` Actions (`Content-Type: application/json`)
-
-| Domain | `command` Values | Purpose |
-|---|---|---|
-| **Planning & Action Graph** | `plan`, `action_graph`, `buildings_eta`, `ranking_evolution` | Generate heuristic or `ga_nn` action plans, run isolated `action_graph` parameter simulations (`simulated: true`, `refresh: false`, `config: {...}`), or inspect building/research ETAs. |
-| **Colony Construction & Economy** | `build`, `demolish_building`, `research`, `build_ship`, `throttle_building`, `sync_economy`, `claim_tutorial` | Execute (or dry-run with `"dry_run": true`) building upgrades, `b6` solar demolitions, tech research, shipyard batches, `internalEconomy` percentage sliders, and tutorial claims. |
-| **Fleet, Combat & Colonization** | `attack`, `spy`, `recycle`, `colonize`, `escape_flight`, `scan_galaxy`, `simulate_combat`, `combat_overview`, `fleetsave_plan` | Launch attacks, espionage probes, debris recyclers (`s11`), colony ships (`s8`), or `SAVE` escape flights; scan solar systems; run offline `1:1` combat simulations. |
-| **Manual Operator Queue** | `queue_list`, `queue_add`, `queue_update`, `queue_cancel`, `queue_clear` | Enqueue manual actions (`P0`..`P3`), reorder (`top`, `up`, `down`), pin priorities, reserve resources, or cancel pending items. |
-| **Intelligence & Archival Views** | `espionage_intel`, `colony_candidates`, `attack_results`, `recycler_results`, `game_messages`, `sync_messages`, `sync_spy_reports`, `db_summary` | Query archived SQLite spy reports, graded `300+` field colony candidates, battle plunder/loss history, rubble harvests, and archived in-game messages. |
-| **Runtime, Session & Config** | `config`, `update_config`, `bot_control`, `tick_once`, `ensure_session`, `navigate`, `menu` | Read or persist `StrategyConfig` (`update_config` writes `config.yaml` + `config_history`), pause/resume automation, trigger a single tick, or navigate game frames safely under `_lock`. |
-
-#### Example: Isolated Action Graph Simulation via `curl`
 ```bash
-curl -s -X POST http://127.0.0.1:8787/command \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "command": "action_graph",
-    "simulated": true,
-    "refresh": false,
-    "planner_mode": "ga_nn",
-    "config": {
-      "playstyle": "fleeter",
-      "ga_population_size": 24,
-      "ga_generations": 10,
-      "ga_nn_weight": 0.40
-    }
-  }'
+podman-compose up -d --build
+podman-compose ps
+```
+
+Services & local ports (`127.0.0.1` only):
+- **`postgres`** (`127.0.0.1:5433`): PostgreSQL 16 with `pg_stat_statements` enabled and `./data/postgres` persistent volume.
+- **`browser`** (`127.0.0.1:7900`): Persistent Chromium + noVNC (`http://127.0.0.1:7900/vnc.html?autoconnect=true&resize=scale`) for manual login/CAPTCHA resolution.
+- **`game_api`** (`127.0.0.1:8787`): HTTP JSON API (`bin/game_api.py --reload`) serving the built Operator Console from `/opt/spaceinvasion-ui` (`SPACEINVASION_UI_DIR=/opt/spaceinvasion-ui`).
+- **`commander`**: Pure-HTTP autonomous loop (`bin/commander.py --live --loop --reload`).
+- **`frontend`** (`127.0.0.1:5173`): Optional live Vite dev server proxying API calls to `game_api`.
+
+### Mode B: Host Mode (`./starter.sh` + PostgreSQL 16)
+
+```bash
+./starter.sh                 # Live supervised stack (auto-builds stale UI, ensures PG16, auto-restarts crashes)
+./starter.sh --dry-run       # Dry-run commander (no in-game clicks)
+./starter.sh --check-ui-build # Rebuild spaceinvasion/ui/ only if missing or stale, then exit
+```
+
+Individual host-mode entrypoints:
+- `bin/login.py --debug-port 9222 --detach` — Opens persistent host Chrome profile and logs into BitMeUp.
+- `bin/game_api.py --reload` — Runs the local HTTP API bridge on `127.0.0.1:8787`.
+- `bin/commander.py --loop --reload [--live]` — Runs the pure-HTTP autonomous decision loop.
+- `bin/run_stack.py [--live]` — Supervises Chrome, `game_api.py`, and `commander.py`.
+
+**CAPTCHA / Anti-Bot Stop Behavior**: If Cloudflare Turnstile or a BitMeUp challenge appears, automation pauses immediately, persists a `captcha_gate` notification in the Operator Console, and exits `starter.sh` with code `2` (never auto-restarting into an anti-bot gate). Resolve the challenge manually in Chrome (or noVNC `:7900`), then click **Resume** in the console or re-run `./starter.sh`.
+
+---
+
+## 3. Configuration & HTTP API
+
+- **Strategy Settings**: Persisted in PostgreSQL `strategy_config_store` and editable live in the Web Operator Console. See the generated [Strategy Settings Reference](./settings-reference.md) for all 50 canonical fields, bounds, and defaults.
+- **HTTP Endpoints**:
+  - `GET /health` — Lightweight bridge health & DB status (lock-free).
+  - `GET /bot_status` — Pause state, mode override, and `captcha_gate` alert status (lock-free).
+  - `GET /ui-version` — Compiled UI bundle hash/version.
+  - `GET /state` — Published empire state snapshot (lock-free).
+  - `GET /dashboard` — Consolidated Operator Console payload (lock-free).
+  - `POST /command` — Executes any of the 60 declarative commands documented in the generated [API Command Reference](./api-commands.md).
+
+Quick read-only checks:
+
+```bash
+curl -s http://127.0.0.1:8787/health
+curl -s -X POST http://127.0.0.1:8787/command -H 'Content-Type: application/json' -d '{"command":"plan"}'
+curl -s -X POST http://127.0.0.1:8787/command -H 'Content-Type: application/json' -d '{"command":"db_verify"}'
 ```
 
 ---
 
-## 4. Experimentation & Strategy Notebooks
+## 4. Database Backups & Alembic Migrations
 
-The Jupyter notebooks in `notebooks/` read the bot's data **100% read-only** (copying `state/spaceinvasion.db` + WAL sidecars into a temporary directory before querying and never opening browser connections). Two of them write one file each into `notebooks/metadata/`: `config_optimizer.ipynb` the JSON with its result, and `full_planner.ipynb` the text file with the path of its Section 11.
+- **Manual `pg_dump` backup**:
 
-1. **[notebooks/optimizer_experimentation.ipynb](../notebooks/optimizer_experimentation.ipynb)** (`25` cells across `8` chapters):
-   - Walks step-by-step through `attack_history.json` coercion, 4-layer SQLite WAL inspection, midgame colony synthesis, controlled Farm (`90%` win) vs. Fluke Trap (`10%` win) raid telemetry, 46D state encoding, `NeuralValueNetwork` rollout training & `dV/dx_j` sensitivities, `ga_nn` convergence, Action Graph DAG layering, planetary solar demolition ablations, and hyperparameter sweeps.
-2. **[notebooks/full_planner.ipynb](../notebooks/full_planner.ipynb)**:
-   - Full-game strategy simulation notebook starting with dedicated statistical cells for **Attack Resource Mean & Std** (`pig_iron`, `metal`, `kryptonite`, `spice`, `spice_eq`), **Attack Time Mean & Std** (one-way flight, round-trip slot occupation, and inter-attack dispatch interval), and **Attack Success Rate** (`W/N`, binomial SE, Laplace-smoothed prior, and per-slot-hour `SpiceEq` yield).
-   - It then loads every owned colony, adds generic planets (empty colony slots) up to the planet limit, and builds `pandas` tables of every building, technology, ship and defense: level tables for a generic planet, and per-planet tables with each colony's own levels, build times and temperature. It also builds an in-memory technology requirement graph with unlock plans and tables of the planet sizes and states. Section 9 collects the highest level of every research known in the universe (the bot's `universe_research_max` ledger, archived spy reports and your own levels), and Section 10 prints every data set generated up to there in full.
-   - Section 11 searches for the **`W`-week path** toward the configuration that `config_optimizer.ipynb` saved (`notebooks/metadata/config_optimizer_result.json`, so run that notebook first) that maximizes **net weekly-discounted resource production** (`gamma ** (w - 1)` per week `w = 1..W` in SpiceEq, after deducting per-resource `PATH_RESOURCE_SPARE_PERCENT` for ships/raid losses). It simulates every building level, research level, ship order and colony founding with pooled resources, models raid income dynamically from `Fleet base` (`b10`, Fleet Command Center, `1 + b10` slots per founded planet × `3600 / median_round_trip_sec` × median loot), compares three ordering strategies, and tunes an 8-gene policy with a genetic algorithm. Its last cell saves only the `W` weeks of actions — with a 14-line header reporting fleet slots, spare %, net discounted reward, and the max level reached of each factor — as `notebooks/metadata/full_planner_path.txt`.
-   - Static descriptions and planner settings (planet limit, empty-colony size, table level caps, cold-start colony) are JSON files in [notebooks/metadata/](../notebooks/metadata/), loaded and checked against `game_data` when the notebook runs.
-3. **[notebooks/config_optimizer.ipynb](../notebooks/config_optimizer.ipynb)**:
-   - Searches, with a genetic algorithm, for the building levels of every planet that build the most Imperial starbases per month. It runs on its own: it loads your planets (with generic planets added up to the planet limit), your research levels and the highest research levels known in the universe. Its helpers are copies of the helpers of `full_planner.ipynb`, and a unit test fails when a copy differs from its original.
-   - The first cell after the imports holds the meta parameters to tune: the minimum fleet of every planet, the levels of the miscellaneous buildings, the highest level of each optimized building, the research levels as a percentage of the universe maximum, the hours of production that the warehouses must hold, and the central planet with the minimum level of its warehouses.
-   - The planner sets the warehouse levels itself. Every planet gets the lowest levels that hold those hours of its own production and the cost of the most expensive single thing it still has to pay for: a building level, a missing fleet ship, the target ship where it is built, and a research level on the planet with the Research lab. The central planet also holds those hours of the production of the whole empire.
-   - The result lists, for each planet, every building with its target level, the levels still to build, their cost, and the time that the last of those levels takes to build.
-   - The last cell saves the result as `notebooks/metadata/config_optimizer_result.json`: the meta parameters of the run, the summary, the limits and one record per planet. Every run replaces the file. It holds the coordinates and building levels of your planets.
+```bash
+podman exec spaceinvasion_postgres pg_dump -U spaceinvasion -Fc spaceinvasion > data/backups/manual_$(date -u +%Y%m%dT%H%M%SZ).dump
+```
+
+- **Programmatic Alembic upgrades** (`spaceinvasion.db.alembic_migrations.upgrade_database`) require a `backup_fn` callback (creating a pre-upgrade `pg_dump` snapshot) and append SHA-256 checksums + timings to `schema_migration_events`.
+- **Query performance inspection**:
+
+```bash
+.venv/bin/python3 scripts/enable_pg_stats.py --report --limit 40
+```
 
 ---
 
-## 5. Verification & Test Suites
-
-Run the automated test suites before committing any change:
+## 5. Quality Gates & Verification
 
 ```bash
-# 1. Unit, Action Graph, Watchdog, Notebook & Dual-Node-VM UI Suite
-PYTHONDONTWRITEBYTECODE=1 .venv/bin/python3 -W error::ResourceWarning -m unittest discover -s tests -v
+# Static quality gates (ruff format + lint + mypy + AST standards)
+.venv/bin/python3 scripts/check.py --lint-only
 
-# 2. 5-Tier End-to-End Integration & Adversarial Suite
-PYTHONDONTWRITEBYTECODE=1 .venv/bin/python3 -W error::ResourceWarning -m unittest discover -s e2e_tests -v
+# Regenerate / verify docs/api-commands.md and docs/settings-reference.md
+.venv/bin/python3 scripts/generate_docs.py --check
+.venv/bin/python3 scripts/generate_docs.py --write
+
+# Frontend TypeScript build & Vitest unit suite
+npm --prefix frontend run build
+npm --prefix frontend test
+
+# Python tests (hermetic, never touching live ports 8787/5433/9222/7900/5173)
+.venv/bin/pytest -v tests/invariants/ tests/unit/
+.venv/bin/pytest -v tests/e2e/
 ```
