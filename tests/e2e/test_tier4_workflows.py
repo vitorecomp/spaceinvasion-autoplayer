@@ -20,7 +20,6 @@ from spaceinvasion.core.model import (
     EnergyBalance,
     Resources,
 )
-from tests.pg_harness import open_test_db as GameDatabase
 from spaceinvasion.core.model import PlannedAction
 from spaceinvasion.planner.heuristics import (
     DEVELOPMENT_CENTER,

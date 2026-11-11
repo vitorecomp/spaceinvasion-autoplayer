@@ -1253,8 +1253,6 @@ class TestTier5Adversarial(unittest.TestCase):
             self.assertEqual([u.universe_id for u in uni_opts], [31])
 
     def test_adv_t5_11_extreme_ints_1e1m_nan_rank_history_http_state_and_ui_node(self) -> None:
-        import time
-        from spaceinvasion.core import catalog as game_data
         from spaceinvasion.runtime.logs import append_tick_logs
         from spaceinvasion.combat.points import (
             build_combat_overview,
@@ -2144,7 +2142,6 @@ class TestTier5Adversarial(unittest.TestCase):
         import requests
         import commander
         from spaceinvasion.runtime.api.validation import ApiRequestError
-        from spaceinvasion.session.client import PageViewLimiter
         from spaceinvasion.runtime.commander_client import (
             GameApiClient,
             GameApiError,
@@ -2387,9 +2384,6 @@ class TestTier5Adversarial(unittest.TestCase):
                 self.assertNotIn("T5_METHOD_SID", log_p.read_text(encoding="utf-8"))
 
     def test_adv_t5_20_r10_e2e_unicode_digits_negative_fields_blob_redaction_and_raid_asteroid_parity(self) -> None:
-        from spaceinvasion.runtime.api.http_server import create_api_server
-        from spaceinvasion.runtime.bridge import GameApiBridge
-        from spaceinvasion.session.client import RateLimitError
         from spaceinvasion.core.config import StrategyConfig
         from spaceinvasion.session.executor import ActionExecutor
         from spaceinvasion.core.model import (
@@ -2402,7 +2396,7 @@ class TestTier5Adversarial(unittest.TestCase):
             TutorialTask,
             UnitOffer,
         )
-        from tests.pg_harness import open_test_db as GameDatabase, run_pg_exec, run_pg_query
+        from tests.pg_harness import open_test_db as GameDatabase, run_pg_exec
         from spaceinvasion.planner.heuristics import (
             SOLAR_CELLS_ID,
             plan_actions,

@@ -613,7 +613,10 @@ class TestTier2R2(unittest.TestCase):
             for _ in range(3):
                 ok_atk = h.api.send_command({"command": "attack", "target_coords": "02:380:06", "dry_run": False})
                 self.assertTrue(ok_atk["executed"], ok_atk)
-            attack_fleets = lambda: [f for f in srv.launched_fleets if f.get("mission") == "1"]
+
+            def attack_fleets() -> list[dict[str, object]]:
+                return [f for f in srv.launched_fleets if f.get("mission") == "1"]
+
             self.assertEqual(len(attack_fleets()), 3)
 
             # 4th attack on active light_red MUST be blocked by 3/24h Bash tracker

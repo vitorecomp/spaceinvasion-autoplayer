@@ -3,29 +3,24 @@
 from __future__ import annotations
 
 from dataclasses import asdict
-import inspect
 import json
-import math
-import os
 from pathlib import Path
 import re
 import subprocess
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
 
 import commander
 from tests.e2e.fixtures import (
     evaluate_sequence_score,
-    make_building_offer,
     make_game_state,
     make_midgame_state,
     make_planet,
     make_research_offer,
     make_ship_offer,
 )
-from tests.e2e.harness import E2ETestHarness, FakeSpaceInvasionServer
+from tests.e2e.harness import E2ETestHarness
 from spaceinvasion.core import catalog as game_data
 from spaceinvasion.core.config import (
     StrategyConfig,
@@ -49,10 +44,7 @@ from tests.pg_harness import open_test_db as GameDatabase
 from spaceinvasion.core.model import PlannedAction
 from spaceinvasion.planner.heuristics import (
     BLAST_FURNACE,
-    DEVELOPMENT_CENTER,
     FUSION_PLANT,
-    KRYPTONITE_MINE,
-    PIG_IRON_MINE,
     PIG_IRON_WAREHOUSE,
     RESEARCH_LAB,
     SPICE_MINE,

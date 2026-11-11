@@ -5,7 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 import re
 from typing import Any, Mapping, Optional, Sequence
-import unittest
 
 from spaceinvasion.combat.flight import BashTracker
 from spaceinvasion.combat.points import (
@@ -19,7 +18,6 @@ from spaceinvasion.core.catalog import SHIP_SLUG_BY_KEY
 from spaceinvasion.parsing.models import SpyReport
 from spaceinvasion.core.config import (
     StrategyConfig,
-    strategy_config_from_dict,
 )
 from spaceinvasion.core.model import (
     BuildingOffer,
@@ -31,7 +29,6 @@ from spaceinvasion.core.model import (
     ResearchOffer,
     Resources,
     TutorialStatus,
-    TutorialTask,
     UnitOffer,
 )
 

@@ -2,14 +2,7 @@
 
 from __future__ import annotations
 
-import inspect
-import json
 import math
-import os
-from pathlib import Path
-import re
-import sys
-import tempfile
 import time
 import unittest
 
@@ -18,7 +11,6 @@ from tests.e2e.fixtures import (
     evaluate_sequence_score,
     make_building_offer,
     make_game_state,
-    make_midgame_state,
     make_planet,
     make_research_offer,
     make_ship_offer,
@@ -34,12 +26,9 @@ from spaceinvasion.core.model import (
     GameState,
     Resources,
 )
-from tests.pg_harness import open_test_db as GameDatabase
 from spaceinvasion.planner.heuristics import (
     BLAST_FURNACE,
-    FUSION_PLANT,
     PIG_IRON_MINE,
-    RESEARCH_LAB,
     SOLAR_CELLS_ID,
     plan_actions,
 )
