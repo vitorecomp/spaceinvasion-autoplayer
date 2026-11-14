@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import os
 from pathlib import Path
 import signal
 import subprocess
@@ -12,6 +11,7 @@ import threading
 import time
 from typing import Mapping, Optional, Sequence
 
+from spaceinvasion.core.env import get_env, get_process_env
 from spaceinvasion.runtime.cli_support import terminate_child as _terminate_child
 
 RELOAD_CHILD_ENV = "SPACEINVASION_RELOAD_CHILD"
@@ -177,20 +177,20 @@ def watch_and_run(
     debounce_seconds: float = 0.25,
 ) -> int:
     """Run `cmd` as a supervised child process, restarting on watched file edits."""
-    env = os.environ.copy()
+    env = get_process_env()
     env[RELOAD_CHILD_ENV] = "1"
     env.setdefault("PYTHONUNBUFFERED", "1")
 
     is_main = threading.current_thread() is threading.main_thread()
     prev_sigterm = signal.getsignal(signal.SIGTERM) if is_main else None
 
-    def _on_sigterm(_signum, _frame) -> None:
+    def _on_sigterm(_signum: int, _frame: object) -> None:
         raise KeyboardInterrupt
 
     if is_main:
         signal.signal(signal.SIGTERM, _on_sigterm)
 
-    proc: Optional[subprocess.Popen] = None
+    proc: Optional[subprocess.Popen[bytes]] = None
     try:
         mtimes = snapshot_mtimes(watch_paths)
         digests = _snapshot_digests(mtimes)
@@ -247,7 +247,7 @@ def watch_and_run(
 
 def should_spawn_reloader(reload_flag: bool) -> bool:
     """Return True when `--reload` was requested and we are not already the child."""
-    return reload_flag and os.environ.get(RELOAD_CHILD_ENV) != "1"
+    return reload_flag and get_env(RELOAD_CHILD_ENV) != "1"
 
 
 def strip_reload_args(argv: Sequence[str]) -> list[str]:

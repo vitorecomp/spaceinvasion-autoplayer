@@ -62,6 +62,7 @@ force-sort-within-sections = true
 python_version = "3.12"
 ignore_missing_imports = true
 warn_unused_configs = true
+explicit_package_bases = true
 check_untyped_defs = false
 disallow_untyped_defs = false
 exclude = [
@@ -70,7 +71,6 @@ exclude = [
     "^frontend/",
 ]
 
-# Rewritten packages opt into strict checking here as phases progress:
-# [[tool.mypy.overrides]]
-# module = ["spaceinvasion.core.*"]
-# strict = true
+[[tool.mypy.overrides]]
+module = ["spaceinvasion.*", "bin.*", "scripts.*"]
+strict = true

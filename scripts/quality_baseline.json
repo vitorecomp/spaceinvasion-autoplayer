@@ -3,13 +3,7 @@
     "broad_except": {},
     "class_loc": {},
     "environ_reads": {
-      "bin/game_api.py": 1,
-      "bin/login.py": 1,
-      "bin/run_stack.py": 2,
-      "spaceinvasion/runtime/postgres_ctl.py": 1,
-      "spaceinvasion/runtime/reloader.py": 2,
-      "spaceinvasion/session/auth.py": 2,
-      "spaceinvasion/session/browser.py": 3
+      "spaceinvasion/core/env.py": 2
     },
     "function_loc": {},
     "module_loc": {},

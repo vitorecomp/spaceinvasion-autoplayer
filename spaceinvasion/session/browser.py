@@ -13,6 +13,7 @@ from typing import Any, Optional
 import urllib.error
 import urllib.request
 
+from spaceinvasion.core.env import get_env
 from spaceinvasion.session._browser_driver import (
     _SELENIUM_AVAILABLE,
     By,
@@ -62,9 +63,9 @@ from spaceinvasion.session.auth import (
     save_session_cookies,
 )
 
-DEFAULT_DEBUG_HOST = os.environ.get("SPACEINVASION_CHROME_HOST", "127.0.0.1").strip() or "127.0.0.1"
-DEFAULT_DEBUG_PORT = int(os.environ.get("SPACEINVASION_CHROME_PORT", "9222"))
-DEFAULT_PROFILE_ROOT = Path(os.environ.get("SPACEINVASION_PROFILE_DIR", "data/browser_profile"))
+DEFAULT_DEBUG_HOST = get_env("SPACEINVASION_CHROME_HOST", "127.0.0.1").strip() or "127.0.0.1"
+DEFAULT_DEBUG_PORT = int(get_env("SPACEINVASION_CHROME_PORT", "9222"))
+DEFAULT_PROFILE_ROOT = Path(get_env("SPACEINVASION_PROFILE_DIR", "data/browser_profile"))
 
 
 @dataclass(frozen=True)

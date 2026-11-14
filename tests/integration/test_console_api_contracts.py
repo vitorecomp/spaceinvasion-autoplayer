@@ -9,13 +9,15 @@ import tempfile
 import threading
 from unittest.mock import MagicMock, patch
 
+import pytest
 import requests
 
 from spaceinvasion.core.config import StrategyConfig
 from spaceinvasion.core.model import EnergyBalance, GameState, PlanetState, Resources
 from spaceinvasion.db.config_store import load_strategy_config
-import spaceinvasion.runtime.api_server as api_mod
-from spaceinvasion.runtime.api_server import GameApiBridge, create_api_server
+import spaceinvasion.runtime.api.http_server as http_mod
+from spaceinvasion.runtime.api.http_server import create_api_server
+from spaceinvasion.runtime.bridge import GameApiBridge, compute_ui_assets_state
 from tests.e2e.harness import E2ETestHarness
 
 REPO_ROOT: Path = Path(__file__).resolve().parents[2]
@@ -77,7 +79,7 @@ def test_temp_ui_dir_serves_bundle_tracks_versions_and_blocks_traversal(tmp_path
     (fake_ui / "app.js").write_text("console.log('v1');", encoding="utf-8")
     (assets_dir / "chunk-test.js").write_text("export const v = 1;\n", encoding="utf-8")
 
-    with patch.object(api_mod, "UI_DIR", fake_ui):
+    with patch.object(http_mod, "UI_DIR", fake_ui):
         with E2ETestHarness(config=StrategyConfig()) as h:
             r_html = requests.get(f"{h.base_url}/", timeout=5.0)
             r_css = requests.get(f"{h.base_url}/styles.css", timeout=5.0)
@@ -97,15 +99,42 @@ def test_temp_ui_dir_serves_bundle_tracks_versions_and_blocks_traversal(tmp_path
             assert ver["ok"] is True
             assert isinstance(ver.get("server_boot_id"), str) and bool(ver["server_boot_id"])
 
-            v1 = api_mod.compute_ui_assets_state(fake_ui)
+            v1 = compute_ui_assets_state(fake_ui)
             (fake_ui / "styles.css").write_text("body{background:#091015;}", encoding="utf-8")
-            v2 = api_mod.compute_ui_assets_state(fake_ui)
+            v2 = compute_ui_assets_state(fake_ui)
             assert v2["code_version"] == v1["code_version"]
             assert v2["css_version"] != v1["css_version"]
 
             (fake_ui / "app.js").write_text("console.log('v2');", encoding="utf-8")
-            v3 = api_mod.compute_ui_assets_state(fake_ui)
+            v3 = compute_ui_assets_state(fake_ui)
             assert v3["code_version"] != v2["code_version"]
+
+
+def test_spaceinvasion_ui_dir_env_fallback_and_explicit_override(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`SPACEINVASION_UI_DIR` serves bundle when `ui_dir=None`, and explicit `ui_dir` overrides it."""
+    env_ui = tmp_path / "env_ui"
+    explicit_ui = tmp_path / "explicit_ui"
+    env_ui.mkdir()
+    explicit_ui.mkdir()
+    (env_ui / "index.html").write_text("<!doctype html><div>FROM_ENV_UI</div>", encoding="utf-8")
+    (explicit_ui / "index.html").write_text("<!doctype html><div>FROM_EXPLICIT_UI</div>", encoding="utf-8")
+
+    monkeypatch.setenv("SPACEINVASION_UI_DIR", str(env_ui))
+    with E2ETestHarness(config=StrategyConfig()) as h:
+        r_env = requests.get(f"{h.base_url}/", timeout=5.0)
+        assert r_env.status_code == 200 and "FROM_ENV_UI" in r_env.text
+
+        srv_explicit = create_api_server(h.bridge, host="127.0.0.1", port=0, ui_dir=explicit_ui)
+        t_explicit = threading.Thread(target=srv_explicit.serve_forever, daemon=True)
+        t_explicit.start()
+        try:
+            r_exp = requests.get(f"http://127.0.0.1:{srv_explicit.server_address[1]}/", timeout=5.0)
+            assert r_exp.status_code == 200 and "FROM_EXPLICIT_UI" in r_exp.text
+        finally:
+            srv_explicit.shutdown()
+            srv_explicit.server_close()
 
 
 def test_protected_target_spy_records_block_with_zero_operator_notifications() -> None:
@@ -134,8 +163,8 @@ def test_protected_target_spy_records_block_with_zero_operator_notifications() -
             client_factory=lambda _port: fake_client,
             ensure_session_fn=lambda: None,
         )
-        bridge._record_state(state, fetched_buildings=True, fetched_home=True, observed_active_planet=True)
-        bridge._last_snapshot_at = 1e9
+        bridge.state_cache.record_state(state, fetched_buildings=True, fetched_home=True, observed_active_planet=True)
+        bridge.ctx.last_snapshot_at = 1e9
         server = create_api_server(bridge, host="127.0.0.1", port=0)
         base_url = f"http://127.0.0.1:{server.server_address[1]}"
         thread = threading.Thread(target=server.serve_forever, daemon=True)

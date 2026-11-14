@@ -13,6 +13,7 @@ from dotenv import dotenv_values
 import requests
 
 from spaceinvasion.core import catalog as game_data
+from spaceinvasion.core.env import get_env, get_process_env
 from spaceinvasion.session._auth_http import (
     assert_no_antibot as _assert_no_antibot,
 )
@@ -60,7 +61,7 @@ from spaceinvasion.session.http_pools import (
 )
 
 BASE_URL = "https://spaceinvasion.bitmeup.com"
-DEFAULT_SESSIONS_DIR = Path(os.environ.get("SPACEINVASION_SESSIONS_DIR", "data/sessions"))
+DEFAULT_SESSIONS_DIR = Path(get_env("SPACEINVASION_SESSIONS_DIR", "data/sessions"))
 DEFAULT_USER_AGENT = (
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 )
@@ -77,7 +78,7 @@ def load_credentials(
     if resolved_env.exists():
         raw_values = dotenv_values(resolved_env)
         merged.update({k: v for k, v in raw_values.items() if v is not None})
-    source_env = os.environ if environ is None else environ
+    source_env = get_process_env() if environ is None else environ
     merged.update({k: v for k, v in source_env.items() if v is not None})
 
     tag = _normalize_account_tag(account)

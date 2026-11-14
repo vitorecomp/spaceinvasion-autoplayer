@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import argparse
 import math
-import os
 from pathlib import Path
 import signal
 import subprocess
@@ -23,8 +22,9 @@ if str(_REPO_ROOT) not in sys.path:
 from spaceinvasion.runtime.cli_support import maybe_reexec_venv, safe_cli_str  # noqa: E402
 from spaceinvasion.runtime.cli_support import terminate_child as _stop_proc  # noqa: E402
 
-maybe_reexec_venv(_REPO_ROOT, skip=os.environ.get("SPACEINVASION_NO_REEXEC") == "1")
+maybe_reexec_venv(_REPO_ROOT)
 
+from spaceinvasion.core.env import get_process_env  # noqa: E402
 from spaceinvasion.core.redaction import redact_sensitive  # noqa: E402
 from spaceinvasion.runtime.bridge import ensure_debug_browser_ready  # noqa: E402
 from spaceinvasion.session.auth import SpaceInvasionAuthError  # noqa: E402
@@ -187,7 +187,7 @@ def main(argv: list[str] | None = None) -> int:
     if is_main:
         signal.signal(signal.SIGTERM, _sigterm)
 
-    child_env = os.environ.copy()
+    child_env = get_process_env()
     child_env.setdefault("PYTHONUNBUFFERED", "1")
     api_proc: Optional[subprocess.Popen[bytes]] = None
     cmd_proc: Optional[subprocess.Popen[bytes]] = None

@@ -9,6 +9,7 @@ from spaceinvasion.runtime.bridge._helpers import (
     UI_DIR,
     GalaxyScanInProgressError,
     ensure_debug_browser_ready,
+    resolve_ui_dir,
 )
 from spaceinvasion.runtime.bridge._helpers_sig import compute_ui_assets_state
 from spaceinvasion.runtime.bridge.bridge import GameApiBridge, ModularGameApiBridge
@@ -53,4 +54,5 @@ __all__ = [
     "compute_section_version",
     "compute_ui_assets_state",
     "ensure_debug_browser_ready",
+    "resolve_ui_dir",
 ]

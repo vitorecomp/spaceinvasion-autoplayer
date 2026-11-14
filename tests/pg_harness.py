@@ -178,11 +178,11 @@ def install_libpq_guard() -> None:
             _assert_hermetic_libpq_dsn(conninfo, pool_kw if isinstance(pool_kw, dict) else None)
             _ORIG_ASYNC_POOL_INIT(self, conninfo, *args, **kwargs)
 
-        psycopg.connect = _guarded_psycopg_connect  # type: ignore[assignment]
+        psycopg.connect = _guarded_psycopg_connect
         psycopg.Connection.connect = classmethod(_guarded_conn_connect)  # type: ignore[assignment,method-assign]
         psycopg.AsyncConnection.connect = classmethod(_guarded_async_connect)  # type: ignore[assignment,method-assign]
-        psycopg_pool.ConnectionPool.__init__ = _guarded_pool_init  # type: ignore[assignment,method-assign]
-        psycopg_pool.AsyncConnectionPool.__init__ = _guarded_async_pool_init  # type: ignore[assignment,method-assign]
+        psycopg_pool.ConnectionPool.__init__ = _guarded_pool_init  # type: ignore[method-assign]
+        psycopg_pool.AsyncConnectionPool.__init__ = _guarded_async_pool_init  # type: ignore[method-assign]
         _LIBPQ_GUARD_INSTALLED = True
 
 
@@ -888,7 +888,7 @@ class PostgresTestRedirector:
                             return gw.get_rank_samples()
                         finally:
                             gw.close()
-                return redirector._orig_load_rank_history(history_path)
+                return list(redirector._orig_load_rank_history(history_path))
 
             def _wrapped_load_cfg_json(path: Any = None) -> Any:
                 if redirector._enabled and path is not None:
@@ -904,12 +904,12 @@ class PostgresTestRedirector:
                         return redirector._orig_save_cfg(cfg, mapped)
                 return redirector._orig_save_cfg_json(cfg, path)
 
-            ctx_init_mod.open_runtime_gateway = _wrapped_open_gateway  # type: ignore[assignment]
-            config_store_mod.load_strategy_config = _wrapped_load_cfg  # type: ignore[assignment]
-            config_store_mod.save_strategy_config = _wrapped_save_cfg  # type: ignore[assignment]
-            config_mod.load_strategy_config = _wrapped_load_cfg_json  # type: ignore[assignment]
-            config_mod.save_strategy_config = _wrapped_save_cfg_json  # type: ignore[assignment]
-            points_mod.load_rank_history = _wrapped_load_rank_history  # type: ignore[assignment]
+            ctx_init_mod.open_runtime_gateway = _wrapped_open_gateway
+            config_store_mod.load_strategy_config = _wrapped_load_cfg
+            config_store_mod.save_strategy_config = _wrapped_save_cfg
+            config_mod.load_strategy_config = _wrapped_load_cfg_json
+            config_mod.save_strategy_config = _wrapped_save_cfg_json
+            points_mod.load_rank_history = _wrapped_load_rank_history
             _ = dsn_mod.is_unix_socket_dsn
             self._installed = True
 

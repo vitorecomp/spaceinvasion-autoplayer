@@ -9,7 +9,7 @@ import time
 from typing import Any, Optional
 
 from spaceinvasion.combat._scanner_batch import select_smart_galaxy_scan_batch as select_smart_galaxy_scan_batch
-from spaceinvasion.combat._scanner_sectors import score_galaxy_scan_sectors
+from spaceinvasion.combat._scanner_sectors import score_galaxy_scan_sectors as score_galaxy_scan_sectors
 from spaceinvasion.combat._scanner_walk import order_sectors_for_smooth_walk as order_sectors_for_smooth_walk
 from spaceinvasion.core.config import StrategyConfig
 from spaceinvasion.core.coords import ARROW_NAV_MAX_DISTANCE as ARROW_NAV_MAX_DISTANCE

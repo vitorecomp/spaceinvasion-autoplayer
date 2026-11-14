@@ -9,6 +9,7 @@ import subprocess
 import sys
 
 from spaceinvasion.core.coercion import fmt_compact_int, safe_key
+from spaceinvasion.core.env import get_env
 from spaceinvasion.core.redaction import redact_sensitive
 
 _SAFE_TEXT_EXCS = (
@@ -24,9 +25,10 @@ _SAFE_TEXT_EXCS = (
 )
 
 
-def maybe_reexec_venv(repo_root: Path, *, skip: bool = False) -> None:
+def maybe_reexec_venv(repo_root: Path, *, skip: bool | None = None) -> None:
     """Re-exec the current CLI script with `<repo_root>/.venv/bin/python3` when needed."""
-    if skip or sys.prefix != sys.base_prefix:
+    resolved_skip = (get_env("SPACEINVASION_NO_REEXEC") == "1") if skip is None else skip
+    if resolved_skip or sys.prefix != sys.base_prefix:
         return
     venv_python = repo_root / ".venv" / "bin" / "python3"
     if venv_python.exists() and os.path.abspath(sys.executable) != os.path.abspath(venv_python):

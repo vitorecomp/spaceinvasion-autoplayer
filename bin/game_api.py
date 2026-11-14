@@ -9,7 +9,6 @@ supports `--reload` so API/parser edits restart the server without closing Chrom
 from __future__ import annotations
 
 import argparse
-import os
 from pathlib import Path
 import signal
 import sys
@@ -21,12 +20,13 @@ if str(_REPO_ROOT) not in sys.path:
 
 from spaceinvasion.runtime.cli_support import maybe_reexec_venv, safe_cli_str  # noqa: E402
 
-maybe_reexec_venv(_REPO_ROOT, skip=os.environ.get("SPACEINVASION_NO_REEXEC") == "1")
+maybe_reexec_venv(_REPO_ROOT)
 
+from spaceinvasion.core.env import get_env  # noqa: E402
 from spaceinvasion.core.redaction import redact_sensitive  # noqa: E402
 from spaceinvasion.runtime.api.http_server import create_api_server  # noqa: E402
 from spaceinvasion.runtime.bridge import GameApiBridge, ensure_debug_browser_ready  # noqa: E402
-from spaceinvasion.runtime.postgres_ctl import get_process_env, is_container_runtime  # noqa: E402
+from spaceinvasion.runtime.postgres_ctl import is_container_runtime  # noqa: E402
 from spaceinvasion.runtime.reloader import (  # noqa: E402
     current_python_cmd,
     discover_watch_paths,
@@ -101,7 +101,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--ui-dir",
         type=Path,
-        default=Path(ui_dir_env) if (ui_dir_env := get_process_env().get("SPACEINVASION_UI_DIR")) else None,
+        default=Path(ui_dir_env) if (ui_dir_env := get_env("SPACEINVASION_UI_DIR").strip()) else None,
         help="Optional directory serving the compiled Web Operator Console bundle (defaults to SPACEINVASION_UI_DIR or spaceinvasion/ui).",
     )
     parser.add_argument(

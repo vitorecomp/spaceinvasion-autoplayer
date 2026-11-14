@@ -12,6 +12,7 @@ from selenium.common.exceptions import WebDriverException
 
 from spaceinvasion.core import catalog as game_data
 from spaceinvasion.core.catalog.json_sanitize import sanitize_json_tree
+from spaceinvasion.core.env import get_env
 from spaceinvasion.core.redaction import format_clean_error, redact_text
 from spaceinvasion.core.redaction import redact_api_payload as _core_redact_api_payload
 from spaceinvasion.runtime.api.validation import ApiRequestError
@@ -46,6 +47,18 @@ BRIDGE_RUNTIME_ERRORS: tuple[type[Exception], ...] = (
 
 REPO_ROOT_DIR = Path(__file__).resolve().parents[3]
 UI_DIR = Path(__file__).resolve().parents[2] / "ui"
+
+
+def resolve_ui_dir(explicit: Path | None = None, *, default_dir: Path | None = None) -> Path:
+    """Resolve UI bundle directory from `--ui-dir`, `SPACEINVASION_UI_DIR`, or package default."""
+    if explicit is not None:
+        return Path(explicit)
+    raw_env = get_env("SPACEINVASION_UI_DIR").strip()
+    if raw_env:
+        return Path(raw_env)
+    return UI_DIR if default_dir is None else Path(default_dir)
+
+
 MAX_REQUEST_BYTES = 1_048_576
 SERVER_BOOT_ID = secrets.token_hex(4)
 

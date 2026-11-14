@@ -24,7 +24,7 @@ if str(_REPO_ROOT) not in sys.path:
 
 from spaceinvasion.runtime.cli_support import maybe_reexec_venv, safe_cli_str  # noqa: E402
 
-maybe_reexec_venv(_REPO_ROOT, skip=os.environ.get("SPACEINVASION_NO_REEXEC") == "1")
+maybe_reexec_venv(_REPO_ROOT)
 
 from spaceinvasion.core import catalog as game_data  # noqa: E402
 from spaceinvasion.core.redaction import redact_sensitive  # noqa: E402

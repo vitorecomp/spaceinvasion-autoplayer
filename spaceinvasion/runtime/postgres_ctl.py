@@ -15,6 +15,7 @@ import threading
 import time
 from urllib.parse import urlparse
 
+from spaceinvasion.core.env import get_process_env as get_process_env
 from spaceinvasion.core.redaction import redact_sensitive
 from spaceinvasion.db.dsn import (
     DEFAULT_PG_DB,
@@ -31,11 +32,6 @@ DEFAULT_PODMAN_CONTAINER_NAME: str = "spaceinvasion_postgres"
 
 _PODMAN_STATUS_LOCK = threading.Lock()
 _PODMAN_STATUS_CACHE: tuple[float, dict[str, object]] = (0.0, {})
-
-
-def get_process_env() -> dict[str, str]:
-    """Return a snapshot copy of the current process environment (single explicit env boundary)."""
-    return dict(os.environ)
 
 
 def is_container_runtime(env: Mapping[str, str] | None = None) -> bool:

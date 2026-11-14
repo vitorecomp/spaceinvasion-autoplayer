@@ -1296,12 +1296,12 @@ class FakeWebElement:
     def get_attribute(self, name: str) -> Optional[str]:
         self._assert_fresh()
         if name == "textContent":
-            return self._tag.get_text()
+            return str(self._tag.get_text())
         val = self._tag.get(name)
         if name in ("selected", "checked", "disabled", "multiple"):
             return "true" if self._tag.has_attr(name) else None
         if name == "value" and self._tag.name == "option" and val is None:
-            return self._tag.get_text(strip=True)
+            return str(self._tag.get_text(strip=True))
         if val is None:
             return None
         if isinstance(val, list):
@@ -1322,7 +1322,7 @@ class FakeWebElement:
 
     def is_selected(self) -> bool:
         self._assert_fresh()
-        return self._tag.has_attr("selected") or self._tag.has_attr("checked")
+        return bool(self._tag.has_attr("selected") or self._tag.has_attr("checked"))
 
     def find_element(self, by: str, value: str) -> FakeWebElement:
         self._assert_fresh()

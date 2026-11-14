@@ -31,6 +31,7 @@ from spaceinvasion.runtime.bridge._helpers import (
     UI_DIR,
     GalaxyScanInProgressError,
     redact_api_payload,
+    resolve_ui_dir,
     sanitize_finite_json,
     sanitize_json_dict,
 )
@@ -289,7 +290,7 @@ def create_modular_api_server(
     ui_dir: Path | None = None,
 ) -> ThreadingHTTPServer:
     """Create a local `ThreadingHTTPServer` bound to `host:port` for `bridge` with optional `ui_dir`."""
-    effective_ui_dir = Path(ui_dir) if ui_dir is not None else UI_DIR
+    effective_ui_dir = resolve_ui_dir(ui_dir, default_dir=UI_DIR)
 
     class _BoundApiHandler(_BaseApiRequestHandler):
         pass
