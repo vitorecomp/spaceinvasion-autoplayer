@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
-import socket
 import time as _real_time
 import unittest
 from unittest.mock import patch
@@ -18,7 +16,6 @@ from selenium.webdriver.support.ui import Select
 
 from tests.e2e.fixtures import (
     evaluate_sequence_score,
-    make_building_offer,
     make_game_state,
     make_planet,
     make_ship_offer,
@@ -28,14 +25,15 @@ from tests.e2e.harness import (
     FakeClock,
     FakeDriver,
     FakeSpaceInvasionServer,
-    inspect_ui_html,
-    run_ui_in_node,
 )
-from spaceinvasion.client import GameBrowserClient, RateLimitError
-from spaceinvasion.commander_client import GameApiError
-from spaceinvasion.config import StrategyConfig
-from spaceinvasion.state import Resources
-from spaceinvasion.strategy import PlannedAction
+from spaceinvasion.session.client import (
+    GameBrowserClient,
+    RateLimitError,
+)
+from spaceinvasion.runtime.commander_client import GameApiError
+from spaceinvasion.core.config import StrategyConfig
+from spaceinvasion.core.model import Resources
+from spaceinvasion.core.model import PlannedAction
 
 
 class TestHarnessSelf(unittest.TestCase):
@@ -121,7 +119,7 @@ class TestHarnessSelf(unittest.TestCase):
         self.assertIn("Pig iron mine", b_html)
 
     def test_self_03_fake_server_rolling_throttle_and_stale_f_planets(self) -> None:
-        import spaceinvasion.client as client_mod
+        import spaceinvasion.session.client as client_mod
 
         clock = FakeClock()
         srv = FakeSpaceInvasionServer(clock=clock, rate_limit_threshold=3, server_cooldown_s=50.0)
@@ -181,8 +179,12 @@ class TestHarnessSelf(unittest.TestCase):
             auto_offers=True,
         )
         state = make_game_state(planets=(cold, warm), researches={"r1": 5}, speedup_factor=1.0)
-        act_cold = PlannedAction("P2", "BUILD", 101, "02:380:15", "Spice mine", "test", target_id=4, target_level=5, executable_now=True)
-        act_warm = PlannedAction("P2", "BUILD", 102, "02:380:02", "Spice mine", "test", target_id=4, target_level=5, executable_now=True)
+        act_cold = PlannedAction(
+            "P2", "BUILD", 101, "02:380:15", "Spice mine", "test", target_id=4, target_level=5, executable_now=True
+        )
+        act_warm = PlannedAction(
+            "P2", "BUILD", 102, "02:380:02", "Spice mine", "test", target_id=4, target_level=5, executable_now=True
+        )
 
         eval_cold = evaluate_sequence_score(state, [act_cold], config=StrategyConfig())
         eval_warm = evaluate_sequence_score(state, [act_warm], config=StrategyConfig())
@@ -191,47 +193,24 @@ class TestHarnessSelf(unittest.TestCase):
         self.assertGreater(eval_cold.final_income_spice_eq, eval_warm.final_income_spice_eq)
 
         # Illegal asteroid mine detected as violation
-        astro = make_planet(planet_id=200, coords="02:380:05", planet_type="asteroid", fields_max=30, buildings={"b7": 2})
+        astro = make_planet(
+            planet_id=200, coords="02:380:05", planet_type="asteroid", fields_max=30, buildings={"b7": 2}
+        )
         astro_state = make_game_state(planets=(astro,))
-        bad_act = PlannedAction("P2", "BUILD", 200, "02:380:05", "Pig iron mine", "illegal", target_id=1, target_level=1, executable_now=True)
+        bad_act = PlannedAction(
+            "P2",
+            "BUILD",
+            200,
+            "02:380:05",
+            "Pig iron mine",
+            "illegal",
+            target_id=1,
+            target_level=1,
+            executable_now=True,
+        )
         eval_bad = evaluate_sequence_score(astro_state, [bad_act])
         self.assertFalse(eval_bad.legal)
         self.assertGreaterEqual(len(eval_bad.violations), 1)
-
-    def test_self_05_real_ui_in_node_loads_and_interacts_with_live_http_api(self) -> None:
-        with E2ETestHarness() as h:
-            h.api.get_state(include_buildings=True)
-            dash = h.get_dashboard(refresh=0)
-            self.assertTrue(dash["ok"])
-            res = run_ui_in_node(
-                h.base_url,
-                """
-                const ok = await __waitUntil(() => __serializeTable("dash-plan-tbody").length > 0 && !document.querySelector("#dash-plan-tbody td.empty-cell"), 4000);
-                if (!ok) throw new Error("Timed out waiting for dash-plan-tbody");
-                document.querySelector('[data-page="operations"]').click();
-                const opsOk = await __waitUntil(() => !document.getElementById("view-operations").hidden, 2000);
-                if (!opsOk) throw new Error("Operations view remained hidden");
-                const probe = document.createElement("div");
-                probe.style.setProperty("display", "none");
-                const propDisplay = probe.style.getPropertyValue("display");
-                const inlineAttr = probe.getAttribute("style");
-                const dashRows = __serializeTable("dash-plan-tbody");
-                const planRows = __serializeTable("plan-tbody");
-                const opsHidden = document.getElementById("view-operations").hidden;
-                const badge = __snapshotElement("plan-count-badge");
-                return { dashRows, planRows, opsHidden, badge, propDisplay, inlineAttr };
-                """,
-            )
-            self.assertEqual(res["errors"], [])
-            sc = res["scenario"]
-            self.assertFalse(sc["opsHidden"])
-            self.assertEqual(sc["propDisplay"], "none")
-            self.assertIn("display: none", sc["inlineAttr"])
-            self.assertGreaterEqual(len(sc["dashRows"]), 1)
-            self.assertGreaterEqual(len(sc["planRows"]), 1)
-            self.assertIn("TASKS", sc["badge"]["textContent"])
-            self.assertTrue(res["htmlInspection"]["dash_plan"]["found"])
-            self.assertTrue(res["htmlInspection"]["ops_plan"]["found"])
 
     def test_self_06_bridge_restart_persists_sqlite_and_config_in_same_tempdir(self) -> None:
         with E2ETestHarness() as h:
@@ -240,7 +219,9 @@ class TestHarnessSelf(unittest.TestCase):
                 before_views = h.api.health()["page_views_last_60s"]
                 h.page_limiter.record_view(1)
                 self.assertEqual(h.api.health()["page_views_last_60s"], before_views + 1)
-            h.api.send_command({"command": "update_config", "config": {"playstyle": "miner", "max_actions_per_hour": 19}})
+            h.api.send_command(
+                {"command": "update_config", "config": {"playstyle": "miner", "max_actions_per_hour": 19}}
+            )
             h.api.send_command({"command": "scan_galaxy", "galaxy": 2, "system": 381, "dry_run": False})
             port_before = h.port
             h.restart_bridge()
@@ -290,13 +271,13 @@ class TestHarnessSelf(unittest.TestCase):
                     h8.api.send_command({"command": "build", "building_id": 1, "dry_run": False})
 
     def test_self_07_enter_exception_rolls_back_patches_and_tmpdir(self) -> None:
-        import spaceinvasion.api_server as api_server_mod
-        import spaceinvasion.client as client_mod
-        import spaceinvasion.ranking as ranking_mod
+        import spaceinvasion.combat._rank_history as rank_history_mod
+        import spaceinvasion.session.browser as browser_mod
+        import spaceinvasion.session.client as client_mod
 
         orig_client_time = client_mod.time
-        orig_ranking_time = ranking_mod.time
-        orig_dbg_fn = api_server_mod.is_debug_port_open
+        orig_ranking_time = rank_history_mod.time
+        orig_dbg_fn = browser_mod.is_debug_port_open
         orig_default_lim = getattr(client_mod, "_DEFAULT_PAGE_VIEW_LIMITER", None)
         orig_cls_lim = getattr(GameBrowserClient, "page_limiter", None)
 
@@ -314,8 +295,8 @@ class TestHarnessSelf(unittest.TestCase):
                 h.__enter__()
 
         self.assertIs(client_mod.time, orig_client_time)
-        self.assertIs(ranking_mod.time, orig_ranking_time)
-        self.assertIs(api_server_mod.is_debug_port_open, orig_dbg_fn)
+        self.assertIs(rank_history_mod.time, orig_ranking_time)
+        self.assertIs(browser_mod.is_debug_port_open, orig_dbg_fn)
         self.assertIs(getattr(client_mod, "_DEFAULT_PAGE_VIEW_LIMITER", None), orig_default_lim)
         self.assertIs(getattr(GameBrowserClient, "page_limiter", None), orig_cls_lim)
         self.assertIs(_real_time, orig_client_time)

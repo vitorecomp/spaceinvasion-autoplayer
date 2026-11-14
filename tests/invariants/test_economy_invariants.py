@@ -10,10 +10,10 @@ import unittest
 
 import pytest
 
-from spaceinvasion.combat.ranking import estimate_planet_hourly_economy
-from spaceinvasion.core import game_data
+from spaceinvasion.planner.eta import estimate_planet_hourly_economy
+from spaceinvasion.core import catalog as game_data
 from spaceinvasion.core.config import StrategyConfig
-from spaceinvasion.core.state import (
+from spaceinvasion.core.model import (
     BuildingOffer,
     EnergyBalance,
     FleetAlert,
@@ -25,7 +25,7 @@ from spaceinvasion.core.state import (
     TutorialTask,
     UnitOffer,
 )
-from spaceinvasion.planner.strategy import plan_actions
+from spaceinvasion.planner.heuristics import plan_actions
 
 pytestmark = pytest.mark.invariants
 
@@ -119,11 +119,7 @@ class TestEconomyInvariants(unittest.TestCase):
             31, 1, "Cmdr", 1_700_000_000.0, (planet_surplus,), active_planet_id=101, tutorial=tutorial
         )
         acts_surplus = plan_actions(state_surplus, config=StrategyConfig(planner_mode="priority"))
-        tut_build_ids = [
-            a.target_id
-            for a in acts_surplus
-            if a.kind == "BUILD" and "Tutorial" in a.reason
-        ]
+        tut_build_ids = [a.target_id for a in acts_surplus if a.kind == "BUILD" and "Tutorial" in a.reason]
         self.assertIn(5, tut_build_ids)
         self.assertIn(1, tut_build_ids)
         self.assertIn(3, tut_build_ids)
@@ -174,9 +170,7 @@ class TestEconomyInvariants(unittest.TestCase):
             building_offers=(
                 BuildingOffer(1, "Pig iron mine", 3, 4, Resources(500, 0, 200, 0), False, "Need resources", None),
             ),
-            ship_offers=(
-                UnitOffer(4, "Small fighter", 0, Resources(3000, 1000, 0, 0), False, "Locked", None),
-            ),
+            ship_offers=(UnitOffer(4, "Small fighter", 0, Resources(3000, 1000, 0, 0), False, "Locked", None),),
         )
         state = GameState(
             universe_id=31,
@@ -192,9 +186,7 @@ class TestEconomyInvariants(unittest.TestCase):
             tutorial=TutorialStatus(
                 step=4,
                 total_steps=11,
-                tasks=(
-                    TutorialTask("Rename your home planet 0/1", "Rename planet", None, 0, 1, "other"),
-                ),
+                tasks=(TutorialTask("Rename your home planet 0/1", "Rename planet", None, 0, 1, "other"),),
             ),
         )
         actions = plan_actions(

@@ -1,30 +1,42 @@
 import React from "react";
-import { feedbackKindForError, safeFiniteNumber } from "../../api/httpClient";
-import { useConsole } from "../../context/ConsoleContext";
+import {
+  feedbackKindForError,
+  safeFiniteNumber } from "../../api/httpClient";
+import { useActivePage,
+  useApiStatus,
+  useAtkData,
+  useColonyData,
+  useConsoleActions,
+  useDashboard,
+  useEspData,
+  useRecData,
+  useSectorsData,
+  useUiPrefs,
+} from "../../store";
 import { isOngoingFleetFlight } from "../../features/operations/planActions";
 import { PageKey } from "../../types/api";
 import { FeedbackBanner } from "./FeedbackBanner";
 
 export const AppSidebar: React.FC = () => {
+  const dashboard = useDashboard();
+  const activePage = useActivePage();
+  const uiPrefs = useUiPrefs();
+  const sectorsData = useSectorsData();
+  const espData = useEspData();
+  const colonyData = useColonyData();
+  const atkData = useAtkData();
+  const recData = useRecData();
+  const { apiOnline, reconnectAttempts } = useApiStatus();
   const {
-    dashboard,
-    apiOnline,
-    reconnectAttempts,
-    activePage,
     setActivePage,
-    uiPrefs,
     setUiPref,
-    sectorsData,
-    espData,
-    colonyData,
-    atkData,
-    recData,
     beginGaCalc,
     endGaCalc,
     loadDashboard,
     apiCommand,
     showFeedback,
-  } = useConsole();
+    getSnapshot,
+  } = useConsoleActions();
 
   const health = dashboard?.health || {};
   const gs = dashboard?.state || {};
@@ -170,7 +182,7 @@ export const AppSidebar: React.FC = () => {
       showFeedback("Syncing live snapshot from Chrome...", "ok");
       const ok = await loadDashboard({ refresh: true, preserveConfig: true, force: true });
       if (ok) {
-        const latestDash = (globalThis as any).state?.dashboard || dashboard;
+        const latestDash = getSnapshot().dashboard || dashboard;
         if ((latestDash as any)?.sweep_deferred_refresh) {
           showFeedback(
             String(

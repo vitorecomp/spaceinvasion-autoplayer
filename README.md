@@ -1,100 +1,92 @@
 # SpaceInvasion Classic Autoplayer
 
-Autonomous strategy engine (`priority` + evolutionary `ga_nn`), topological Action Graph (`DAG`), append-only SQLite universe observatory (`V001..V008` migrations), local HTTP API, and Web Operator Console for **SpaceInvasion Classic** (`https://spaceinvasion.bitmeup.com/?locale=en`).
+Autonomous strategy engine (rule-based `priority` P0–P3 + full-horizon `ai_planner` + `config_opt`), topological Action Graph (`DAG`), append-only **PostgreSQL 16** universe observatory (40 tables via SQLAlchemy 2.0 ORM & Alembic migrations), local HTTP API, and modular React Operator Console for **SpaceInvasion Classic** (`https://spaceinvasion.bitmeup.com/?locale=en`).
 
-See [docs/README.md](docs/README.md) for the full documentation portal, [docs/architecture.md](docs/architecture.md) for the 3-tier runtime design, [docs/database-mer.md](docs/database-mer.md) for the 25-table SQLite MER & migration architecture, [docs/specifications/README.md](docs/specifications/README.md) for the game-mechanics SRS, and [AGENTS.md](AGENTS.md) for contributor/agent rules.
+See [docs/README.md](docs/README.md) for the full documentation portal, [docs/architecture.md](docs/architecture.md) for the modular runtime architecture, [docs/database-mer.md](docs/database-mer.md) for the 40-table PostgreSQL MER & Alembic migrations, [docs/api-commands.md](docs/api-commands.md) for the generated 60-command HTTP API catalog, [docs/settings-reference.md](docs/settings-reference.md) for all 50 `StrategyConfig` settings, and [AGENTS.md](AGENTS.md) for contributor/agent rules.
 
 ## Repository Structure
 
 ```text
 spaceinvasion-autoplayer/
-├── starter.sh             # Supervised live stack launcher with crash auto-restart & CAPTCHA stop guard
-├── bin/                   # 3-tier runtime launchers (run_stack.py, game_api.py, commander.py, login.py)
+├── starter.sh             # Host-mode supervisor (auto-builds stale UI, ensures PG16, restarts crashes, stops on CAPTCHA)
+├── docker-compose.yml     # Docker/Podman 5-container stack (postgres, browser/noVNC, game_api, commander, frontend)
+├── docker/                # Containerfiles (Containerfile.backend builds frontend into /opt/spaceinvasion-ui)
+├── bin/                   # Thin CLI entrypoints (run_stack.py, game_api.py, commander.py, login.py)
 ├── spaceinvasion/         # Modular Python package:
-│   ├── core/              #   game_data.py, state.py, config.py, logging_utils.py
-│   ├── session/           #   auth.py, browser.py, client.py, executor.py
-│   ├── combat/            #   fleet.py, ranking.py
-│   ├── planner/           #   strategy.py, optimizer.py, action_graph.py
-│   ├── db/                #   migrations.py (V001..V007), storage.py
-│   ├── runtime/           #   api_server.py, commander_client.py, reloader.py
-│   └── ui/                #   Web Operator Console (index.html, styles.css, app.js)
-├── scripts/               # Maintenance & DB utilities (db_migrate.py, sync_wiki_data.py)
-├── docs/                  # Unified documentation hub (architecture, MER, manual, specifications/, testing/, notes/)
-├── notebooks/             # Offline analytics & GA+NN experimentation notebooks
-├── tests/                 # Unified test suite (tests/unit/ + tests/e2e/)
-├── config.example.yaml    # Non-secret StrategyConfig template (copy to config.yaml)
-├── .env.example           # Credential profile template (copy to .env)
-└── requirements.txt       # Python dependencies
+│   ├── core/              #   model.py, catalog/, settings/ (50-field schema), redaction/coercion/coords
+│   ├── parsing/           #   Pure HTML/DOM parsers (overview, buildings, galaxy, spy, messages, fleet)
+│   ├── combat/            #   1:1 simulator, Escape flight packer, 3/24h Bash tracker, colony grader, points
+│   ├── planner/           #   heuristics/, ai/, config_opt/, graph/ (Kahn DAG), eta.py
+│   ├── session/           #   auth.py, browser.py, limiter.py, browser_client/, exec_ops/
+│   ├── db/                #   PostgreSQL 16 SQLAlchemy 2.0 ORM (models/, repos/, queries/, session.py, store.py) & Alembic
+│   └── runtime/           #   api/ (declarative @command registry), bridge/ (published snapshots), commander/, reloader.py
+├── frontend/              # Modular React + TypeScript + Vite Operator Console
+├── scripts/               # Quality gates & utilities (check.py, generate_docs.py, enable_pg_stats.py, sync_wiki_data.py)
+├── docs/                  # Unified docs (architecture, database-mer, manual, api-commands, settings-reference, specs)
+├── notebooks/             # Offline strategy & optimizer notebooks (full_planner.ipynb, config_optimizer.ipynb)
+└── tests/                 # Layered tests (tests/invariants/, tests/unit/, tests/e2e/)
 ```
 
-## Architecture (Hot-Reloadable 3-Tier Stack)
+## Architecture (3-Tier Stack on PostgreSQL 16)
 
 ```text
-[Tier 3] bin/commander.py (--reload) / Web Operator Console / curl
-             │  HTTP JSON (GET /state, GET /dashboard, POST /command)
+[Tier 3] bin/commander.py (--reload) / React Operator Console (:8787 or Vite :5173) / curl
+             │  HTTP JSON (GET /health, /bot_status, /state, /dashboard; POST /command)
              ▼
-[Tier 2] bin/game_api.py @ 127.0.0.1:8787 (--reload) + SQLite WAL (state/spaceinvasion.db)
-             │  Thread-locked GameBrowserClient + ActionExecutor
+[Tier 2] bin/game_api.py @ 127.0.0.1:8787 (--reload) ──► PostgreSQL 16 (40 tables, Alembic)
+             │  Serialized browser lock (GameBrowserClient + ActionExecutor)
              ▼
-[Tier 1] Persistent Chrome @ 127.0.0.1:9222 (--detach)
+[Tier 1] Persistent Chrome @ 127.0.0.1:9222 (host --detach or browser container + noVNC :7900)
 ```
 
 ## Quickstart
 
-1. **Install dependencies into `.venv/`**:
+### Option A: Docker / Podman Mode (Recommended)
+
+1. Copy `.env.example` to `.env` and fill in your BitMeUp credentials (`SPACEINVASION_EMAIL`, `SPACEINVASION_PASSWORD`, `SPACEINVASION_UNIVERSE`).
+2. Start all five containers:
+
+```bash
+podman-compose up -d --build
+```
+
+- **Operator Console**: `http://127.0.0.1:8787/` (built into `/opt/spaceinvasion-ui` inside `game_api`) or live Vite dev server at `http://127.0.0.1:5173/`.
+- **Live Browser (noVNC)**: `http://127.0.0.1:7900/vnc.html?autoconnect=true&resize=scale` (for resolving login/CAPTCHA gates).
+- **PostgreSQL 16**: `127.0.0.1:5433` (persisted in `./data/postgres`).
+
+### Option B: Host Mode (`./starter.sh` + PostgreSQL 16)
+
+1. Create `.venv/` and install dependencies:
 
 ```bash
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 ```
 
-2. **Configure credentials in git-ignored `.env`** (see [.env.example](.env.example)):
-
-```env
-SPACEINVASION_EMAIL=you@example.com
-SPACEINVASION_PASSWORD=your-password
-SPACEINVASION_UNIVERSE=RETRO
-```
-
-3. **Strategy configuration** lives directly in SQLite (`state/spaceinvasion.db` `strategy_config_store`, editable live in the Web Operator Console; [config.example.yaml](config.example.yaml) documents all fields).
-
-4. **Launch the full hot-reloadable stack**:
+2. Configure git-ignored `.env` (see [.env.example](.env.example)).
+3. Launch the supervised stack (automatically builds `frontend/` when missing or stale and starts the `postgres` container if needed):
 
 ```bash
 ./starter.sh                              # Supervised live stack with crash auto-restart
-.venv/bin/python3 bin/run_stack.py        # Dry-run commander
-.venv/bin/python3 bin/run_stack.py --live # Live execution in visible Chrome
+./starter.sh --dry-run                    # Dry-run commander (no in-game clicks)
 ```
 
-Or launch individual tiers directly:
-
-```bash
-.venv/bin/python3 bin/login.py --debug-port 9222 --detach
-.venv/bin/python3 bin/game_api.py --reload
-.venv/bin/python3 bin/commander.py --loop --reload --live
-```
-
-Open the **Web Operator Console** at `http://127.0.0.1:8787/`:
+Strategy settings live directly in PostgreSQL (`strategy_config_store`), editable live from the Web Operator Console and documented in [docs/settings-reference.md](docs/settings-reference.md).
 
 ![SpaceInvasion Control UI](docs/images/control-ui.png)
-
-## Database Versioning & Migrations
-
-All telemetry, espionage reports, battle/recycle reports, galaxy history, rank history, full state/plan snapshots, and manual command queues are persisted append-only in `state/spaceinvasion.db` (`V001..V007`):
-
-```bash
-.venv/bin/python3 scripts/db_migrate.py status
-.venv/bin/python3 scripts/db_migrate.py migrate --all --backup
-.venv/bin/python3 scripts/db_migrate.py verify --full-integrity
-.venv/bin/python3 scripts/db_migrate.py backup --label manual_snapshot
-```
 
 ## Verification
 
 ```bash
-# Fast unit & component suite
-.venv/bin/python3 -m unittest discover -s tests/unit -t . -v
+# Static quality gates & doc drift checks
+.venv/bin/python3 scripts/check.py --lint-only
+.venv/bin/python3 scripts/generate_docs.py --check
 
-# Full 4-tier E2E & adversarial suite
-.venv/bin/python3 -m unittest discover -s tests/e2e -t . -v
+# Frontend build & Vitest suite
+npm --prefix frontend run build
+npm --prefix frontend test
+
+# Python invariants, unit & E2E suites (hermetic, disposable PostgreSQL 16)
+.venv/bin/pytest -v tests/invariants/ tests/unit/
+.venv/bin/pytest -v tests/e2e/
 ```

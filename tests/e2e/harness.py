@@ -3,21 +3,20 @@
 from __future__ import annotations
 
 from collections import deque
-from dataclasses import asdict
-from html.parser import HTMLParser
+import importlib
 import inspect
 import json
 from pathlib import Path
+import pkgutil
 import re
 import shutil
-import subprocess
+import sys
 import tempfile
 import threading
 import time as _real_time
-from typing import Any, Callable, Optional
-import unittest
+from typing import Any, Optional
 from unittest.mock import patch
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import parse_qs, urlparse
 
 from bs4 import BeautifulSoup
 from selenium.common.exceptions import (
@@ -28,22 +27,74 @@ from selenium.common.exceptions import (
 from selenium.webdriver.common.by import By
 
 import commander
-import spaceinvasion.api_server as api_server_mod
-from spaceinvasion.api_server import GameApiBridge, create_api_server
-import spaceinvasion.client as client_mod
-from spaceinvasion.client import GameBrowserClient
-from spaceinvasion.commander_client import GameApiClient
-from spaceinvasion.config import StrategyConfig, save_strategy_config
-import spaceinvasion.executor as executor_mod
-import spaceinvasion.fleet as fleet_mod
-from spaceinvasion import game_data
-import spaceinvasion.ranking as ranking_mod
-import spaceinvasion.storage as storage_mod
-import spaceinvasion.strategy as strategy_mod
+import spaceinvasion.runtime.api as api_pkg
+from spaceinvasion.runtime.api.http_server import create_api_server
+import spaceinvasion.runtime.bridge as bridge_pkg
+from spaceinvasion.runtime.bridge import GameApiBridge
+import spaceinvasion.runtime.commander as commander_pkg
+import spaceinvasion.session.browser as browser_mod
+import spaceinvasion.session.client as client_mod
+from spaceinvasion.session.client import GameBrowserClient
+from spaceinvasion.runtime.commander_client import GameApiClient
+from spaceinvasion.core.config import StrategyConfig
+from spaceinvasion.db.config_store import save_strategy_config
+import spaceinvasion.session.executor as executor_mod
+import spaceinvasion.combat.flight as fleet_mod
+import spaceinvasion.combat._rank_history as rank_history_mod
+from spaceinvasion.core import catalog as game_data
+import spaceinvasion.db.storage as storage_mod
+import spaceinvasion.planner.heuristics._fleet_context as fleet_ctx_mod
+import spaceinvasion.planner.heuristics.blast_furnace as blast_furnace_mod
 
 
 def _fmt_dot_int(val: int) -> str:
     return f"{int(val):,}".replace(",", ".")
+
+
+_GAME_BROWSER_CLIENT_PARAMS: frozenset[str] = frozenset(inspect.signature(GameBrowserClient.__init__).parameters)
+_GAME_API_BRIDGE_SIG = inspect.signature(GameApiBridge.__init__)
+_GAME_API_BRIDGE_PARAMS: frozenset[str] = frozenset(_GAME_API_BRIDGE_SIG.parameters)
+_GAME_API_BRIDGE_HAS_VAR_KW: bool = any(
+    p.kind == inspect.Parameter.VAR_KEYWORD for p in _GAME_API_BRIDGE_SIG.parameters.values()
+)
+_CLOCK_PATCH_MODULES: Optional[tuple[Any, ...]] = None
+
+
+def _get_clock_patch_modules() -> tuple[Any, ...]:
+    global _CLOCK_PATCH_MODULES
+    if _CLOCK_PATCH_MODULES is not None:
+        return _CLOCK_PATCH_MODULES
+    import spaceinvasion.db as db_pkg
+
+    clock_mods: list[Any] = [
+        client_mod,
+        executor_mod,
+        storage_mod,
+        fleet_mod,
+        rank_history_mod,
+        fleet_ctx_mod,
+        blast_furnace_mod,
+        commander,
+    ]
+    for pkg in (bridge_pkg, api_pkg, commander_pkg, client_mod, executor_mod, db_pkg):
+        clock_mods.append(pkg)
+        if hasattr(pkg, "__path__"):
+            for mod_info in pkgutil.walk_packages(pkg.__path__, prefix=f"{pkg.__name__}."):
+                if ".migrations." in mod_info.name or mod_info.name.endswith(".migrations"):
+                    continue
+                sub = sys.modules.get(mod_info.name)
+                if sub is None:
+                    sub = importlib.import_module(mod_info.name)
+                clock_mods.append(sub)
+    seen_ids: set[int] = set()
+    unique_mods: list[Any] = []
+    for mod in clock_mods:
+        if id(mod) in seen_ids or "time" not in getattr(mod, "__dict__", {}):
+            continue
+        seen_ids.add(id(mod))
+        unique_mods.append(mod)
+    _CLOCK_PATCH_MODULES = tuple(unique_mods)
+    return _CLOCK_PATCH_MODULES
 
 
 class FakeClock:
@@ -335,12 +386,12 @@ class FakeSpaceInvasionServer:
                 b_map[str(bkey)] = {"name": bname, "level": int(lvl)}
             s_map: dict[str, dict[str, Any]] = {}
             for skey, qty in (p.get("ships") or {}).items():
-                slug = fleet_mod.SHIP_SLUG_BY_KEY.get(str(skey))
+                slug = game_data.SHIP_SLUG_BY_KEY.get(str(skey))
                 sname = (game_data.SHIPS.get(slug or "") or {}).get("name", str(skey))
                 s_map[str(skey)] = {"name": sname, "level": int(qty)}
             d_map: dict[str, dict[str, Any]] = {}
             for dkey, qty in (p.get("defense") or {}).items():
-                slug = fleet_mod.DEFENSE_SLUG_BY_KEY.get(str(dkey))
+                slug = game_data.DEFENSE_SLUG_BY_KEY.get(str(dkey))
                 dname = (game_data.DEFENSES.get(slug or "") or {}).get("name", str(dkey))
                 d_map[str(dkey)] = {"name": dname, "level": int(qty)}
             p_list.append(
@@ -429,9 +480,7 @@ class FakeSpaceInvasionServer:
                 "<html><body><div>Session expired. Please log in again.</div></body></html>",
             )
 
-        if self.inject_antibot and (
-            self.inject_antibot_on_action is None or self.inject_antibot_on_action == action
-        ):
+        if self.inject_antibot and (self.inject_antibot_on_action is None or self.inject_antibot_on_action == action):
             if self.inject_antibot == "turnstile":
                 return (
                     "https://spaceinvasion.bitmeup.com/cdn-cgi/challenge",
@@ -485,7 +534,9 @@ class FakeSpaceInvasionServer:
             with self._render_counter_lock:
                 self._active_renders -= 1
 
-    def _render_frame_inner(self, frame_id: str, url: str, form_data: Optional[dict[str, Any]] = None) -> tuple[str, str]:
+    def _render_frame_inner(
+        self, frame_id: str, url: str, form_data: Optional[dict[str, Any]] = None
+    ) -> tuple[str, str]:
         if self.render_yield_s > 0.0:
             _real_time.sleep(self.render_yield_s)
         parsed = urlparse(url)
@@ -525,10 +576,7 @@ class FakeSpaceInvasionServer:
                 ("internalFleet", "Fleet commands"),
                 ("internalUniverse", "Overview"),
             ]
-            nav_links = " ".join(
-                f'<a href="indexInternal.es?action={act}{sq_amp}">{lbl}</a>'
-                for act, lbl in nav_items
-            )
+            nav_links = " ".join(f'<a href="indexInternal.es?action={act}{sq_amp}">{lbl}</a>' for act, lbl in nav_items)
             gal_link = '<a href="#" onclick="p_galaxy()">Galaxy</a>'
             html = (
                 f"<html><body>"
@@ -557,7 +605,9 @@ class FakeSpaceInvasionServer:
                 self.action_log.append({"action": "claim_tutorial", "step": self.tutorial["step"]})
 
             ap = self._active_planet()
-            newbie_html = "<div>Up to 10.000 points,no attacks can be launched on you!</div>" if self.newbie_protection else ""
+            newbie_html = (
+                "<div>Up to 10.000 points,no attacks can be launched on you!</div>" if self.newbie_protection else ""
+            )
             alerts_html = "".join(
                 f'<div class="attack-alert" id="attack_alert_{i}">{msg}</div>'
                 for i, msg in enumerate(self.hostile_alerts, start=1)
@@ -567,9 +617,7 @@ class FakeSpaceInvasionServer:
                 step = self.tutorial.get("step", 1)
                 total = self.tutorial.get("total_steps", 11)
                 disp = "" if self.tutorial.get("displayed", True) else ' style="display:none"'
-                tasks_html = " ".join(
-                    str(t.get("description") or "") for t in (self.tutorial.get("tasks") or [])
-                )
+                tasks_html = " ".join(str(t.get("description") or "") for t in (self.tutorial.get("tasks") or []))
                 reward_txt = self.tutorial.get("reward_text", "")
                 claim_form = ""
                 if self.tutorial.get("can_complete"):
@@ -579,10 +627,10 @@ class FakeSpaceInvasionServer:
                         '<input type="submit" value="Mission complete"/></form>'
                     )
                 tut_html = (
-                    f'<div>Tutorial {step} / {total}</div>'
+                    f"<div>Tutorial {step} / {total}</div>"
                     '<a id="tutorial.show" href="#">Show</a>'
                     f'<div id="tutorial.text"{disp}>{tasks_html} '
-                    f'You receive the following resources: {reward_txt} {claim_form}</div>'
+                    f"You receive the following resources: {reward_txt} {claim_form}</div>"
                 )
             q_html = ""
             if ap.get("building_queue"):
@@ -622,7 +670,7 @@ class FakeSpaceInvasionServer:
                         if edelta >= 0:
                             ap["energy"]["produced"] += edelta
                         else:
-                            ap["energy"]["used"] += (-edelta)
+                            ap["energy"]["used"] += -edelta
                     else:
                         bname = (game_data.BUILDING_BY_ID.get(bid) or {}).get("name", f"Building {bid}")
                         ap.setdefault("building_queue", []).append(
@@ -667,7 +715,7 @@ class FakeSpaceInvasionServer:
                         continue
                     sid_num = int(m.group(1))
                     skey = f"s{sid_num}"
-                    slug = fleet_mod.SHIP_SLUG_BY_KEY.get(skey)
+                    slug = game_data.SHIP_SLUG_BY_KEY.get(skey)
                     cost = (game_data.SHIPS.get(slug or "") or {}).get("base_cost") or {}
                     res = ap["resources"]
                     res[0] = max(0, res[0] - int(cost.get("pig_iron", 0)) * qty)
@@ -675,8 +723,12 @@ class FakeSpaceInvasionServer:
                     res[2] = max(0, res[2] - int(cost.get("kryptonite", 0)) * qty)
                     res[3] = max(0, res[3] - int(cost.get("spice", 0)) * qty)
                     ap.setdefault("ships", {})[skey] = int(ap["ships"].get(skey, 0)) + qty
-                    self.action_log.append({"action": "build_ship", "planet_id": ap["planet_id"], "sid": sid_num, "qty": qty})
-                return f"indexInternal.es?action=internalWeaponFactory{sq_amp}", self._render_weapon_factory_html(ap, sq_amp)
+                    self.action_log.append(
+                        {"action": "build_ship", "planet_id": ap["planet_id"], "sid": sid_num, "qty": qty}
+                    )
+                return f"indexInternal.es?action=internalWeaponFactory{sq_amp}", self._render_weapon_factory_html(
+                    ap, sq_amp
+                )
 
         if action == "internalBuildings":
             ap = self._active_planet()
@@ -710,18 +762,10 @@ class FakeSpaceInvasionServer:
             def_sys = int(parts[1]) if len(parts) >= 2 else 1
             fd = form_data or {}
             raw_gal = (
-                fd.get("galaxy")
-                or fd.get("gal")
-                or qs.get("galaxy", [None])[0]
-                or qs.get("gal", [None])[0]
-                or def_gal
+                fd.get("galaxy") or fd.get("gal") or qs.get("galaxy", [None])[0] or qs.get("gal", [None])[0] or def_gal
             )
             raw_sys = (
-                fd.get("system")
-                or fd.get("sun")
-                or qs.get("system", [None])[0]
-                or qs.get("sun", [None])[0]
-                or def_sys
+                fd.get("system") or fd.get("sun") or qs.get("system", [None])[0] or qs.get("sun", [None])[0] or def_sys
             )
             gal = max(1, int(raw_gal))
             sys_num = max(1, int(raw_sys))
@@ -763,7 +807,9 @@ class FakeSpaceInvasionServer:
         switcher = self._planet_switcher_html("internalBuildings")
         q_items = ap.get("building_queue") or []
         q_rows = "".join(f"<tr><td>{q['name']} (Level {q['target_level']})</td></tr>" for q in q_items)
-        q_table = f'<table class="ecoshadow"><tr><td>Construction queue ( {len(q_items)} Elements )</td></tr>{q_rows}</table>'
+        q_table = (
+            f'<table class="ecoshadow"><tr><td>Construction queue ( {len(q_items)} Elements )</td></tr>{q_rows}</table>'
+        )
         if built_msg:
             q_table += f"<div>{built_msg}</div>"
 
@@ -778,11 +824,11 @@ class FakeSpaceInvasionServer:
                 if o.get("can_build", False):
                     act_html = f'<a class="bau" href="indexInternal.es?action=internalBuildItem&buildingID={bid}{sq_amp}">Build level {o["target_level"]}</a>'
                 else:
-                    act_html = f'<span>{o.get("status_text", "Not enough resources")}</span>'
+                    act_html = f"<span>{o.get('status_text', 'Not enough resources')}</span>"
                 cards.append(
                     f'<div class="ecoshadow build-card b-{bid}">'
                     f'<a href="indexInternal.es?action=internalDetail&type=building&id={bid}{sq_amp}">{name}</a> '
-                    f'Required: {cost_str} {act_html}</div>'
+                    f"Required: {cost_str} {act_html}</div>"
                 )
         else:
             res = ap["resources"]
@@ -795,7 +841,9 @@ class FakeSpaceInvasionServer:
                 cost = game_data.building_cost(bid, nxt)
                 if not cost:
                     continue
-                unmet = game_data.missing_prerequisites("buildings", bid, buildings=ap["buildings"], researches=self.researches)
+                unmet = game_data.missing_prerequisites(
+                    "buildings", bid, buildings=ap["buildings"], researches=self.researches
+                )
                 cost_str = (
                     f"{_fmt_dot_int(cost.get('pig_iron', 0))} Pig iron "
                     f"{_fmt_dot_int(cost.get('metal', 0))} Metal "
@@ -817,7 +865,7 @@ class FakeSpaceInvasionServer:
                 cards.append(
                     f'<div class="ecoshadow build-card b-{bid}">'
                     f'<a href="indexInternal.es?action=internalDetail&type=building&id={bid}{sq_amp}">{info["name"]}</a> '
-                    f'Required: {cost_str} {act_html}</div>'
+                    f"Required: {cost_str} {act_html}</div>"
                 )
         return "", f"<html><body>{switcher}{q_table}{''.join(cards)}</body></html>"
 
@@ -839,10 +887,10 @@ class FakeSpaceInvasionServer:
                 if o.get("can_research", False):
                     act_html = f'<a class="bau" href="indexInternal.es?action=internalBuildItem&researchID={rid}{sq_amp}">Research level {o["target_level"]}</a>'
                 else:
-                    act_html = f'<span>{o.get("status_text", "Not enough resources")}</span>'
+                    act_html = f"<span>{o.get('status_text', 'Not enough resources')}</span>"
                 cards.append(
                     f'<table><tr><td><a href="indexInternal.es?action=internalDetail&type=research&id={rid}{sq_amp}">{o["name"]}</a> '
-                    f'Required: {cost_str} {act_html}</td></tr></table>'
+                    f"Required: {cost_str} {act_html}</td></tr></table>"
                 )
         else:
             for rkey, info in game_data.RESEARCH_BY_ID.items():
@@ -852,7 +900,9 @@ class FakeSpaceInvasionServer:
                 c = ((info.get("levels") or {}).get(nxt) or {}).get("cost") or {}
                 if not c:
                     continue
-                unmet = game_data.missing_prerequisites("research", rkey, buildings=ap["buildings"], researches=self.researches)
+                unmet = game_data.missing_prerequisites(
+                    "research", rkey, buildings=ap["buildings"], researches=self.researches
+                )
                 cost_str = (
                     f"{_fmt_dot_int(c.get('pig_iron', 0))} Pig iron "
                     f"{_fmt_dot_int(c.get('metal', 0))} Metal "
@@ -873,7 +923,7 @@ class FakeSpaceInvasionServer:
                     act_html = "<span>Not enough resources</span>"
                 cards.append(
                     f'<table><tr><td><a href="indexInternal.es?action=internalDetail&type=research&id={rid}{sq_amp}">{info["name"]}</a> '
-                    f'Required: {cost_str} {act_html}</td></tr></table>'
+                    f"Required: {cost_str} {act_html}</td></tr></table>"
                 )
         extra = f"<div>{active_msg}</div>" if active_msg else ""
         return "", f"<html><body>{switcher}{extra}{''.join(cards)}</body></html>"
@@ -888,18 +938,24 @@ class FakeSpaceInvasionServer:
                 sid_num = int(o["unit_id"])
                 c = o["cost"]
                 cost_str = f"{_fmt_dot_int(c[0])} Pig iron {_fmt_dot_int(c[1])} Metal {_fmt_dot_int(c[2])} Kryptonite {_fmt_dot_int(c[3])} Spice"
-                inp_html = f'<input type="text" name="ship[{sid_num}]" value="0"/>' if o.get("can_build", True) else "<span>Locked</span>"
+                inp_html = (
+                    f'<input type="text" name="ship[{sid_num}]" value="0"/>'
+                    if o.get("can_build", True)
+                    else "<span>Locked</span>"
+                )
                 cards.append(
                     f'<table><tr><td><a href="indexInternal.es?action=internalDetail&type=ship&id={sid_num}{sq_amp}">{o["name"]}</a> '
-                    f'Available: {o.get("owned", 0)} Required: {cost_str} {inp_html}</td></tr></table>'
+                    f"Available: {o.get('owned', 0)} Required: {cost_str} {inp_html}</td></tr></table>"
                 )
         else:
-            for skey, slug in fleet_mod.SHIP_SLUG_BY_KEY.items():
+            for skey, slug in game_data.SHIP_SLUG_BY_KEY.items():
                 sid_num = int(skey[1:])
                 info = game_data.SHIPS.get(slug) or {}
                 c = info.get("base_cost") or {}
                 owned = int((ap.get("ships") or {}).get(skey, 0))
-                unmet = game_data.missing_prerequisites("ships", slug, buildings=ap["buildings"], researches=self.researches)
+                unmet = game_data.missing_prerequisites(
+                    "ships", slug, buildings=ap["buildings"], researches=self.researches
+                )
                 cost_str = (
                     f"{_fmt_dot_int(c.get('pig_iron', 0))} Pig iron "
                     f"{_fmt_dot_int(c.get('metal', 0))} Metal "
@@ -912,10 +968,14 @@ class FakeSpaceInvasionServer:
                     and res[2] >= c.get("kryptonite", 0)
                     and res[3] >= c.get("spice", 0)
                 )
-                inp_html = f'<input type="text" name="ship[{sid_num}]" value="0"/>' if (not unmet and afford) else "<span>Locked / insufficient</span>"
+                inp_html = (
+                    f'<input type="text" name="ship[{sid_num}]" value="0"/>'
+                    if (not unmet and afford)
+                    else "<span>Locked / insufficient</span>"
+                )
                 cards.append(
                     f'<table><tr><td><a href="indexInternal.es?action=internalDetail&type=ship&id={sid_num}{sq_amp}">{info.get("name", slug)}</a> '
-                    f'Available: {owned} Required: {cost_str} {inp_html}</td></tr></table>'
+                    f"Available: {owned} Required: {cost_str} {inp_html}</td></tr></table>"
                 )
         return (
             f"<html><body>{switcher}"
@@ -932,7 +992,7 @@ class FakeSpaceInvasionServer:
             rk = f"resource{i}"
             cur = int(rates.get(rk, 100))
             opts = "".join(
-                f'<option value="{pct}"{" selected=\"selected\"" if pct == cur else ""}>{pct}%</option>'
+                f'<option value="{pct}"{' selected="selected"' if pct == cur else ""}>{pct}%</option>'
                 for pct in range(100, -1, -10)
             )
             selects.append(f'<select name="{rk}">{opts}</select>')
@@ -983,18 +1043,18 @@ class FakeSpaceInvasionServer:
                     trs.append(
                         f'<tr class="galaxy_{color}">'
                         f'<td><img src="p.png" alt="planet"/></td>'
-                        f'<td>[{pos:02d}]</td>'
+                        f"<td>[{pos:02d}]</td>"
                         f'<td><span class="galaxy_{color}">{s["name"]}</span>{debris}</td>'
-                        f'<td>{s["owner"]}</td>'
-                        f'<td>{spy}</td></tr>'
+                        f"<td>{s['owner']}</td>"
+                        f"<td>{spy}</td></tr>"
                     )
                 else:
                     trs.append(
                         f'<tr class="galaxy_{color}">'
-                        f'<td>{pos}</td>'
+                        f"<td>{pos}</td>"
                         f'<td><span class="galaxy_{color}">{s["name"]}</span>{debris}</td>'
-                        f'<td>{s["owner"]}</td>'
-                        f'<td>{spy}</td></tr>'
+                        f"<td>{s['owner']}</td>"
+                        f"<td>{spy}</td></tr>"
                     )
             else:
                 if self.galaxy_layout == "icon_table":
@@ -1027,10 +1087,10 @@ class FakeSpaceInvasionServer:
             f'<a class="origin-planet-link" href="indexInternal.es?action=internalFleet&newPlanet={pid}{sq_amp}">{p["coords"]} {p["name"]}</a>'
             for pid, p in self.planets.items()
         )
-        fav_opts = "".join(
-            f'<option value="{p["coords"]}">Fav {p["name"]}</option>'
-            for p in self.planets.values()
-        ) + '<option value="02:380:04">Fav IdlePrime</option>'
+        fav_opts = (
+            "".join(f'<option value="{p["coords"]}">Fav {p["name"]}</option>' for p in self.planets.values())
+            + '<option value="02:380:04">Fav IdlePrime</option>'
+        )
         fav_form = (
             f'<form id="fav_form" action="indexInternal.es?action=internalFleet{sq_amp}" method="POST">'
             f'<select name="planet">{fav_opts}</select>'
@@ -1104,11 +1164,11 @@ class FakeSpaceInvasionServer:
             f"Spice: {_fmt_dot_int(res.get('spice', 0))}",
         ]
         for skey, qty in (rep.get("fleet") or {}).items():
-            slug = fleet_mod.SHIP_SLUG_BY_KEY.get(skey)
+            slug = game_data.SHIP_SLUG_BY_KEY.get(skey)
             uname = (game_data.SHIPS.get(slug or "") or {}).get("name", skey)
             parts.append(f"{uname}: {_fmt_dot_int(qty)}")
         for dkey, qty in (rep.get("defense") or {}).items():
-            slug = fleet_mod.DEFENSE_SLUG_BY_KEY.get(dkey)
+            slug = game_data.DEFENSE_SLUG_BY_KEY.get(dkey)
             uname = (game_data.DEFENSES.get(slug or "") or {}).get("name", dkey)
             parts.append(f"{uname}: {_fmt_dot_int(qty)}")
         if rep.get("dug_in") is True:
@@ -1282,12 +1342,12 @@ class FakeWebElement:
     def get_attribute(self, name: str) -> Optional[str]:
         self._assert_fresh()
         if name == "textContent":
-            return self._tag.get_text()
+            return str(self._tag.get_text())
         val = self._tag.get(name)
         if name in ("selected", "checked", "disabled", "multiple"):
             return "true" if self._tag.has_attr(name) else None
         if name == "value" and self._tag.name == "option" and val is None:
-            return self._tag.get_text(strip=True)
+            return str(self._tag.get_text(strip=True))
         if val is None:
             return None
         if isinstance(val, list):
@@ -1308,7 +1368,7 @@ class FakeWebElement:
 
     def is_selected(self) -> bool:
         self._assert_fresh()
-        return self._tag.has_attr("selected") or self._tag.has_attr("checked")
+        return bool(self._tag.has_attr("selected") or self._tag.has_attr("checked"))
 
     def find_element(self, by: str, value: str) -> FakeWebElement:
         self._assert_fresh()
@@ -1319,10 +1379,7 @@ class FakeWebElement:
 
     def find_elements(self, by: str, value: str) -> list[FakeWebElement]:
         self._assert_fresh()
-        return [
-            FakeWebElement(self._driver, self._frame_id, self._gen_id, t)
-            for t in _find_tags(self._tag, by, value)
-        ]
+        return [FakeWebElement(self._driver, self._frame_id, self._gen_id, t) for t in _find_tags(self._tag, by, value)]
 
     def clear(self) -> None:
         self._assert_fresh()
@@ -1405,16 +1462,20 @@ class FakeWebElement:
                 return
             href = str(self._tag.get("href") or "")
             if href and href != "#" and not href.startswith("javascript:"):
-                target_frame = "F_Hauptframe" if self._frame_id in ("F_Navi", "F_Hauptframe") else (self._frame_id or "F_Hauptframe")
+                target_frame = (
+                    "F_Hauptframe"
+                    if self._frame_id in ("F_Navi", "F_Hauptframe")
+                    else (self._frame_id or "F_Hauptframe")
+                )
                 self._driver._navigate_frame(target_frame, href)
             return
 
-        if (tag_name == "input" and str(self._tag.get("type") or "").lower() == "submit") or (
-            tag_name == "button"
-        ):
+        if (tag_name == "input" and str(self._tag.get("type") or "").lower() == "submit") or (tag_name == "button"):
             form = self._tag.find_parent("form")
             if form is not None:
-                form_action = str(form.get("action") or (frame.url if frame else "indexInternal.es?action=internalHome"))
+                form_action = str(
+                    form.get("action") or (frame.url if frame else "indexInternal.es?action=internalHome")
+                )
                 data: dict[str, Any] = {}
                 for inp in form.find_all("input"):
                     itype = str(inp.get("type") or "text").lower()
@@ -1475,6 +1536,8 @@ class FakeDriver:
         self.window_handles = ["game_tab"]
         self.current_window_handle = "game_tab"
         self._current_frame: Optional[str] = None
+        self._cached_top_source: Optional[str] = None
+        self._cached_top_soup: Optional[BeautifulSoup] = None
         sq = server.sid_query()
         sq_amp = f"&{sq}" if sq else ""
         self._frames: dict[str, _FrameState] = {}
@@ -1517,7 +1580,11 @@ class FakeDriver:
 
     def _active_soup(self) -> BeautifulSoup:
         if self._current_frame is None:
-            return BeautifulSoup(self.page_source, "html.parser")
+            src = self.page_source
+            if self._cached_top_soup is None or self._cached_top_source != src:
+                self._cached_top_source = src
+                self._cached_top_soup = BeautifulSoup(src, "html.parser")
+            return self._cached_top_soup
         return self._frames[self._current_frame].soup
 
     def _active_gen_id(self) -> int:
@@ -1567,7 +1634,9 @@ class FakeDriver:
             if ".submit(" in text:
                 form_tag = el._tag if el._tag.name == "form" else el._tag.find_parent("form")
                 if form_tag is not None:
-                    form_action = str(form_tag.get("action") or (frame.url if frame else "indexInternal.es?action=internalHome"))
+                    form_action = str(
+                        form_tag.get("action") or (frame.url if frame else "indexInternal.es?action=internalHome")
+                    )
                     data: dict[str, Any] = {}
                     for inp in form_tag.find_all("input"):
                         iname = str(inp.get("name") or "")
@@ -1675,7 +1744,9 @@ class FakeDriver:
                 return False
             return bool(frame.window_vars.get(m_bool_win.group(1)))
 
-        m_ret_win = re.search(r"return\s+(?:\(\s*)?window\.([A-Za-z0-9_$]+)(?:\s*\|\|\s*['\"]([^'\"]*)['\"])?\s*\)?", text)
+        m_ret_win = re.search(
+            r"return\s+(?:\(\s*)?window\.([A-Za-z0-9_$]+)(?:\s*\|\|\s*['\"]([^'\"]*)['\"])?\s*\)?", text
+        )
         if m_ret_win:
             if frame is None:
                 return m_ret_win.group(2) if m_ret_win.group(2) is not None else None
@@ -1716,8 +1787,7 @@ class E2ETestHarness:
         self.patch_clocks = patch_clocks
         self.executor_max_limiter_wait: Optional[float] = (
             float(executor_max_limiter_wait)
-            if isinstance(executor_max_limiter_wait, (int, float))
-            and not isinstance(executor_max_limiter_wait, bool)
+            if isinstance(executor_max_limiter_wait, (int, float)) and not isinstance(executor_max_limiter_wait, bool)
             else None
         )
 
@@ -1738,7 +1808,6 @@ class E2ETestHarness:
         self.page_limiter: Optional[Any] = None
 
     def _make_client(self, _port: int) -> GameBrowserClient:
-        sig = inspect.signature(GameBrowserClient.__init__)
         kwargs: dict[str, Any] = {
             "detach_on_close": True,
             "min_nav_delay": self.min_nav_delay,
@@ -1746,17 +1815,25 @@ class E2ETestHarness:
         }
         chosen_limiter = self.page_limiter
         if self.bridge is not None:
-            for attr_name in ("limiter", "_limiter", "page_view_limiter", "_page_view_limiter", "page_limiter", "_page_limiter", "rate_limiter"):
+            for attr_name in (
+                "limiter",
+                "_limiter",
+                "page_view_limiter",
+                "_page_view_limiter",
+                "page_limiter",
+                "_page_limiter",
+                "rate_limiter",
+            ):
                 lim = getattr(self.bridge, attr_name, None)
                 if lim is not None:
                     chosen_limiter = lim
                     break
         if chosen_limiter is not None:
             for param_name in ("page_limiter", "limiter", "page_view_limiter", "rate_limiter"):
-                if param_name in sig.parameters:
+                if param_name in _GAME_BROWSER_CLIENT_PARAMS:
                     kwargs[param_name] = chosen_limiter
                     break
-        if "max_limiter_wait" in sig.parameters:
+        if "max_limiter_wait" in _GAME_BROWSER_CLIENT_PARAMS:
             kwargs["max_limiter_wait"] = None
         client = GameBrowserClient(self.driver, **kwargs)
         self._created_clients.append(client)
@@ -1768,7 +1845,15 @@ class E2ETestHarness:
     def _sync_bridge_limiter_clock(self) -> None:
         if self.bridge is None or not self.patch_clocks:
             return
-        for attr_name in ("limiter", "_limiter", "page_view_limiter", "_page_view_limiter", "page_limiter", "_page_limiter", "rate_limiter"):
+        for attr_name in (
+            "limiter",
+            "_limiter",
+            "page_view_limiter",
+            "_page_view_limiter",
+            "page_limiter",
+            "_page_limiter",
+            "rate_limiter",
+        ):
             lim = getattr(self.bridge, attr_name, None)
             if lim is not None and hasattr(lim, "_clock"):
                 lim._clock = self.clock.monotonic
@@ -1786,8 +1871,12 @@ class E2ETestHarness:
         return dict(resp.json())
 
     def _start_bridge_and_server(self) -> None:
-        assert self.config_path is not None and self.log_dir is not None and self.db_path is not None and self.env_file is not None
-        bridge_sig = inspect.signature(GameApiBridge.__init__)
+        assert (
+            self.config_path is not None
+            and self.log_dir is not None
+            and self.db_path is not None
+            and self.env_file is not None
+        )
         bridge_kwargs: dict[str, Any] = {
             "debug_port": 0,
             "env_file": self.env_file,
@@ -1799,17 +1888,11 @@ class E2ETestHarness:
             "client_factory": self._make_client,
             "ensure_session_fn": self._ensure_session,
         }
-        if self.page_limiter is not None and (
-            "page_limiter" in bridge_sig.parameters
-            or any(p.kind == inspect.Parameter.VAR_KEYWORD for p in bridge_sig.parameters.values())
-        ):
+        if self.page_limiter is not None and ("page_limiter" in _GAME_API_BRIDGE_PARAMS or _GAME_API_BRIDGE_HAS_VAR_KW):
             bridge_kwargs["page_limiter"] = self.page_limiter
-        if "executor_max_limiter_wait" in bridge_sig.parameters:
+        if "executor_max_limiter_wait" in _GAME_API_BRIDGE_PARAMS:
             bridge_kwargs["executor_max_limiter_wait"] = self.executor_max_limiter_wait
-        elif (
-            self.executor_max_limiter_wait is not None
-            and "max_limiter_wait" in bridge_sig.parameters
-        ):
+        elif self.executor_max_limiter_wait is not None and "max_limiter_wait" in _GAME_API_BRIDGE_PARAMS:
             bridge_kwargs["max_limiter_wait"] = self.executor_max_limiter_wait
         self.bridge = GameApiBridge(**bridge_kwargs)
         self._sync_bridge_limiter_clock()
@@ -1822,13 +1905,19 @@ class E2ETestHarness:
         self.base_url = f"http://127.0.0.1:{self.port}"
         self.server_thread = threading.Thread(
             target=self.http_server.serve_forever,
-            kwargs={"poll_interval": 0.05},
+            kwargs={"poll_interval": 0.002},
             daemon=True,
         )
         self.server_thread.start()
         self.api = GameApiClient(base_url=self.base_url, timeout=self.http_timeout)
 
     def _stop_bridge_and_server(self) -> None:
+        if self.api is not None:
+            try:
+                self.api.close()
+            except Exception:
+                pass
+            self.api = None
         if self.http_server is not None:
             try:
                 self.http_server.shutdown()
@@ -1869,7 +1958,7 @@ class E2ETestHarness:
                 save_strategy_config(self.initial_config, self.config_path)
 
             p_dbg = patch.object(
-                api_server_mod,
+                browser_mod,
                 "is_debug_port_open",
                 side_effect=lambda *_a, **_kw: self.debug_port_open,
             )
@@ -1878,16 +1967,7 @@ class E2ETestHarness:
 
             if self.patch_clocks:
                 proxy = _ClockTimeProxy(self.clock)
-                for mod in (
-                    client_mod,
-                    executor_mod,
-                    api_server_mod,
-                    storage_mod,
-                    fleet_mod,
-                    strategy_mod,
-                    ranking_mod,
-                    commander,
-                ):
+                for mod in _get_clock_patch_modules():
                     p_time = patch.object(mod, "time", proxy)
                     p_time.start()
                     self._patches.append(p_time)
@@ -1926,550 +2006,3 @@ class E2ETestHarness:
         if self.tmp_dir is not None:
             shutil.rmtree(self.tmp_dir, ignore_errors=True)
             self.tmp_dir = None
-
-
-class _DOMNodeBuilder(HTMLParser):
-    """Builds a serializable DOM JSON tree from real `GET /` HTML via Python `html.parser`."""
-
-    VOID_TAGS = frozenset({"meta", "link", "input", "br", "hr", "img"})
-
-    def __init__(self) -> None:
-        super().__init__(convert_charrefs=True)
-        self.root: dict[str, Any] = {"tag": "document", "attrs": {}, "children": []}
-        self._stack: list[dict[str, Any]] = [self.root]
-
-    def handle_starttag(self, tag: str, attrs: list[tuple[str, Optional[str]]]) -> None:
-        node = {
-            "tag": tag.lower(),
-            "attrs": {str(k): ("" if v is None else str(v)) for k, v in attrs},
-            "children": [],
-        }
-        self._stack[-1]["children"].append(node)
-        if tag.lower() not in self.VOID_TAGS:
-            self._stack.append(node)
-
-    def handle_startendtag(self, tag: str, attrs: list[tuple[str, Optional[str]]]) -> None:
-        node = {
-            "tag": tag.lower(),
-            "attrs": {str(k): ("" if v is None else str(v)) for k, v in attrs},
-            "children": [],
-        }
-        self._stack[-1]["children"].append(node)
-
-    def handle_endtag(self, tag: str) -> None:
-        t = tag.lower()
-        for idx in range(len(self._stack) - 1, 0, -1):
-            if self._stack[idx]["tag"] == t:
-                del self._stack[idx:]
-                break
-
-    def handle_data(self, data: str) -> None:
-        if data:
-            self._stack[-1]["children"].append({"tag": "#text", "text": data})
-
-
-def inspect_ui_html(html_text: str) -> dict[str, Any]:
-    """Parse real `GET /` HTML via stdlib `html.parser` and inspect table headers, colspans, and config controls."""
-    parser = _DOMNodeBuilder()
-    parser.feed(html_text)
-    parser.close()
-
-    def _walk(node: dict[str, Any]) -> list[dict[str, Any]]:
-        out = [node]
-        for ch in node.get("children", []):
-            if ch.get("tag") != "#text":
-                out.extend(_walk(ch))
-        return out
-
-    all_nodes = _walk(parser.root)
-
-    def _find_by_id(tid: str) -> Optional[dict[str, Any]]:
-        for n in all_nodes:
-            if n.get("attrs", {}).get("id") == tid:
-                return n
-        return None
-
-    def _text(node: dict[str, Any]) -> str:
-        if node.get("tag") == "#text":
-            return str(node.get("text", ""))
-        return "".join(_text(ch) for ch in node.get("children", []))
-
-    def _find_table_info(tbody_id: str) -> dict[str, Any]:
-        for n in all_nodes:
-            if n.get("tag") != "table":
-                continue
-            sub = _walk(n)
-            if not any(s.get("attrs", {}).get("id") == tbody_id for s in sub):
-                continue
-            ths = [
-                " ".join(_text(s).split())
-                for s in sub
-                if s.get("tag") == "th"
-            ]
-            tbody = next(s for s in sub if s.get("attrs", {}).get("id") == tbody_id)
-            tbody_sub = _walk(tbody)
-            placeholder_colspans = [
-                int(s["attrs"]["colspan"])
-                for s in tbody_sub
-                if s.get("tag") == "td" and str(s.get("attrs", {}).get("colspan", "")).isdigit()
-            ]
-            return {
-                "found": True,
-                "headers": ths,
-                "th_count": len(ths),
-                "placeholder_colspans": placeholder_colspans,
-            }
-        return {"found": False, "headers": [], "th_count": 0, "placeholder_colspans": []}
-
-    planner_sel = _find_by_id("cfg-planner_mode")
-    planner_opts = []
-    if planner_sel is not None:
-        for ch in _walk(planner_sel):
-            if ch.get("tag") == "option":
-                planner_opts.append(ch.get("attrs", {}).get("value", ""))
-
-    return {
-        "tree": parser.root,
-        "dash_plan": _find_table_info("dash-plan-tbody"),
-        "ops_plan": _find_table_info("plan-tbody"),
-        "has_cfg_planner_mode": planner_sel is not None,
-        "cfg_planner_mode_options": planner_opts,
-        "has_feedback_banner": _find_by_id("feedback-banner") is not None,
-        "has_planet_select": _find_by_id("planet-select") is not None,
-        "has_save_config": _find_by_id("btn-save-config") is not None,
-    }
-
-
-_NODE_HARNESS_SCRIPT = r"""
-const fs = require("node:fs");
-const path = require("node:path");
-const vm = require("node:vm");
-
-const payload = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
-const baseUrl = String(payload.baseUrl || "http://127.0.0.1:8787").replace(/\/$/, "");
-const html = String(payload.html || "<!doctype html><html><body><div id='root'></div></body></html>");
-const appJs = String(payload.appJs || "");
-const scenarioJs = String(payload.scenarioJs || "");
-const fetchPatchJs = String(payload.fetchPatchJs || "");
-const jsdomPath = payload.jsdomPath || path.resolve(process.cwd(), "frontend/node_modules/jsdom");
-
-const { JSDOM, VirtualConsole } = require(jsdomPath);
-
-const activeIntervals = new Set();
-const activeTimeouts = new Set();
-const recordedTimeoutDelays = [];
-const errors = [];
-const windowErrors = [];
-const fetchLog = [];
-let reloadCount = 0;
-
-const virtualConsole = new VirtualConsole();
-virtualConsole.on("jsdomError", (err) => {
-  const msg = String((err && err.message) || err || "");
-  if (msg.includes("Not implemented: navigation")) {
-    reloadCount += 1;
-    return;
-  }
-  windowErrors.push(msg);
-});
-
-const dom = new JSDOM(html, {
-  url: `${baseUrl}/`,
-  pretendToBeVisual: true,
-  runScripts: "outside-only",
-  virtualConsole,
-});
-
-const { window } = dom;
-const ctx = dom.getInternalVMContext();
-
-// Preserve unsanitized invalid strings (e.g. "abc") on <input type="number"> for validation tests
-const origInputValueDesc = Object.getOwnPropertyDescriptor(
-  window.HTMLInputElement.prototype,
-  "value"
-);
-if (origInputValueDesc && origInputValueDesc.get && origInputValueDesc.set) {
-  Object.defineProperty(window.HTMLInputElement.prototype, "value", {
-    configurable: true,
-    enumerable: origInputValueDesc.enumerable,
-    get() {
-      const cur = origInputValueDesc.get.call(this);
-      if (this.type === "number" && cur === "" && this.__siRawUnsanitizedValue !== undefined) {
-        return this.__siRawUnsanitizedValue;
-      }
-      return cur;
-    },
-    set(val) {
-      const strVal = val === null || val === undefined ? "" : String(val);
-      delete this.__siRawUnsanitizedValue;
-      origInputValueDesc.set.call(this, strVal);
-      if (this.type === "number" && strVal !== "" && origInputValueDesc.get.call(this) === "") {
-        this.__siRawUnsanitizedValue = strVal;
-      }
-    },
-  });
-}
-
-// Array-method ergonomics on NodeList / HTMLCollection for legacy test scenarios
-for (const proto of [window.NodeList?.prototype, window.HTMLCollection?.prototype]) {
-  if (!proto) continue;
-  for (const method of ["map", "filter", "some", "every", "find", "reduce"]) {
-    if (typeof proto[method] !== "function") {
-      Object.defineProperty(proto, method, {
-        configurable: true,
-        writable: true,
-        value(...args) {
-          return Array.from(this)[method](...args);
-        },
-      });
-    }
-  }
-}
-
-// Seamless synthetic + legacy string/object dispatchEvent with React _valueTracker & scheduler sync
-const microQueue = [];
-const macroQueue = [];
-let flushingReact = false;
-let scenarioFinished = false;
-
-function flushReactScheduler() {
-  if (flushingReact || scenarioFinished) return;
-  flushingReact = true;
-  try {
-    let guard = 0;
-    while ((microQueue.length > 0 || macroQueue.length > 0) && guard++ < 50) {
-      while (microQueue.length > 0) {
-        const fn = microQueue.shift();
-        fn();
-      }
-      if (macroQueue.length > 0) {
-        const fn = macroQueue.shift();
-        fn();
-      }
-    }
-  } finally {
-    flushingReact = false;
-  }
-}
-
-window.queueMicrotask = (fn) => {
-  if (scenarioFinished) return;
-  microQueue.push(fn);
-  queueMicrotask(flushReactScheduler);
-};
-window.setImmediate = (fn) => {
-  if (scenarioFinished) return 0;
-  macroQueue.push(fn);
-  setImmediate(flushReactScheduler);
-  return 1;
-};
-
-const origClick = window.HTMLElement.prototype.click;
-window.HTMLElement.prototype.click = function patchedClick() {
-  const res = origClick.call(this);
-  flushReactScheduler();
-  return res;
-};
-
-const origDispatchEvent = window.EventTarget.prototype.dispatchEvent;
-window.EventTarget.prototype.dispatchEvent = function patchedDispatchEvent(evOrType) {
-  let ev = evOrType;
-  if (typeof evOrType === "string") {
-    ev = new window.Event(evOrType, { bubbles: true, cancelable: true });
-  } else if (evOrType && !(evOrType instanceof window.Event) && typeof evOrType === "object") {
-    const type = String(evOrType.type || "custom");
-    if (
-      type.startsWith("mouse") ||
-      type.startsWith("pointer") ||
-      type === "click" ||
-      type === "dblclick"
-    ) {
-      ev = new window.MouseEvent(type, {
-        bubbles: evOrType.bubbles !== undefined ? Boolean(evOrType.bubbles) : true,
-        cancelable: evOrType.cancelable !== undefined ? Boolean(evOrType.cancelable) : true,
-        clientX: Number(evOrType.clientX || 0),
-        clientY: Number(evOrType.clientY || 0),
-        button: evOrType.button !== undefined ? Number(evOrType.button) : 0,
-      });
-    } else if (type.startsWith("key")) {
-      ev = new window.KeyboardEvent(type, {
-        bubbles: evOrType.bubbles !== undefined ? Boolean(evOrType.bubbles) : true,
-        cancelable: evOrType.cancelable !== undefined ? Boolean(evOrType.cancelable) : true,
-        key: String(evOrType.key || ""),
-      });
-    } else {
-      ev = new window.Event(type, {
-        bubbles: evOrType.bubbles !== undefined ? Boolean(evOrType.bubbles) : true,
-        cancelable: evOrType.cancelable !== undefined ? Boolean(evOrType.cancelable) : true,
-      });
-    }
-  }
-  if (
-    ev &&
-    (ev.type === "input" || ev.type === "change") &&
-    this &&
-    this._valueTracker &&
-    typeof this._valueTracker.setValue === "function"
-  ) {
-    this._valueTracker.setValue(`__si_force_diff__${Math.random()}`);
-  }
-  const out = origDispatchEvent.call(this, ev);
-  flushReactScheduler();
-  return out;
-};
-
-const nativeFetch = globalThis.fetch;
-async function wrappedFetch(url, opts = {}) {
-  if (scenarioFinished) {
-    return { ok: true, status: 200, text: async () => "{}", json: async () => ({}) };
-  }
-  const urlStr = String(url);
-  const fullUrl = urlStr.startsWith("http")
-    ? urlStr
-    : `${baseUrl}${urlStr.startsWith("/") ? "" : "/"}${urlStr}`;
-  const reqInfo = { url: urlStr, method: String(opts.method || "GET").toUpperCase(), body: null };
-  if (opts.body) {
-    try {
-      reqInfo.body = JSON.parse(String(opts.body));
-    } catch {
-      reqInfo.body = String(opts.body);
-    }
-  }
-  fetchLog.push(reqInfo);
-  if (window.__siFetchHook) {
-    const custom = await window.__siFetchHook(urlStr, opts, fullUrl, nativeFetch);
-    if (custom !== undefined) return custom;
-  }
-  return nativeFetch(fullUrl, opts);
-}
-
-function trackedSetTimeout(fn, ms = 0, ...args) {
-  if (scenarioFinished) return 0;
-  const numMs = Number(ms || 0);
-  recordedTimeoutDelays.push(numMs);
-  const id = setTimeout(() => {
-    activeTimeouts.delete(id);
-    if (scenarioFinished) return;
-    fn(...args);
-    flushReactScheduler();
-  }, Math.max(0, numMs));
-  activeTimeouts.add(id);
-  return id;
-}
-function trackedClearTimeout(id) {
-  activeTimeouts.delete(id);
-  clearTimeout(id);
-}
-function trackedSetInterval(fn, ms = 0, ...args) {
-  if (scenarioFinished) return 0;
-  const id = setInterval(() => {
-    if (scenarioFinished) return;
-    fn(...args);
-    flushReactScheduler();
-  }, Math.max(50, Number(ms || 0)));
-  activeIntervals.add(id);
-  return id;
-}
-function trackedClearInterval(id) {
-  activeIntervals.delete(id);
-  clearInterval(id);
-}
-
-window.fetch = wrappedFetch;
-window.AbortController = AbortController;
-window.setTimeout = trackedSetTimeout;
-window.clearTimeout = trackedClearTimeout;
-window.setInterval = trackedSetInterval;
-window.clearInterval = trackedClearInterval;
-window.fetchLog = fetchLog;
-window.recordedTimeoutDelays = recordedTimeoutDelays;
-Object.defineProperty(window, "reloadCount", {
-  configurable: true,
-  enumerable: true,
-  get() {
-    return reloadCount;
-  },
-});
-window.console = {
-  log() {},
-  info() {},
-  debug() {},
-  warn() {},
-  error(...a) {
-    if (!scenarioFinished) {
-      errors.push(a.map(String).join(" "));
-    }
-  },
-};
-window.__waitUntil = async (pred, timeoutMs = 10000) => {
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
-    flushReactScheduler();
-    if (pred()) return true;
-    await new Promise((r) => setTimeout(r, 20));
-  }
-  flushReactScheduler();
-  return Boolean(pred());
-};
-window.__sleep = async (ms) => {
-  await new Promise((r) => setTimeout(r, ms));
-  flushReactScheduler();
-};
-window.__serializeTable = (tbodyId) => {
-  flushReactScheduler();
-  const tb = window.document.getElementById(tbodyId);
-  if (!tb) return [];
-  return Array.from(tb.children)
-    .filter((c) => c.nodeType === 1 && c.tagName === "TR")
-    .map((tr) =>
-      Array.from(tr.children)
-        .filter((td) => td.nodeType === 1 && td.tagName === "TD")
-        .map((td) => ({
-          text: (td.textContent || "").replace(/\s+/g, " ").trim(),
-          className: typeof td.className === "string" ? td.className : td.getAttribute("class") || "",
-          colSpan: td.colSpan || 1,
-          pills: Array.from(td.querySelectorAll(".eta-pill")).map((p) => ({
-            text: (p.textContent || "").trim(),
-            className: typeof p.className === "string" ? p.className : p.getAttribute("class") || "",
-          })),
-          buttons: Array.from(td.querySelectorAll("button")).map((b) =>
-            (b.textContent || "").trim()
-          ),
-        }))
-    );
-};
-window.__snapshotElement = (id) => {
-  flushReactScheduler();
-  const node = window.document.getElementById(id);
-  if (!node) return null;
-  return {
-    id: node.id,
-    tagName: node.tagName,
-    className: typeof node.className === "string" ? node.className : node.getAttribute("class") || "",
-    hidden: Boolean(node.hidden),
-    disabled: Boolean(node.disabled),
-    value: node.value ?? "",
-    checked: Boolean(node.checked),
-    textContent: (node.textContent || "").replace(/\s+/g, " ").trim(),
-    options:
-      node.tagName === "SELECT"
-        ? Array.from(node.querySelectorAll("option")).map((o) => ({
-            value: o.value,
-            text: (o.textContent || "").trim(),
-            selected: Boolean(o.selected),
-          }))
-        : undefined,
-  };
-};
-
-if (fetchPatchJs) {
-  window.__siFetchHook = vm.runInContext(`(${fetchPatchJs})`, ctx);
-}
-
-(async () => {
-  let exitCode = 0;
-  let outStr = "";
-  try {
-    await new Promise((r) => setImmediate(r));
-    vm.runInContext(appJs, ctx, { filename: "app.js" });
-    flushReactScheduler();
-    if (typeof window.loadDashboard === "function") {
-      const origLoadDash = window.loadDashboard;
-      window.loadDashboard = async (...args) => {
-        const res = await origLoadDash(...args);
-        flushReactScheduler();
-        return res;
-      };
-    }
-    await window.__sleep(120);
-    let scenarioOut = null;
-    if (scenarioJs) {
-      scenarioOut = await vm.runInContext(
-        `(async () => {\n${scenarioJs}\n})()`,
-        ctx,
-        { filename: "scenario.js" }
-      );
-      flushReactScheduler();
-    }
-    outStr = JSON.stringify({
-      ok: true,
-      errors,
-      windowErrors,
-      reloadCount,
-      fetchLog,
-      recordedTimeoutDelays,
-      scenario: scenarioOut,
-    });
-  } catch (err) {
-    windowErrors.push(err && err.message ? err.message : String(err));
-    outStr = JSON.stringify({
-      ok: false,
-      fatal: err && err.stack ? err.stack : String(err),
-      errors,
-      windowErrors,
-      reloadCount,
-      fetchLog,
-      recordedTimeoutDelays,
-    });
-    exitCode = 1;
-  } finally {
-    scenarioFinished = true;
-    for (const id of activeIntervals) clearInterval(id);
-    for (const id of activeTimeouts) clearTimeout(id);
-  }
-  fs.writeSync(1, outStr);
-  process.exit(exitCode);
-})();
-"""
-
-
-def run_ui_in_node(
-    base_url: str,
-    scenario_js: str = "",
-    *,
-    fetch_patch_js: str = "",
-    timeout: float = 30.0,
-) -> dict[str, Any]:
-    """Fetch real `GET /` and `GET /app.js` over HTTP and execute inside real `jsdom` against `base_url`."""
-    import requests
-
-    html_resp = requests.get(f"{base_url}/", timeout=5.0)
-    html_resp.raise_for_status()
-    js_resp = requests.get(f"{base_url}/app.js", timeout=5.0)
-    js_resp.raise_for_status()
-
-    inspected = inspect_ui_html(html_resp.text)
-    jsdom_path = Path(__file__).resolve().parents[2] / "frontend" / "node_modules" / "jsdom"
-    with tempfile.TemporaryDirectory(prefix="si_ui_node_") as tmp:
-        tmp_path = Path(tmp)
-        runner_js = tmp_path / "runner.cjs"
-        payload_json = tmp_path / "payload.json"
-        runner_js.write_text(_NODE_HARNESS_SCRIPT, encoding="utf-8")
-        payload_json.write_text(
-            json.dumps(
-                {
-                    "baseUrl": base_url.rstrip("/"),
-                    "html": html_resp.text,
-                    "domTree": inspected["tree"],
-                    "appJs": js_resp.text,
-                    "scenarioJs": scenario_js,
-                    "fetchPatchJs": fetch_patch_js,
-                    "jsdomPath": str(jsdom_path),
-                }
-            ),
-            encoding="utf-8",
-        )
-        proc = subprocess.run(
-            ["node", str(runner_js), str(payload_json)],
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            check=False,
-        )
-    if proc.returncode != 0 and not proc.stdout.strip():
-        raise RuntimeError(f"Node UI runner failed (rc={proc.returncode}): {proc.stderr}")
-    data = json.loads(proc.stdout)
-    data["htmlInspection"] = {k: v for k, v in inspected.items() if k != "tree"}
-    if not data.get("ok"):
-        raise AssertionError(f"Node UI JS execution failed: {data.get('fatal') or data}")
-    return data

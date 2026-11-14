@@ -1,9 +1,9 @@
 import React, { useEffect } from "react";
 import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ConsoleProvider, useConsole } from "../context/ConsoleContext";
+import { ConsoleProvider, useConsoleActions, useDashboard } from "../store";
 import { ActionGraphView } from "../features/action-graph";
-import { GaNnScannerHud } from "../components/layout/GaNnScannerHud";
+import { ScannerHud } from "../components/layout/ScannerHud";
 import { ConfigView } from "../features/config";
 import type { DashboardPayload } from "../types/api";
 
@@ -154,7 +154,7 @@ const Harness: React.FC<{ initialDashboard: DashboardPayload; children: React.Re
   children,
 }) => {
   const Inner: React.FC = () => {
-    const { setDashboard, setActivePage } = useConsole();
+    const { setDashboard, setActivePage } = useConsoleActions();
     useEffect(() => {
       setDashboard(initialDashboard);
       setActivePage("action-graph");
@@ -913,7 +913,7 @@ describe("ActionGraph 4-Tab Workspace", () => {
   it("renders Tab 4 Fleet/Attack Planner, bids bidirectional sync with global Config, and updates GaNnScannerHud for AI-Planner", async () => {
     render(
       <Harness initialDashboard={makeDashboard({ coloniesOwned: 11, maxPlanets: 11, plannerMode: "ai_planner", liveAiUnlocked: true })}>
-        <GaNnScannerHud />
+        <ScannerHud />
         <ConfigView />
         <ActionGraphView />
       </Harness>
@@ -963,7 +963,7 @@ describe("ActionGraph 4-Tab Workspace", () => {
     fallbackPreviewDash.effective_planner_mode = "priority";
     render(
       <Harness initialDashboard={fallbackPreviewDash}>
-        <GaNnScannerHud />
+        <ScannerHud />
       </Harness>
     );
     expect(document.getElementById("gann-calc-hud")?.hidden).toBe(false);
@@ -1090,7 +1090,7 @@ describe("ActionGraph 4-Tab Workspace", () => {
     mockIncludePlaceholderPlanet = true;
 
     const DashboardNameProbe: React.FC = () => {
-      const { dashboard } = useConsole();
+      const dashboard = useDashboard();
       const p100 = (dashboard?.state?.planets || []).find((p) => Number(p.planet_id) === 100);
       return <span id="test-dash-p100-name">{p100?.name || ""}</span>;
     };
@@ -1404,7 +1404,7 @@ describe("ActionGraph 4-Tab Workspace", () => {
 
     render(
       <Harness initialDashboard={hudDash}>
-        <GaNnScannerHud />
+        <ScannerHud />
       </Harness>
     );
 
@@ -1447,7 +1447,7 @@ describe("ActionGraph 4-Tab Workspace", () => {
     };
     render(
       <Harness initialDashboard={runningDash}>
-        <GaNnScannerHud />
+        <ScannerHud />
       </Harness>
     );
     expect(document.getElementById("gann-calc-hud")?.textContent).toContain("Background Job");
@@ -1473,7 +1473,7 @@ describe("ActionGraph 4-Tab Workspace", () => {
     };
     render(
       <Harness initialDashboard={legacyGaDash}>
-        <GaNnScannerHud />
+        <ScannerHud />
       </Harness>
     );
     expect(document.getElementById("gann-gen-val")?.textContent).toBe("4 / 4");

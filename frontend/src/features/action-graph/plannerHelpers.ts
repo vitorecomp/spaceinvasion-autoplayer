@@ -318,15 +318,17 @@ export function normalizeUiPlannerMode(mode: unknown): "priority" | "ai_planner"
   return "priority";
 }
 
+export interface ColonyGateInfo {
+  coloniesOwned: number;
+  maxPlanets: number;
+  liveAiUnlocked: boolean;
+}
+
 export function computeColonyGateInfo(
   dashboard: DashboardPayload | null | undefined,
   jobsStatus?: PlannerJobsStatusPayload | null,
   tabOverride?: { colonies_owned?: unknown; max_planets?: unknown; live_ai_unlocked?: unknown } | null
-): {
-  coloniesOwned: number;
-  maxPlanets: number;
-  liveAiUnlocked: boolean;
-} {
+): ColonyGateInfo {
   const normalPlanets = Array.isArray(dashboard?.state?.planets)
     ? dashboard!.state!.planets!.filter(
         (p) => String(p?.planet_type || "normal").toLowerCase() === "normal"

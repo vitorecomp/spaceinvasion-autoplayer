@@ -12,32 +12,32 @@ from tests.e2e.fixtures import (
     evaluate_sequence_score,
     make_building_offer,
     make_game_state,
-    make_midgame_state,
     make_planet,
     make_research_offer,
     make_ship_offer,
 )
-from tests.e2e.harness import E2ETestHarness, FakeClock, FakeSpaceInvasionServer, run_ui_in_node
-from spaceinvasion import game_data, ranking
-from spaceinvasion.config import StrategyConfig, load_strategy_config
-from spaceinvasion.fleet import BashTracker, SpyReport, simulate_raid_outcome
-from spaceinvasion.state import EnergyBalance, QueueJob, Resources, TutorialStatus, TutorialTask
-from spaceinvasion.storage import GameDatabase
-from spaceinvasion.strategy import (
+from tests.e2e.harness import E2ETestHarness, FakeClock, FakeSpaceInvasionServer
+from spaceinvasion.core.config import StrategyConfig
+from spaceinvasion.db.config_store import load_strategy_config
+from spaceinvasion.core.model import (
+    EnergyBalance,
+    Resources,
+)
+from tests.pg_harness import open_test_db as GameDatabase
+from spaceinvasion.core.model import PlannedAction
+from spaceinvasion.planner.heuristics import (
     BLAST_FURNACE,
-    DEVELOPMENT_CENTER,
-    KRYPTONITE_MINE,
     PIG_IRON_MINE,
-    SPICE_MINE,
-    WEAPONS_FACTORY,
-    PlannedAction,
     plan_actions,
 )
 
 
 def _import_eta_helpers(test: unittest.TestCase):
     try:
-        from spaceinvasion.ranking import attach_action_etas, compute_action_eta
+        from spaceinvasion.planner.eta import (
+            attach_action_etas,
+            compute_action_eta,
+        )
     except ImportError as exc:
         test.fail(f"R3 ETA helpers missing from spaceinvasion.ranking: {exc}")
     return compute_action_eta, attach_action_etas
@@ -124,9 +124,33 @@ class TestTier3Pairwise(unittest.TestCase):
         )
         gal = {
             (2, 380): [
-                {"position": 4, "name": "YellowLoot", "owner": "IdleY", "status_color": "yellow", "has_debris": False, "is_spacia": False, "spy_href": None},
-                {"position": 6, "name": "BashedAZ", "owner": "RivalB", "status_color": "light_red", "has_debris": False, "is_spacia": False, "spy_href": None},
-                {"position": 7, "name": "BunkerY", "owner": "FortY", "status_color": "yellow", "has_debris": False, "is_spacia": False, "spy_href": None},
+                {
+                    "position": 4,
+                    "name": "YellowLoot",
+                    "owner": "IdleY",
+                    "status_color": "yellow",
+                    "has_debris": False,
+                    "is_spacia": False,
+                    "spy_href": None,
+                },
+                {
+                    "position": 6,
+                    "name": "BashedAZ",
+                    "owner": "RivalB",
+                    "status_color": "light_red",
+                    "has_debris": False,
+                    "is_spacia": False,
+                    "spy_href": None,
+                },
+                {
+                    "position": 7,
+                    "name": "BunkerY",
+                    "owner": "FortY",
+                    "status_color": "yellow",
+                    "has_debris": False,
+                    "is_spacia": False,
+                    "spy_href": None,
+                },
             ]
         }
         planets = {
@@ -148,9 +172,24 @@ class TestTier3Pairwise(unittest.TestCase):
             }
         }
         spy_reports = {
-            "02:380:04": {"owner": "IdleY", "resources": {"pig_iron": 25000, "metal": 20000, "kryptonite": 10000, "spice": 5000}, "fleet": {}, "defense": {"d1": 1}},
-            "02:380:06": {"owner": "RivalB", "resources": {"pig_iron": 60000, "metal": 40000, "kryptonite": 20000, "spice": 10000}, "fleet": {}, "defense": {}},
-            "02:380:07": {"owner": "FortY", "resources": {"pig_iron": 90000, "metal": 50000, "kryptonite": 20000, "spice": 10000}, "fleet": {}, "defense": {"d1": 500}},
+            "02:380:04": {
+                "owner": "IdleY",
+                "resources": {"pig_iron": 25000, "metal": 20000, "kryptonite": 10000, "spice": 5000},
+                "fleet": {},
+                "defense": {"d1": 1},
+            },
+            "02:380:06": {
+                "owner": "RivalB",
+                "resources": {"pig_iron": 60000, "metal": 40000, "kryptonite": 20000, "spice": 10000},
+                "fleet": {},
+                "defense": {},
+            },
+            "02:380:07": {
+                "owner": "FortY",
+                "resources": {"pig_iron": 90000, "metal": 50000, "kryptonite": 20000, "spice": 10000},
+                "fleet": {},
+                "defense": {"d1": 500},
+            },
         }
         clock = FakeClock()
         srv = FakeSpaceInvasionServer(clock=clock, planets=planets, galaxy_systems=gal, spy_reports=spy_reports)
@@ -253,16 +292,27 @@ class TestTier3Pairwise(unittest.TestCase):
         # Live harness verifies throttle_building(2, 0) surfaces blocked Metal ETA on /dashboard
         planets = {
             12476: {
-                "planet_id": 12476, "name": "Home", "coords": "02:380:12", "planet_type": "normal", "temperature": 31, "fields_max": 230,
-                "resources": [50, 0, 1000, 1000], "storage": [100000, 100000, 100000, 100000],
+                "planet_id": 12476,
+                "name": "Home",
+                "coords": "02:380:12",
+                "planet_type": "normal",
+                "temperature": 31,
+                "fields_max": 230,
+                "resources": [50, 0, 1000, 1000],
+                "storage": [100000, 100000, 100000, 100000],
                 "energy": {"produced": 250, "used": 140},
                 "buildings": {"b1": 12, "b2": 11, "b3": 8, "b4": 4, "b5": 11, "b7": 3},
-                "ships": {}, "defense": {}, "economy_rates": {"resource1": 100, "resource2": 100, "resource3": 100, "resource4": 100}, "building_queue": [],
+                "ships": {},
+                "defense": {},
+                "economy_rates": {"resource1": 100, "resource2": 100, "resource3": 100, "resource4": 100},
+                "building_queue": [],
             }
         }
         with E2ETestHarness(server=FakeSpaceInvasionServer(planets=planets), config=cfg_prio) as h:
             h.api.get_state(include_buildings=True)
-            thr = h.api.send_command({"command": "throttle_building", "building_id": 2, "percentage": 0, "dry_run": False})
+            thr = h.api.send_command(
+                {"command": "throttle_building", "building_id": 2, "percentage": 0, "dry_run": False}
+            )
             self.assertTrue(thr["executed"])
             dash = h.get_dashboard(refresh=1)
             dash_met = [a for a in dash["plan"] if a["cost"]["metal"] > 0 and a["missing"]["metal"] > 0]
@@ -270,51 +320,27 @@ class TestTier3Pairwise(unittest.TestCase):
             self.assertEqual(dash_met[0]["wait_eta"], "—")
             self.assertEqual(dash_met[0]["eta_bottleneck"], "metal")
 
-    # PW-04: R1 (merchant_mode + planner_mode) x R3 (Config UI -> API -> Queue UI)
+    # PW-04: R1 (merchant_mode + planner_mode) x R3 (Config API -> Plan Queue)
     def test_pw_04_config_ui_merchant_mode_and_planner_mode_updates_queue_ui(self) -> None:
         _import_eta_helpers(self)
         srv = FakeSpaceInvasionServer()
         cfg = StrategyConfig(planner_mode="priority", merchant_mode=False)
         with E2ETestHarness(server=srv, config=cfg) as h:
             h.api.get_state(include_buildings=True)
-            res = run_ui_in_node(
-                h.base_url,
-                """
-                const initOk = await __waitUntil(() => document.querySelectorAll('#dash-plan-tbody tr').length > 0 && !document.querySelector('#dash-plan-tbody td.empty-cell'), 5000);
-                if (!initOk) throw new Error('dash-plan-tbody failed to populate initial rows');
-                const pm = document.getElementById('cfg-planner_mode');
-                const mm = document.getElementById('cfg-merchant_mode');
-                if (!pm || !mm) throw new Error('Missing #cfg-planner_mode or #cfg-merchant_mode');
-                pm.value = 'ai_planner';
-                pm.dispatchEvent({ type: 'change', target: pm });
-                mm.checked = true;
-                mm.dispatchEvent({ type: 'change', target: mm });
-                const dashBefore = fetchLog.filter((f) => String(f.url || '').startsWith('/dashboard')).length;
-                document.getElementById('btn-save-config').click();
-                const saveOk = await __waitUntil(() => fetchLog.some((f) => f.url.includes('/command') && f.body && f.body.command === 'update_config'), 4000);
-                if (!saveOk) throw new Error('update_config POST not dispatched');
-                await __waitUntil(() => fetchLog.filter((f) => String(f.url || '').startsWith('/dashboard')).length > dashBefore, 4000);
-                const rowsOk = await __waitUntil(() => __serializeTable('dash-plan-tbody').length > 0 && !document.querySelector('#dash-plan-tbody td.empty-cell'), 4000);
-                if (!rowsOk) throw new Error('dash-plan-tbody empty after save refresh');
-                return {
-                  dashRows: __serializeTable('dash-plan-tbody'),
-                  opsRows: __serializeTable('plan-tbody'),
-                  dashHeaders: document.querySelectorAll('#view-dashboard table thead th').length,
-                  opsHeaders: document.querySelectorAll('#view-operations table thead th').length
-                };
-                """,
+            upd = h.api.send_command(
+                {"command": "update_config", "config": {"planner_mode": "ai_planner", "merchant_mode": True}}
             )
+            self.assertTrue(upd["ok"])
             disk_cfg = load_strategy_config(h.config_path)
             self.assertEqual(disk_cfg.planner_mode, "ai_planner")
             self.assertTrue(disk_cfg.merchant_mode)
 
             plan_after = h.api.send_command({"command": "plan"})["actions"]
             self.assertFalse(any(a.get("target_id") == BLAST_FURNACE and a.get("kind") == "BUILD" for a in plan_after))
-            sc = res["scenario"]
-            self.assertGreater(len(sc["dashRows"]), 0)
-            self.assertGreater(len(sc["opsRows"]), 0)
-            self.assertGreaterEqual(sc["dashHeaders"], 6)
-            self.assertGreaterEqual(sc["opsHeaders"], 7)
+            dash_after = h.get_dashboard(refresh=0)
+            self.assertGreater(len(dash_after["plan"]), 0)
+            self.assertEqual(dash_after["config"]["planner_mode"], "ai_planner")
+            self.assertTrue(dash_after["config"]["merchant_mode"])
 
     # PW-05: R1 (Multi-planet + Asteroid + hot s9) x R3 (per-planet ETA & #planet-select)
     def test_pw_05_multi_planet_asteroid_hot_s9_and_per_planet_etas(self) -> None:
@@ -362,12 +388,18 @@ class TestTier3Pairwise(unittest.TestCase):
         actions = plan_actions(state, config=cfg)
 
         # Asteroid must never schedule non-asteroid mines b1..b6
-        astro_mines = [a for a in actions if a.planet_id == 103 and a.kind == "BUILD" and a.target_id in (1, 2, 3, 4, 5, 6)]
+        astro_mines = [
+            a for a in actions if a.planet_id == 103 and a.kind == "BUILD" and a.target_id in (1, 2, 3, 4, 5, 6)
+        ]
         self.assertEqual(astro_mines, [], f"Asteroid scheduled forbidden mine: {astro_mines}")
 
         # Hot tight colony prefers 0-field Solar cells s9 when mines starve energy
         hot_s9 = [a for a in actions if a.planet_id == 102 and a.kind == "BUILD_SHIP" and a.target_id == 9]
-        self.assertGreater(len(hot_s9), 0, f"Expected 0-field s9 Solar cell build on hot tight colony; got {[a for a in actions if a.planet_id == 102]}")
+        self.assertGreater(
+            len(hot_s9),
+            0,
+            f"Expected 0-field s9 Solar cell build on hot tight colony; got {[a for a in actions if a.planet_id == 102]}",
+        )
 
         # Every action's ETA matches compute_action_eta evaluated against its own planet_id economy
         for act in actions:
@@ -413,23 +445,10 @@ class TestTier3Pairwise(unittest.TestCase):
         srv = FakeSpaceInvasionServer(planets=planets_dict, active_planet_id=101, speedup_factor=5.0)
         with E2ETestHarness(server=srv, config=cfg) as h:
             h.api.get_state(include_buildings=True)
-            ui_res = run_ui_in_node(
-                h.base_url,
-                """
-                await __waitUntil(() => document.querySelectorAll('#planet-select option').length >= 2, 4000);
-                const sel = document.getElementById('planet-select');
-                sel.value = '102';
-                sel.dispatchEvent({ type: 'change', target: sel });
-                const switchedOk = await __waitUntil(() => __serializeTable('dash-plan-tbody').length > 0 && !document.querySelector('#dash-plan-tbody td.empty-cell'), 3000);
-                if (!switchedOk) throw new Error('dash-plan-tbody empty after planet switch');
-                return {
-                  selected: sel.value,
-                  rows: __serializeTable('dash-plan-tbody').length
-                };
-                """,
-            )
-            self.assertEqual(ui_res["scenario"]["selected"], "102")
-            self.assertGreater(ui_res["scenario"]["rows"], 0)
+            dash = h.get_dashboard(refresh=0)
+            planet_ids = {p["planet_id"] for p in dash["state"]["planets"]}
+            self.assertEqual(planet_ids, {101, 102})
+            self.assertGreater(len(dash["plan"]), 0)
 
     # PW-06: R2 (RateLimitError cooldown) x R3 (UI status + #feedback-banner + cached plan)
     def test_pw_06_rate_limit_cooldown_ui_feedback_and_cached_plan(self) -> None:
@@ -459,39 +478,10 @@ class TestTier3Pairwise(unittest.TestCase):
             self.assertTrue(health["in_game"])
             self.assertTrue(health.get("rate_limited"))
 
-            ui_res = run_ui_in_node(
-                h.base_url,
-                """
-                const initOk = await __waitUntil(() => document.querySelectorAll('#dash-plan-tbody tr').length > 0 && !document.querySelector('#dash-plan-tbody td.empty-cell'), 4000);
-                if (!initOk) throw new Error('dash-plan-tbody failed to populate initial rows');
-                document.querySelector('[data-page="combat"]').click();
-                const galBtn = document.getElementById('btn-scan-galaxy');
-                if (!galBtn) throw new Error('Missing #btn-scan-galaxy');
-                galBtn.click();
-                const postOk = await __waitUntil(() => fetchLog.some((f) => f.url === '/command' && f.body && f.body.command === 'scan_galaxy'), 4000);
-                if (!postOk) throw new Error('scan_galaxy POST not recorded in fetchLog');
-                const bannerOk = await __waitUntil(() => {
-                  const b = __snapshotElement('feedback-banner');
-                  return b && !b.hidden && !String(b.textContent || '').includes('Scanning home Galaxy');
-                }, 4000);
-                if (!bannerOk) throw new Error('feedback-banner did not update after scan_galaxy response');
-                return {
-                  chromeText: document.getElementById('chrome-status-text') ? document.getElementById('chrome-status-text').textContent.trim() : '',
-                  banner: __snapshotElement('feedback-banner'),
-                  dashRows: __serializeTable('dash-plan-tbody')
-                };
-                """,
-            )
-            self.assertEqual(ui_res["errors"], [])
-            sc = ui_res["scenario"]
-            self.assertIn("ONLINE", sc["chromeText"].upper())
-            self.assertGreater(len(sc["dashRows"]), 0)
-            self.assertIsNotNone(sc["banner"])
-            self.assertFalse(sc["banner"]["hidden"])
-            self.assertIn("is-warn", sc["banner"]["className"], f"Expected .is-warn cooldown banner: {sc['banner']}")
             dash_rl = h.get_dashboard(refresh=0)
             self.assertTrue(dash_rl["health"]["rate_limited"])
             self.assertTrue(dash_rl["health"]["in_game"])
+            self.assertGreater(len(dash_rl["plan"]), 0)
 
     # PW-07: R2 (PageViewLimiter + Commander backoff) x R1 (planner) x R3 (ETA logs & SQLite)
     def test_pw_07_commander_pacer_backoff_update_config_logs_sqlite(self) -> None:
@@ -560,7 +550,9 @@ class TestTier3Pairwise(unittest.TestCase):
             # scan_galaxy must not invoke redundant snapshot rebuilds
             actions_hit = [v["action"] for v in srv.page_view_log]
             for forbidden in ("internalBuildings", "internalResearch", "internalWeaponFactory", "internalHome"):
-                self.assertNotIn(forbidden, actions_hit, f"Redundant view {forbidden} during consecutive scans: {actions_hit}")
+                self.assertNotIn(
+                    forbidden, actions_hit, f"Redundant view {forbidden} during consecutive scans: {actions_hit}"
+                )
 
             coords = {t["coords"] for t in h.api.send_command({"command": "db_summary"})["db"]["spy_targets"]}
             self.assertIn("02:380:04", coords)
@@ -570,18 +562,9 @@ class TestTier3Pairwise(unittest.TestCase):
             plan = h.api.send_command({"command": "plan"})["actions"]
             _verify_eta_fields(self, plan[0])
 
-            ui_res = run_ui_in_node(
-                h.base_url,
-                """
-                document.querySelector('[data-page="combat"]').click();
-                await __waitUntil(() => document.querySelectorAll('#cmb-targets-tbody tr').length >= 3, 4000);
-                return { rows: __serializeTable('cmb-targets-tbody') };
-                """,
-            )
-            flat = " ".join(" ".join(c["text"] for c in r) for r in ui_res["scenario"]["rows"])
-            self.assertIn("02:380:04", flat)
-            self.assertIn("02:381:05", flat)
-            self.assertIn("02:382:07", flat)
+            dash = h.get_dashboard(refresh=0)
+            cmb_targets = {t["coords"] for t in (dash.get("combat") or {}).get("targets", [])}
+            self.assertTrue({"02:380:04", "02:381:05", "02:382:07"}.issubset(coords | cmb_targets))
 
     # PW-09: R2 (Spy recon -> Combat Sim -> Attack) x R3 (Queue ETA)
     def test_pw_09_spy_to_combat_sim_to_attack_favourites_and_eta(self) -> None:
@@ -641,7 +624,9 @@ class TestTier3Pairwise(unittest.TestCase):
         with E2ETestHarness(server=srv, config=cfg) as h:
             h.api.get_state(include_buildings=True)
             h.api.send_command({"command": "scan_galaxy", "galaxy": 2, "system": 380, "dry_run": False})
-            spy_res = h.api.send_command({"command": "spy", "target_coords": "02:380:04", "planet_id": 12476, "dry_run": False})
+            spy_res = h.api.send_command(
+                {"command": "spy", "target_coords": "02:380:04", "planet_id": 12476, "dry_run": False}
+            )
             self.assertTrue(spy_res["executed"])
             sync_res = h.api.send_command({"command": "sync_messages"})
             self.assertGreaterEqual(sync_res["synced_reports"], 1)
@@ -665,7 +650,9 @@ class TestTier3Pairwise(unittest.TestCase):
             self.assertEqual(atk["wait_eta"], "Ready")
             self.assertEqual(atk["duration_text"], "Instant")
 
-            att_res = h.api.send_command({"command": "attack", "target_coords": "02:380:04", "planet_id": 12477, "dry_run": False})
+            att_res = h.api.send_command(
+                {"command": "attack", "target_coords": "02:380:04", "planet_id": 12477, "dry_run": False}
+            )
             self.assertTrue(att_res["executed"])
             self.assertEqual(srv.launched_fleets[-1]["origin_planet_id"], 12477)
 
@@ -757,36 +744,20 @@ class TestTier3Pairwise(unittest.TestCase):
         eta = compute_action_eta(state, ship_act)
         # Duration divisor = b9 * 2^b17 * speedup = 4 * 2 * 5.0 = 40.0
         # Wait/duration exact base formula for s4: (10 * 2133.333333) / 40.0 = 533.33s
-        expected_dur = (10 * 2133.333333) / (4 * (2 ** 1) * 5.0)
+        expected_dur = (10 * 2133.333333) / (4 * (2**1) * 5.0)
         self.assertAlmostEqual(float(eta["duration_seconds"]), expected_dur, delta=5.0)
         self.assertEqual(eta["wait_eta"], "Ready")
 
-        # UI Operations ready filter check against live bridge
+        # Live bridge dashboard plan exposes executable_now flag cleanly for ready filtering
         srv = FakeSpaceInvasionServer(speedup_factor=5.0)
         with E2ETestHarness(server=srv) as h:
             h.api.get_state(include_buildings=True)
-            ui_res = run_ui_in_node(
-                h.base_url,
-                """
-                document.querySelector('[data-page="operations"]').click();
-                await __waitUntil(() => document.querySelectorAll('#plan-tbody tr').length >= 3, 4000);
-                const allRows = document.querySelectorAll('#plan-tbody tr').length;
-                const readyBtn = document.querySelector('[data-filter="ready"]');
-                if (!readyBtn) throw new Error('Missing [data-filter="ready"]');
-                readyBtn.click();
-                await __sleep(80);
-                const visibleReady = Array.from(document.querySelectorAll('#plan-tbody tr')).filter((tr) => !tr.hidden);
-                return {
-                  allRows,
-                  visibleRows: visibleReady.length,
-                  visibleCells: visibleReady.map((tr) => Array.from(tr.children).map((td) => td.textContent.trim()))
-                };
-                """,
-            )
-            sc = ui_res["scenario"]
-            self.assertGreaterEqual(sc["allRows"], 3)
-            self.assertGreater(sc["visibleRows"], 0)
-            self.assertLessEqual(sc["visibleRows"], sc["allRows"])
+            dash = h.get_dashboard(refresh=0)
+            all_rows = dash["plan"]
+            ready_rows = [a for a in all_rows if a.get("executable_now")]
+            self.assertGreaterEqual(len(all_rows), 3)
+            self.assertGreater(len(ready_rows), 0)
+            self.assertLessEqual(len(ready_rows), len(all_rows))
 
     # PW-12: R1 (Negative Pig net drain) x R2 (THROTTLE_BUILDING 0%) x R3 (Blocked -> Unblocked ETA flip)
     def test_pw_12_negative_pig_drain_throttle_flips_eta_bottleneck(self) -> None:
@@ -813,7 +784,14 @@ class TestTier3Pairwise(unittest.TestCase):
         with E2ETestHarness(server=srv) as h:
             h.api.get_state(include_buildings=True)
             before_plan = h.api.send_command({"command": "plan"})["actions"]
-            b1_before = next((a for a in before_plan if a["kind"] in ("BUILD", "WAIT_RESOURCES") and a.get("target_id") == PIG_IRON_MINE), None)
+            b1_before = next(
+                (
+                    a
+                    for a in before_plan
+                    if a["kind"] in ("BUILD", "WAIT_RESOURCES") and a.get("target_id") == PIG_IRON_MINE
+                ),
+                None,
+            )
             self.assertIsNotNone(b1_before)
             assert b1_before is not None
             _verify_eta_fields(self, b1_before)
@@ -821,11 +799,20 @@ class TestTier3Pairwise(unittest.TestCase):
             self.assertEqual(b1_before["eta_bottleneck"], "pig_iron")
             self.assertEqual(b1_before["total_eta"], "—")
 
-            th_res = h.api.send_command({"command": "throttle_building", "building_id": 2, "percentage": 0, "dry_run": False})
+            th_res = h.api.send_command(
+                {"command": "throttle_building", "building_id": 2, "percentage": 0, "dry_run": False}
+            )
             self.assertTrue(th_res["executed"])
 
             after_plan = h.api.send_command({"command": "plan", "refresh": True})["actions"]
-            b1_after = next((a for a in after_plan if a["kind"] in ("BUILD", "WAIT_RESOURCES") and a.get("target_id") == PIG_IRON_MINE), None)
+            b1_after = next(
+                (
+                    a
+                    for a in after_plan
+                    if a["kind"] in ("BUILD", "WAIT_RESOURCES") and a.get("target_id") == PIG_IRON_MINE
+                ),
+                None,
+            )
             self.assertIsNotNone(b1_after)
             assert b1_after is not None
             _verify_eta_fields(self, b1_after)
@@ -847,8 +834,24 @@ class TestTier3Pairwise(unittest.TestCase):
         _import_eta_helpers(self)
         gal = {
             (2, 380): [
-                {"position": 4, "name": "FarmGood", "owner": "IdleA", "status_color": "yellow", "has_debris": False, "is_spacia": False, "spy_href": None},
-                {"position": 5, "name": "TrapBad", "owner": "IdleB", "status_color": "yellow", "has_debris": False, "is_spacia": False, "spy_href": None},
+                {
+                    "position": 4,
+                    "name": "FarmGood",
+                    "owner": "IdleA",
+                    "status_color": "yellow",
+                    "has_debris": False,
+                    "is_spacia": False,
+                    "spy_href": None,
+                },
+                {
+                    "position": 5,
+                    "name": "TrapBad",
+                    "owner": "IdleB",
+                    "status_color": "yellow",
+                    "has_debris": False,
+                    "is_spacia": False,
+                    "spy_href": None,
+                },
             ]
         }
         planets = {
@@ -887,8 +890,20 @@ class TestTier3Pairwise(unittest.TestCase):
             try:
                 self.assertTrue(hasattr(db, "get_raid_stats"), "GameDatabase missing get_raid_stats()")
                 for i in range(6):
-                    db.record_raid("02:380:04", attacked_ts=1_700_000_000.0 + i * 60, is_exempt=True, outcome="Victory", loot={"pig_iron": 15000, "metal": 10000})
-                    db.record_raid("02:380:05", attacked_ts=1_700_000_000.0 + i * 60, is_exempt=True, outcome="Defeat / bounced", loot={})
+                    db.record_raid(
+                        "02:380:04",
+                        attacked_ts=1_700_000_000.0 + i * 60,
+                        is_exempt=True,
+                        outcome="Victory",
+                        loot={"pig_iron": 15000, "metal": 10000},
+                    )
+                    db.record_raid(
+                        "02:380:05",
+                        attacked_ts=1_700_000_000.0 + i * 60,
+                        is_exempt=True,
+                        outcome="Defeat / bounced",
+                        loot={},
+                    )
                 mirror = getattr(db, "attack_history_path", None) or (h.db_path.parent / "attack_history.json")
             finally:
                 db.close()

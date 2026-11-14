@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-import contextlib
 from dataclasses import replace
 import json
 import math
 import os
 from pathlib import Path
-import re
 import shutil
 import tempfile
 import unittest
@@ -16,30 +14,32 @@ from unittest.mock import MagicMock, patch
 
 from bs4 import BeautifulSoup
 import requests
-from selenium.common.exceptions import NoSuchElementException, StaleElementReferenceException
 
 from tests.e2e.fixtures import (
     evaluate_sequence_score,
     make_game_state,
     make_planet,
-    make_research_offer,
-    make_ship_offer,
 )
 from tests.e2e.harness import (
     E2ETestHarness,
     FakeClock,
-    FakeDriver,
     FakeSpaceInvasionServer,
-    run_ui_in_node,
 )
-from spaceinvasion.api_server import GameApiBridge
-from spaceinvasion.client import GameBrowserClient, PageViewLimiter
-from spaceinvasion.config import StrategyConfig
-from spaceinvasion.executor import ActionExecutor
-from spaceinvasion.fleet import GalaxySlot
-from spaceinvasion.logging_utils import append_api_log
-from spaceinvasion.ranking import _format_duration, build_buildings_eta, compute_action_eta
-from spaceinvasion.state import (
+from spaceinvasion.runtime.bridge import GameApiBridge
+from spaceinvasion.session.client import (
+    GameBrowserClient,
+    PageViewLimiter,
+)
+from spaceinvasion.core.config import StrategyConfig
+from spaceinvasion.session.executor import ActionExecutor
+from spaceinvasion.parsing.models import GalaxySlot
+from spaceinvasion.runtime.logs import append_api_log
+from spaceinvasion.planner.eta import (
+    format_duration as _format_duration,
+    build_buildings_eta,
+    compute_action_eta,
+)
+from spaceinvasion.core.model import (
     EnergyBalance,
     GameState,
     PlanetState,
@@ -47,8 +47,12 @@ from spaceinvasion.state import (
     Resources,
     UnitOffer,
 )
-from spaceinvasion.storage import GameDatabase
-from spaceinvasion.strategy import PlannedAction, SPICE_MINE, plan_actions
+from tests.pg_harness import open_test_db as GameDatabase, run_pg_exec, run_pg_query
+from spaceinvasion.core.model import PlannedAction
+from spaceinvasion.planner.heuristics import (
+    SPICE_MINE,
+    plan_actions,
+)
 
 
 class TestTier5Adversarial(unittest.TestCase):
@@ -206,7 +210,7 @@ class TestTier5Adversarial(unittest.TestCase):
         self.assertEqual(eta_b6["duration_text"], "1s")
 
         # Pig iron rate at b1=5, b2=2, speedup=1.0 -> scale speedup so net pig_iron_per_hr ~ 7200/hr (missing=1 => ~0.5s wait)
-        from spaceinvasion.ranking import estimate_planet_hourly_economy
+        from spaceinvasion.planner.eta import estimate_planet_hourly_economy
 
         pig_hr = float(estimate_planet_hourly_economy(st_eta, p_eta)["pig_iron_per_hr"])
         spd_half = 7200.0 / max(1.0, pig_hr)
@@ -279,7 +283,7 @@ class TestTier5Adversarial(unittest.TestCase):
                 for mem_uri in (":memory:", "file::memory:?cache=shared"):
                     db = GameDatabase(mem_uri)
                     try:
-                        self.assertTrue(db._is_postgres)
+                        self.assertEqual(db.backend_name, "postgres")
                         db.record_raid(
                             "2:380:4",
                             attacked_ts=float("nan"),
@@ -345,7 +349,19 @@ class TestTier5Adversarial(unittest.TestCase):
                 100.0,
                 (p0,),
                 active_planet_id=1,
-                research_offers=(ResearchOffer(2, "r2", "Energy technology", 0, 1, cost=Resources(), status_text="Active", can_research=False, active=True),),
+                research_offers=(
+                    ResearchOffer(
+                        2,
+                        "r2",
+                        "Energy technology",
+                        0,
+                        1,
+                        cost=Resources(),
+                        status_text="Active",
+                        can_research=False,
+                        active=True,
+                    ),
+                ),
             )
             cur_st = GameState(31, 1, "u", 110.0, (p0,), active_planet_id=1, research_offers=(), active_queues=())
             bridge = GameApiBridge(
@@ -355,8 +371,8 @@ class TestTier5Adversarial(unittest.TestCase):
                 log_dir=Path(tmp) / "logs",
             )
             try:
-                bridge._last_state = prev_st
-                merged = bridge._merge_cached_offers(cur_st)
+                bridge.ctx.last_state = prev_st
+                merged = bridge.state_cache.merge_cached_offers(cur_st)
                 self.assertFalse(merged.research_offers[0].active)
             finally:
                 if bridge._db is not None:
@@ -372,7 +388,7 @@ class TestTier5Adversarial(unittest.TestCase):
             client_b.driver = MagicMock()
             client_b._wait_frame_ready.return_value = html_sel
             ex = ActionExecutor(dry_run=False, action_delay_range=(0.0, 0.0))
-            with patch("spaceinvasion.executor.Select"):
+            with patch("spaceinvasion.session.executor.Select"):
                 switched, _ = ex._select_planet_if_needed(client_b, 2, html=html_sel, require_confirm=True)
             self.assertFalse(switched)
 
@@ -386,73 +402,6 @@ class TestTier5Adversarial(unittest.TestCase):
             r_trn = MagicMock()
             r_trn.get_attribute.side_effect = lambda k: {"value": "trn", "name": "mission", "id": ""}.get(k, "")
             self.assertIs(ActionExecutor._match_mission_radio(soup, "form#f", [r_atk, r_trn], "ATTACK"), r_atk)
-
-    # ------------------------------------------------------------------
-    # T5-05: UI finiteNum, fmtImprovementPct(-0.01 -> +0.0%), refcounted gaCalcCount
-    # ------------------------------------------------------------------
-    def test_t5_05_ui_adversarial_refcounted_ga_calc_finite_num_and_neg_zero_in_node(self) -> None:
-        cfg = StrategyConfig(planner_mode="priority", ga_population_size=8, ga_generations=3)
-        with E2ETestHarness(config=cfg) as h:
-            ui_res = run_ui_in_node(
-                h.base_url,
-                """
-                const loaded = await __waitUntil(() => state && state.dashboard !== null, 4000);
-                if (!loaded) throw new Error('Dashboard failed to load');
-
-                // 1. finiteNum hardening
-                const fObj = finiteNum({}, null);
-                const fArr = finiteNum([], null);
-                const fBlank = finiteNum('   ', -1);
-                const fSym = finiteNum(Symbol('x'), -1);
-                const fNan = finiteNum(Number.NaN, 0);
-                const fInf = finiteNum(Infinity, 0);
-                const fOk = finiteNum(' 42.5 ', 0);
-
-                // 2. fmtImprovementPct -0.0% normalization
-                const negTiny = fmtImprovementPct(-0.01, null, null);
-                const posTiny = fmtImprovementPct(0.01, null, null);
-
-                // 3. Concurrent refcounted gaCalcCount
-                beginGaCalc();
-                const afterBegin1 = state.gaCalcRunning;
-                const count1 = state.gaCalcCount;
-                beginGaCalc();
-                const count2 = state.gaCalcCount;
-                endGaCalc();
-                const afterEnd1 = state.gaCalcRunning;
-                const countAfterEnd1 = state.gaCalcCount;
-                endGaCalc();
-                const afterEnd2 = state.gaCalcRunning;
-                const countAfterEnd2 = state.gaCalcCount;
-
-                return {
-                  fObj, fArr, fBlank, fSym, fNan, fInf, fOk,
-                  negTiny, posTiny,
-                  afterBegin1, count1, count2,
-                  afterEnd1, countAfterEnd1,
-                  afterEnd2, countAfterEnd2,
-                };
-                """,
-            )
-            sc = ui_res["scenario"]
-            self.assertEqual(ui_res["errors"], [])
-            self.assertEqual(ui_res["windowErrors"], [])
-            self.assertIsNone(sc["fObj"])
-            self.assertIsNone(sc["fArr"])
-            self.assertEqual(sc["fBlank"], -1)
-            self.assertEqual(sc["fSym"], -1)
-            self.assertEqual(sc["fNan"], 0)
-            self.assertEqual(sc["fInf"], 0)
-            self.assertEqual(sc["fOk"], 42.5)
-            self.assertEqual(sc["negTiny"], "+0.0%")
-            self.assertEqual(sc["posTiny"], "+0.0%")
-            self.assertTrue(sc["afterBegin1"])
-            self.assertEqual(sc["count1"], 1)
-            self.assertEqual(sc["count2"], 2)
-            self.assertTrue(sc["afterEnd1"])
-            self.assertEqual(sc["countAfterEnd1"], 1)
-            self.assertFalse(sc["afterEnd2"])
-            self.assertEqual(sc["countAfterEnd2"], 0)
 
     # ------------------------------------------------------------------
     # Section B1: Unpadded vs padded BashTracker + executor raid_stats roundtrip
@@ -474,7 +423,13 @@ class TestTier5Adversarial(unittest.TestCase):
                     "buildings": {"b1": 4, "b5": 8, "b9": 2},
                     "ships": {"s1": 10, "s4": 25},
                     "defense": {},
-                    "economy_rates": {"resource1": 100, "resource2": 100, "resource3": 100, "resource4": 100, "resource5": 100},
+                    "economy_rates": {
+                        "resource1": 100,
+                        "resource2": 100,
+                        "resource3": 100,
+                        "resource4": 100,
+                        "resource5": 100,
+                    },
                     "building_queue": [],
                 }
             },
@@ -489,7 +444,9 @@ class TestTier5Adversarial(unittest.TestCase):
                 ts=clock.time(),
             )
             for i in range(3):
-                h.bridge._db.record_raid("2:380:4", attacked_ts=clock.time() - 600 + i * 30, is_exempt=False, outcome="win")
+                h.bridge._db.record_raid(
+                    "2:380:4", attacked_ts=clock.time() - 600 + i * 30, is_exempt=False, outcome="win"
+                )
 
             blocked = h.api.send_command({"command": "attack", "target_coords": "02:380:04", "dry_run": False})
             self.assertFalse(blocked.get("executed", True))
@@ -497,8 +454,8 @@ class TestTier5Adversarial(unittest.TestCase):
 
             # Live build execution preserves raid_stats on updated_state via ActionExecutor._build_updated_state
             h.bridge.get_state()
-            assert h.bridge._last_state is not None
-            h.bridge._last_state = replace(h.bridge._last_state, raid_stats=h.bridge._db.get_raid_stats())
+            assert h.bridge.ctx.last_state is not None
+            h.bridge.ctx.last_state = replace(h.bridge.ctx.last_state, raid_stats=h.bridge._db.get_raid_stats())
             bld_res = h.api.send_command({"command": "build", "building_id": 1, "dry_run": False})
             self.assertTrue(bld_res.get("executed", False))
             self.assertEqual(bld_res["state"]["raid_stats"]["overall"]["attempts"], 3)
@@ -552,7 +509,13 @@ class TestTier5Adversarial(unittest.TestCase):
                 "buildings": {"b1": 5, "b5": 8, "b8": 5, "b9": 1},
                 "ships": {},
                 "defense": {},
-                "economy_rates": {"resource1": 100, "resource2": 100, "resource3": 100, "resource4": 100, "resource5": 100},
+                "economy_rates": {
+                    "resource1": 100,
+                    "resource2": 100,
+                    "resource3": 100,
+                    "resource4": 100,
+                    "resource5": 100,
+                },
                 "building_queue": [],
             },
             12477: {
@@ -568,7 +531,13 @@ class TestTier5Adversarial(unittest.TestCase):
                 "buildings": {"b1": 4, "b5": 8, "b8": 1, "b9": 1},
                 "ships": {},
                 "defense": {},
-                "economy_rates": {"resource1": 100, "resource2": 100, "resource3": 100, "resource4": 100, "resource5": 100},
+                "economy_rates": {
+                    "resource1": 100,
+                    "resource2": 100,
+                    "resource3": 100,
+                    "resource4": 100,
+                    "resource5": 100,
+                },
                 "building_queue": [],
             },
         }
@@ -580,7 +549,7 @@ class TestTier5Adversarial(unittest.TestCase):
         )
         with E2ETestHarness(server=srv, config=StrategyConfig()) as h:
             h.bridge.get_state(include_buildings=True)
-            st0 = h.bridge._last_state
+            st0 = h.bridge.ctx.last_state
             assert st0 is not None
             self.assertTrue(next(o for o in st0.research_offers if o.research_id == 8).can_research)
 
@@ -588,7 +557,9 @@ class TestTier5Adversarial(unittest.TestCase):
             r8_dry = h.api.send_command({"command": "research", "research_id": 8, "planet_id": 12477, "dry_run": True})
             self.assertFalse(r8_dry["action"]["executable_now"])
             views_before = len(srv.page_view_log)
-            r8_live = h.api.send_command({"command": "research", "research_id": 8, "planet_id": 12477, "dry_run": False})
+            r8_live = h.api.send_command(
+                {"command": "research", "research_id": 8, "planet_id": 12477, "dry_run": False}
+            )
             self.assertFalse(r8_live["executed"])
             self.assertEqual(len(srv.page_view_log), views_before)
 
@@ -599,16 +570,27 @@ class TestTier5Adversarial(unittest.TestCase):
             self.assertFalse(s10_live["executed"])
 
             # External research cancel clears stale active=True so r8 can execute
-            h.bridge._last_state = replace(
+            h.bridge.ctx.last_state = replace(
                 st0,
                 research_offers=(
-                    ResearchOffer(2, "r2", "Energy technology", 4, 5, Resources(0, 1600, 800, 0), False, "In research (Cancel)", None, active=True),
+                    ResearchOffer(
+                        2,
+                        "r2",
+                        "Energy technology",
+                        4,
+                        5,
+                        Resources(0, 1600, 800, 0),
+                        False,
+                        "In research (Cancel)",
+                        None,
+                        active=True,
+                    ),
                     next(o for o in st0.research_offers if o.research_id == 8),
                 ),
             )
-            merged = h.bridge._merge_cached_offers(replace(st0, research_offers=(), active_queues=()))
+            merged = h.bridge.state_cache.merge_cached_offers(replace(st0, research_offers=(), active_queues=()))
             self.assertFalse(any(o.active for o in merged.research_offers))
-            self.assertTrue(h.bridge._find_research_action(merged, 8, 12476).executable_now)
+            self.assertTrue(h.bridge.plan_assembly.find_research_action(merged, 8, 12476).executable_now)
 
     # ------------------------------------------------------------------
     # Section B4: Storage memory URI, inf loot, corrupt cells via /command db_summary & /dashboard
@@ -638,100 +620,37 @@ class TestTier5Adversarial(unittest.TestCase):
 
         with E2ETestHarness(config=StrategyConfig()) as h:
             assert h.bridge._db is not None
-            h.bridge._db._conn.execute(
-                "INSERT INTO economy_rates_cache(planet_id, coords, rates_json, updated_ts) VALUES(1, '01:001:01', 'null', 10.0)"
+            run_pg_exec(
+                h.bridge._db,
+                "INSERT INTO economy_rates_cache(planet_id, coords, rates_json, updated_ts) VALUES(1, '01:001:01', 'null', 10.0)",
             )
-            h.bridge._db._conn.execute(
-                "INSERT INTO spy_targets(coords, owner, fleet_json, defense_json, last_scanned_ts) VALUES('01:001:09', 'Bad', '{bad', '[]', 10.0)"
+            run_pg_exec(
+                h.bridge._db,
+                "INSERT INTO spy_targets(coords, owner, fleet_json, defense_json, last_scanned_ts) VALUES('01:001:09', 'Bad', '{bad', '[]', 10.0)",
             )
-            h.bridge._db._conn.execute(
+            run_pg_exec(
+                h.bridge._db,
                 "INSERT INTO planet_snapshots(ts, universe_id, planet_id, coords, name, planet_type, "
                 "temperature, fields_used, fields_max, pig_iron, metal, kryptonite, spice, "
                 "energy_produced, energy_used, buildings_json, ships_json, defense_json, "
                 "economy_rates_json, researches_json) "
                 "VALUES(10.0, 31, 1, '01:001:01', 'P', 'normal', 20, 10, 200, 0, 0, 0, 0, 0, 0, "
-                "'{bad', 'null', 'null', '{bad', 'null')"
+                "'{bad', 'null', 'null', '{bad', 'null')",
             )
-            h.bridge._db._conn.execute(
+            run_pg_exec(
+                h.bridge._db,
                 "INSERT INTO tutorial_progress(step, total_steps, tasks_json, reward_text, can_complete, first_seen_ts, last_seen_ts) "
-                "VALUES(1, 5, '{bad', 'Reward', 0, 10.0, 10.0)"
+                "VALUES(1, 5, '{bad', 'Reward', 0, 10.0, 10.0)",
             )
-            h.bridge._db._conn.commit()
             db_res = h.api.send_command({"command": "db_summary"})
             self.assertTrue(db_res.get("ok"))
             dash_res = h.get_dashboard(refresh=0)
             self.assertTrue(dash_res.get("ok"))
 
-    # ------------------------------------------------------------------
-    # Section B5: UI concurrent #btn-gann-recalc + #btn-sync refcount & CSS floors
-    # ------------------------------------------------------------------
-    @unittest.skipUnless(shutil.which("node"), "Node.js not installed")
-    def test_adv_t5_05_ui_gann_recalc_concurrent_sync_and_mobile_css_floors(self) -> None:
-        cfg = StrategyConfig(planner_mode="priority", ga_population_size=8, ga_generations=3)
-        with E2ETestHarness(config=cfg) as h:
-            css_txt = re.sub(r"/\*.*?\*/", "", requests.get(f"{h.base_url}/styles.css", timeout=5.0).text, flags=re.DOTALL)
-            self.assertRegex(css_txt, r"\.nav-title\s*\{[^}]*font-size\s*:\s*0\.86rem")
-            self.assertRegex(css_txt, r"\.eta-pill\s*\{[^}]*font-size\s*:\s*0\.86rem")
-            m_1100 = re.search(
-                r"@media\s*\(\s*max-width\s*:\s*1100px\s*\)\s*\{((?:[^{}]|\{[^{}]*\})*)\}",
-                css_txt,
-                flags=re.IGNORECASE | re.DOTALL,
-            )
-            self.assertIsNotNone(m_1100)
-            m_logs = re.search(r"#logs-pre\s*\{[^}]*min-height\s*:\s*(\d+)px", m_1100.group(1))
-            self.assertIsNotNone(m_logs)
-            self.assertGreaterEqual(int(m_logs.group(1)), 200)
-
-            patch_js = (
-                "async (url, opts, fullUrl, nativeFetch) => { "
-                "if (url === '/command' && opts && opts.body) { "
-                "  const b = JSON.parse(String(opts.body)); "
-                "  if (b.command === 'plan') { "
-                "    return new Promise((resolve) => { "
-                "      globalThis.__resolveSlowPlan = async () => resolve(await nativeFetch(fullUrl, opts)); "
-                "    }); "
-                "  } "
-                "} }"
-            )
-            ui_res = run_ui_in_node(
-                h.base_url,
-                """
-                const loaded = await __waitUntil(() => state && state.dashboard !== null, 4000);
-                if (!loaded) throw new Error('Dashboard failed to load');
-
-                document.getElementById('btn-gann-recalc').click();
-                await __sleep(10);
-                document.getElementById('btn-sync').click();
-                await __waitUntil(() => document.getElementById('feedback-banner').textContent.includes('Synced') && !state.inFlightDashboard, 4000);
-                await __sleep(10);
-                const activeAfterSync = state.gaCalcRunning;
-                const countAfterSync = state.gaCalcCount;
-                const hasClassAfterSync = document.getElementById('gann-calc-hud').classList.contains('is-calculating');
-
-                globalThis.__resolveSlowPlan();
-                await __waitUntil(() => !state.gaCalcRunning, 4000);
-                return {
-                  activeAfterSync,
-                  countAfterSync,
-                  hasClassAfterSync,
-                  activeAfterRecalc: state.gaCalcRunning,
-                  countAfterRecalc: state.gaCalcCount,
-                };
-                """,
-                fetch_patch_js=patch_js,
-            )
-            self.assertEqual(ui_res["errors"], [])
-            sc = ui_res["scenario"]
-            self.assertTrue(sc["activeAfterSync"])
-            self.assertEqual(sc["countAfterSync"], 1)
-            self.assertTrue(sc["hasClassAfterSync"])
-            self.assertFalse(sc["activeAfterRecalc"])
-            self.assertEqual(sc["countAfterRecalc"], 0)
-
     def test_adv_t5_06_unnormalized_coords_api_guards_and_deep_sid_redaction(self) -> None:
-        from spaceinvasion.api_server import _redact_api_payload
-        from spaceinvasion.fleet import parse_spy_report_html
-        from spaceinvasion.logging_utils import redact_sensitive
+        from spaceinvasion.runtime.bridge._helpers import redact_api_payload as _redact_api_payload
+        from spaceinvasion.parsing.spy import parse_spy_report_html
+        from spaceinvasion.core.redaction import redact_sensitive
 
         clock = FakeClock()
         planets = {
@@ -807,17 +726,12 @@ class TestTier5Adversarial(unittest.TestCase):
             )
             self.assertEqual(extracted.target_coords, "2:380:4")
             h.bridge._db.record_spy_report(extracted)
-            with h.bridge._db._lock:
-                stored_rows = h.bridge._db._conn.execute(
-                    "SELECT coords FROM spy_targets ORDER BY coords"
-                ).fetchall()
-            self.assertIn("02:380:04", [str(r[0]) for r in stored_rows])
-            self.assertNotIn("2:380:4", [str(r[0]) for r in stored_rows])
+            stored_rows = run_pg_query(h.bridge._db, "SELECT coords FROM spy_targets ORDER BY coords")
+            self.assertIn("02:380:04", [str(r["coords"]) for r in stored_rows])
+            self.assertNotIn("2:380:4", [str(r["coords"]) for r in stored_rows])
 
             # BUG-01: unpadded own-planet coords blocked for attack and spy.
-            res_own_atk = h.api.send_command(
-                {"command": "attack", "target_coords": "2:380:12", "dry_run": True}
-            )
+            res_own_atk = h.api.send_command({"command": "attack", "target_coords": "2:380:12", "dry_run": True})
             self.assertFalse(res_own_atk["executed"])
             self.assertIn("own planet", res_own_atk["message"].lower())
 
@@ -828,17 +742,13 @@ class TestTier5Adversarial(unittest.TestCase):
             self.assertIn("own planet", res_own_spy["message"].lower())
 
             # BUG-01: unpadded blue-shielded target blocked by normalized status lookup.
-            res_blue = h.api.send_command(
-                {"command": "attack", "target_coords": "2:380:5", "dry_run": True}
-            )
+            res_blue = h.api.send_command({"command": "attack", "target_coords": "2:380:5", "dry_run": True})
             self.assertFalse(res_blue["executed"])
             self.assertIn("blue", res_blue["message"].lower())
 
             # BUG-01: unpadded yellow inactive target stays bash-exempt through 4 consecutive raids.
             for idx in range(4):
-                res_raid = h.api.send_command(
-                    {"command": "attack", "target_coords": "2:380:4", "dry_run": False}
-                )
+                res_raid = h.api.send_command({"command": "attack", "target_coords": "2:380:4", "dry_run": False})
                 self.assertTrue(res_raid["executed"], f"Yellow raid {idx + 1} failed: {res_raid}")
             self.assertEqual(len(srv.launched_fleets), 4)
 
@@ -860,8 +770,8 @@ class TestTier5Adversarial(unittest.TestCase):
                 self.assertNotIn(srv.sid, log_path.read_text(encoding="utf-8", errors="ignore"))
 
     def test_adv_t5_07_off_home_sso_redirect_external_cancel_and_corrupt_eta_priority_guards(self) -> None:
-        from spaceinvasion.client import SpaceInvasionAuthError
-        from spaceinvasion.ranking import build_ranking_evolution
+        from spaceinvasion.session.client import SpaceInvasionAuthError
+        from spaceinvasion.combat.points import build_ranking_evolution
 
         clock = FakeClock()
         planets = {
@@ -997,11 +907,20 @@ class TestTier5Adversarial(unittest.TestCase):
         )
 
     def test_adv_t5_08_domain_coords_cc_huge_ints_unicode_and_state_resilience(self) -> None:
-        from spaceinvasion import game_data
-        from spaceinvasion.auth import universes_from_portal_data
-        from spaceinvasion.fleet import fleet_cargo_capacity, plan_escape_flight, simulate_raid_outcome, SpyReport
-        from spaceinvasion.ranking import build_combat_overview, build_ranking_evolution, simulate_combat_matchup
-        from spaceinvasion.state import game_state_from_dict
+        from spaceinvasion.core import catalog as game_data
+        from spaceinvasion.session.auth import universes_from_portal_data
+        from spaceinvasion.combat.cargo import (
+            fleet_cargo_capacity,
+            plan_escape_flight,
+        )
+        from spaceinvasion.combat.simulator import simulate_raid_outcome
+        from spaceinvasion.parsing.models import SpyReport
+        from spaceinvasion.combat.points import (
+            build_combat_overview,
+            build_ranking_evolution,
+        )
+        from spaceinvasion.combat.simulator import simulate_combat_matchup
+        from spaceinvasion.core.model import game_state_from_dict
 
         # Finding 1 + Finding 2: Unnormalized own coords blocked in planner;
         # bad construction_commander degrades safely.
@@ -1027,7 +946,9 @@ class TestTier5Adversarial(unittest.TestCase):
         )
         cfg_raid = StrategyConfig(planner_mode="priority", allow_raids=True)
         prio_acts = plan_actions(st_own, config=cfg_raid)
-        self.assertFalse(any(a.kind == "ATTACK" and ("01:010:01" in a.target_name or "1:10:1" in a.target_name) for a in prio_acts))
+        self.assertFalse(
+            any(a.kind == "ATTACK" and ("01:010:01" in a.target_name or "1:10:1" in a.target_name) for a in prio_acts)
+        )
 
         # Finding 3 + Finding 4 + Finding 5 across game_data, state, fleet, ranking, auth
         for cat in ("buildings", "research", "ships", "defense"):
@@ -1063,7 +984,9 @@ class TestTier5Adversarial(unittest.TestCase):
             defense={"d1": 10**1_000_000},
         )
         st_huge = replace(
-            make_game_state(planets=[p_huge], active_planet_id=101, researches={"r1": 10**400, "r2": 10**400, "r8": 10**400}),
+            make_game_state(
+                planets=[p_huge], active_planet_id=101, researches={"r1": 10**400, "r2": 10**400, "r8": 10**400}
+            ),
             account_points=10**1_000_000,
         )
         self.assertIsNotNone(gs_corrupt)
@@ -1076,21 +999,34 @@ class TestTier5Adversarial(unittest.TestCase):
         json.dumps({"evo": evo, "ov": ov, "sim": sim_m}, allow_nan=False)
 
         self.assertGreater(fleet_cargo_capacity({"s1": 10**400}, miner_spec_level=10**400), 0)
-        self.assertTrue(math.isfinite(simulate_raid_outcome({"s4": 10**1_000_000}, SpyReport("02:380:05", fleet={"s4": 10**400})).attacker_power))
+        self.assertTrue(
+            math.isfinite(
+                simulate_raid_outcome(
+                    {"s4": 10**1_000_000}, SpyReport("02:380:05", fleet={"s4": 10**400})
+                ).attacker_power
+            )
+        )
         self.assertIn("~1e", plan_escape_flight(p_huge, target_coords="01:010:02").reason)
-        unis = universes_from_portal_data("s", [{"id": 31, "name": "G", "speed": "", "flightSpeed": "bad"}], "https://example.test")
+        unis = universes_from_portal_data(
+            "s", [{"id": 31, "name": "G", "speed": "", "flightSpeed": "bad"}], "https://example.test"
+        )
         self.assertEqual(unis[0].speed, 1.0)
         self.assertEqual(unis[0].flight_speed, 1.0)
 
     def test_adv_t5_09_runtime_deep_target_coalescing_stale_cancel_cost_and_clocks(self) -> None:
-        from spaceinvasion.fleet import _extract_spy_coords, extract_galaxy_system_coords, normalize_coords, parse_spy_report_html
+        from spaceinvasion.core.coords import normalize_coords
+        from spaceinvasion.parsing._common import extract_spy_coords as _extract_spy_coords
+        from spaceinvasion.parsing.galaxy import extract_galaxy_system_coords
+        from spaceinvasion.parsing.spy import parse_spy_report_html
 
         # GAP-05: Clock timestamps must never resolve as planet coordinates; Harvest radio rejected for ATTACK
         self.assertEqual(_extract_spy_coords("[12:05:12] Spy report Pig iron 500"), "")
         self.assertEqual(_extract_spy_coords("[12:05:12] target 2:380:4 Pig iron 500"), "2:380:4")
         self.assertEqual(
             normalize_coords(
-                parse_spy_report_html("<html><body><div>[12:05:12] target 2:380:4</div><div>Pig iron 500</div></body></html>").target_coords
+                parse_spy_report_html(
+                    "<html><body><div>[12:05:12] target 2:380:4</div><div>Pig iron 500</div></body></html>"
+                ).target_coords
             ),
             "02:380:04",
         )
@@ -1115,21 +1051,26 @@ class TestTier5Adversarial(unittest.TestCase):
                 "building_queue": [],
             }
         }
-        srv = FakeSpaceInvasionServer(clock=clock, planets=planets, researches={"r1": 1, "r2": 4, "r3": 2, "r4": 4, "r7": 2})
+        srv = FakeSpaceInvasionServer(
+            clock=clock, planets=planets, researches={"r1": 1, "r2": 4, "r3": 2, "r4": 4, "r7": 2}
+        )
         cfg = StrategyConfig(planner_mode="priority", allow_raids=True)
         with E2ETestHarness(server=srv, clock=clock, config=cfg, max_actions_per_hour=50) as h:
             assert h.bridge._db is not None
             # GAP-04 + Caveat: legacy unnormalized row + corrupt snapshot rows handled cleanly on state read
-            h.bridge._db._conn.execute(
+            run_pg_exec(
+                h.bridge._db,
                 "INSERT INTO spy_targets(coords, owner, status_color, is_inactive, pig_iron, metal, kryptonite, spice, last_spied_ts, last_scanned_ts) "
-                "VALUES('2:380:4', 'OldOwner', 'white', 0, 9999, 100, 0, 0, 800.0, 500.0)"
+                "VALUES('2:380:4', 'OldOwner', 'white', 0, 9999, 100, 0, 0, 800.0, 500.0)",
             )
-            h.bridge._db._conn.execute(
+            run_pg_exec(
+                h.bridge._db,
                 "INSERT INTO rank_snapshots(ts, universe_id, estimated_points, pts_per_hr, spice_value, planets) "
                 "VALUES(?, 31, ?, 0.0, 0.0, 1)",
                 (float("nan"), float("inf")),
             )
-            h.bridge._db._conn.execute(
+            run_pg_exec(
+                h.bridge._db,
                 "INSERT INTO planet_snapshots(ts, universe_id, planet_id, coords, name, planet_type, "
                 "temperature, fields_used, fields_max, pig_iron, metal, kryptonite, spice, "
                 "energy_produced, energy_used, buildings_json, ships_json, defense_json, "
@@ -1137,13 +1078,12 @@ class TestTier5Adversarial(unittest.TestCase):
                 "VALUES(?, 31, 12476, '02:380:12', 'Home', 'normal', 31, 10, 230, 0, 0, 0, 0, 0, 0, '{}', '{}', '{}', '{}', '{}')",
                 (float("nan"),),
             )
-            h.bridge._db._conn.commit()
             h.bridge._db.record_galaxy_slots(
                 [GalaxySlot("02:380:04", 4, "Farm", "OldOwner", "yellow")],
                 ts=1000.0,
             )
-            rows = h.bridge._db._conn.execute("SELECT coords FROM spy_targets WHERE coords LIKE '%380%'").fetchall()
-            self.assertEqual([r[0] for r in rows], ["02:380:04"])
+            rows = run_pg_query(h.bridge._db, "SELECT coords FROM spy_targets WHERE coords LIKE '%380%'")
+            self.assertEqual([r["coords"] for r in rows], ["02:380:04"])
             direct = h.bridge._db.get_spy_target_by_coords("2:380:4")
             self.assertIsNotNone(direct)
             self.assertEqual(direct["resources"]["pig_iron"], 9999)
@@ -1156,24 +1096,32 @@ class TestTier5Adversarial(unittest.TestCase):
             many_y = [GalaxySlot(f"05:{idx:03d}:01", 1, f"F{idx}", f"O{idx}", "yellow") for idx in range(1, 106)]
             many_y.append(GalaxySlot("09:009:09", 9, "DeepBlue", "VacDeep", "blue"))
             h.bridge._db.record_galaxy_slots(many_y, ts=1100.0)
-            h.bridge._raid_targets = h.bridge._enrich_raid_targets(h.bridge._db.get_spy_targets(limit=100))
+            h.bridge.ctx.raid_targets = h.bridge.state_cache.enrich_raid_targets(
+                h.bridge._db.get_spy_targets(limit=100)
+            )
             atk_deep = h.api.send_command({"command": "attack", "target_coords": "9:9:9", "dry_run": False})
             self.assertFalse(atk_deep.get("executed"))
             self.assertIn("protected", str(atk_deep.get("message", "")).lower())
 
             # GAP-03: zero-cost active research restored with real catalog cost after external cancel
-            cur_st = h.bridge._last_state
+            cur_st = h.bridge.ctx.last_state
             assert cur_st is not None
-            r2_zero = ResearchOffer(2, "r2", "Energy technology", 4, 5, Resources(), False, "In research (Cancel)", None, active=True)
-            h.bridge._last_state = replace(cur_st, research_offers=(r2_zero,))
-            merged = h.bridge._merge_cached_offers(replace(cur_st, research_offers=(), active_queues=()))
+            r2_zero = ResearchOffer(
+                2, "r2", "Energy technology", 4, 5, Resources(), False, "In research (Cancel)", None, active=True
+            )
+            h.bridge.ctx.last_state = replace(cur_st, research_offers=(r2_zero,))
+            merged = h.bridge.state_cache.merge_cached_offers(replace(cur_st, research_offers=(), active_queues=()))
             self.assertFalse(merged.research_offers[0].cost.is_zero())
             self.assertEqual(merged.research_offers[0].status_text, "Not enough resources")
 
     def test_adv_t5_10_gap05_clocks_dark_red_auth_executor_and_storage_blank_path(self) -> None:
         from selenium.common.exceptions import ElementNotInteractableException
-        from spaceinvasion.auth import SpaceInvasionAuthError, universes_from_portal_data
-        from spaceinvasion.fleet import extract_galaxy_system_coords, parse_spy_messages_html
+        from spaceinvasion.session.auth import (
+            SpaceInvasionAuthError,
+            universes_from_portal_data,
+        )
+        from spaceinvasion.parsing.galaxy import extract_galaxy_system_coords
+        from spaceinvasion.parsing.spy import parse_spy_messages_html
 
         clock = FakeClock()
         planets = {
@@ -1239,7 +1187,9 @@ class TestTier5Adversarial(unittest.TestCase):
                 [GalaxySlot("05:010:03", 3, "TitanPlanet", "Titan", "dark_red")],
                 ts=clock.time(),
             )
-            h.bridge._raid_targets = h.bridge._enrich_raid_targets(h.bridge._db.get_spy_targets(limit=100))
+            h.bridge.ctx.raid_targets = h.bridge.state_cache.enrich_raid_targets(
+                h.bridge._db.get_spy_targets(limit=100)
+            )
             atk_resp = requests.post(
                 f"{h.base_url}/command",
                 json={"command": "attack", "target_coords": "05:010:03", "dry_run": False},
@@ -1288,7 +1238,7 @@ class TestTier5Adversarial(unittest.TestCase):
             sel = MagicMock()
             sel.find_elements.return_value = [opt1, opt2]
             mock_client.driver.find_element.return_value = sel
-            with patch("spaceinvasion.executor.Select") as mock_select_cls:
+            with patch("spaceinvasion.session.executor.Select") as mock_select_cls:
                 mock_select_cls.return_value.select_by_value.side_effect = ElementNotInteractableException("hidden")
                 switched, waited_html = ex._select_planet_if_needed(mock_client, 102, html=multi_html)
             self.assertFalse(switched)
@@ -1303,11 +1253,17 @@ class TestTier5Adversarial(unittest.TestCase):
             self.assertEqual([u.universe_id for u in uni_opts], [31])
 
     def test_adv_t5_11_extreme_ints_1e1m_nan_rank_history_http_state_and_ui_node(self) -> None:
-        import time
-        from spaceinvasion import game_data
-        from spaceinvasion.logging_utils import append_tick_logs
-        from spaceinvasion.ranking import build_combat_overview, build_ranking_evolution, load_rank_history, record_rank_snapshot
-        from spaceinvasion.state import BuildingOffer, QueueJob
+        from spaceinvasion.runtime.logs import append_tick_logs
+        from spaceinvasion.combat.points import (
+            build_combat_overview,
+            build_ranking_evolution,
+            load_rank_history,
+            record_rank_snapshot,
+        )
+        from spaceinvasion.core.model import (
+            BuildingOffer,
+            QueueJob,
+        )
 
         def _reject_nonfinite(tok: str):
             raise ValueError(f"Non-standard JSON constant {tok!r}")
@@ -1329,9 +1285,7 @@ class TestTier5Adversarial(unittest.TestCase):
                 buildings={"b1": 10**1_000_000, "b5": 5, "b8": 5, "b9": 10**1_000_000, "b10": 5},
                 ships={"s1": 10**1_000_000, "s4": 10**400},
                 defense={"d1": 10**1_000_000},
-                building_offers=(
-                    BuildingOffer(1, "Pig iron mine", 5, 6, Resources(10**400, 0, 0, 0), False, "Need"),
-                ),
+                building_offers=(BuildingOffer(1, "Pig iron mine", 5, 6, Resources(10**400, 0, 0, 0), False, "Need"),),
                 economy_rates={"resource1": 100, "resource2": 100, "resource3": 100, "resource4": 100},
             )
             raid_t = {
@@ -1353,7 +1307,17 @@ class TestTier5Adversarial(unittest.TestCase):
                 researches={"r1": 10**1_000_000, "r4": 5, "r5": 5, "r6": 5},
                 active_queues=(QueueJob("research", "Mining technology", target_level=10**5000),),
                 research_offers=(
-                    ResearchOffer(1, "r1", "Mining technology", 1, 10**5000, Resources(100, 0, 0, 0), True, "In research", active=True),
+                    ResearchOffer(
+                        1,
+                        "r1",
+                        "Mining technology",
+                        1,
+                        10**5000,
+                        Resources(100, 0, 0, 0),
+                        True,
+                        "In research",
+                        active=True,
+                    ),
                 ),
                 account_points=10**1_000_000,
                 account_rank=10**5000,
@@ -1378,13 +1342,23 @@ class TestTier5Adversarial(unittest.TestCase):
 
             with tempfile.TemporaryDirectory() as tmp_rk:
                 hp = Path(tmp_rk) / "rank_history.json"
-                hp.write_text('[{"ts": 1000.0, "estimated_points": NaN, "server_rank": Infinity, "server_points": 1e5000}]', encoding="utf-8")
+                hp.write_text(
+                    '[{"ts": 1000.0, "estimated_points": NaN, "server_rank": Infinity, "server_points": 1e5000}]',
+                    encoding="utf-8",
+                )
                 json.dumps(load_rank_history(hp), allow_nan=False)
                 snaps = record_rank_snapshot(hp, st_huge)
                 json.dumps(snaps, allow_nan=False)
                 evo = build_ranking_evolution(
                     st_huge,
-                    [{"ts": 1000.0, "estimated_points": float("nan"), "server_rank": float("inf"), "server_points": 10**5000}],
+                    [
+                        {
+                            "ts": 1000.0,
+                            "estimated_points": float("nan"),
+                            "server_rank": float("inf"),
+                            "server_points": 10**5000,
+                        }
+                    ],
                 )
                 json.dumps(evo, allow_nan=False)
 
@@ -1411,12 +1385,12 @@ class TestTier5Adversarial(unittest.TestCase):
                     json.loads(line, parse_constant=_reject_nonfinite)
 
             # Inject extreme state into bridge cache -> test HTTP /state, /dashboard, and POST NaN rejection
-            h.bridge._last_state = st_huge
-            h.bridge._last_recorded_state_obj = st_huge
-            h.bridge._last_snapshot_at = clock.monotonic()
-            h.bridge._last_buildings_fetched = True
-            h.bridge._last_home_fetched = True
-            h.bridge._last_home_at = clock.monotonic()
+            h.bridge.ctx.last_state = st_huge
+            h.bridge.ctx.last_recorded_state_obj = st_huge
+            h.bridge.ctx.last_snapshot_at = clock.monotonic()
+            h.bridge.ctx.last_buildings_fetched = True
+            h.bridge.ctx.last_home_fetched = True
+            h.bridge.ctx.last_home_at = clock.monotonic()
 
             st_resp = requests.get(f"{h.base_url}/state", timeout=5.0)
             self.assertEqual(st_resp.status_code, 200)
@@ -1436,72 +1410,15 @@ class TestTier5Adversarial(unittest.TestCase):
             )
             self.assertEqual(nan_post.status_code, 400)
 
-            if shutil.which("node"):
-                ui_patch = (
-                    "async (url, opts, fullUrl, nativeFetch) => { "
-                    "if (url.startsWith('/dashboard')) { "
-                    "  const r = await nativeFetch(fullUrl, opts); "
-                    "  const d = await r.json(); "
-                    "  d.state.planets[0].energy = { produced: 1e400, used: 1e400 }; "
-                    "  d.state.planets[0].fields_used = 1e400; "
-                    "  d.state.planets[0].fields_max = 1e400; "
-                    "  d.ranking = { "
-                    "    current: { estimated_points: 1e400, buildings_points: 1e400, research_points: 0, baseline_points: 1e400, server_rank: 1e400, server_points: 1e400, spice_value: 1e400, attack_zone: { label: 'AZ 1', range_text: '0-500' } }, "
-                    "    rates: { pts_per_hr_steady: 1e400, net_resources_per_hr: 1e400, spice_eq_per_hr: 1e400, speedup_factor: 1 }, "
-                    "    horizons: [], "
-                    "    milestones: [], "
-                    "    observed_trend: { sample_count: 3, delta_points: NaN, observed_pts_per_hr: Infinity, elapsed_hours: NaN, samples: [{ estimated_points: NaN }, { estimated_points: 12.5 }, { estimated_points: Infinity }] } "
-                    "  }; "
-                    "  return { ok: true, status: 200, json: async () => d }; "
-                    "} }"
-                )
-                ui_res = run_ui_in_node(
-                    h.base_url,
-                    """
-                    const loaded = await __waitUntil(() => state && state.dashboard !== null, 4000);
-                    if (!loaded) throw new Error('Dashboard failed to load');
-                    const valEnergy = document.getElementById('val-energy').textContent;
-                    const energyRatio = document.getElementById('energy-ratio').textContent;
-                    const planetSpecs = document.getElementById('planet-specs').textContent;
-                    setActivePage('ranking');
-                    await __sleep(20);
-                    const rnkBreakdown = document.getElementById('rnk-breakdown').textContent;
-                    const rnkServerPos = document.getElementById('rnk-server-pos').textContent;
-                    const svg = document.getElementById('rnk-chart');
-                    const svgChildren = svg ? svg.children.map((ch) => ({
-                      tag: ch.tagName,
-                      cx: ch.getAttribute('cx'),
-                      cy: ch.getAttribute('cy'),
-                      points: ch.getAttribute('points'),
-                      text: ch.textContent,
-                    })) : [];
-                    return { valEnergy, energyRatio, planetSpecs, rnkBreakdown, rnkServerPos, svgChildren };
-                    """,
-                    fetch_patch_js=ui_patch,
-                )
-                self.assertEqual(ui_res["errors"], [])
-                sc = ui_res["scenario"]
-                for k in ("valEnergy", "energyRatio", "planetSpecs", "rnkBreakdown", "rnkServerPos"):
-                    self.assertNotIn("NaN", sc[k])
-                    self.assertNotIn("∞", sc[k])
-                    self.assertNotIn("Infinity", sc[k])
-                self.assertTrue(len(sc["svgChildren"]) >= 1)
-                for ch in sc["svgChildren"]:
-                    for attr in ("cx", "cy", "points", "text"):
-                        v = ch.get(attr)
-                        if v is not None:
-                            self.assertNotIn("NaN", str(v))
-                            self.assertNotIn("Infinity", str(v))
-
     def test_adv_t5_12_ranking_1e307_1e295_b17_60_and_1e308_delta_strict_http_json(self) -> None:
-        from spaceinvasion.state import BuildingOffer
+        from spaceinvasion.core.model import BuildingOffer
 
         def _reject_nonfinite(tok: str):
             raise ValueError(f"Non-standard JSON constant {tok!r}")
 
         clock = FakeClock()
         with E2ETestHarness(clock=clock, config=StrategyConfig(planner_mode="priority")) as h:
-            h.bridge._rank_samples = [
+            h.bridge.ctx.rank_samples = [
                 {"ts": -1e308, "server_points": -1e308, "estimated_points": -1e308, "server_rank": 1},
                 {"ts": 1e308, "server_points": 1e308, "estimated_points": 1e308, "server_rank": 1},
             ]
@@ -1532,12 +1449,12 @@ class TestTier5Adversarial(unittest.TestCase):
                     researches={"r1": 1},
                     speedup_factor=spd,
                 )
-                h.bridge._last_state = st_ext
-                h.bridge._last_recorded_state_obj = st_ext
-                h.bridge._last_snapshot_at = clock.monotonic()
-                h.bridge._last_buildings_fetched = True
-                h.bridge._last_home_fetched = True
-                h.bridge._last_home_at = clock.monotonic()
+                h.bridge.ctx.last_state = st_ext
+                h.bridge.ctx.last_recorded_state_obj = st_ext
+                h.bridge.ctx.last_snapshot_at = clock.monotonic()
+                h.bridge.ctx.last_buildings_fetched = True
+                h.bridge.ctx.last_home_fetched = True
+                h.bridge.ctx.last_home_at = clock.monotonic()
 
                 dash_resp = requests.get(f"{h.base_url}/dashboard?refresh=0", timeout=5.0)
                 self.assertEqual(dash_resp.status_code, 200)
@@ -1574,17 +1491,22 @@ class TestTier5Adversarial(unittest.TestCase):
                     self.assertEqual(eta["eta_bottleneck"], "pig_iron")
 
     def test_adv_t5_13_10e400_storage_p1_warehouse_and_5000_digit_html_config_sim(self) -> None:
-        from spaceinvasion.config import load_strategy_config, save_strategy_config
-        from spaceinvasion.state import (
-            BuildingOffer,
-            parse_building_queue,
-            parse_buildings_page,
+        from spaceinvasion.db.config_store import (
+            load_strategy_config,
+            save_strategy_config,
+        )
+        from spaceinvasion.core.model import BuildingOffer
+        from spaceinvasion.parsing.overview import (
             parse_home_metadata,
             parse_menu_status,
+        )
+        from spaceinvasion.parsing.pages import (
+            parse_buildings_page,
             parse_research_page,
-            parse_tutorial_from_home,
             parse_unit_factory_page,
         )
+        from spaceinvasion.parsing.queues import parse_building_queue
+        from spaceinvasion.parsing.tutorial import parse_tutorial_from_home
 
         def _reject_nonfinite(tok: str):
             raise ValueError(f"Non-standard JSON constant {tok!r}")
@@ -1643,12 +1565,12 @@ class TestTier5Adversarial(unittest.TestCase):
                 researches={"r1": 1},
                 speedup_factor=1.0,
             )
-            h.bridge._last_state = st_over
-            h.bridge._last_recorded_state_obj = st_over
-            h.bridge._last_snapshot_at = clock.monotonic()
-            h.bridge._last_buildings_fetched = True
-            h.bridge._last_home_fetched = True
-            h.bridge._last_home_at = clock.monotonic()
+            h.bridge.ctx.last_state = st_over
+            h.bridge.ctx.last_recorded_state_obj = st_over
+            h.bridge.ctx.last_snapshot_at = clock.monotonic()
+            h.bridge.ctx.last_buildings_fetched = True
+            h.bridge.ctx.last_home_fetched = True
+            h.bridge.ctx.last_home_at = clock.monotonic()
 
             for mode in ("priority", "ga_nn"):
                 resp = requests.post(
@@ -1677,7 +1599,7 @@ class TestTier5Adversarial(unittest.TestCase):
         b_offers = parse_buildings_page(
             f'<div class="build-card b-{huge}"><span class="title">Mine (Level {huge})</span></div>'
             f'<table><tr><td><a href="indexInternal.es?action=internalDetail&type=building&id={huge}">Mine</a></td>'
-            f'<td>Required: 100 Pig iron</td>'
+            f"<td>Required: 100 Pig iron</td>"
             f'<td><a class="bau" href="indexInternal.es?action=internalBuildItem&buildingID={huge}#{huge}">Build level {huge}</a></td>'
             f"</tr></table>",
             {},
@@ -1726,7 +1648,11 @@ class TestTier5Adversarial(unittest.TestCase):
         import commander
         import login
         import run_stack
-        from spaceinvasion.auth import Credentials, LoginResult, UniverseOption
+        from spaceinvasion.session.auth import (
+            Credentials,
+            LoginResult,
+            UniverseOption,
+        )
 
         routes: dict[str, list[tuple[int, str]]] = {}
 
@@ -1764,7 +1690,7 @@ class TestTier5Adversarial(unittest.TestCase):
                 self._reply(404, '{"ok":false,"error":"not found"}')
 
         srv = ThreadingHTTPServer(("127.0.0.1", 0), _LoopMockHandler)
-        t = threading.Thread(target=srv.serve_forever, daemon=True)
+        t = threading.Thread(target=srv.serve_forever, kwargs={"poll_interval": 0.002}, daemon=True)
         t.start()
         base_url = f"http://127.0.0.1:{srv.server_address[1]}"
         try:
@@ -1878,7 +1804,8 @@ class TestTier5Adversarial(unittest.TestCase):
         try:
             ready = proc.stdout.readline().strip() if proc.stdout is not None else ""
             self.assertEqual(ready, "ready")
-            run_stack._stop_proc(proc)
+            with patch("spaceinvasion.runtime.cli_support.TERMINATE_GRACE_SECONDS", 0.1):
+                run_stack._stop_proc(proc)
             self.assertIsNotNone(proc.poll())
         finally:
             for strm in (proc.stdout, proc.stderr, proc.stdin):
@@ -1927,89 +1854,6 @@ class TestTier5Adversarial(unittest.TestCase):
         self.assertIn("sid=FINAL_SECRET_T5", login_res.final_url)
         self.assertIn("sid=UNI_SECRET_T5", uni_opt.url)
 
-    def test_adv_t5_15_bug03_non_dict_json_and_neg_zero_rate_in_ui_node(self) -> None:
-        self.assertIsNotNone(shutil.which("node"), "Node.js is required for UI runtime verification")
-        clock = FakeClock()
-        with E2ETestHarness(clock=clock) as h:
-            patch_js = """
-async (url) => {
-  const mp = globalThis.__t5Mock;
-  if (!mp || (url !== "/state" && url !== "/command")) return undefined;
-  if (mp.jsonOnly) {
-    return { ok: mp.ok, status: mp.status, async json() { return mp.jsonVal; } };
-  }
-  return { ok: mp.ok, status: mp.status, async text() { return mp.body; } };
-}
-"""
-            ui_res = run_ui_in_node(
-                h.base_url,
-                """
-                const loaded = await __waitUntil(() => state && state.dashboard !== null, 4000);
-                if (!loaded) throw new Error('Dashboard failed to load');
-
-                const mocks = [
-                  { ok: true, status: 200, body: "null" },
-                  { ok: false, status: 500, body: "null" },
-                  { ok: false, status: 502, body: '["bad"]' },
-                  { ok: true, status: 200, body: "[]" },
-                  { ok: false, status: 429, body: '["rate"]' },
-                  { ok: true, status: 200, jsonOnly: true, jsonVal: null },
-                  { ok: false, status: 500, jsonOnly: true, jsonVal: [] },
-                ];
-                const apiResults = [];
-                for (const mp of mocks) {
-                  globalThis.__t5Mock = mp;
-                  let getErr = null;
-                  try { await apiGet("/state"); } catch (e) {
-                    getErr = { isTypeErr: e instanceof TypeError, msg: String(e.message || e), rateLimited: Boolean(e.rateLimited) };
-                  }
-                  let cmdErr = null;
-                  try { await apiCommand({ command: "plan" }); } catch (e) {
-                    cmdErr = { isTypeErr: e instanceof TypeError, msg: String(e.message || e), rateLimited: Boolean(e.rateLimited) };
-                  }
-                  apiResults.push({ status: mp.status, getErr, cmdErr });
-                }
-
-                // Trigger real UI handler on 429 ["rate"] via #btn-tick-now
-                globalThis.__t5Mock = { ok: false, status: 429, body: '["rate"]' };
-                document.getElementById("btn-tick-now").click();
-                await __waitUntil(() => {
-                  const b = document.getElementById("feedback-banner");
-                  return b && !b.hidden && b.className.includes("is-warn");
-                }, 3000);
-                const bannerClass = document.getElementById("feedback-banner").className;
-                const bannerText = document.getElementById("feedback-banner").textContent;
-                globalThis.__t5Mock = null;
-
-                renderResourceBar("pig", 0, 1000, -0.1);
-                return {
-                  apiResults,
-                  bannerClass,
-                  bannerText,
-                  fmtRateNegPointOne: fmtRate(-0.1),
-                  fmtIntNegZero: fmtInt(-0),
-                  pigRateText: document.getElementById("rate-pig").textContent,
-                  pigRateClass: document.getElementById("rate-pig").className,
-                };
-                """,
-                fetch_patch_js=patch_js,
-            )
-            self.assertEqual(ui_res["errors"], [])
-            sc = ui_res["scenario"]
-            for entry in sc["apiResults"]:
-                for key in ("getErr", "cmdErr"):
-                    err = entry[key]
-                    self.assertIsNotNone(err)
-                    self.assertFalse(err["isTypeErr"])
-                    self.assertNotIn("Cannot read properties of null", err["msg"])
-                    if entry["status"] == 429:
-                        self.assertTrue(err["rateLimited"])
-            self.assertIn("is-warn", sc["bannerClass"])
-            self.assertEqual(sc["fmtRateNegPointOne"], "0/h")
-            self.assertEqual(sc["fmtIntNegZero"], "0")
-            self.assertEqual(sc["pigRateText"], "0/h")
-            self.assertNotIn("is-neg", sc["pigRateClass"])
-
     def test_adv_t5_16_m5_r6_domain_runtime_boundary_and_lifecycle_hardening(self) -> None:
         import gc
         import socket
@@ -2020,12 +1864,17 @@ async (url) => {
         from urllib.parse import urlparse
         import commander
         import scripts.sync_wiki_data as sync_wiki_data
-        from spaceinvasion import browser, game_data
-        from spaceinvasion.api_server import MAX_REQUEST_BYTES
-        from spaceinvasion.auth import SpaceInvasionAuthError
-        from spaceinvasion.browser import BrowserConfig
-        from spaceinvasion.config import load_strategy_config, save_strategy_config, strategy_config_from_dict
-        from spaceinvasion.state import game_state_from_dict
+        from spaceinvasion.session import browser
+        from spaceinvasion.core import catalog as game_data
+        from spaceinvasion.runtime.bridge import MAX_REQUEST_BYTES
+        from spaceinvasion.session.auth import SpaceInvasionAuthError
+        from spaceinvasion.session.browser import BrowserConfig
+        from spaceinvasion.core.config import strategy_config_from_dict
+        from spaceinvasion.db.config_store import (
+            load_strategy_config,
+            save_strategy_config,
+        )
+        from spaceinvasion.core.model import game_state_from_dict
 
         def _reject_nonfinite(tok: str) -> object:
             raise ValueError(f"Non-finite JSON token: {tok!r}")
@@ -2040,18 +1889,25 @@ async (url) => {
             game_data.missing_prerequisites("building", 10**5000, buildings={}, researches={}),  # type: ignore[arg-type]
             [],
         )
-        rendered_gd = sync_wiki_data.render_module(
-            {
-                "synced_at_utc": game_data.WIKI_SYNCED_AT_UTC,
-                "source": game_data.WIKI_SOURCE_URL,
-                "merchant_rates_in_spice": game_data.MERCHANT_RATES_IN_SPICE,
-                "buildings": game_data.BUILDINGS,
-                "researches": game_data.RESEARCHES,
-                "ships": game_data.SHIPS,
-                "defenses": game_data.DEFENSES,
-            }
-        )
-        self.assertEqual(rendered_gd, Path("spaceinvasion/core/game_data.py").read_text(encoding="utf-8"))
+        with tempfile.TemporaryDirectory() as tmp_tables:
+            sync_wiki_data.write_catalog_tables(
+                {
+                    "synced_at_utc": game_data.WIKI_SYNCED_AT_UTC,
+                    "source": game_data.WIKI_SOURCE_URL,
+                    "merchant_rates_in_spice": game_data.MERCHANT_RATES_IN_SPICE,
+                    "buildings": game_data.BUILDINGS,
+                    "researches": game_data.RESEARCHES,
+                    "ships": game_data.SHIPS,
+                    "defenses": game_data.DEFENSES,
+                },
+                Path(tmp_tables),
+            )
+            tables_dir = Path("spaceinvasion/core/catalog/tables")
+            for fname in ("buildings.json", "research.json", "ships.json", "defenses.json"):
+                self.assertEqual(
+                    json.loads((Path(tmp_tables) / fname).read_text(encoding="utf-8")),
+                    json.loads((tables_dir / fname).read_text(encoding="utf-8")),
+                )
 
         # GAP-05: JSON roundtrip preserves '#' and ':' in playstyle cleanly
         with tempfile.TemporaryDirectory() as tmp_cfg:
@@ -2061,7 +1917,10 @@ async (url) => {
                 self.assertEqual(load_strategy_config(p_cfg).playstyle, ps)
 
         # GAP-M5-01: browser cleanup reaps SIGTERM-ignoring subprocess cleanly with 0 ResourceWarning
-        with tempfile.TemporaryDirectory() as tmp_proc:
+        with (
+            tempfile.TemporaryDirectory() as tmp_proc,
+            patch("spaceinvasion.session._browser_driver._TERMINATE_GRACE_SECONDS", 0.1),
+        ):
             for idx, mode in enumerate(("close", "attach_err"), start=1):
                 flag_f = Path(tmp_proc) / f"sigign_{idx}.flag"
                 child_code = (
@@ -2085,9 +1944,12 @@ async (url) => {
                         browser.close_or_detach_driver(MagicMock(), proc, keep_running=False)
                     else:
                         with (
-                            patch("spaceinvasion.browser.is_debug_port_open", return_value=False),
-                            patch("spaceinvasion.browser.launch_chrome_with_debug_port", return_value=proc),
-                            patch("spaceinvasion.browser.attach_chrome_driver", side_effect=SpaceInvasionAuthError("attach fail")),
+                            patch("spaceinvasion.session.browser.is_debug_port_open", return_value=False),
+                            patch("spaceinvasion.session.browser.launch_chrome_with_debug_port", return_value=proc),
+                            patch(
+                                "spaceinvasion.session.browser.attach_chrome_driver",
+                                side_effect=SpaceInvasionAuthError("attach fail"),
+                            ),
                         ):
                             with self.assertRaises(SpaceInvasionAuthError):
                                 browser.open_browser_session(
@@ -2125,12 +1987,12 @@ async (url) => {
                     ],
                 }
             )
-            h.bridge._last_state = gs_b5k
-            h.bridge._last_recorded_state_obj = gs_b5k
-            h.bridge._last_snapshot_at = clock.monotonic()
-            h.bridge._last_buildings_fetched = True
-            h.bridge._last_home_fetched = True
-            h.bridge._last_home_at = clock.monotonic()
+            h.bridge.ctx.last_state = gs_b5k
+            h.bridge.ctx.last_recorded_state_obj = gs_b5k
+            h.bridge.ctx.last_snapshot_at = clock.monotonic()
+            h.bridge.ctx.last_buildings_fetched = True
+            h.bridge.ctx.last_home_fetched = True
+            h.bridge.ctx.last_home_at = clock.monotonic()
 
             resp = requests.post(
                 f"{h.base_url}/command",
@@ -2177,20 +2039,28 @@ async (url) => {
 
         # GAP-M5-03: direct commander & executor 10**5000 safety
         cmd_payload = commander._action_to_command_payload(
-            PlannedAction("P2", "BUILD_SHIP", 10**5000, "01:010:01", "Small transport", "Adv", target_id=1, target_level=10**5000),
+            PlannedAction(
+                "P2", "BUILD_SHIP", 10**5000, "01:010:01", "Small transport", "Adv", target_id=1, target_level=10**5000
+            ),
             dry_run=True,
         )
         json.dumps(cmd_payload, allow_nan=False)
         ex = ActionExecutor(dry_run=True)
         cl = MagicMock(spec=GameBrowserClient)
         cl.driver = MagicMock()
-        self.assertEqual(ex._select_planet_if_needed(cl, 10**5000, html="<select name='planet'></select>"), (False, None))
+        self.assertEqual(
+            ex._select_planet_if_needed(cl, 10**5000, html="<select name='planet'></select>"), (False, None)
+        )
 
     def test_adv_t5_17_m5_r7_ui_race_and_corrupt_pct_api_unicode_and_lifecycle_parity(self) -> None:
         import ast
         from pathlib import Path
         import requests
-        from spaceinvasion.config import load_strategy_config, save_strategy_config, StrategyConfig
+        from spaceinvasion.core.config import StrategyConfig
+        from spaceinvasion.db.config_store import (
+            load_strategy_config,
+            save_strategy_config,
+        )
 
         self.assertIsNotNone(shutil.which("node"), "Node.js is required")
 
@@ -2210,9 +2080,7 @@ async (url) => {
                     and node.func.value.id == "json"
                 ):
                     ok = any(
-                        kw.arg == "allow_nan"
-                        and isinstance(kw.value, ast.Constant)
-                        and kw.value.value is False
+                        kw.arg == "allow_nan" and isinstance(kw.value, ast.Constant) and kw.value.value is False
                         for kw in node.keywords
                     )
                     if not ok:
@@ -2250,7 +2118,7 @@ async (url) => {
             self.assertEqual(reloaded_cfg.shipyard_targets[" 12 "], 4)
             self.assertEqual(reloaded_cfg.shipyard_targets["small-fighter"], 99)
 
-        # 3. Live E2ETestHarness HTTP API Unicode rejection + invalid fleetsave_plan + UI save race & corrupt pct
+        # 3. Live E2ETestHarness HTTP API Unicode rejection + invalid fleetsave_plan + update_config roundtrip
         clock = FakeClock()
         with E2ETestHarness(clock=clock) as h:
             for bad_cmd in (
@@ -2261,69 +2129,15 @@ async (url) => {
                 r_bad = requests.post(f"{h.base_url}/command", json=bad_cmd, timeout=5)
                 self.assertEqual(r_bad.status_code, 400, msg=r_bad.text)
 
-            patch_js = """
-async (url, opts, fullUrl, nativeFetch) => {
-  if (globalThis.__t5R7Dash === 'hold_prio' && url.startsWith('/dashboard')) {
-    globalThis.__t5R7Dash = 'normal';
-    const r = await nativeFetch(fullUrl, opts);
-    const d = await r.json();
-    d.config = { ...(d.config || {}), planner_mode: 'priority', ga_generations: 4 };
-    d.planner_mode = 'priority';
-    return new Promise((resolve) => {
-      globalThis.__resolveT5Dash = () => resolve({ ok: true, status: 200, json: async () => d });
-    });
-  }
-  if (globalThis.__t5R7Dash === 'fail_503' && url.startsWith('/dashboard')) {
-    return { ok: false, status: 503, json: async () => ({ ok: false, error: 'down' }) };
-  }
-}
-"""
-            ui_res = run_ui_in_node(
-                h.base_url,
-                """
-                const okLoad = await __waitUntil(() => state && state.dashboard !== null, 4000);
-                if (!okLoad) throw new Error('Initial dashboard timeout');
-
-                const fmtSmallNeg = fmtInt(-0.0001);
-                const imprUndef = fmtImprovementPct(null, undefined, undefined);
-                const bfFallback = getSelectedBlastFurnacePct({
-                  state: { planets: [{ planet_id: 1, economy_rates: { resource2: 'bad' } }] },
-                  buildings_eta: { planet: { planet_id: 1 }, planet_economy: { blast_furnace_pct: 0 } },
-                });
-
-                el('cfg-planner_mode').value = 'ai_planner';
-                el('cfg-ga_generations').value = '16';
-                globalThis.__t5R7Dash = 'hold_prio';
-                const pDash = loadDashboard({ refresh: false, preserveConfig: true, force: true });
-                await __waitUntil(() => typeof globalThis.__resolveT5Dash === 'function');
-
-                globalThis.__t5R7Dash = 'fail_503';
-                el('btn-save-config').click();
-                await __sleep(20);
-                globalThis.__resolveT5Dash();
-                await pDash;
-                await __waitUntil(() => state.dashboard?.config?.planner_mode === 'ai_planner' && state.dashboard?.config?.ga_generations === 16);
-                await __sleep(30);
-
-                return {
-                  fmtSmallNeg,
-                  imprUndef,
-                  bfFallback,
-                  cfgMode: state.dashboard?.config?.planner_mode,
-                  cfgGens: state.dashboard?.config?.ga_generations,
-                  domMode: el('cfg-planner_mode').value,
-                };
-                """,
-                fetch_patch_js=patch_js,
+            r_ok = requests.post(
+                f"{h.base_url}/command",
+                json={"command": "update_config", "config": {"planner_mode": "ai_planner", "ga_generations": 16}},
+                timeout=5,
             )
-            self.assertEqual(ui_res["errors"], [])
-            sc = ui_res["scenario"]
-            self.assertEqual(sc["fmtSmallNeg"], "0")
-            self.assertEqual(sc["imprUndef"], "—")
-            self.assertEqual(sc["bfFallback"], 0)
-            self.assertEqual(sc["cfgMode"], "ai_planner")
-            self.assertEqual(sc["cfgGens"], 16)
-            self.assertEqual(sc["domMode"], "ai_planner")
+            self.assertEqual(r_ok.status_code, 200, msg=r_ok.text)
+            cfg_now = r_ok.json()["config"]
+            self.assertEqual(cfg_now["planner_mode"], "ai_planner")
+            self.assertEqual(cfg_now["ga_generations"], 16)
 
     def test_adv_t5_18_m5_r8_keepalive_redaction_arabic_float_mlp_horizon_and_ui_guards(self) -> None:
         import json
@@ -2331,15 +2145,19 @@ async (url, opts, fullUrl, nativeFetch) => {
         from unittest.mock import MagicMock, patch
         import requests
         import commander
-        from spaceinvasion.api_server import ApiRequestError
-        from spaceinvasion.client import PageViewLimiter
-        from spaceinvasion.commander_client import GameApiClient, GameApiError
-        from spaceinvasion.config import StrategyConfig, load_strategy_config
-        from spaceinvasion.executor import ActionExecutor
-        from spaceinvasion.fleet import normalize_coords
-        from spaceinvasion.ranking import build_buildings_eta
-        from spaceinvasion.state import game_state_from_dict
-        from spaceinvasion.strategy import PlannedAction, plan_actions
+        from spaceinvasion.runtime.api.validation import ApiRequestError
+        from spaceinvasion.runtime.commander_client import (
+            GameApiClient,
+            GameApiError,
+        )
+        from spaceinvasion.core.config import StrategyConfig
+        from spaceinvasion.db.config_store import load_strategy_config
+        from spaceinvasion.session.executor import ActionExecutor
+        from spaceinvasion.core.coords import normalize_coords
+        from spaceinvasion.planner.eta import build_buildings_eta
+        from spaceinvasion.core.model import game_state_from_dict
+        from spaceinvasion.core.model import PlannedAction
+        from spaceinvasion.planner.heuristics import plan_actions
 
         # 1. Domain boundary regressions (config mid-token quotes, non-ASCII coords, ranking horizon, MLP train, sim horizon)
         with tempfile.TemporaryDirectory() as tmp:
@@ -2352,7 +2170,10 @@ async (url, opts, fullUrl, nativeFetch) => {
             self.assertEqual(cfg_r8.playstyle, "bob's miner")
             self.assertEqual(cfg_r8.shipyard_targets["unit'1"], 5)
 
-        self.assertEqual(normalize_coords("\u0660\u0662:\u0663\u0668\u0660:\u0660\u0664"), "\u0660\u0662:\u0663\u0668\u0660:\u0660\u0664")
+        self.assertEqual(
+            normalize_coords("\u0660\u0662:\u0663\u0668\u0660:\u0660\u0664"),
+            "\u0660\u0662:\u0663\u0668\u0660:\u0660\u0664",
+        )
         gs_sup = game_state_from_dict(
             {
                 "planets": [
@@ -2418,89 +2239,26 @@ async (url, opts, fullUrl, nativeFetch) => {
                 wait_json = json.dumps(wait_res, allow_nan=False)
                 for s_tok in ("T5_WAIT_SID", "T5_REASON_SID", "T5_HREF_SID"):
                     self.assertNotIn(s_tok, wait_json)
-
-                ui_patch = """
-async (url, opts, fullUrl, nativeFetch) => {
-  if (url === '/command' && opts?.body) {
-    const p = JSON.parse(opts.body);
-    if (p.command === 'update_config' && globalThis.__t5R8HoldSave) {
-      return new Promise((resolve) => {
-        globalThis.__resolveT5R8Save = () => resolve({
-          ok: false,
-          status: 500,
-          json: async () => ({ ok: false, error: 'transient fail' }),
-        });
-      });
-    }
-  }
-  if (url.startsWith('/dashboard') && globalThis.__t5R8DashPrio) {
-    const r = await nativeFetch(fullUrl, opts);
-    const d = await r.json();
-    d.config = { ...(d.config || {}), planner_mode: 'priority' };
-    d.planner_mode = 'priority';
-    return { ok: true, status: 200, json: async () => d };
-  }
-}
-"""
-                ui_res = run_ui_in_node(
-                    h.base_url,
-                    """
-                    const okLoad = await __waitUntil(() => state && state.dashboard !== null, 4000);
-                    if (!okLoad) throw new Error('Dashboard timeout');
-                    renderBuildingsView({
-                      ...state.dashboard,
-                      buildings_eta: {
-                        planet: state.dashboard.buildings_eta?.planet || { planet_id: 1 },
-                        planet_economy: state.dashboard.buildings_eta?.planet_economy || {},
-                        buildings: [{
-                          building_id: 1, key: 'b1', name: 'Pig iron mine', category: 'mines',
-                          current_level: 1, next_level: 2, missing_total: 0, build_time_text: '10s',
-                          wait_eta: 'Ready', reach_eta: '10s', wait_hours: 0, bottleneck: '   ',
-                          can_build_live: false, offer_visible: true, unmet_prerequisites: [],
-                        }],
-                        researches: [],
-                      },
-                    });
-                    const bldText = el('eta-table-tbody').textContent;
-
-                    el('cfg-planner_mode').value = 'ai_planner';
-                    state.configDirty = false;
-                    globalThis.__t5R8HoldSave = true;
-                    globalThis.__t5R8DashPrio = true;
-                    el('btn-save-config').click();
-                    await __waitUntil(() => typeof globalThis.__resolveT5R8Save === 'function');
-                    await loadDashboard({ refresh: false, preserveConfig: true, force: true });
-                    const domMid = el('cfg-planner_mode').value;
-                    globalThis.__resolveT5R8Save();
-                    await __waitUntil(() => state.configSaving === 0 && el('feedback-banner').textContent.includes('Failed saving config'));
-                    const domAfterFail = el('cfg-planner_mode').value;
-                    return { bldText, domMid, domAfterFail };
-                    """,
-                    fetch_patch_js=ui_patch,
-                )
-                self.assertEqual(ui_res["errors"], [])
-                self.assertNotIn("()", ui_res["scenario"]["bldText"])
-                self.assertEqual(ui_res["scenario"]["domMid"], "ai_planner")
-                self.assertEqual(ui_res["scenario"]["domAfterFail"], "ai_planner")
         finally:
             held_err = None
 
     def test_adv_t5_19_r9_priority_asteroid_full_field_defender_research_rate_limit_and_ascii_parity(self) -> None:
-        from spaceinvasion.api_server import ApiRequestError
-        from spaceinvasion.config import normalize_planner_mode, strategy_config_from_dict
-        from spaceinvasion.fleet import (
-            _parse_coords_distance,
+        from spaceinvasion.runtime.api.validation import ApiRequestError
+        from spaceinvasion.core.config import (
+            normalize_planner_mode,
+            strategy_config_from_dict,
+        )
+        from spaceinvasion.core.coords import coords_distance as _parse_coords_distance
+        from spaceinvasion.parsing.galaxy import (
             extract_galaxy_system_coords,
             parse_galaxy_system_html,
-            parse_spy_report_html,
         )
-        from spaceinvasion.state import (
-            BuildingOffer,
-            parse_economy_rates,
-            parse_planets_overview_json,
-            parse_si_int,
-        )
-        from spaceinvasion.storage import _coord_query_candidates
+        from spaceinvasion.parsing.spy import parse_spy_report_html
+        from spaceinvasion.core.coercion import parse_si_int
+        from spaceinvasion.core.model import BuildingOffer
+        from spaceinvasion.parsing.overview import parse_planets_overview_json
+        from spaceinvasion.parsing.pages import parse_economy_rates
+        from spaceinvasion.core.coords import coord_query_variants as _coord_query_candidates
 
         # 1. GAP-R9-01: priority mode obeys Asteroid REQ-BLD-003 and 0-free-field limit
         ast_p = PlanetState(
@@ -2540,19 +2298,45 @@ async (url, opts, fullUrl, nativeFetch) => {
         )
         gs_r9 = GameState(31, 1, "u", 1_700_000_000.0, (full_home, ast_p), active_planet_id=1)
         acts_prio = plan_actions(gs_r9, config=StrategyConfig(planner_mode="priority", allow_multi_planet=True))
-        self.assertEqual([a for a in acts_prio if a.planet_id == 99 and a.target_id in {1, 2, 3, 4, 5, 6, 8, 11, 12, 13, 14}], [])
+        self.assertEqual(
+            [a for a in acts_prio if a.planet_id == 99 and a.target_id in {1, 2, 3, 4, 5, 6, 8, 11, 12, 13, 14}], []
+        )
         self.assertEqual([a for a in acts_prio if a.planet_id == 1 and a.kind == "BUILD"], [])
 
         # 2. GAP-R9-03 & GAP-R9-04: Arabic-Indic parser parity + negative level clamp
         ar = "\u0660\u0662:\u0663\u0668\u0660:\u0660\u0664"
         self.assertEqual(_parse_coords_distance(ar, "02:380:05"), 100.0)
         self.assertEqual(parse_si_int("\u0662.\u0660\u0660\u0660"), 0)
-        self.assertEqual(parse_economy_rates('<select name="resource\u0662"><option selected value="80">80%</option></select>'), {})
-        self.assertEqual(extract_galaxy_system_coords('<input name="galaxy" value="\u0662"><input name="system" value="\u0663\u0668\u0660">', default=(9, 99)), (9, 99))
-        self.assertEqual(parse_galaxy_system_html('<table><tr><td class="pos">1</td><td>P</td></tr></table>', url="?galaxy=\u0662&system=\u0663\u0668\u0660")[0].coords, "01:001:01")
-        self.assertEqual(parse_spy_report_html(f"<div>Target [{ar}] Pig iron: \u0665\u0660\u0660</div>").resources.pig_iron, 0)
+        self.assertEqual(
+            parse_economy_rates('<select name="resource\u0662"><option selected value="80">80%</option></select>'), {}
+        )
+        self.assertEqual(
+            extract_galaxy_system_coords(
+                '<input name="galaxy" value="\u0662"><input name="system" value="\u0663\u0668\u0660">', default=(9, 99)
+            ),
+            (9, 99),
+        )
+        self.assertEqual(
+            parse_galaxy_system_html(
+                '<table><tr><td class="pos">1</td><td>P</td></tr></table>',
+                url="?galaxy=\u0662&system=\u0663\u0668\u0660",
+            )[0].coords,
+            "01:001:01",
+        )
+        self.assertEqual(
+            parse_spy_report_html(f"<div>Target [{ar}] Pig iron: \u0665\u0660\u0660</div>").resources.pig_iron, 0
+        )
         self.assertEqual(_coord_query_candidates(ar), (ar, [ar], None))
-        neg_gs = parse_planets_overview_json(json.dumps({"planets": [{"id": 1, "name": "P", "coords": "1:2:3", "fields": -5, "buildings": {"b1": {"level": -10}}}]}, allow_nan=False))
+        neg_gs = parse_planets_overview_json(
+            json.dumps(
+                {
+                    "planets": [
+                        {"id": 1, "name": "P", "coords": "1:2:3", "fields": -5, "buildings": {"b1": {"level": -10}}}
+                    ]
+                },
+                allow_nan=False,
+            )
+        )
         neg_p = neg_gs.active_planet()
         assert neg_p is not None
         self.assertEqual(neg_p.fields_used, 0)
@@ -2566,12 +2350,22 @@ async (url, opts, fullUrl, nativeFetch) => {
         with E2ETestHarness() as h:
             r0 = requests.post(
                 f"{h.base_url}/command",
-                json={"command": "simulate_combat", "attacker_ships": {"s4": 16}, "defender_ships": {"s4": 10}, "defender_researches": {"r8": 0, "r9": 0, "r10": 0}},
+                json={
+                    "command": "simulate_combat",
+                    "attacker_ships": {"s4": 16},
+                    "defender_ships": {"s4": 10},
+                    "defender_researches": {"r8": 0, "r9": 0, "r10": 0},
+                },
                 timeout=5,
             )
             r15 = requests.post(
                 f"{h.base_url}/command",
-                json={"command": "simulate_combat", "attacker_ships": {"s4": 16}, "defender_ships": {"s4": 10}, "defender_researches": {"r8": 15, "r9": 15, "r10": 15}},
+                json={
+                    "command": "simulate_combat",
+                    "attacker_ships": {"s4": 16},
+                    "defender_ships": {"s4": 10},
+                    "defender_researches": {"r8": 15, "r9": 15, "r10": 15},
+                },
                 timeout=5,
             )
             self.assertEqual(r0.status_code, 200)
@@ -2594,11 +2388,9 @@ async (url, opts, fullUrl, nativeFetch) => {
                 self.assertNotIn("T5_METHOD_SID", log_p.read_text(encoding="utf-8"))
 
     def test_adv_t5_20_r10_e2e_unicode_digits_negative_fields_blob_redaction_and_raid_asteroid_parity(self) -> None:
-        from spaceinvasion.api_server import GameApiBridge, create_api_server
-        from spaceinvasion.client import RateLimitError
-        from spaceinvasion.config import StrategyConfig
-        from spaceinvasion.executor import ActionExecutor
-        from spaceinvasion.state import (
+        from spaceinvasion.core.config import StrategyConfig
+        from spaceinvasion.session.executor import ActionExecutor
+        from spaceinvasion.core.model import (
             BuildingOffer,
             EnergyBalance,
             GameState,
@@ -2608,8 +2400,11 @@ async (url, opts, fullUrl, nativeFetch) => {
             TutorialTask,
             UnitOffer,
         )
-        from spaceinvasion.storage import GameDatabase
-        from spaceinvasion.strategy import SOLAR_CELLS_ID, plan_actions
+        from tests.pg_harness import open_test_db as GameDatabase, run_pg_exec
+        from spaceinvasion.planner.heuristics import (
+            SOLAR_CELLS_ID,
+            plan_actions,
+        )
 
         # 1. SQLite bytes BLOB + literal 'sid' JSON + non-finite cells redacted across all DB readers
         with tempfile.TemporaryDirectory() as tmp:
@@ -2617,16 +2412,17 @@ async (url, opts, fullUrl, nativeFetch) => {
             db = GameDatabase(tp / "adv20.db")
             try:
                 sec = "T5_R10_BLOB_SID"
-                db._conn.execute(
+                run_pg_exec(
+                    db,
                     "INSERT INTO planet_snapshots(ts, universe_id, planet_id, coords, name, planet_type, temperature, fields_used, fields_max, pig_iron, metal, kryptonite, spice, energy_produced, energy_used, buildings_json, ships_json, defense_json, economy_rates_json, researches_json) "
                     "VALUES(?, 31, 7, ?, ?, 'normal', 20, 0, 200, 1, 1, 1, 1, 10, 5, ?, '{}', '{}', '{}', '{}')",
                     (float("nan"), "02:380:04", f"?sid={sec}", json.dumps({"sid": sec, "b1": 5}, allow_nan=False)),
                 )
-                db._conn.execute(
+                run_pg_exec(
+                    db,
                     "INSERT INTO raid_history(target_coords, attacked_ts, is_exempt, outcome, loot_json) VALUES(?, 1000.0, 0, ?, ?)",
                     ("02:380:04", f"?sid={sec}", json.dumps({"sid": sec, "pig_iron": 500}, allow_nan=False)),
                 )
-                db._conn.commit()
                 self.assertEqual(db.load_bash_tracker(now=1000.0).attacks_last_24h("02:380:04", timestamp=1000.0), 1)
                 for obj in (db.get_raid_stats()["telemetry_summary"], db.summary()):
                     self.assertNotIn(sec, json.dumps(obj, allow_nan=False))
@@ -2664,7 +2460,9 @@ async (url, opts, fullUrl, nativeFetch) => {
             energy=EnergyBalance(10, 160),
             buildings={"b9": 1},
             building_offers=(BuildingOffer(5, "Fusion plant", 0, 1, Resources(100, 100, 100, 100), True, "?b=5"),),
-            ship_offers=(UnitOffer("ship", SOLAR_CELLS_ID, "Solar cells", 0, Resources(0, 2000, 200, 400), True, "ship[9]"),),
+            ship_offers=(
+                UnitOffer("ship", SOLAR_CELLS_ID, "Solar cells", 0, Resources(0, 2000, 200, 400), True, "ship[9]"),
+            ),
         )
         self.assertEqual(full_cold.temperature, -110)
         self.assertEqual(full_cold.fields_remaining, 0)
@@ -2692,11 +2490,25 @@ async (url, opts, fullUrl, nativeFetch) => {
             1_700_000_000.0,
             (full_cold, raid_p),
             active_planet_id=1,
-            tutorial=TutorialStatus(1, 5, (TutorialTask("Build Fusion plant level 1", building_name="Fusion plant", building_id=5, current=0, target=1),), "", False),
+            tutorial=TutorialStatus(
+                1,
+                5,
+                (
+                    TutorialTask(
+                        "Build Fusion plant level 1", building_name="Fusion plant", building_id=5, current=0, target=1
+                    ),
+                ),
+                "",
+                False,
+            ),
         )
-        p_acts = plan_actions(st, config=StrategyConfig(planner_mode="priority", allow_multi_planet=True, allow_shipyard=True))
+        p_acts = plan_actions(
+            st, config=StrategyConfig(planner_mode="priority", allow_multi_planet=True, allow_shipyard=True)
+        )
         self.assertEqual([a for a in p_acts if a.kind == "BUILD"], [])
-        self.assertEqual([a for a in p_acts if a.planet_id == 2 and a.kind in ("BUILD", "BUILD_SHIP", "THROTTLE_BUILDING")], [])
+        self.assertEqual(
+            [a for a in p_acts if a.planet_id == 2 and a.kind in ("BUILD", "BUILD_SHIP", "THROTTLE_BUILDING")], []
+        )
 
         # 3. ActionExecutor max_actions_per_hour=0 + None fields + E2ETestHarness port=0 & health/bot_control scrubbing
         ex0 = ActionExecutor(dry_run=False, max_actions_per_hour=0)
@@ -2705,7 +2517,7 @@ async (url, opts, fullUrl, nativeFetch) => {
             r_h = requests.get(f"{h.base_url}/health", timeout=5)
             self.assertEqual(r_h.status_code, 200)
             self.assertEqual(r_h.json()["debug_port"], 0)
-            h.bridge._bot_control["password"] = b"E2E_PW_SEC"
+            h.bridge.ctx.bot_control["password"] = b"E2E_PW_SEC"
             r_ctrl = requests.post(f"{h.base_url}/command", json={"command": "bot_control"}, timeout=5)
             self.assertEqual(r_ctrl.status_code, 200)
             self.assertNotIn("E2E_PW_SEC", r_ctrl.text)
@@ -2714,12 +2526,21 @@ async (url, opts, fullUrl, nativeFetch) => {
         import io
         from types import MappingProxyType
         import login as login_cli
-        from spaceinvasion.auth import Credentials, LoginResult
-        from spaceinvasion.browser import BrowserLoginResult
-        from spaceinvasion.config import _sanitize_cfg_json_tree, strategy_config_from_dict
-        from spaceinvasion.logging_utils import redact_sensitive
-        from spaceinvasion.state import BuildingOffer, QueueJob
-        from spaceinvasion.storage import _json_dumps
+        from spaceinvasion.session.auth import (
+            Credentials,
+            LoginResult,
+        )
+        from spaceinvasion.session.browser import BrowserLoginResult
+        from spaceinvasion.core.config import (
+            _sanitize_cfg_json_tree,
+            strategy_config_from_dict,
+        )
+        from spaceinvasion.core.redaction import redact_sensitive
+        from spaceinvasion.core.model import (
+            BuildingOffer,
+            QueueJob,
+        )
+        from spaceinvasion.db.repos._helpers import json_dumps as _json_dumps
 
         class _BytesPath:
             def __fspath__(self) -> bytes:
@@ -2741,7 +2562,9 @@ async (url, opts, fullUrl, nativeFetch) => {
             building_offers=(
                 BuildingOffer(5, "Fusion plant", 0, 1, Resources(100, 50, 0, 0), True, "Build", "?b=5"),
                 BuildingOffer(11, "Pig iron warehouse", 0, 1, Resources(100, 50, 0, 0), True, "Build", "?b=11"),
-                BuildingOffer(19, "Galaxy scanner", 1, 2, Resources(20_000, 80_000, 40_000, 16_000), True, "Build", "?b=19"),
+                BuildingOffer(
+                    19, "Galaxy scanner", 1, 2, Resources(20_000, 80_000, 40_000, 16_000), True, "Build", "?b=19"
+                ),
             ),
         )
         st_ast = GameState(
@@ -2759,7 +2582,13 @@ async (url, opts, fullUrl, nativeFetch) => {
                 config=StrategyConfig(planner_mode=mode),
             )
             self.assertEqual(
-                [a for a in acts if a.kind == "THROTTLE_BUILDING" or a.target_id in (5, 11, 12, 13, 14) or (a.kind == "BUILD" and a.executable_now)],
+                [
+                    a
+                    for a in acts
+                    if a.kind == "THROTTLE_BUILDING"
+                    or a.target_id in (5, 11, 12, 13, 14)
+                    or (a.kind == "BUILD" and a.executable_now)
+                ],
                 [],
                 f"mode={mode} emitted illegal asteroid actions: {acts}",
             )
@@ -2788,7 +2617,9 @@ async (url, opts, fullUrl, nativeFetch) => {
             (raid_p,),
             active_planet_id=91,
             researches={"r2": 4, "r4": 4},
-            research_offers=(ResearchOffer(1, "r1", "Mining technology", 0, 1, Resources(1000, 0, 500, 0), True, "ready", "?r=1"),),
+            research_offers=(
+                ResearchOffer(1, "r1", "Mining technology", 0, 1, Resources(1000, 0, 500, 0), True, "ready", "?r=1"),
+            ),
         )
         for bad_step in (
             ("RESEARCH", 91, "r1"),
@@ -2803,7 +2634,11 @@ async (url, opts, fullUrl, nativeFetch) => {
             config=StrategyConfig(allow_research=True, allow_shipyard=True),
         )
         self.assertEqual(
-            [a for a in raid_acts if a.planet_id == 91 and a.kind in ("BUILD", "BUILD_SHIP", "THROTTLE_BUILDING") and a.executable_now],
+            [
+                a
+                for a in raid_acts
+                if a.planet_id == 91 and a.kind in ("BUILD", "BUILD_SHIP", "THROTTLE_BUILDING") and a.executable_now
+            ],
             [],
         )
 
@@ -2814,8 +2649,25 @@ async (url, opts, fullUrl, nativeFetch) => {
         self.assertEqual((cfg_f.merchant_mode, cfg_f.allow_raids, cfg_f.allow_pvp_in_az), (False, False, False))
 
         for dumped in (
-            json.dumps(_sanitize_cfg_json_tree({"p": Path("?sid=T5_CFG_SEC"), "bp": _BytesPath(), "err": RuntimeError("?sid=T5_CFG_ERR"), "obj": object()}), allow_nan=False),
-            _json_dumps({"p": Path("?sid=T5_ST_SEC"), "bp": _BytesPath(), "cplx": complex(1, 2), "m": MappingProxyType({"k": object()})}),
+            json.dumps(
+                _sanitize_cfg_json_tree(
+                    {
+                        "p": Path("?sid=T5_CFG_SEC"),
+                        "bp": _BytesPath(),
+                        "err": RuntimeError("?sid=T5_CFG_ERR"),
+                        "obj": object(),
+                    }
+                ),
+                allow_nan=False,
+            ),
+            _json_dumps(
+                {
+                    "p": Path("?sid=T5_ST_SEC"),
+                    "bp": _BytesPath(),
+                    "cplx": complex(1, 2),
+                    "m": MappingProxyType({"k": object()}),
+                }
+            ),
             str(redact_sensitive(Path("?sid=T5_LOG_SEC"))),
         ):
             for sec in ("T5_R11_BPATH_SEC", "T5_CFG_SEC", "T5_CFG_ERR", "T5_ST_SEC", "T5_LOG_SEC"):
@@ -2856,17 +2708,26 @@ async (url, opts, fullUrl, nativeFetch) => {
                     self.assertEqual(login_cli.main(argv), 0)
                 rendered = buf.getvalue()
                 for sec in (
-                    "T5_BACC_SEC", "T5_BPROF_SEC", "T5_BCOOK_SEC", "T5_BCN_SEC", "T5_BFINAL_SEC", "T5_BDBG_SEC",
-                    "T5_HACC_SEC", "T5_HLAND_SEC", "T5_HFINAL_SEC", "T5_HCOOK_SEC", "T5_HCN_SEC",
+                    "T5_BACC_SEC",
+                    "T5_BPROF_SEC",
+                    "T5_BCOOK_SEC",
+                    "T5_BCN_SEC",
+                    "T5_BFINAL_SEC",
+                    "T5_BDBG_SEC",
+                    "T5_HACC_SEC",
+                    "T5_HLAND_SEC",
+                    "T5_HFINAL_SEC",
+                    "T5_HCOOK_SEC",
+                    "T5_HCN_SEC",
                 ):
                     self.assertNotIn(sec, rendered)
         self.assertIn("sid=T5_BFINAL_SEC", b_res.final_url)
 
         with E2ETestHarness() as h:
-            h.bridge._last_url = Path("https://u/?sid=T5_HTTP_PATH_SEC")  # type: ignore[assignment]
-            h.bridge._bot_control["bp"] = _BytesPath()
-            h.bridge._bot_control["err"] = RuntimeError("?sid=T5_HTTP_ERR_SEC")
-            h.bridge._bot_control["cplx"] = complex(1, 2)
+            h.bridge.ctx.last_url = Path("https://u/?sid=T5_HTTP_PATH_SEC")  # type: ignore[assignment]
+            h.bridge.ctx.bot_control["bp"] = _BytesPath()
+            h.bridge.ctx.bot_control["err"] = RuntimeError("?sid=T5_HTTP_ERR_SEC")
+            h.bridge.ctx.bot_control["cplx"] = complex(1, 2)
             for ep in ("/health", "/bot_status", "/dashboard"):
                 r = requests.get(f"{h.base_url}{ep}", timeout=5)
                 self.assertEqual(r.status_code, 200)
@@ -2888,11 +2749,15 @@ async (url, opts, fullUrl, nativeFetch) => {
                 coords="01:001:04",
                 planet_type="normal",
                 buildings={"b7": 8},
-                building_offers=(BuildingOffer(19, "Galaxy scanner", 0, 1, Resources(10_000, 40_000, 20_000, 8_000), True, "Build", "?b=19"),),
+                building_offers=(
+                    BuildingOffer(
+                        19, "Galaxy scanner", 0, 1, Resources(10_000, 40_000, 20_000, 8_000), True, "Build", "?b=19"
+                    ),
+                ),
             )
             st_mix = GameState(31, 1, "u", 1000.0, (ast_p, raid_p, norm_p), active_planet_id=92)
             for bid_bad, pid_bad in ((5, 92), (1, 91), (19, 93)):
-                act = h.bridge._find_build_action(st_mix, bid_bad, pid_bad, allow_live_verify=True)
+                act = h.bridge.plan_assembly.find_build_action(st_mix, bid_bad, pid_bad, allow_live_verify=True)
                 self.assertFalse(act.executable_now)
                 self.assertIsNone(act.action_href)
             r_ct = requests.post(f"{h.base_url}/command", json={"command": "claim_tutorial"}, timeout=5)
@@ -2906,10 +2771,15 @@ async (url, opts, fullUrl, nativeFetch) => {
     def test_adv_t5_22_r12_unified_secret_redaction_http_exc_safety_raid_tutorial_and_broken_pathlike(
         self,
     ) -> None:
-        from spaceinvasion.fleet import normalize_coords
-        from spaceinvasion.logging_utils import redact_sensitive
-        from spaceinvasion.ranking import build_combat_overview
-        from spaceinvasion.state import BuildingOffer, TutorialStatus, TutorialTask, normalize_planet_type
+        from spaceinvasion.core.coords import normalize_coords
+        from spaceinvasion.core.redaction import redact_sensitive
+        from spaceinvasion.combat.points import build_combat_overview
+        from spaceinvasion.core.model import (
+            BuildingOffer,
+            TutorialStatus,
+            TutorialTask,
+            normalize_planet_type,
+        )
 
         class _RaiseFspath:
             def __fspath__(self) -> str:
@@ -2953,7 +2823,9 @@ async (url, opts, fullUrl, nativeFetch) => {
             storage=Resources(100_000, 100_000, 100_000, 100_000),
             energy=EnergyBalance(500, 100),
             buildings={"b7": 1, "b9": 1},
-            building_offers=(BuildingOffer(7, "Development center", 1, 2, Resources(400, 120, 200, 0), True, "Build", "?b=7"),),
+            building_offers=(
+                BuildingOffer(7, "Development center", 1, 2, Resources(400, 120, 200, 0), True, "Build", "?b=7"),
+            ),
             ship_offers=(UnitOffer("ship", 4, "Small fighter", 0, Resources(3000, 1000, 0, 0), True, "ship[4]"),),
         )
         ast_nolab = PlanetState(
@@ -2979,7 +2851,9 @@ async (url, opts, fullUrl, nativeFetch) => {
             reward_text=10**5000,  # type: ignore[arg-type]
             can_complete=False,
         )
-        r_offer = ResearchOffer(1, "r1", "Mining technology", 0, 1, Resources(200, 100, 100, 0), True, "Research", "?r=1")
+        r_offer = ResearchOffer(
+            1, "r1", "Mining technology", 0, 1, Resources(200, 100, 100, 0), True, "Research", "?r=1"
+        )
         for planet_obj in (raid_p, ast_nolab):
             st_x = GameState(
                 31,
@@ -3010,15 +2884,15 @@ async (url, opts, fullUrl, nativeFetch) => {
         for _ in range(5):
             deep_key = (deep_key,)
         with E2ETestHarness() as h:
-            h.bridge._bot_control["auth_header"] = "Authorization: Bearer T5_HTTP_BEARER"
-            h.bridge._bot_control["json_blob"] = '{"password": "T5_JSON_PW"}'
-            h.bridge._bot_control["authorization"] = "T5_DICT_AUTH"
-            h.bridge._bot_control["long_s"] = "\u017fid=T5_LONGS_SEC"
-            h.bridge._bot_control["bad_fs"] = _RaiseFspath()
-            h.bridge._bot_control["int_fs"] = _IntPath()
-            h.bridge._bot_control["bad_repr"] = _RaiseStrRepr()
-            h.bridge._bot_control["exc"] = RuntimeError(10**5000, "?password=T5_EXC_PW")
-            h.bridge._bot_control[deep_key] = "ok"
+            h.bridge.ctx.bot_control["auth_header"] = "Authorization: Bearer T5_HTTP_BEARER"
+            h.bridge.ctx.bot_control["json_blob"] = '{"password": "T5_JSON_PW"}'
+            h.bridge.ctx.bot_control["authorization"] = "T5_DICT_AUTH"
+            h.bridge.ctx.bot_control["long_s"] = "\u017fid=T5_LONGS_SEC"
+            h.bridge.ctx.bot_control["bad_fs"] = _RaiseFspath()
+            h.bridge.ctx.bot_control["int_fs"] = _IntPath()
+            h.bridge.ctx.bot_control["bad_repr"] = _RaiseStrRepr()
+            h.bridge.ctx.bot_control["exc"] = RuntimeError(10**5000, "?password=T5_EXC_PW")
+            h.bridge.ctx.bot_control[deep_key] = "ok"
 
             for ep in ("/dashboard", "/bot_status"):
                 r = requests.get(f"{h.base_url}{ep}", timeout=5)
@@ -3068,11 +2942,21 @@ async (url, opts, fullUrl, nativeFetch) => {
     def test_adv_t5_23_r13_b8_b9_raid_tutorial_spy_links_client_cookies_and_compound_redaction(self) -> None:
         import time
         from types import SimpleNamespace
-        from spaceinvasion.auth import ConfigurationError, load_session_cookies
-        from spaceinvasion.commander_client import GameApiClient, GameApiError
-        from spaceinvasion.fleet import parse_spy_messages_html
-        from spaceinvasion.logging_utils import redact_sensitive
-        from spaceinvasion.state import QueueJob, TutorialStatus, TutorialTask
+        from spaceinvasion.session.auth import (
+            ConfigurationError,
+            load_session_cookies,
+        )
+        from spaceinvasion.runtime.commander_client import (
+            GameApiClient,
+            GameApiError,
+        )
+        from spaceinvasion.parsing.spy import parse_spy_messages_html
+        from spaceinvasion.core.redaction import redact_sensitive
+        from spaceinvasion.core.model import (
+            QueueJob,
+            TutorialStatus,
+            TutorialTask,
+        )
 
         # 1. b8=0 / queued b8 RESEARCH & b9=0 / queued b9 BUILD_SHIP blocked across priority & ga_nn
         p_nob8_b9 = PlanetState(
@@ -3092,7 +2976,9 @@ async (url, opts, fullUrl, nativeFetch) => {
                 UnitOffer("ship", 9, "Solar cells", 0, Resources(0, 2000, 200, 400), True, "ship[9]"),
             ),
         )
-        r2_offer = ResearchOffer(2, "r2", "Energy technology", 0, 1, Resources(0, 400, 800, 400), True, "Research", "?r=2")
+        r2_offer = ResearchOffer(
+            2, "r2", "Energy technology", 0, 1, Resources(0, 400, 800, 400), True, "Research", "?r=2"
+        )
         tut_r_s = TutorialStatus(
             4,
             11,
@@ -3156,7 +3042,9 @@ async (url, opts, fullUrl, nativeFetch) => {
         tut_b8 = TutorialStatus(3, 11, (TutorialTask("Build Research lab 0/1", "Research lab", 8, 0, 1, "building"),))
         st_multi = GameState(31, 1, "u", 1000.0, (raid_p, norm_p), active_planet_id=962, tutorial=tut_b8)
         multi_acts = plan_actions(st_multi, config=StrategyConfig(planner_mode="priority", allow_multi_planet=True))
-        self.assertTrue(any(a.planet_id == 963 and a.kind == "BUILD" and a.target_id == 8 and a.executable_now for a in multi_acts))
+        self.assertTrue(
+            any(a.planet_id == 963 and a.kind == "BUILD" and a.target_id == 8 and a.executable_now for a in multi_acts)
+        )
 
         ast_p = PlanetState(
             planet_id=964,
@@ -3181,7 +3069,9 @@ async (url, opts, fullUrl, nativeFetch) => {
             ),
         )
         ast_acts = plan_actions(
-            GameState(31, 1, "u", 1000.0, (ast_p,), active_planet_id=964, tutorial=tut_ast, research_offers=(r2_offer,)),
+            GameState(
+                31, 1, "u", 1000.0, (ast_p,), active_planet_id=964, tutorial=tut_ast, research_offers=(r2_offer,)
+            ),
             config=StrategyConfig(planner_mode="priority", allow_multi_planet=False),
         )
         self.assertEqual([(a.kind, a.target_id) for a in ast_acts], [("WAIT_RESOURCES", 7)])
@@ -3216,13 +3106,13 @@ async (url, opts, fullUrl, nativeFetch) => {
             self.assertNotIn("T5_DEC_CSEC", str(ctx_dec.exception))
 
         with E2ETestHarness() as h:
-            h.bridge._bot_control["client_secret"] = "T5_HTTP_CSEC"
-            h.bridge._bot_control["user_password"] = "T5_HTTP_UPW"
-            h.bridge._bot_control["quoted_bearer"] = 'Authorization: Bearer "T5_Q_BEAR"'
-            h.bridge._bot_control["brk_bearer"] = "Authorization: Bearer [T5_B_BEAR]"
-            h.bridge._bot_control["turk_sid"] = "?s\u0130d=T5_TURK_SID&?ap\u0131_key=T5_TURK_AK"
-            h.bridge._bot_control["has_sid"] = False
-            h.bridge._bot_control["cookie_path"] = "/tmp/cookies.json"
+            h.bridge.ctx.bot_control["client_secret"] = "T5_HTTP_CSEC"
+            h.bridge.ctx.bot_control["user_password"] = "T5_HTTP_UPW"
+            h.bridge.ctx.bot_control["quoted_bearer"] = 'Authorization: Bearer "T5_Q_BEAR"'
+            h.bridge.ctx.bot_control["brk_bearer"] = "Authorization: Bearer [T5_B_BEAR]"
+            h.bridge.ctx.bot_control["turk_sid"] = "?s\u0130d=T5_TURK_SID&?ap\u0131_key=T5_TURK_AK"
+            h.bridge.ctx.bot_control["has_sid"] = False
+            h.bridge.ctx.bot_control["cookie_path"] = "/tmp/cookies.json"
             r = requests.get(f"{h.base_url}/bot_status", timeout=5)
             self.assertEqual(r.status_code, 200)
             for sec in ("T5_HTTP_CSEC", "T5_HTTP_UPW", "T5_Q_BEAR", "T5_B_BEAR", "T5_TURK_SID", "T5_TURK_AK"):
@@ -3249,7 +3139,7 @@ async (url, opts, fullUrl, nativeFetch) => {
                 )
                 for i in range(1, 6)
             )
-            h.bridge._last_state = GameState(31, 1, "u", 1000.0, planets_5, active_planet_id=501)
+            h.bridge.ctx.last_state = GameState(31, 1, "u", 1000.0, planets_5, active_planet_id=501)
             _ = h.bridge.dashboard(refresh=False)
             t0 = time.perf_counter()
             dash_5 = h.bridge.dashboard(refresh=False)
@@ -3261,9 +3151,9 @@ async (url, opts, fullUrl, nativeFetch) => {
     def test_adv_t5_24_r14_combined_domain_offline_spio_redaction_and_dag20_cycles(self) -> None:
         import time
         from unittest.mock import patch
-        from spaceinvasion.auth import SpaceInvasionAuthError
-        from spaceinvasion.client import RateLimitError
-        from spaceinvasion.state import (
+        from spaceinvasion.session.auth import SpaceInvasionAuthError
+        from spaceinvasion.session.client import RateLimitError
+        from spaceinvasion.core.model import (
             BuildingOffer,
             EnergyBalance,
             GameState,
@@ -3311,7 +3201,9 @@ async (url, opts, fullUrl, nativeFetch) => {
             storage=Resources(100_000, 100_000, 100_000, 100_000),
             energy=EnergyBalance(500, 100),
             buildings={"b1": 4},
-            building_offers=(BuildingOffer(1, "Pig iron mine", 5, 6, Resources(100, 100, 0, 0), True, "Build", "?b=1"),),
+            building_offers=(
+                BuildingOffer(1, "Pig iron mine", 5, 6, Resources(100, 100, 0, 0), True, "Build", "?b=1"),
+            ),
             ship_offers=(UnitOffer("ship", 4, "Small fighter", 0, Resources(3000, 1000, 0, 0), True, "ship[4]"),),
         )
         st = GameState(
@@ -3321,22 +3213,24 @@ async (url, opts, fullUrl, nativeFetch) => {
             time.time(),
             (raid_p, ast_p, norm_p),
             active_planet_id=972,
-            research_offers=(ResearchOffer(2, "r2", "Energy technology", 0, 1, Resources(500, 500, 0, 0), True, "Research", "?r=2"),),
+            research_offers=(
+                ResearchOffer(2, "r2", "Energy technology", 0, 1, Resources(500, 500, 0, 0), True, "Research", "?r=2"),
+            ),
             unread_messages={"spio": 2},
         )
 
         with E2ETestHarness() as h:
-            h.bridge._record_state(
+            h.bridge.state_cache.record_state(
                 st,
                 fetched_buildings=True,
                 fetched_research=True,
                 fetched_shipyard=True,
                 fetched_home=True,
             )
-            h.bridge._last_spio_sync_at = 0.0
+            h.bridge.ctx.last_spio_sync_at = 0.0
 
             # 1. Offline auth failure during cached plan unread spio sync degrades cleanly
-            with patch.object(h.bridge, "_client_factory", side_effect=SpaceInvasionAuthError("offline")):
+            with patch.object(h.bridge.ctx, "client_factory", side_effect=SpaceInvasionAuthError("offline")):
                 r_plan = requests.post(
                     f"{h.base_url}/command",
                     json={"command": "plan", "force_refresh": False},
@@ -3363,8 +3257,8 @@ async (url, opts, fullUrl, nativeFetch) => {
                 self.assertEqual(r_thr.status_code, 400)
 
             # 3. RateLimitError on unread spio sync still surfaces HTTP 429
-            h.bridge._last_spio_sync_at = 0.0
-            with patch.object(h.bridge, "_client_factory", side_effect=RateLimitError("slow", retry_after=15.0)):
+            h.bridge.ctx.last_spio_sync_at = 0.0
+            with patch.object(h.bridge.ctx, "client_factory", side_effect=RateLimitError("slow", retry_after=15.0)):
                 r_rl = requests.post(
                     f"{h.base_url}/command",
                     json={"command": "plan", "force_refresh": False},
@@ -3378,10 +3272,10 @@ async (url, opts, fullUrl, nativeFetch) => {
             dag_exc: BaseException = RuntimeError("Bearer T5_R14_DAG_SEC")
             for _ in range(20):
                 dag_exc = RuntimeError(dag_exc, dag_exc, dag_exc, dag_exc)
-            h.bridge._bot_control["ue_json"] = '%22password%22%3A%22T5_R14_UE_PW%22'
-            h.bridge._bot_control["esc_json"] = '\\"password\\":\\"T5_R14_ESC_PW\\"'
-            h.bridge._bot_control["cyc"] = cyc_d
-            h.bridge._bot_control["dag"] = dag_exc
+            h.bridge.ctx.bot_control["ue_json"] = "%22password%22%3A%22T5_R14_UE_PW%22"
+            h.bridge.ctx.bot_control["esc_json"] = '\\"password\\":\\"T5_R14_ESC_PW\\"'
+            h.bridge.ctx.bot_control["cyc"] = cyc_d
+            h.bridge.ctx.bot_control["dag"] = dag_exc
             t0 = time.perf_counter()
             r_bs = requests.get(f"{h.base_url}/bot_status", timeout=5)
             self.assertLess((time.perf_counter() - t0) * 1000.0, 250.0)

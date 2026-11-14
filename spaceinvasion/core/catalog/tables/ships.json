@@ -1,0 +1,637 @@
+{
+  "battleship": {
+    "slug": "battleship",
+    "name": "Battleship",
+    "url": "https://spaceinvasion.bitmeup.com/wiki/en/ships/battleship",
+    "base_cost": {
+      "pig_iron": 0,
+      "metal": 35000,
+      "kryptonite": 25000,
+      "spice": 0
+    },
+    "requirements": [
+      {
+        "category": "buildings",
+        "slug": "weapons-factory",
+        "name": "Weapons factory",
+        "level": 8
+      },
+      {
+        "category": "research",
+        "slug": "warp-engine",
+        "name": "Warp engine",
+        "level": 4
+      }
+    ],
+    "required_for": [],
+    "base_build_time_s": 19166.667,
+    "build_time_factors": {
+      "formula": "b9 b9msb uni",
+      "control": "uni"
+    },
+    "stats": {
+      "hull": 60000,
+      "shield": 300,
+      "attack": 300,
+      "speed": 6800,
+      "cargo": 1000,
+      "fuel": 90,
+      "engine": "Warp engine"
+    }
+  },
+  "colony-ship": {
+    "slug": "colony-ship",
+    "name": "Colony ship",
+    "url": "https://spaceinvasion.bitmeup.com/wiki/en/ships/colony-ship",
+    "base_cost": {
+      "pig_iron": 10000,
+      "metal": 20000,
+      "kryptonite": 15000,
+      "spice": 8000
+    },
+    "requirements": [
+      {
+        "category": "buildings",
+        "slug": "weapons-factory",
+        "name": "Weapons factory",
+        "level": 4
+      },
+      {
+        "category": "research",
+        "slug": "rocket-engine",
+        "name": "Rocket engine",
+        "level": 8
+      }
+    ],
+    "required_for": [],
+    "base_build_time_s": 16000.0,
+    "build_time_factors": {
+      "formula": "b9 b9msb uni",
+      "control": "uni"
+    },
+    "stats": {
+      "hull": 45000,
+      "shield": 80,
+      "attack": 10,
+      "speed": 1500,
+      "cargo": 5000,
+      "fuel": 32,
+      "engine": "Rocket engine"
+    }
+  },
+  "destroyer": {
+    "slug": "destroyer",
+    "name": "Destroyer",
+    "url": "https://spaceinvasion.bitmeup.com/wiki/en/ships/destroyer",
+    "base_cost": {
+      "pig_iron": 0,
+      "metal": 60000,
+      "kryptonite": 50000,
+      "spice": 2000
+    },
+    "requirements": [
+      {
+        "category": "buildings",
+        "slug": "weapons-factory",
+        "name": "Weapons factory",
+        "level": 10
+      },
+      {
+        "category": "research",
+        "slug": "warp-engine",
+        "name": "Warp engine",
+        "level": 8
+      }
+    ],
+    "required_for": [],
+    "base_build_time_s": 33333.333,
+    "build_time_factors": {
+      "formula": "b9 b9msb uni",
+      "control": "uni"
+    },
+    "stats": {
+      "hull": 110000,
+      "shield": 400,
+      "attack": 700,
+      "speed": 4000,
+      "cargo": 3000,
+      "fuel": 130,
+      "engine": "Warp engine"
+    }
+  },
+  "imperial-starbase": {
+    "slug": "imperial-starbase",
+    "name": "Imperial starbase",
+    "url": "https://spaceinvasion.bitmeup.com/wiki/en/ships/imperial-starbase",
+    "base_cost": {
+      "pig_iron": 0,
+      "metal": 3000000,
+      "kryptonite": 2000000,
+      "spice": 500000
+    },
+    "requirements": [
+      {
+        "category": "buildings",
+        "slug": "weapons-factory",
+        "name": "Weapons factory",
+        "level": 13
+      },
+      {
+        "category": "research",
+        "slug": "black-hole-research",
+        "name": "Black hole research",
+        "level": 2
+      }
+    ],
+    "required_for": [],
+    "base_build_time_s": 1633333.333,
+    "build_time_factors": {
+      "formula": "b9 b9msb uni",
+      "control": "uni"
+    },
+    "stats": {
+      "hull": 5000000,
+      "shield": 15000,
+      "attack": 35000,
+      "speed": 300,
+      "cargo": 3500000,
+      "fuel": 250,
+      "engine": "Warp engine"
+    }
+  },
+  "large-transport": {
+    "slug": "large-transport",
+    "name": "Large transport",
+    "url": "https://spaceinvasion.bitmeup.com/wiki/en/ships/large-transport",
+    "base_cost": {
+      "pig_iron": 0,
+      "metal": 8000,
+      "kryptonite": 6000,
+      "spice": 0
+    },
+    "requirements": [
+      {
+        "category": "buildings",
+        "slug": "weapons-factory",
+        "name": "Weapons factory",
+        "level": 6
+      },
+      {
+        "category": "research",
+        "slug": "rocket-engine",
+        "name": "Rocket engine",
+        "level": 6
+      }
+    ],
+    "required_for": [],
+    "base_build_time_s": 4400.0,
+    "build_time_factors": {
+      "formula": "b9 b9msb uni",
+      "control": "uni"
+    },
+    "stats": {
+      "hull": 14000,
+      "shield": 25,
+      "attack": 5,
+      "speed": 5000,
+      "cargo": 30000,
+      "fuel": 15,
+      "engine": "Rocket engine"
+    }
+  },
+  "phoenix": {
+    "slug": "phoenix",
+    "name": "Phoenix",
+    "url": "https://spaceinvasion.bitmeup.com/wiki/en/ships/phoenix",
+    "base_cost": {
+      "pig_iron": 0,
+      "metal": 30000,
+      "kryptonite": 20000,
+      "spice": 5000
+    },
+    "requirements": [
+      {
+        "category": "buildings",
+        "slug": "weapons-factory",
+        "name": "Weapons factory",
+        "level": 7
+      },
+      {
+        "category": "research",
+        "slug": "diffusion-engine",
+        "name": "Diffusion engine",
+        "level": 8
+      },
+      {
+        "category": "research",
+        "slug": "defense-systems",
+        "name": "Defense systems",
+        "level": 5
+      }
+    ],
+    "required_for": [],
+    "base_build_time_s": 16333.333,
+    "build_time_factors": {
+      "formula": "b9 b9msb uni",
+      "control": "uni"
+    },
+    "stats": {
+      "hull": 50000,
+      "shield": 180,
+      "attack": 320,
+      "speed": 8000,
+      "cargo": 500,
+      "fuel": 55,
+      "engine": "Diffusion engine"
+    }
+  },
+  "recycler": {
+    "slug": "recycler",
+    "name": "Recycler",
+    "url": "https://spaceinvasion.bitmeup.com/wiki/en/ships/recycler",
+    "base_cost": {
+      "pig_iron": 2000,
+      "metal": 10000,
+      "kryptonite": 5000,
+      "spice": 0
+    },
+    "requirements": [
+      {
+        "category": "buildings",
+        "slug": "weapons-factory",
+        "name": "Weapons factory",
+        "level": 4
+      },
+      {
+        "category": "research",
+        "slug": "diffusion-engine",
+        "name": "Diffusion engine",
+        "level": 4
+      }
+    ],
+    "required_for": [],
+    "base_build_time_s": 6333.3333,
+    "build_time_factors": {
+      "formula": "b9 b9msb uni",
+      "control": "uni"
+    },
+    "stats": {
+      "hull": 17000,
+      "shield": 30,
+      "attack": 8,
+      "speed": 2000,
+      "cargo": 25000,
+      "fuel": 20,
+      "engine": "Diffusion engine"
+    }
+  },
+  "small-fighter": {
+    "slug": "small-fighter",
+    "name": "Small fighter",
+    "url": "https://spaceinvasion.bitmeup.com/wiki/en/ships/small-fighter",
+    "base_cost": {
+      "pig_iron": 0,
+      "metal": 4000,
+      "kryptonite": 2000,
+      "spice": 100
+    },
+    "requirements": [
+      {
+        "category": "buildings",
+        "slug": "weapons-factory",
+        "name": "Weapons factory",
+        "level": 1
+      },
+      {
+        "category": "research",
+        "slug": "rocket-engine",
+        "name": "Rocket engine",
+        "level": 1
+      }
+    ],
+    "required_for": [],
+    "base_build_time_s": 2133.3333,
+    "build_time_factors": {
+      "formula": "b9 b9msb uni",
+      "control": "uni"
+    },
+    "stats": {
+      "hull": 6000,
+      "shield": 10,
+      "attack": 50,
+      "speed": 9000,
+      "cargo": 60,
+      "fuel": 15,
+      "engine": "Rocket engine"
+    }
+  },
+  "small-transport": {
+    "slug": "small-transport",
+    "name": "Small transport",
+    "url": "https://spaceinvasion.bitmeup.com/wiki/en/ships/small-transport",
+    "base_cost": {
+      "pig_iron": 0,
+      "metal": 3000,
+      "kryptonite": 3000,
+      "spice": 0
+    },
+    "requirements": [
+      {
+        "category": "buildings",
+        "slug": "weapons-factory",
+        "name": "Weapons factory",
+        "level": 2
+      },
+      {
+        "category": "research",
+        "slug": "rocket-engine",
+        "name": "Rocket engine",
+        "level": 4
+      }
+    ],
+    "required_for": [],
+    "base_build_time_s": 1700.0,
+    "build_time_factors": {
+      "formula": "b9 b9msb uni",
+      "control": "uni"
+    },
+    "stats": {
+      "hull": 6000,
+      "shield": 10,
+      "attack": 2,
+      "speed": 3000,
+      "cargo": 6000,
+      "fuel": 10,
+      "engine": "Rocket engine"
+    }
+  },
+  "solar-cells": {
+    "slug": "solar-cells",
+    "name": "Solar cells",
+    "url": "https://spaceinvasion.bitmeup.com/wiki/en/ships/solar-cells",
+    "base_cost": {
+      "pig_iron": 0,
+      "metal": 2000,
+      "kryptonite": 200,
+      "spice": 400
+    },
+    "requirements": [
+      {
+        "category": "buildings",
+        "slug": "weapons-factory",
+        "name": "Weapons factory",
+        "level": 1
+      }
+    ],
+    "required_for": [],
+    "base_build_time_s": 1013.3333,
+    "build_time_factors": {
+      "formula": "b9 b9msb uni",
+      "control": "uni"
+    },
+    "stats": {
+      "hull": 2200,
+      "shield": 5,
+      "attack": 0,
+      "speed": 0,
+      "cargo": 0,
+      "fuel": 0
+    },
+    "solar_cell_energy_by_temp": {
+      "-160": 10,
+      "-120": 10,
+      "-80": 10,
+      "-40": 20,
+      "0": 30,
+      "40": 40,
+      "80": 50,
+      "120": 60,
+      "160": 70,
+      "200": 80
+    }
+  },
+  "spy-probe": {
+    "slug": "spy-probe",
+    "name": "Spy probe",
+    "url": "https://spaceinvasion.bitmeup.com/wiki/en/ships/spy-probe",
+    "base_cost": {
+      "pig_iron": 0,
+      "metal": 0,
+      "kryptonite": 3000,
+      "spice": 200
+    },
+    "requirements": [
+      {
+        "category": "buildings",
+        "slug": "weapons-factory",
+        "name": "Weapons factory",
+        "level": 1
+      },
+      {
+        "category": "research",
+        "slug": "rocket-engine",
+        "name": "Rocket engine",
+        "level": 3
+      },
+      {
+        "category": "research",
+        "slug": "spy-technology",
+        "name": "Spy technology",
+        "level": 2
+      }
+    ],
+    "required_for": [],
+    "base_build_time_s": 200.0,
+    "build_time_factors": {
+      "formula": "b9 b9msb uni",
+      "control": "uni"
+    },
+    "stats": {
+      "hull": 3000,
+      "shield": 6,
+      "attack": 0,
+      "speed": 15000000,
+      "cargo": 6,
+      "fuel": 3,
+      "engine": "Rocket engine"
+    }
+  },
+  "starcruiser": {
+    "slug": "starcruiser",
+    "name": "Starcruiser",
+    "url": "https://spaceinvasion.bitmeup.com/wiki/en/ships/starcruiser",
+    "base_cost": {
+      "pig_iron": 0,
+      "metal": 25000,
+      "kryptonite": 10000,
+      "spice": 1500
+    },
+    "requirements": [
+      {
+        "category": "buildings",
+        "slug": "weapons-factory",
+        "name": "Weapons factory",
+        "level": 5
+      },
+      {
+        "category": "research",
+        "slug": "diffusion-engine",
+        "name": "Diffusion engine",
+        "level": 5
+      },
+      {
+        "category": "research",
+        "slug": "shield-technology",
+        "name": "Shield technology",
+        "level": 4
+      }
+    ],
+    "required_for": [],
+    "base_build_time_s": 13166.667,
+    "build_time_factors": {
+      "formula": "b9 b9msb uni",
+      "control": "uni"
+    },
+    "stats": {
+      "hull": 35000,
+      "shield": 100,
+      "attack": 250,
+      "speed": 4800,
+      "cargo": 200,
+      "fuel": 40,
+      "engine": "Diffusion engine"
+    }
+  },
+  "stealth-bomber": {
+    "slug": "stealth-bomber",
+    "name": "Stealth bomber",
+    "url": "https://spaceinvasion.bitmeup.com/wiki/en/ships/stealth-bomber",
+    "base_cost": {
+      "pig_iron": 0,
+      "metal": 40000,
+      "kryptonite": 60000,
+      "spice": 10000
+    },
+    "requirements": [
+      {
+        "category": "buildings",
+        "slug": "weapons-factory",
+        "name": "Weapons factory",
+        "level": 10
+      },
+      {
+        "category": "research",
+        "slug": "spy-technology",
+        "name": "Spy technology",
+        "level": 8
+      },
+      {
+        "category": "research",
+        "slug": "warp-engine",
+        "name": "Warp engine",
+        "level": 6
+      }
+    ],
+    "required_for": [],
+    "base_build_time_s": 24000.0,
+    "build_time_factors": {
+      "formula": "b9 b9msb uni",
+      "control": "uni"
+    },
+    "stats": {
+      "hull": 100000,
+      "shield": 100,
+      "attack": 300,
+      "speed": 5200,
+      "cargo": 1400,
+      "fuel": 110,
+      "engine": "Warp engine"
+    }
+  },
+  "transmitter": {
+    "slug": "transmitter",
+    "name": "Transmitter",
+    "url": "https://spaceinvasion.bitmeup.com/wiki/en/ships/transmitter",
+    "base_cost": {
+      "pig_iron": 0,
+      "metal": 25000,
+      "kryptonite": 25000,
+      "spice": 0
+    },
+    "requirements": [
+      {
+        "category": "buildings",
+        "slug": "weapons-factory",
+        "name": "Weapons factory",
+        "level": 8
+      },
+      {
+        "category": "research",
+        "slug": "diffusion-engine",
+        "name": "Diffusion engine",
+        "level": 8
+      }
+    ],
+    "required_for": [],
+    "base_build_time_s": 14166.667,
+    "build_time_factors": {
+      "formula": "b9 b9msb uni",
+      "control": "uni"
+    },
+    "stats": {
+      "hull": 50000,
+      "shield": 70,
+      "attack": 130,
+      "speed": 7000,
+      "cargo": 250000,
+      "fuel": 25,
+      "engine": "Diffusion engine"
+    }
+  },
+  "warship": {
+    "slug": "warship",
+    "name": "Warship",
+    "url": "https://spaceinvasion.bitmeup.com/wiki/en/ships/warship",
+    "base_cost": {
+      "pig_iron": 0,
+      "metal": 8000,
+      "kryptonite": 4000,
+      "spice": 300
+    },
+    "requirements": [
+      {
+        "category": "buildings",
+        "slug": "weapons-factory",
+        "name": "Weapons factory",
+        "level": 4
+      },
+      {
+        "category": "research",
+        "slug": "rocket-engine",
+        "name": "Rocket engine",
+        "level": 4
+      },
+      {
+        "category": "research",
+        "slug": "weapons-technology",
+        "name": "Weapons technology",
+        "level": 2
+      }
+    ],
+    "required_for": [],
+    "base_build_time_s": 4266.667,
+    "build_time_factors": {
+      "formula": "b9 b9msb uni",
+      "control": "uni"
+    },
+    "stats": {
+      "hull": 12000,
+      "shield": 30,
+      "attack": 90,
+      "speed": 6500,
+      "cargo": 100,
+      "fuel": 28,
+      "engine": "Rocket engine"
+    }
+  }
+}

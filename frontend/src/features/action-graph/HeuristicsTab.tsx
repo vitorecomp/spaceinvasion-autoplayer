@@ -1,71 +1,27 @@
-import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { feedbackKindForError, safeFiniteNumber } from "../../api/httpClient";
-import { buildClientFallbackActionGraph, useConsole } from "../../context/ConsoleContext";
+import {
+  buildClientFallbackActionGraph,
+  useActionGraphData,
+  useAgSimState,
+  useApiOnline,
+  useConsoleActions,
+  useDashboard,
+  usePlannerJobsStatus,
+  useUiPrefs,
+} from "../../store";
 import { ActionGraphTabKey, StrategyConfigData } from "../../types/api";
-import { ActionGraphParamRow } from "./ActionGraphParamRow";
 import { DagCanvas } from "./DagCanvas";
-import { getStrategyParamDoc } from "./paramDocs";
+import {
+  AG_BOOL_FIELDS,
+  AG_NUM_DEFAULTS,
+  buildDraftStateFromConfig,
+  collectHeuristicsDraftPayload,
+} from "./heuristicsDraft";
+import { HeuristicsParamPanel } from "./HeuristicsParamPanel";
 import { computeColonyGateInfo, normalizeUiPlannerMode, sanitizeMainWindowText } from "./plannerHelpers";
 
-const useClientSyncEffect = typeof window !== "undefined" ? useLayoutEffect : useEffect;
-
-const AG_BOOL_FIELDS = [
-  "auto_throttle_blast_furnace",
-  "merchant_mode",
-  "allow_research",
-  "allow_shipyard",
-  "allow_multi_planet",
-  "allow_fleetsave",
-  "allow_galaxy_scan",
-  "spy_reserved_slots_only",
-  "allow_raids",
-  "allow_pvp_in_az",
-  "allow_colonize",
-  "allow_transport",
-  "allow_transmitter",
-  "forbid_planetary_solar",
-];
-
-export const AG_NUM_DEFAULTS: Record<string, number> = {
-  storage_warn_ratio: 0.85,
-  blast_pig_iron_max_share: 0.7,
-  combat_safety_margin: 1.4,
-  raid_min_loot_spice_eq: 1500,
-  attack_min_res_per_hour: 0,
-  recycle_min_res_per_hour: 0,
-  hot_planet_solar_temp_threshold: 40,
-  min_free_fields_warning: 20,
-  min_colony_fields: 300,
-  max_planets: 11,
-  galaxy_sweep_interval_seconds: 270,
-  galaxy_sweep_pages: 100,
-  galaxy_scan_click_delay_seconds: 1.5,
-  galaxy_scan_click_jitter_seconds: 0.6,
-  reserved_spy_slots: 1,
-  fleet_save_fuel_reserve_spice: 500,
-  action_batch_interval_seconds: 120,
-  max_actions_per_hour: 60,
-};
-
-function buildDraftStateFromConfig(cfg: StrategyConfigData | null | undefined): Record<string, any> {
-  const out: Record<string, any> = {
-    planner_mode: normalizeUiPlannerMode(cfg?.planner_mode),
-    playstyle: String(cfg?.playstyle || "fleeter"),
-  };
-  for (const [k, fallback] of Object.entries(AG_NUM_DEFAULTS)) {
-    const v = safeFiniteNumber(cfg?.[k], fallback) ?? fallback;
-    out[k] = String(v);
-  }
-  for (const bKey of AG_BOOL_FIELDS) {
-    const defChecked =
-      bKey === "auto_throttle_blast_furnace" ||
-      bKey === "allow_research" ||
-      bKey === "allow_shipyard" ||
-      bKey === "allow_multi_planet";
-    out[bKey] = cfg && bKey in cfg ? Boolean(cfg[bKey]) : defChecked;
-  }
-  return out;
-}
+export { AG_NUM_DEFAULTS };
 
 export interface HeuristicsTabProps {
   hidden?: boolean;
@@ -73,28 +29,31 @@ export interface HeuristicsTabProps {
 }
 
 export const HeuristicsTab: React.FC<HeuristicsTabProps> = ({ hidden = false, onSwitchTab }) => {
+  const apiOnline = useApiOnline();
+  const dashboard = useDashboard();
+  const actionGraphData = useActionGraphData();
+  const plannerJobsStatus = usePlannerJobsStatus();
+  const uiPrefs = useUiPrefs();
+  const { agSimDirty, agHydrationTick } = useAgSimState();
   const {
-    dashboard,
     setDashboard,
-    apiOnline,
-    actionGraphData,
     setActionGraphData,
-    plannerJobsStatus,
-    agSimDirty,
     setAgSimDirty,
     setAgSimRunning,
-    agHydrationTick,
     setConfigDirty,
     setConfigSaving,
     bumpDashboardSeq,
     beginGaCalc,
     endGaCalc,
-    uiPrefs,
     setUiPref,
     apiCommand,
     loadDashboard,
     showFeedback,
-  } = useConsole();
+    getSnapshot,
+    getRuntime,
+    bumpAgSimSeq,
+    bumpConfigHydration,
+  } = useConsoleActions();
 
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [draftValues, setDraftValues] = useState<Record<string, any>>(() =>
@@ -122,16 +81,11 @@ export const HeuristicsTab: React.FC<HeuristicsTabProps> = ({ hidden = false, on
   }, []);
 
   useEffect(() => {
-    const gState = (globalThis as any).state;
-    if (
-      !gState?.agSimDirty &&
-      !(gState?.agSimRunning > 0) &&
-      !(gState?.configSaving > 0) &&
-      dashboard?.config
-    ) {
+    const rt = getRuntime();
+    if (!rt.agSimDirty && !(rt.agSimRunning > 0) && !(rt.configSaving > 0) && dashboard?.config) {
       populateControls(dashboard.config);
     }
-  }, [agHydrationTick, dashboard?.config, populateControls]);
+  }, [agHydrationTick, dashboard?.config, getRuntime, populateControls]);
 
   const syncDraftValuesFromDom = useCallback(
     (modeOverride?: "priority" | "ai_planner") => {
@@ -168,76 +122,47 @@ export const HeuristicsTab: React.FC<HeuristicsTabProps> = ({ hidden = false, on
   );
 
   const collectDraftPayload = useCallback(
-    (modeOverride?: "priority" | "ai_planner"): Record<string, any> => {
-      const readEl = (id: string) =>
-        (typeof document !== "undefined" ? document.getElementById(id) : null) as
-          | HTMLInputElement
-          | HTMLSelectElement
-          | null;
-
-      const modeSel = readEl("ag-cfg-planner_mode");
-      const playSel = readEl("ag-cfg-playstyle");
-      const payload: Record<string, any> = {
-        planner_mode:
-          modeOverride ??
-          normalizeUiPlannerMode(modeSel ? modeSel.value : draftValues.planner_mode),
-        playstyle: playSel
-          ? String(playSel.value || "fleeter")
-          : String(draftValues.playstyle || "fleeter"),
-      };
-
-      for (const boolField of AG_BOOL_FIELDS) {
-        const box = readEl(`ag-cfg-${boolField}`) as HTMLInputElement | null;
-        payload[boolField] = box ? Boolean(box.checked) : Boolean(draftValues[boolField]);
-      }
-
-      for (const numField of Object.keys(AG_NUM_DEFAULTS)) {
-        const inp = readEl(`ag-cfg-${numField}`);
-        const raw = inp ? String(inp.value ?? "").trim() : String(draftValues[numField] ?? "").trim();
-        if (raw === "") {
-          payload[numField] = "";
-        } else if (/^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/.test(raw)) {
-          const parsed = Number(raw);
-          payload[numField] = Number.isFinite(parsed) ? parsed : raw;
-        } else {
-          payload[numField] = raw;
-        }
-      }
-
-      return payload;
-    },
+    (modeOverride?: "priority" | "ai_planner"): Record<string, any> =>
+      collectHeuristicsDraftPayload(draftValues, modeOverride),
     [draftValues]
   );
 
   const refreshActiveActionGraph = useCallback(
     async (forceRefresh = false): Promise<boolean> => {
-      const gState = (globalThis as any).state;
-      const reqSeq = gState ? ++gState.agSimSeq : 1;
+      const reqSeq = bumpAgSimSeq();
       try {
         const res = await apiCommand({
           command: "action_graph",
           simulated: false,
           refresh: Boolean(forceRefresh),
         });
-        if (gState && (reqSeq !== gState.agSimSeq || gState.agSimDirty)) return false;
+        const rt = getRuntime();
+        if (reqSeq !== rt.agSimSeq || rt.agSimDirty) return false;
         if (res.action_graph && typeof res.action_graph === "object") {
           setActionGraphData(res.action_graph);
-          const curDash = gState?.dashboard || dashboard;
+          const curDash = getSnapshot().dashboard || dashboard;
           if (curDash) {
-            const nextDash = { ...curDash, action_graph: res.action_graph };
-            if (gState) gState.dashboard = nextDash;
-            setDashboard(nextDash);
+            setDashboard({ ...curDash, action_graph: res.action_graph });
           }
           return true;
         }
       } catch (err: any) {
-        if (!gState || reqSeq === gState.agSimSeq) {
+        if (reqSeq === getRuntime().agSimSeq) {
           showFeedback(`Action graph load failed: ${err.message}`, feedbackKindForError(err));
         }
       }
       return false;
     },
-    [apiCommand, dashboard, setActionGraphData, setDashboard, showFeedback]
+    [
+      apiCommand,
+      bumpAgSimSeq,
+      dashboard,
+      getRuntime,
+      getSnapshot,
+      setActionGraphData,
+      setDashboard,
+      showFeedback,
+    ]
   );
 
   const runAgSimulation = useCallback(
@@ -257,9 +182,7 @@ export const HeuristicsTab: React.FC<HeuristicsTabProps> = ({ hidden = false, on
       syncDraftValuesFromDom(simMode);
       setAgSimDirty(true);
 
-      const gState = (globalThis as any).state;
-      const reqSeq = gState ? ++gState.agSimSeq : 1;
-      if (gState) gState.agSimRunning = (gState.agSimRunning || 0) + 1;
+      const reqSeq = bumpAgSimSeq();
       setAgSimRunning((c) => c + 1);
 
       const useHud = simMode === "ai_planner";
@@ -273,15 +196,13 @@ export const HeuristicsTab: React.FC<HeuristicsTabProps> = ({ hidden = false, on
           simulated: true,
           refresh: false,
         });
-        if (gState && reqSeq !== gState.agSimSeq) return false;
+        if (reqSeq !== getRuntime().agSimSeq) return false;
         if (res.action_graph && typeof res.action_graph === "object") {
           const isDirty = Boolean(res.action_graph.is_dirty);
           setActionGraphData(res.action_graph);
-          const curDash = gState?.dashboard || dashboard;
+          const curDash = getSnapshot().dashboard || dashboard;
           if (!isDirty && curDash) {
-            const nextDash = { ...curDash, action_graph: res.action_graph };
-            if (gState) gState.dashboard = nextDash;
-            setDashboard(nextDash);
+            setDashboard({ ...curDash, action_graph: res.action_graph });
           }
           setAgSimDirty(isDirty);
           if (explicit) {
@@ -297,12 +218,11 @@ export const HeuristicsTab: React.FC<HeuristicsTabProps> = ({ hidden = false, on
         }
         return false;
       } catch (err: any) {
-        if (!gState || reqSeq === gState.agSimSeq) {
+        if (reqSeq === getRuntime().agSimSeq) {
           showFeedback(`Simulation preview error: ${err.message}`, feedbackKindForError(err));
         }
         return false;
       } finally {
-        if (gState) gState.agSimRunning = Math.max(0, (gState.agSimRunning || 0) - 1);
         setAgSimRunning((c) => Math.max(0, c - 1));
         if (useHud) endGaCalc();
       }
@@ -310,9 +230,12 @@ export const HeuristicsTab: React.FC<HeuristicsTabProps> = ({ hidden = false, on
     [
       apiCommand,
       beginGaCalc,
+      bumpAgSimSeq,
       collectDraftPayload,
       dashboard,
       endGaCalc,
+      getRuntime,
+      getSnapshot,
       setActionGraphData,
       setAgSimDirty,
       setAgSimRunning,
@@ -322,23 +245,17 @@ export const HeuristicsTab: React.FC<HeuristicsTabProps> = ({ hidden = false, on
     ]
   );
 
-  useClientSyncEffect(() => {
-    (globalThis as any).runAgSimulation = runAgSimulation;
-    (globalThis as any).populateAgParamControls = populateControls;
-  }, [populateControls, runAgSimulation]);
-
   const scheduleDebouncedSim = useCallback(() => {
-    const gState = (globalThis as any).state;
-    if (gState) gState.agSimSeq = (gState.agSimSeq || 0) + 1;
+    bumpAgSimSeq();
     setAgSimDirty(true);
     if (debounceRef.current) {
       clearTimeout(debounceRef.current);
     }
     debounceRef.current = setTimeout(() => {
       debounceRef.current = null;
-      runAgSimulation({ explicit: false });
+      void runAgSimulation({ explicit: false });
     }, 180);
-  }, [runAgSimulation, setAgSimDirty]);
+  }, [bumpAgSimSeq, runAgSimulation, setAgSimDirty]);
 
   const onModeSwitchClick = (targetMode: "priority" | "ai_planner") => {
     const modeSel =
@@ -357,14 +274,13 @@ export const HeuristicsTab: React.FC<HeuristicsTabProps> = ({ hidden = false, on
       clearTimeout(debounceRef.current);
       debounceRef.current = null;
     }
-    const gState = (globalThis as any).state;
-    if (gState) gState.agSimSeq = (gState.agSimSeq || 0) + 1;
+    bumpAgSimSeq();
     setAgSimDirty(false);
-    const activeCfg = (gState?.dashboard || dashboard)?.config || null;
+    const curDash = getSnapshot().dashboard || dashboard;
+    const activeCfg = curDash?.config || null;
     if (activeCfg) {
       populateControls(activeCfg);
     }
-    const curDash = gState?.dashboard || dashboard;
     if (curDash?.action_graph) {
       setActionGraphData(curDash.action_graph);
     } else if (curDash) {
@@ -386,11 +302,7 @@ export const HeuristicsTab: React.FC<HeuristicsTabProps> = ({ hidden = false, on
     const isAi = normalizeUiPlannerMode(payload.planner_mode) === "ai_planner";
     if (isAi) beginGaCalc();
 
-    const gState = (globalThis as any).state;
-    if (gState) {
-      gState.agSimSeq = (gState.agSimSeq || 0) + 1;
-      gState.configSaving = (gState.configSaving || 0) + 1;
-    }
+    bumpAgSimSeq();
     bumpDashboardSeq();
     setConfigSaving((c) => c + 1);
 
@@ -405,8 +317,7 @@ export const HeuristicsTab: React.FC<HeuristicsTabProps> = ({ hidden = false, on
       setAgSimDirty(false);
       if (res.config && typeof res.config === "object") {
         populateControls(res.config);
-        (globalThis as any).renderConfigForm?.(res.config);
-        const curDash = gState?.dashboard || dashboard;
+        const curDash = getSnapshot().dashboard || dashboard;
         const nextDash = curDash
           ? {
               ...curDash,
@@ -429,8 +340,8 @@ export const HeuristicsTab: React.FC<HeuristicsTabProps> = ({ hidden = false, on
               live_ai_unlocked: res.live_ai_unlocked,
               action_graph: res.action_graph || null,
             };
-        if (gState) gState.dashboard = nextDash;
         setDashboard(nextDash);
+        bumpConfigHydration();
       }
       if (res.action_graph && typeof res.action_graph === "object") {
         setActionGraphData(res.action_graph);
@@ -440,7 +351,6 @@ export const HeuristicsTab: React.FC<HeuristicsTabProps> = ({ hidden = false, on
     } catch (err: any) {
       showFeedback(`Failed applying parameters: ${err.message}`, feedbackKindForError(err));
     } finally {
-      if (gState) gState.configSaving = Math.max(0, (gState.configSaving || 0) - 1);
       setConfigSaving((c) => Math.max(0, c - 1));
       if (isAi) endGaCalc();
     }
@@ -646,302 +556,35 @@ export const HeuristicsTab: React.FC<HeuristicsTabProps> = ({ hidden = false, on
         />
       </article>
 
-      <aside
-        className="hud-window ag-control-panel"
-        id="ag-control-panel"
-        aria-label="Planner parameter simulation and apply controls"
-      >
-        <div className="window-bar window-bar-wrap">
-          <div className="window-title-group">
-            <span className="module-code tabular">PRM</span>
-            <h2>Heuristic Parameters</h2>
-          </div>
-          <span
-            className={`ag-dirty-badge tabular ${agSimDirty ? "is-dirty" : "is-synced"}`}
-            id="ag-dirty-badge"
-          >
-            {agSimDirty ? "MODIFIED (PREVIEW)" : "ACTIVE SYNCED"}
-          </span>
-        </div>
-
-        <div className="ag-panel-tabs" role="tablist" aria-label="Parameter categories">
-          <button
-            type="button"
-            className={`tab-btn${paramTab === "core" ? " active" : ""}`}
-            role="tab"
-            aria-selected={paramTab === "core" ? "true" : "false"}
-            id="ag-ptab-btn-core"
-            data-ag-ptab="core"
-            onClick={() => {
-              syncDraftValuesFromDom();
-              setUiPref("agParamTab", "core");
-            }}
-          >
-            Mode &amp; Thresholds
-          </button>
-          <button
-            type="button"
-            className={`tab-btn${paramTab === "scope" ? " active" : ""}`}
-            role="tab"
-            aria-selected={paramTab === "scope" ? "true" : "false"}
-            id="ag-ptab-btn-scope"
-            data-ag-ptab="scope"
-            onClick={() => {
-              syncDraftValuesFromDom();
-              setUiPref("agParamTab", "scope");
-            }}
-          >
-            Automation &amp; Limits
-          </button>
-        </div>
-
-        <div className="ag-panel-body">
-          <div className="ag-param-pane" id="ag-param-pane-core" hidden={paramTab !== "core"}>
-            <div className="ag-param-group">
-              <div className="ag-param-group-head">
-                <h3>Planner Mode &amp; Doctrine</h3>
-                <p className="ag-param-group-sub">
-                  Choose the active planner engine and strategic doctrine used to preview and execute action sequences.
-                </p>
-              </div>
-              <div className="ag-param-list">
-                <ActionGraphParamRow
-                  doc={getStrategyParamDoc("planner_mode")}
-                  htmlFor="ag-cfg-planner_mode"
-                  layout="stack"
-                >
-                  <select
-                    id="ag-cfg-planner_mode"
-                    value={draftModeNorm}
-                    onChange={(e) => {
-                      const v = normalizeUiPlannerMode(e.target.value);
-                      syncDraftValuesFromDom(v);
-                      void runAgSimulation({ explicit: false, modeOverride: v });
-                    }}
-                  >
-                    <option value="priority">priority — Rule-Based Heuristic</option>
-                    <option value="ai_planner">ai_planner — AI-Planner (W-Week NPV)</option>
-                  </select>
-                </ActionGraphParamRow>
-
-                <ActionGraphParamRow
-                  doc={getStrategyParamDoc("playstyle")}
-                  htmlFor="ag-cfg-playstyle"
-                  layout="stack"
-                >
-                  <select
-                    id="ag-cfg-playstyle"
-                    value={curPlaystyle}
-                    onChange={(e) => {
-                      const v = e.target.value;
-                      setDraftValues((prev) => ({ ...prev, playstyle: v }));
-                      setTimeout(() => runAgSimulation({ explicit: false }), 0);
-                    }}
-                  >
-                    <option value="fleeter">fleeter — Combat &amp; Techs</option>
-                    <option value="hybrid">hybrid — Balanced</option>
-                    <option value="miner">miner — Economy ROI</option>
-                    {!knownPlaystyles.includes(curPlaystyle) && curPlaystyle ? (
-                      <option value={curPlaystyle}>{curPlaystyle}</option>
-                    ) : null}
-                  </select>
-                </ActionGraphParamRow>
-              </div>
-            </div>
-
-            <div className="ag-ai-handoff-card" id="ag-ai-handoff-card">
-              <div className="ag-ai-handoff-head">
-                <span className="ag-handoff-title">AI-Planner Workspace</span>
-                <span
-                  className={`ag-gate-chip tabular ${gate.liveAiUnlocked ? "is-unlocked" : "is-locked"}`}
-                >
-                  {gate.liveAiUnlocked
-                    ? `${gate.coloniesOwned}/${gate.maxPlanets} UNLOCKED`
-                    : `${gate.coloniesOwned}/${gate.maxPlanets} PREVIEW ONLY`}
-                </span>
-              </div>
-              <p className="ag-sim-note">
-                {gate.liveAiUnlocked
-                  ? "All colonies founded. Configure monthly targets and W-week discounted builds in Tab 2 & Tab 3."
-                  : `Live AI-Planner unlocks at ${gate.maxPlanets}/${gate.maxPlanets} colonies. Heuristic mode guides early expansion.`}
-              </p>
-              {onSwitchTab ? (
-                <div className="ag-handoff-actions">
-                  <button
-                    type="button"
-                    className="btn btn-secondary btn-sm"
-                    id="btn-ag-goto-config-opt"
-                    onClick={() => onSwitchTab("config-optimizer")}
-                  >
-                    Config Optimization →
-                  </button>
-                  <button
-                    type="button"
-                    className="btn btn-secondary btn-sm"
-                    id="btn-ag-goto-ai-planner"
-                    onClick={() => onSwitchTab("ai-planner")}
-                  >
-                    Open AI-Planner →
-                  </button>
-                </div>
-              ) : null}
-            </div>
-
-            <div className="ag-param-group" id="ag-heuristic-params-group">
-              <div className="ag-param-group-head">
-                <h3>Economy &amp; Safety Thresholds</h3>
-                <p className="ag-param-group-sub">
-                  Resource warehouse thresholds, Blast furnace throttling, combat margins, and colony field constraints.
-                </p>
-              </div>
-              <div className="ag-param-list">
-                {(
-                  [
-                    ["storage_warn_ratio", 0.1, 0.99, 0.05],
-                    ["blast_pig_iron_max_share", 0.1, 1.0, 0.05],
-                    ["combat_safety_margin", 1.0, 1000.0, 0.1],
-                    ["raid_min_loot_spice_eq", 0, undefined, 100],
-                    ["attack_min_res_per_hour", 0, undefined, 100],
-                    ["recycle_min_res_per_hour", 0, undefined, 100],
-                    ["hot_planet_solar_temp_threshold", -273, 1000, 5],
-                    ["min_free_fields_warning", 1, 1000, 1],
-                    ["min_colony_fields", 50, 600, 10],
-                    ["max_planets", 1, 50, 1],
-                  ] as const
-                ).map(([key, minV, maxV, stepV]) => (
-                  <ActionGraphParamRow
-                    key={key}
-                    doc={getStrategyParamDoc(key)}
-                    htmlFor={`ag-cfg-${key}`}
-                    layout="inline"
-                  >
-                    <input
-                      type="number"
-                      id={`ag-cfg-${key}`}
-                      min={minV}
-                      max={maxV}
-                      step={stepV}
-                      value={String(draftValues[key] ?? AG_NUM_DEFAULTS[key])}
-                      onChange={(e) => {
-                        setDraftValues((prev) => ({ ...prev, [key]: e.target.value }));
-                        scheduleDebouncedSim();
-                      }}
-                    />
-                  </ActionGraphParamRow>
-                ))}
-              </div>
-            </div>
-          </div>
-
-          <div className="ag-param-pane" id="ag-param-pane-scope" hidden={paramTab !== "scope"}>
-            <div className="ag-param-group">
-              <div className="ag-param-group-head">
-                <h3>Pacing, Reserves &amp; Limits</h3>
-                <p className="ag-param-group-sub">
-                  Batch refresh cadence, galaxy scanner humanization delays, hourly action rate limit, and spy/escape reserves.
-                </p>
-              </div>
-              <div className="ag-param-list">
-                {(
-                  [
-                    ["fleet_save_fuel_reserve_spice", 0, undefined, 50],
-                    ["action_batch_interval_seconds", 5, 86400, 5],
-                    ["galaxy_scan_click_delay_seconds", 0.2, 60, 0.1],
-                    ["galaxy_scan_click_jitter_seconds", 0, 30, 0.1],
-                    ["max_actions_per_hour", 1, 100000, 1],
-                    ["reserved_spy_slots", 0, 10, 1],
-                  ] as const
-                ).map(([key, minV, maxV, stepV]) => (
-                  <ActionGraphParamRow
-                    key={key}
-                    doc={getStrategyParamDoc(key)}
-                    htmlFor={`ag-cfg-${key}`}
-                    layout="inline"
-                  >
-                    <input
-                      type="number"
-                      id={`ag-cfg-${key}`}
-                      min={minV}
-                      max={maxV}
-                      step={stepV}
-                      value={String(draftValues[key] ?? AG_NUM_DEFAULTS[key])}
-                      onChange={(e) => {
-                        setDraftValues((prev) => ({ ...prev, [key]: e.target.value }));
-                        scheduleDebouncedSim();
-                      }}
-                    />
-                  </ActionGraphParamRow>
-                ))}
-              </div>
-            </div>
-
-            <div className="ag-param-group">
-              <div className="ag-param-group-head">
-                <h3>Automation Capabilities</h3>
-                <p className="ag-param-group-sub">
-                  Master switches controlling which autonomous build, research, scanning, combat, and logistics systems may run.
-                </p>
-              </div>
-              <div className="ag-param-list">
-                {AG_BOOL_FIELDS.map((bKey) => (
-                  <ActionGraphParamRow
-                    key={bKey}
-                    doc={getStrategyParamDoc(bKey)}
-                    htmlFor={`ag-cfg-${bKey}`}
-                    layout="toggle"
-                  >
-                    <input
-                      type="checkbox"
-                      className="config-checkbox"
-                      id={`ag-cfg-${bKey}`}
-                      checked={Boolean(draftValues[bKey])}
-                      onChange={(e) => {
-                        const checked = e.target.checked;
-                        setDraftValues((prev) => ({ ...prev, [bKey]: checked }));
-                        setTimeout(() => runAgSimulation({ explicit: false }), 0);
-                      }}
-                    />
-                  </ActionGraphParamRow>
-                ))}
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <div className="ag-panel-footer">
-          <p className="ag-sim-note" id="ag-sim-note">
-            {agSimDirty
-              ? "Preview mode active: active StrategyConfig and config.yaml remain unchanged until applied."
-              : "Edits simulate a preview graph without modifying active config.yaml until applied."}
-          </p>
-          <div className="ag-footer-actions">
-            <button
-              type="button"
-              className="btn btn-secondary btn-sm"
-              id="btn-ag-simulate"
-              onClick={() => runAgSimulation({ explicit: true })}
-            >
-              Simulate Graph
-            </button>
-            <button
-              type="button"
-              className="btn btn-secondary btn-sm"
-              id="btn-ag-reset"
-              onClick={onResetSim}
-            >
-              Reset to Active
-            </button>
-            <button
-              type="button"
-              className="btn btn-primary btn-sm btn-span"
-              id="btn-ag-apply"
-              onClick={onApplySim}
-            >
-              Apply to Active Config
-            </button>
-          </div>
-        </div>
-      </aside>
+      <HeuristicsParamPanel
+        agSimDirty={agSimDirty}
+        paramTab={paramTab}
+        draftValues={draftValues}
+        gate={gate}
+        onSwitchTab={onSwitchTab}
+        onSelectParamTab={(tab) => {
+          syncDraftValuesFromDom();
+          setUiPref("agParamTab", tab);
+        }}
+        onDraftChange={(key, val) => setDraftValues((prev) => ({ ...prev, [key]: val }))}
+        onModeSelectChange={(mode) => {
+          syncDraftValuesFromDom(mode);
+          void runAgSimulation({ explicit: false, modeOverride: mode });
+        }}
+        onImmediateSim={() => {
+          setTimeout(() => runAgSimulation({ explicit: false }), 0);
+        }}
+        onDebouncedSim={scheduleDebouncedSim}
+        onSimulateExplicit={() => {
+          void runAgSimulation({ explicit: true });
+        }}
+        onResetSim={() => {
+          void onResetSim();
+        }}
+        onApplySim={() => {
+          void onApplySim();
+        }}
+      />
     </div>
   );
 };

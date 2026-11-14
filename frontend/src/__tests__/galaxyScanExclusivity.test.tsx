@@ -1,7 +1,7 @@
 import React, { useEffect } from "react";
 import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ConsoleProvider, useConsole } from "../context/ConsoleContext";
+import { ConsoleProvider, useConsoleActions } from "../store";
 import { FeedbackBanner } from "../components/layout/FeedbackBanner";
 import { AppSidebar } from "../components/layout/AppSidebar";
 import { ConfigView } from "../features/config";
@@ -81,7 +81,7 @@ function SeedHarness({
   children: React.ReactNode;
 }) {
   const Inner = () => {
-    const { setDashboard, setActivePage, setBuildingsEtaData } = useConsole();
+    const { setDashboard, setActivePage, setBuildingsEtaData } = useConsoleActions();
     useEffect(() => {
       setDashboard(dash);
       if (dash.buildings_eta) {

@@ -1,7 +1,13 @@
 import React, { useCallback, useMemo } from "react";
-import { feedbackKindForError } from "../../api/httpClient";
+import {
+  feedbackKindForError } from "../../api/httpClient";
 import { SortableTh } from "../../components/SortableTh";
-import { useConsole } from "../../context/ConsoleContext";
+import { useActivePage,
+  useConsoleActions,
+  useDashboard,
+  useNowEpochSec,
+  useUiPrefs,
+} from "../../store";
 import { useTableSort } from "../../hooks/useTableSort";
 import type { PlannedActionData } from "../../types/api";
 import { ManualQueueComposer } from "./ManualQueueComposer";
@@ -24,18 +30,18 @@ const NAV_JUMP_TARGETS = [
 ] as const;
 
 export const OperationsView: React.FC = () => {
+  const dashboard = useDashboard();
+  const activePage = useActivePage();
+  const nowEpochSec = useNowEpochSec();
+  const uiPrefs = useUiPrefs();
   const {
-    dashboard,
-    activePage,
     setActivePage,
-    nowEpochSec,
     showFeedback,
     apiCommand,
     loadDashboard,
-    uiPrefs,
     setUiPref,
     enqueueManualCommand,
-  } = useConsole();
+  } = useConsoleActions();
 
   const planets = useMemo(() => dashboard?.state?.planets || [], [dashboard?.state?.planets]);
   const planetNameMaps = useMemo(

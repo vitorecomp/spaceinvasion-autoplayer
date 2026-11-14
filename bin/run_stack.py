@@ -5,32 +5,36 @@ from __future__ import annotations
 
 import argparse
 import math
-import os
 from pathlib import Path
 import signal
 import subprocess
 import sys
 import threading
 import time
-from typing import Optional
+from typing import Any, Optional
+import urllib.error
 import urllib.request
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from spaceinvasion.core.cli_support import (  # noqa: E402
-    maybe_reexec_venv,
-    safe_cli_str,
-    terminate_child as _stop_proc,  # noqa: E402
-)
+from spaceinvasion.runtime.cli_support import maybe_reexec_venv, safe_cli_str  # noqa: E402
+from spaceinvasion.runtime.cli_support import terminate_child as _stop_proc  # noqa: E402
 
-maybe_reexec_venv(_REPO_ROOT, skip=os.environ.get("SPACEINVASION_NO_REEXEC") == "1")
+maybe_reexec_venv(_REPO_ROOT)
 
-from spaceinvasion.core.logging_utils import redact_sensitive  # noqa: E402
-from spaceinvasion.runtime.api_server import ensure_debug_browser_ready  # noqa: E402
+from spaceinvasion.core.env import get_process_env  # noqa: E402
+from spaceinvasion.core.redaction import redact_sensitive  # noqa: E402
+from spaceinvasion.runtime.bridge import ensure_debug_browser_ready  # noqa: E402
 from spaceinvasion.session.auth import SpaceInvasionAuthError  # noqa: E402
 from spaceinvasion.session.browser import DEFAULT_DEBUG_PORT  # noqa: E402
+
+
+def _emit(line: str, *, err: bool = False) -> None:
+    stream = sys.stderr if err else sys.stdout
+    stream.write(f"{line}\n")
+    stream.flush()
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -73,7 +77,7 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _wait_api_health(url: str, timeout: float = 25.0, proc: Optional[subprocess.Popen] = None) -> bool:
+def _wait_api_health(url: str, timeout: float = 25.0, proc: Optional[subprocess.Popen[Any]] = None) -> bool:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if proc is not None and proc.poll() is not None:
@@ -84,7 +88,7 @@ def _wait_api_health(url: str, timeout: float = 25.0, proc: Optional[subprocess.
             with urllib.request.urlopen(f"{url}/health", timeout=req_timeout) as resp:
                 if resp.status == 200:
                     return True
-        except Exception:
+        except (urllib.error.URLError, OSError, ValueError, TimeoutError):
             if proc is not None and proc.poll() is not None:
                 return False
             time.sleep(0.25)
@@ -99,15 +103,16 @@ def _safe_interval(raw: object, default: float = 20.0) -> float:
             return 86400.0 if raw > 0 else default
         iv = float(raw)
     else:
-        if isinstance(raw, (bytes, bytearray)):
-            raw = bytes(raw).decode("utf-8", errors="replace")
-        if isinstance(raw, str):
-            txt = raw.strip()
+        coerced: object = bytes(raw).decode("utf-8", errors="replace") if isinstance(raw, (bytes, bytearray)) else raw
+        if isinstance(coerced, str):
+            txt = coerced.strip()
             if not txt or not txt.isascii():
                 return default
-            raw = txt
+            coerced = txt
+        if not isinstance(coerced, (int, float, str)):
+            return default
         try:
-            iv = float(raw)  # type: ignore[arg-type]
+            iv = float(coerced)
         except (TypeError, ValueError, OverflowError):
             return default
     if not math.isfinite(iv) or iv <= 0.0:
@@ -119,25 +124,7 @@ def _safe_err_text(exc: BaseException) -> str:
     return safe_cli_str(exc, redact_fn=redact_sensitive)
 
 
-def main(argv: list[str] | None = None) -> int:
-    parser = _build_parser()
-    args = parser.parse_args(argv)
-
-    try:
-        ensure_debug_browser_ready(
-            debug_port=args.debug_port,
-            env_file=args.env_file,
-            account=args.account,
-        )
-    except SpaceInvasionAuthError as exc:
-        print(
-            f"[STACK] Browser startup error: {redact_sensitive(_safe_err_text(exc))}",
-            file=sys.stderr,
-            flush=True,
-        )
-        return 1
-
-    base_dir = Path(__file__).resolve().parent
+def _build_stack_commands(args: argparse.Namespace, base_dir: Path) -> tuple[str, list[str], list[str]]:
     api_url = f"http://127.0.0.1:{args.api_port}"
     api_cmd = [
         sys.executable,
@@ -156,16 +143,15 @@ def main(argv: list[str] | None = None) -> int:
         api_cmd.extend(["--db-backend", args.db_backend])
     if args.db_url:
         api_cmd.extend(["--db-url", args.db_url])
+
     raw_iv = args.interval
     if raw_iv is None or (
-        isinstance(raw_iv, (int, float))
-        and not isinstance(raw_iv, bool)
-        and math.isfinite(raw_iv)
-        and raw_iv <= 0.0
+        isinstance(raw_iv, (int, float)) and not isinstance(raw_iv, bool) and math.isfinite(raw_iv) and raw_iv <= 0.0
     ):
         safe_interval = 0.0
     else:
         safe_interval = _safe_interval(raw_iv, 20.0)
+
     cmd_cmd = [
         sys.executable,
         str(base_dir / "commander.py"),
@@ -180,33 +166,42 @@ def main(argv: list[str] | None = None) -> int:
     ]
     if args.live:
         cmd_cmd.append("--live")
+    return api_url, api_cmd, cmd_cmd
 
+
+def main(argv: list[str] | None = None) -> int:
+    args = _build_parser().parse_args(argv)
+    try:
+        ensure_debug_browser_ready(debug_port=args.debug_port, env_file=args.env_file, account=args.account)
+    except SpaceInvasionAuthError as exc:
+        _emit(f"[STACK] Browser startup error: {redact_sensitive(_safe_err_text(exc))}", err=True)
+        return 1
+
+    api_url, api_cmd, cmd_cmd = _build_stack_commands(args, Path(__file__).resolve().parent)
     is_main = threading.current_thread() is threading.main_thread()
     prev_sigterm = signal.getsignal(signal.SIGTERM) if is_main else None
 
-    def _sigterm(_s, _f) -> None:
+    def _sigterm(_s: int, _f: object) -> None:
         raise KeyboardInterrupt
 
     if is_main:
         signal.signal(signal.SIGTERM, _sigterm)
 
-    child_env = os.environ.copy()
+    child_env = get_process_env()
     child_env.setdefault("PYTHONUNBUFFERED", "1")
-    api_proc: Optional[subprocess.Popen] = None
-    cmd_proc: Optional[subprocess.Popen] = None
+    api_proc: Optional[subprocess.Popen[bytes]] = None
+    cmd_proc: Optional[subprocess.Popen[bytes]] = None
     try:
         api_proc = subprocess.Popen(api_cmd, env=child_env)
         if not _wait_api_health(api_url, proc=api_proc):
-            print("[STACK] Game API failed to start.", file=sys.stderr, flush=True)
+            _emit("[STACK] Game API failed to start.", err=True)
             return 1
 
         cmd_proc = subprocess.Popen(cmd_cmd, env=child_env)
-        print(
+        _emit(
             f"[STACK] Running: Chrome @ 127.0.0.1:{args.debug_port} | "
-            f"API @ {api_url} (hot-reload) | Commander (hot-reload)",
-            flush=True,
+            f"API @ {api_url} (hot-reload) | Commander (hot-reload)"
         )
-
         while True:
             time.sleep(1.0)
             if api_proc.poll() is not None or cmd_proc.poll() is not None:
@@ -217,7 +212,7 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         return 0
     except KeyboardInterrupt:
-        print("\n[STACK] Stopping API & Commander (Chrome stays open on debug port).", flush=True)
+        _emit("\n[STACK] Stopping API & Commander (Chrome stays open on debug port).")
         return 0
     finally:
         if cmd_proc is not None:

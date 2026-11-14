@@ -27,12 +27,14 @@ Exit codes: 0 ready, 1 connection or SQL error, 2 the library is not preloaded
 from __future__ import annotations
 
 import argparse
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from datetime import datetime
 import json
 import logging
 from pathlib import Path
 import sys
-from typing import Any, Optional, Sequence
+from typing import Protocol
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -44,14 +46,14 @@ EXTENSION = "pg_stat_statements"
 CREATE_EXTENSION_SQL = f"CREATE EXTENSION IF NOT EXISTS {EXTENSION};"
 
 # Settings docker-compose.yml is expected to apply: name -> expected value (None: any value).
-EXPECTED_SETTINGS: dict[str, Optional[str]] = {
+EXPECTED_SETTINGS: dict[str, str | None] = {
     "shared_preload_libraries": None,
     "pg_stat_statements.track": "all",
     "pg_stat_statements.max": "10000",
     "log_min_duration_statement": "50ms",
 }
 
-ORDER_COLUMNS = {
+ORDER_COLUMNS: dict[str, str] = {
     "total": "total_exec_time",
     "mean": "mean_exec_time",
     "max": "max_exec_time",
@@ -68,12 +70,21 @@ EXIT_NO_EXTENSION = 3
 _CURRENT_DB_FILTER = "dbid = (SELECT oid FROM pg_database WHERE datname = current_database())"
 
 
+class _CursorLike(Protocol):
+    def fetchone(self) -> tuple[object, ...] | None: ...
+    def fetchall(self) -> list[tuple[object, ...]]: ...
+
+
+class _ConnLike(Protocol):
+    def execute(self, query: str, params: Sequence[object] | None = None) -> _CursorLike: ...
+
+
 @dataclass(frozen=True)
 class ServerStatus:
     """What the server says about statement statistics."""
 
-    settings: dict[str, Optional[str]]
-    extension_version: Optional[str]
+    settings: dict[str, str | None]
+    extension_version: str | None
 
     @property
     def preloaded(self) -> bool:
@@ -98,20 +109,50 @@ def _emit(line: str) -> None:
     sys.stdout.write(f"{line}\n")
 
 
-def default_dsn() -> str:
-    from spaceinvasion.db.backend import build_default_postgres_url
+def _as_int(value: object, default: int = 0) -> int:
+    if isinstance(value, bool):
+        return default
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(float(value))
+        except ValueError:
+            return default
+    return default
 
-    return build_default_postgres_url()
+
+def _as_float(value: object, default: float = 0.0) -> float:
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value)
+        except ValueError:
+            return default
+    return default
+
+
+def default_dsn() -> str:
+    """Build the default PostgreSQL DSN from process environment variables."""
+    from spaceinvasion.db.dsn import build_default_postgres_url
+    from spaceinvasion.runtime.postgres_ctl import get_process_env
+
+    return build_default_postgres_url(get_process_env())
 
 
 def redact(dsn: str) -> str:
-    from spaceinvasion.db.backend import redact_db_url
+    """Redact credentials from a PostgreSQL DSN for safe logging."""
+    from spaceinvasion.db.dsn import redact_db_url
 
     return redact_db_url(dsn)
 
 
-def read_status(conn: Any) -> ServerStatus:
-    settings: dict[str, Optional[str]] = {}
+def read_status(conn: _ConnLike) -> ServerStatus:
+    """Inspect PostgreSQL server GUC settings and `pg_stat_statements` extension version."""
+    settings: dict[str, str | None] = {}
     for name in EXPECTED_SETTINGS:
         row = conn.execute("SELECT current_setting(%s, true)", (name,)).fetchone()
         settings[name] = None if row is None or row[0] is None else str(row[0])
@@ -119,7 +160,7 @@ def read_status(conn: Any) -> ServerStatus:
     return ServerStatus(settings=settings, extension_version=None if row is None else str(row[0]))
 
 
-def ensure_extension(conn: Any) -> ServerStatus:
+def ensure_extension(conn: _ConnLike) -> ServerStatus:
     """Create the extension if it is missing and return the status afterwards."""
     before = read_status(conn).extension_version
     conn.execute(CREATE_EXTENSION_SQL)
@@ -128,26 +169,27 @@ def ensure_extension(conn: Any) -> ServerStatus:
     return status
 
 
-def _statement_row(rank: int, row: Sequence[Any], total_ms: float) -> dict[str, Any]:
+def _statement_row(rank: int, row: Sequence[object], total_ms: float) -> dict[str, object]:
+    tot_exec = _as_float(row[3])
     return {
         "rank": rank,
         "queryid": str(row[0]),
         "toplevel": bool(row[1]),
-        "calls": int(row[2]),
-        "total_ms": round(float(row[3]), 3),
-        "mean_ms": round(float(row[4]), 3),
-        "max_ms": round(float(row[5]), 3),
-        "stddev_ms": round(float(row[6]), 3),
-        "pct_of_total": round(100.0 * float(row[3]) / total_ms, 2) if total_ms > 0 else 0.0,
-        "rows": int(row[7]),
-        "shared_blks_hit": int(row[8]),
-        "shared_blks_read": int(row[9]),
-        "temp_blks_written": int(row[10]),
+        "calls": _as_int(row[2]),
+        "total_ms": round(tot_exec, 3),
+        "mean_ms": round(_as_float(row[4]), 3),
+        "max_ms": round(_as_float(row[5]), 3),
+        "stddev_ms": round(_as_float(row[6]), 3),
+        "pct_of_total": round(100.0 * tot_exec / total_ms, 2) if total_ms > 0 else 0.0,
+        "rows": _as_int(row[7]),
+        "shared_blks_hit": _as_int(row[8]),
+        "shared_blks_read": _as_int(row[9]),
+        "temp_blks_written": _as_int(row[10]),
         "query": " ".join(str(row[11]).split()),
     }
 
 
-def fetch_report(conn: Any, *, order_by: str = "total", limit: int = 25, min_calls: int = 1) -> dict[str, Any]:
+def fetch_report(conn: _ConnLike, *, order_by: str = "total", limit: int = 25, min_calls: int = 1) -> dict[str, object]:
     """Statements of the current database ranked by `order_by`, plus totals and the collection window."""
     column = ORDER_COLUMNS[order_by]  # a fixed column name from the table above, never user text
     info = conn.execute("SELECT dealloc, stats_reset FROM pg_stat_statements_info").fetchone()
@@ -155,7 +197,7 @@ def fetch_report(conn: Any, *, order_by: str = "total", limit: int = 25, min_cal
         "SELECT count(*), coalesce(sum(calls), 0), coalesce(sum(total_exec_time), 0) "
         f"FROM pg_stat_statements WHERE {_CURRENT_DB_FILTER}"
     ).fetchone()
-    total_ms = float(totals[2] or 0.0)
+    total_ms = _as_float(totals[2]) if totals is not None else 0.0
     rows = conn.execute(
         "SELECT queryid, toplevel, calls, total_exec_time, mean_exec_time, max_exec_time, stddev_exec_time, "
         "rows, shared_blks_hit, shared_blks_read, temp_blks_written, query "
@@ -164,39 +206,52 @@ def fetch_report(conn: Any, *, order_by: str = "total", limit: int = 25, min_cal
         f"ORDER BY {column} DESC, queryid LIMIT %s",
         (max(1, int(min_calls)), max(1, int(limit))),
     ).fetchall()
+    db_row = conn.execute("SELECT current_database()").fetchone()
+    reset_val = info[1] if (info is not None and len(info) > 1) else None
+    stats_reset = (
+        reset_val.isoformat() if isinstance(reset_val, datetime) else (None if reset_val is None else str(reset_val))
+    )
     return {
-        "database": conn.execute("SELECT current_database()").fetchone()[0],
+        "database": str(db_row[0]) if db_row is not None else "",
         "order_by": order_by,
-        "stats_reset": None if info is None or info[1] is None else info[1].isoformat(),
-        "deallocated_entries": 0 if info is None else int(info[0]),
-        "distinct_statements": int(totals[0]),
-        "total_calls": int(totals[1]),
+        "stats_reset": stats_reset,
+        "deallocated_entries": 0 if info is None else _as_int(info[0]),
+        "distinct_statements": 0 if totals is None else _as_int(totals[0]),
+        "total_calls": 0 if totals is None else _as_int(totals[1]),
         "total_exec_ms": round(total_ms, 3),
         "statements": [_statement_row(rank, row, total_ms) for rank, row in enumerate(rows, start=1)],
     }
 
 
-def format_report(report: dict[str, Any], *, query_width: int = 110) -> str:
+def format_report(report: Mapping[str, object], *, query_width: int = 110) -> str:
+    """Format a `pg_stat_statements` report dictionary into an aligned text table."""
+    total_exec_ms = _as_float(report.get("total_exec_ms"))
     lines = [
-        f"pg_stat_statements report for database {report['database']!r}, ranked by {report['order_by']}",
+        f"pg_stat_statements report for database {report.get('database')!r}, ranked by {report.get('order_by')}",
         (
-            f"collecting since {report['stats_reset'] or 'unknown'}; "
-            f"{report['distinct_statements']} distinct statements, {report['total_calls']} calls, "
-            f"{report['total_exec_ms']:.1f} ms total; {report['deallocated_entries']} entries evicted"
+            f"collecting since {report.get('stats_reset') or 'unknown'}; "
+            f"{report.get('distinct_statements')} distinct statements, {report.get('total_calls')} calls, "
+            f"{total_exec_ms:.1f} ms total; {report.get('deallocated_entries')} entries evicted"
         ),
         "",
         f"{'#':>3} {'calls':>9} {'total ms':>12} {'%':>6} {'mean ms':>10} {'max ms':>10} {'rows':>10} "
         f"{'blk read':>9}  query",
     ]
-    for st in report["statements"]:
-        query = st["query"]
+    raw_stmts = report.get("statements")
+    stmts = raw_stmts if isinstance(raw_stmts, list) else []
+    for st_obj in stmts:
+        if not isinstance(st_obj, Mapping):
+            continue
+        query = str(st_obj.get("query") or "")
         if len(query) > query_width:
             query = query[: query_width - 1] + "…"
         lines.append(
-            f"{st['rank']:>3} {st['calls']:>9} {st['total_ms']:>12.1f} {st['pct_of_total']:>6.2f} "
-            f"{st['mean_ms']:>10.3f} {st['max_ms']:>10.3f} {st['rows']:>10} {st['shared_blks_read']:>9}  {query}"
+            f"{_as_int(st_obj.get('rank')):>3} {_as_int(st_obj.get('calls')):>9} "
+            f"{_as_float(st_obj.get('total_ms')):>12.1f} {_as_float(st_obj.get('pct_of_total')):>6.2f} "
+            f"{_as_float(st_obj.get('mean_ms')):>10.3f} {_as_float(st_obj.get('max_ms')):>10.3f} "
+            f"{_as_int(st_obj.get('rows')):>10} {_as_int(st_obj.get('shared_blks_read')):>9}  {query}"
         )
-    if not report["statements"]:
+    if not stmts:
         lines.append("(no statements recorded yet)")
     return "\n".join(lines)
 
@@ -225,8 +280,8 @@ def _readiness_exit_code(status: ServerStatus) -> int:
     return EXIT_OK
 
 
-def _run_on_connection(conn: Any, args: argparse.Namespace) -> int:
-    read_only = (args.check or args.report) and not args.reset
+def _run_on_connection(conn: _ConnLike, args: argparse.Namespace) -> int:
+    read_only = (bool(args.check) or bool(args.report)) and not bool(args.reset)
     if read_only:
         conn.execute("SET default_transaction_read_only = on")
     status = read_status(conn) if read_only else ensure_extension(conn)
@@ -245,7 +300,12 @@ def _run_on_connection(conn: Any, args: argparse.Namespace) -> int:
         conn.execute("SELECT pg_stat_statements_reset()")
         LOG.info("Statement counters reset.")
     if args.report:
-        report = fetch_report(conn, order_by=args.order_by, limit=args.limit, min_calls=args.min_calls)
+        report = fetch_report(
+            conn,
+            order_by=str(args.order_by),
+            limit=int(args.limit),
+            min_calls=int(args.min_calls),
+        )
         _emit(json.dumps(report, indent=2, allow_nan=False) if args.json else format_report(report))
     else:
         _emit_status(status)
@@ -253,16 +313,17 @@ def _run_on_connection(conn: Any, args: argparse.Namespace) -> int:
 
 
 def run(args: argparse.Namespace) -> int:
+    """Connect to PostgreSQL and execute the requested `pg_stat_statements` command."""
     try:
         import psycopg
     except ImportError:
         LOG.error("psycopg is not installed for this interpreter; run the script with .venv/bin/python3")
         return EXIT_ERROR
 
-    dsn = args.dsn or default_dsn()
+    dsn = str(args.dsn) if args.dsn else default_dsn()
     LOG.info("PostgreSQL: %s", redact(dsn))
     try:
-        with psycopg.connect(dsn, connect_timeout=args.connect_timeout, autocommit=True) as conn:
+        with psycopg.connect(dsn, connect_timeout=int(args.connect_timeout), autocommit=True) as conn:
             return _run_on_connection(conn, args)
     except psycopg.Error as exc:
         LOG.error("PostgreSQL error: %s: %s", type(exc).__name__, " ".join(str(exc).split()))
@@ -270,6 +331,7 @@ def run(args: argparse.Namespace) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
+    """Build the command-line parser for `enable_pg_stats.py`."""
     parser = argparse.ArgumentParser(
         description="Create the pg_stat_statements extension and print a ranked statement report.",
         epilog="Without options: verify the settings and run CREATE EXTENSION IF NOT EXISTS pg_stat_statements.",
@@ -290,10 +352,11 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: Optional[Sequence[str]] = None) -> int:
+def main(argv: Sequence[str] | None = None) -> int:
+    """CLI entrypoint for `enable_pg_stats.py`."""
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s", stream=sys.stderr)
     parser = build_parser()
-    args = parser.parse_args(argv)
+    args = parser.parse_args(list(argv) if argv is not None else None)
     if args.check and args.reset:
         parser.error("--check changes nothing and cannot be combined with --reset")
     return run(args)

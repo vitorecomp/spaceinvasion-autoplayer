@@ -3,7 +3,7 @@ import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AppHeader } from "../../components/layout/AppHeader";
 import { FeedbackBanner } from "../../components/layout/FeedbackBanner";
-import { ConsoleProvider } from "../../context/ConsoleContext";
+import { ConsoleProvider } from "../../store";
 import { BuildingsView } from "../buildings";
 import { OperationsView } from "../operations";
 import { DashboardView } from "./DashboardView";

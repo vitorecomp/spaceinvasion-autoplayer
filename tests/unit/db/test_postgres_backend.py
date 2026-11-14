@@ -1,0 +1,490 @@
+"""Unit and disposable Unix-socket PostgreSQL 16 integration tests for backend control & hermetic harness."""
+
+from __future__ import annotations
+
+import os
+from pathlib import Path
+import socket
+import tempfile
+import threading
+import time
+import unittest
+from unittest.mock import MagicMock, patch
+
+import psycopg
+import psycopg_pool
+
+from spaceinvasion.parsing.models import (
+    GalaxySlot,
+    SpyReport,
+)
+from spaceinvasion.runtime.logs import append_tick_logs
+from spaceinvasion.core.model import (
+    EnergyBalance,
+    GameState,
+    PlanetState,
+    Resources,
+)
+from spaceinvasion.db.dsn import (
+    is_unix_socket_dsn,
+    redact_db_url,
+    resolve_database_config,
+)
+from spaceinvasion.db.migrations import BASELINE_REVISION
+from spaceinvasion.runtime.bridge import GameApiBridge
+from spaceinvasion.runtime.postgres_ctl import (
+    ensure_postgres_container_ready,
+    ping_postgres,
+)
+from tests.pg_harness import (
+    FORBIDDEN_LIVE_PORTS,
+    REPO_ROOT,
+    get_pg_redirector,
+    get_shared_pg_harness,
+    install_hermetic_guards,
+    open_test_db as GameDatabase,
+)
+
+
+class TestPostgresDialectAndBackendControl(unittest.TestCase):
+    def test_backend_config_precedence_persistence_and_url_redaction(self) -> None:
+        self.assertEqual(
+            redact_db_url("postgresql://spaceinvasion:supersecret@127.0.0.1:5433/spaceinvasion"),
+            "postgresql://spaceinvasion:***@127.0.0.1:5433/spaceinvasion",
+        )
+        self.assertEqual(
+            redact_db_url("postgresql://postgres:secret@/test_1?host=/tmp/pgsock"),
+            "postgresql://postgres:***@/test_1?host=/tmp/pgsock",
+        )
+        self.assertTrue(is_unix_socket_dsn("postgresql:///test_1?host=/tmp/pgsock&user=postgres"))
+        self.assertFalse(is_unix_socket_dsn("postgresql://user:pw@127.0.0.1:5433/spaceinvasion"))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            # Host default resolves to postgres
+            cfg_def = resolve_database_config(root_dir=root, env={})
+            self.assertEqual(cfg_def.backend, "postgres")
+            self.assertEqual(cfg_def.selection_source, "default")
+
+            # SQLite backend selection is retired and rejected everywhere
+            with self.assertRaises(ValueError):
+                resolve_database_config(explicit_backend="sqlite", root_dir=root, env={})
+            with self.assertRaises(ValueError):
+                resolve_database_config(
+                    explicit_backend="sqlite",
+                    root_dir=root,
+                    env={"SPACEINVASION_CONTAINER": "1"},
+                )
+
+            # Docker / Podman container mode forces postgres exclusively
+            cfg_container = resolve_database_config(
+                root_dir=root,
+                env={"SPACEINVASION_CONTAINER": "1"},
+            )
+            self.assertEqual(cfg_container.backend, "postgres")
+            self.assertEqual(cfg_container.selection_source, "container_postgres_only")
+
+            # Env var sets postgres explicitly
+            cfg_env = resolve_database_config(
+                root_dir=root,
+                env={"SPACEINVASION_DB_BACKEND": "postgres"},
+            )
+            self.assertEqual(cfg_env.backend, "postgres")
+            self.assertEqual(cfg_env.selection_source, "env_var")
+
+            # CLI flag overrides env var
+            cfg_cli = resolve_database_config(
+                explicit_backend="postgres",
+                root_dir=root,
+                env={"SPACEINVASION_DB_BACKEND": "postgres"},
+            )
+            self.assertEqual(cfg_cli.backend, "postgres")
+            self.assertEqual(cfg_cli.selection_source, "cli_flag")
+
+    def test_hermetic_socket_and_repo_root_log_guards(self) -> None:
+        install_hermetic_guards()
+
+        for port in sorted(FORBIDDEN_LIVE_PORTS):
+            for host in ("127.0.0.1", "localhost", "0.0.0.0", "192.0.2.1", "10.0.0.1"):
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                    with self.assertRaises(RuntimeError):
+                        s.connect((host, port))
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                    with self.assertRaises(RuntimeError):
+                        s.connect_ex((host, port))
+                with self.assertRaises(RuntimeError):
+                    socket.create_connection((host, port), timeout=0.1)
+
+        # C-level libpq (psycopg / psycopg_pool) must also block TCP & non-tmp Unix sockets
+        for bad_dsn in (
+            "postgresql://postgres:x@127.0.0.1:5433/postgres",
+            "postgresql://postgres:x@localhost/postgres",
+            "host=127.0.0.1 port=5433 dbname=postgres",
+            "host=192.0.2.1 port=5432 dbname=postgres",
+            "postgresql:///postgres?host=/var/run/postgresql",
+            "",
+        ):
+            with self.assertRaises(RuntimeError, msg=f"psycopg.connect allowed {bad_dsn!r}"):
+                psycopg.connect(bad_dsn)
+            with self.assertRaises(RuntimeError, msg=f"Connection.connect allowed {bad_dsn!r}"):
+                psycopg.Connection.connect(bad_dsn)
+            with self.assertRaises(RuntimeError, msg=f"ConnectionPool allowed {bad_dsn!r}"):
+                psycopg_pool.ConnectionPool(bad_dsn, open=False)
+        with self.assertRaises(RuntimeError):
+            psycopg.connect(hostaddr="127.0.0.1", port=5433)
+        with self.assertRaises(RuntimeError):
+            psycopg_pool.ConnectionPool("postgresql:///db", kwargs={"host": "127.0.0.1", "port": 5433}, open=False)
+
+        # Env scrub removes inherited live DB / PG* variables and isolates repo-root preference path
+        with patch.dict(
+            os.environ,
+            {
+                "SPACEINVASION_DB_URL": "postgresql://u:p@127.0.0.1:5433/spaceinvasion",
+                "SPACEINVASION_DB_BACKEND": "postgres",
+                "DATABASE_URL": "postgresql://u:p@127.0.0.1:5433/spaceinvasion",
+                "PGHOST": "127.0.0.1",
+                "PGPORT": "5433",
+                "PGDATABASE": "spaceinvasion",
+                "PGUSER": "spaceinvasion",
+                "PGPASSWORD": "secret",
+            },
+            clear=False,
+        ):
+            install_hermetic_guards()
+            for var in (
+                "SPACEINVASION_DB_URL",
+                "SPACEINVASION_DB_BACKEND",
+                "DATABASE_URL",
+                "PGHOST",
+                "PGPORT",
+                "PGDATABASE",
+                "PGUSER",
+                "PGPASSWORD",
+            ):
+                self.assertNotIn(var, os.environ)
+
+        # Ephemeral loopback port connections remain allowed
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as srv:
+            srv.bind(("127.0.0.1", 0))
+            srv.listen(1)
+            eph_port = srv.getsockname()[1]
+            with socket.create_connection(("127.0.0.1", eph_port), timeout=1.0) as cli:
+                conn, _ = srv.accept()
+                conn.close()
+                self.assertEqual(cli.getpeername()[1], eph_port)
+
+        # Empty / repo-root log_dir must never write commander.jsonl or commander.log into repo root
+        dummy_state = GameState(
+            universe_id=31,
+            user_id=1,
+            nickname="guard_test",
+            timestamp=time.time(),
+            planets=(),
+            active_planet_id=0,
+        )
+        for bad_dir in (Path(""), Path("."), REPO_ROOT):
+            jl, tl = append_tick_logs(
+                bad_dir,
+                source="commander",
+                tick=1,
+                mode="dry_run",
+                state=dummy_state,
+                actual_action=None,
+                actual_result=None,
+                next_action=None,
+            )
+            self.assertEqual(jl, Path("/dev/null"))
+            self.assertEqual(tl, Path("/dev/null"))
+        self.assertFalse((REPO_ROOT / "commander.jsonl").exists())
+        self.assertFalse((REPO_ROOT / "commander.log").exists())
+
+    def test_postgres_podman_migrations_concurrent_mvcc_sync_and_live_bridge_switch(self) -> None:
+        harness = get_shared_pg_harness()
+        test_dsn = harness.create_database(prefix="pg_backend", from_template=False)
+
+        # Verify disposable server listens strictly on Unix socket (no TCP)
+        with psycopg.connect(test_dsn, autocommit=True) as conn:
+            listen_row = conn.execute("SHOW listen_addresses").fetchone()
+            self.assertIsNotNone(listen_row)
+            assert listen_row is not None
+            self.assertEqual(listen_row[0], "")
+
+        ok, _ms, srv_msg = ping_postgres(test_dsn, timeout=2.0)
+        self.assertTrue(ok, srv_msg)
+        ready = ensure_postgres_container_ready(test_dsn, auto_start=False)
+        self.assertTrue(ready["ok"], ready)
+
+        # Unreachable Unix-socket DSN never falls back to TCP or live Podman container
+        bad_sock_res = ensure_postgres_container_ready(
+            "postgresql:///nonexistent?host=/tmp/does_not_exist_si_pgsock&user=postgres",
+            auto_start=True,
+        )
+        self.assertFalse(bad_sock_res["ok"])
+        self.assertFalse(bad_sock_res["started_container"])
+
+        pg_db = GameDatabase(test_dsn, backend="postgres")
+        try:
+            self.assertEqual(pg_db.backend_name, "postgres")
+            ver = pg_db.verify_schema(full_integrity=True)
+            self.assertTrue(ver["ok"])
+            self.assertEqual(ver["alembic_revision"], BASELINE_REVISION)
+
+            planet = PlanetState(
+                planet_id=12476,
+                name="Colony",
+                coords="02:380:12",
+                planet_type="normal",
+                temperature=28,
+                fields_used=45,
+                fields_max=310,
+                resources=Resources(50000, 30000, 20000, 10000),
+                storage=Resources(500000, 500000, 500000, 500000),
+                energy=EnergyBalance(800, 500),
+                buildings={"b1": 15, "b2": 12, "b3": 14, "b4": 10, "b5": 16},
+            )
+            state = GameState(
+                universe_id=31,
+                user_id=103603,
+                nickname="tester",
+                timestamp=time.time(),
+                planets=(planet,),
+                active_planet_id=12476,
+                researches={"r1": 5},
+            )
+            pg_db.record_state_snapshot(state)
+            pg_db.record_full_state_snapshot(state, [], source="test")
+            pg_db.record_galaxy_scan(
+                2,
+                380,
+                [
+                    GalaxySlot(
+                        position=4,
+                        coords="02:380:04",
+                        name="Farm",
+                        owner="InactivePlayer",
+                        status_color="yellow",
+                        has_debris=True,
+                    ),
+                    GalaxySlot(
+                        position=8,
+                        coords="02:380:08",
+                        name="",
+                        owner="",
+                        status_color="free",
+                        has_debris=False,
+                        colonize_min_fields=290,
+                        colonize_max_fields=335,
+                        temperature=22,
+                    ),
+                ],
+            )
+            pg_db.record_spy_report(
+                SpyReport(
+                    target_coords="02:380:04",
+                    owner="InactivePlayer",
+                    planet_name="Farm",
+                    is_spacia=False,
+                    resources=Resources(100000, 80000, 60000, 40000),
+                    buildings={"b1": 20},
+                    fleet={},
+                    defense={},
+                    researches={},
+                )
+            )
+            pg_db.set_custom_planet_name(12476, "#PP Planet")
+            q1 = pg_db.enqueue_manual_command(
+                kind="UPGRADE_BUILDING",
+                priority="P1",
+                planet_id=12476,
+                planet_coords="02:380:12",
+                target_id=1,
+                target_name="Pig iron mine",
+                target_level=16,
+            )
+            self.assertGreaterEqual(q1["id"], 1)
+
+            # Verify concurrent MVCC reads & writes across multiple threads without contention errors
+            errors: list[Exception] = []
+
+            def _worker(idx: int) -> None:
+                try:
+                    for _ in range(5):
+                        pg_db.record_hourly_production(1000 + idx, 800, 600, 400, 2800, 750, 1, 1)
+                        _ = pg_db.summary()
+                        _ = pg_db.get_spy_targets(limit=10)
+                except Exception as exc:
+                    errors.append(exc)
+
+            threads = [threading.Thread(target=_worker, args=(i,)) for i in range(4)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join(timeout=10.0)
+            self.assertEqual(errors, [])
+
+            with tempfile.TemporaryDirectory() as td:
+                td_path = Path(td)
+                # Explicit SQLite backend request fails cleanly
+                with self.assertRaises(ValueError):
+                    GameDatabase(td_path / "retired.db", backend="sqlite")
+
+                fake_client = MagicMock()
+                fake_client.__enter__.return_value = fake_client
+                fake_client.driver = MagicMock(current_url="https://spaceinvasion.bitmeup.com/indexGame.es")
+                fake_client.read_full_snapshot.return_value = state
+                bridge_pg = GameApiBridge(
+                    debug_port=19999,
+                    env_file=td_path / "no.env",
+                    db_path=test_dsn,
+                    log_dir=None,
+                    client_factory=lambda _port: fake_client,
+                    ensure_session_fn=lambda: None,
+                )
+                try:
+                    st_pg = bridge_pg.views.build_db_backend_status(include_ping=True)
+                    self.assertEqual(st_pg["backend"], "postgres")
+                    assert bridge_pg._db is not None
+                    q2 = bridge_pg._db.enqueue_manual_command(
+                        kind="BUILD_SHIP",
+                        priority="P3",
+                        planet_id=12476,
+                        planet_coords="02:380:12",
+                        target_id=10,
+                        target_name="Small transporter",
+                        target_level=5,
+                    )
+                    self.assertGreater(q2["id"], 1)
+                    self.assertEqual(len(bridge_pg._db.get_manual_queue()), 2)
+                finally:
+                    bridge_pg.close()
+        finally:
+            pg_db.close()
+
+    def test_template_clone_is_fast_and_isolated(self) -> None:
+        harness = get_shared_pg_harness()
+        t0 = time.perf_counter()
+        dsn_a = harness.create_database(prefix="clone_a", from_template=True)
+        dsn_b = harness.create_database(prefix="clone_b", from_template=True)
+        elapsed_ms = (time.perf_counter() - t0) * 1000.0
+        self.assertLess(elapsed_ms, 5000.0)
+        self.assertNotEqual(dsn_a, dsn_b)
+
+        db_a = GameDatabase(dsn_a, backend="postgres", pool_size=1, max_overflow=1)
+        db_b = GameDatabase(dsn_b, backend="postgres", pool_size=1, max_overflow=1)
+        try:
+            db_a.set_custom_planet_name(12476, "OnlyInA")
+            self.assertEqual(db_a.get_custom_planet_names().get("12476"), "OnlyInA")
+            self.assertNotIn("12476", db_b.get_custom_planet_names())
+        finally:
+            db_a.close()
+            db_b.close()
+
+    def test_conftest_redirector_routes_plain_game_database_to_disposable_postgres(self) -> None:
+        redirector = get_pg_redirector()
+        if not redirector.enabled:
+            self.skipTest("PostgreSQL test redirector is active under pytest (tests/conftest.py).")
+        with tempfile.TemporaryDirectory(prefix="si_pg_redir_") as tmp:
+            p = Path(tmp) / "plain.db"
+            db1 = GameDatabase(p)
+            try:
+                self.assertEqual(db1.backend_name, "postgres")
+                self.assertTrue(is_unix_socket_dsn(db1.postgres_url))
+                self.assertTrue(p.exists())
+                db1.set_custom_planet_name(99999, "RedirectedPG")
+            finally:
+                db1.close()
+
+            # Reopening the same path within the test hits the same disposable PG database
+            db2 = GameDatabase(p)
+            try:
+                self.assertEqual(db2.backend_name, "postgres")
+                self.assertEqual(db2.get_custom_planet_names().get("99999"), "RedirectedPG")
+            finally:
+                db2.close()
+
+    def test_stale_harness_container_and_tempdir_reaper(self) -> None:
+        from types import SimpleNamespace
+        from tests.pg_harness import _is_pid_alive, _reap_stale_harness_containers
+
+        self.assertTrue(_is_pid_alive(os.getpid()))
+        self.assertFalse(_is_pid_alive(999_999_999))
+
+        with tempfile.TemporaryDirectory(prefix="si_pg_harness_") as stale_dir_raw:
+            stale_dir = Path(stale_dir_raw)
+            pgdata_dir = stale_dir / "pgdata"
+            pgdata_dir.mkdir(parents=True, exist_ok=True)
+            calls: list[list[str]] = []
+
+            def _fake_run(cmd: list[str], **_kwargs: object) -> SimpleNamespace:
+                calls.append(cmd)
+                if "ps" in cmd:
+                    return SimpleNamespace(
+                        returncode=0,
+                        stdout=f"deadcid123\tsi_test_pg_999999999_deadbeef\nlivecid456\tsi_test_pg_{os.getpid()}_12345678\n",
+                        stderr="",
+                    )
+                if "inspect" in cmd:
+                    return SimpleNamespace(returncode=0, stdout=f"{pgdata_dir}\n", stderr="")
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+            with patch("tests.pg_harness.subprocess.run", side_effect=_fake_run):
+                reaped = _reap_stale_harness_containers("/usr/bin/podman")
+
+            self.assertEqual(reaped, ["si_test_pg_999999999_deadbeef"])
+            self.assertFalse(stale_dir.exists())
+            rm_calls = [c for c in calls if "rm" in c]
+            self.assertEqual(len(rm_calls), 1)
+            self.assertIn("deadcid123", rm_calls[0])
+
+    def test_postgres_ctl_status_and_container_start_helpers(self) -> None:
+        from types import SimpleNamespace
+        from spaceinvasion.runtime import postgres_ctl
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
+            with (
+                patch("spaceinvasion.runtime.postgres_ctl.shutil.which", side_effect=lambda b: f"/usr/bin/{b}"),
+                patch(
+                    "spaceinvasion.runtime.postgres_ctl.subprocess.run",
+                    return_value=SimpleNamespace(returncode=0, stdout="running|Up 2m\n", stderr=""),
+                ),
+            ):
+                st = postgres_ctl.get_podman_postgres_status(force=True)
+                self.assertTrue(st["container_running"])
+
+            with (
+                patch(
+                    "spaceinvasion.runtime.postgres_ctl.ping_postgres",
+                    side_effect=[(False, 1.0, "down"), (True, 1.2, "PG16")],
+                ),
+                patch("spaceinvasion.runtime.postgres_ctl.check_postgres_tcp_open", return_value=True),
+                patch("spaceinvasion.runtime.postgres_ctl.shutil.which", side_effect=lambda b: f"/usr/bin/{b}"),
+                patch(
+                    "spaceinvasion.runtime.postgres_ctl.subprocess.run",
+                    return_value=SimpleNamespace(returncode=0, stdout="", stderr=""),
+                ),
+                patch(
+                    "spaceinvasion.runtime.postgres_ctl.get_postgres_container_status",
+                    return_value={"container_running": True},
+                ),
+            ):
+                res = postgres_ctl.ensure_postgres_container_ready(
+                    "postgresql://postgres:pw@127.0.0.1:5433/spaceinvasion",
+                    root_dir=root,
+                    auto_start=True,
+                )
+                self.assertTrue(res["ok"])
+                self.assertTrue(res["started_container"])
+
+            with patch("spaceinvasion.runtime.postgres_ctl.ping_postgres", return_value=(False, 1.0, "down")):
+                res_no = postgres_ctl.ensure_postgres_container_ready(
+                    "postgresql://postgres:pw@127.0.0.1:5433/spaceinvasion",
+                    root_dir=root,
+                    auto_start=False,
+                )
+                self.assertFalse(res_no["ok"])
+
+
+if __name__ == "__main__":
+    unittest.main()

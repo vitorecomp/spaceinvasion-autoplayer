@@ -1,3 +1,16 @@
+FROM docker.io/library/node:22-slim AS ui-builder
+
+WORKDIR /app/frontend
+
+COPY frontend/package.json ./
+RUN npm install --registry=https://registry.npmjs.org --no-audit --no-fund
+
+COPY frontend/index.html frontend/tsconfig.json frontend/vite.config.ts ./
+COPY frontend/scripts ./scripts
+COPY frontend/src ./src
+
+RUN mkdir -p /app/spaceinvasion/ui && npm run build
+
 FROM docker.io/library/python:3.12-slim
 
 ENV DEBIAN_FRONTEND=noninteractive \
@@ -6,7 +19,8 @@ ENV DEBIAN_FRONTEND=noninteractive \
     SPACEINVASION_NO_REEXEC=1 \
     SPACEINVASION_CONTAINER=1 \
     SPACEINVASION_DB_BACKEND=postgres \
-    SPACEINVASION_DISK_LOGS=0
+    SPACEINVASION_DISK_LOGS=0 \
+    SPACEINVASION_UI_DIR=/opt/spaceinvasion-ui
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
@@ -20,6 +34,8 @@ WORKDIR /app
 COPY requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt
 
+COPY --from=ui-builder /app/spaceinvasion/ui /opt/spaceinvasion-ui
+COPY spaceinvasion/ui/bell.svg spaceinvasion/ui/favicon.svg spaceinvasion/ui/favicon.ico /opt/spaceinvasion-ui/
 COPY bin /app/bin
 COPY spaceinvasion /app/spaceinvasion
 COPY scripts /app/scripts

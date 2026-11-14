@@ -30,16 +30,10 @@ export function useDragScroll(
     activeRef.current = false;
     wasDraggedRef.current = false;
     setIsDragging(false);
-    if (typeof globalThis !== "undefined" && (globalThis as any).state) {
-      (globalThis as any).state.agSuppressNodeClick = didDrag;
-    }
     if (didDrag) {
       suppressNextClickRef.current = true;
       setTimeout(() => {
         suppressNextClickRef.current = false;
-        if (typeof globalThis !== "undefined" && (globalThis as any).state) {
-          (globalThis as any).state.agSuppressNodeClick = false;
-        }
       }, 0);
     } else {
       suppressNextClickRef.current = false;
@@ -54,9 +48,6 @@ export function useDragScroll(
       activeRef.current = true;
       wasDraggedRef.current = false;
       suppressNextClickRef.current = false;
-      if (typeof globalThis !== "undefined" && (globalThis as any).state) {
-        (globalThis as any).state.agSuppressNodeClick = false;
-      }
       startXRef.current = safeFiniteNumber(e.clientX, 0) ?? 0;
       startYRef.current = safeFiniteNumber(e.clientY, 0) ?? 0;
       startScrollLeftRef.current = safeFiniteNumber(el.scrollLeft, 0) ?? 0;
@@ -110,9 +101,6 @@ export function useDragScroll(
   const consumeSuppressClick = useCallback(() => {
     if (suppressNextClickRef.current) {
       suppressNextClickRef.current = false;
-      if (typeof globalThis !== "undefined" && (globalThis as any).state) {
-        (globalThis as any).state.agSuppressNodeClick = false;
-      }
       return true;
     }
     return false;

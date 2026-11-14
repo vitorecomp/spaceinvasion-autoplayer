@@ -14,8 +14,8 @@ import requests
 import commander
 from tests.e2e.fixtures import make_midgame_state
 from tests.e2e.harness import E2ETestHarness, FakeClock, FakeSpaceInvasionServer
-from spaceinvasion.config import StrategyConfig
-from spaceinvasion.storage import GameDatabase
+from spaceinvasion.core.config import StrategyConfig
+from tests.pg_harness import open_test_db as GameDatabase
 
 
 def _make_two_planet_fleet_server(**kwargs) -> FakeSpaceInvasionServer:
@@ -63,9 +63,39 @@ class TestTier2R2(unittest.TestCase):
 
     def test_r2a_t2_01_consecutive_galaxy_switches_with_async_nav_lag_no_bleed(self) -> None:
         gal = {
-            (2, 380): [{"position": 3, "name": "Sys380", "owner": "Own380", "status_color": "yellow", "has_debris": False, "is_spacia": False, "spy_href": None}],
-            (2, 381): [{"position": 5, "name": "Sys381", "owner": "Own381", "status_color": "yellow", "has_debris": False, "is_spacia": False, "spy_href": None}],
-            (2, 382): [{"position": 7, "name": "Sys382", "owner": "Own382", "status_color": "yellow", "has_debris": False, "is_spacia": False, "spy_href": None}],
+            (2, 380): [
+                {
+                    "position": 3,
+                    "name": "Sys380",
+                    "owner": "Own380",
+                    "status_color": "yellow",
+                    "has_debris": False,
+                    "is_spacia": False,
+                    "spy_href": None,
+                }
+            ],
+            (2, 381): [
+                {
+                    "position": 5,
+                    "name": "Sys381",
+                    "owner": "Own381",
+                    "status_color": "yellow",
+                    "has_debris": False,
+                    "is_spacia": False,
+                    "spy_href": None,
+                }
+            ],
+            (2, 382): [
+                {
+                    "position": 7,
+                    "name": "Sys382",
+                    "owner": "Own382",
+                    "status_color": "yellow",
+                    "has_debris": False,
+                    "is_spacia": False,
+                    "spy_href": None,
+                }
+            ],
         }
         srv = FakeSpaceInvasionServer(galaxy_systems=gal, async_nav_polls=2, async_href_lag=True)
         with E2ETestHarness(server=srv) as h:
@@ -101,7 +131,15 @@ class TestTier2R2(unittest.TestCase):
     def test_r2a_t2_04_icon_table_brackets_and_empty_system_parsing(self) -> None:
         gal = {
             (2, 380): [
-                {"position": 4, "name": "IconWorld", "owner": "Sleepy4", "status_color": "yellow", "has_debris": False, "is_spacia": False, "spy_href": None},
+                {
+                    "position": 4,
+                    "name": "IconWorld",
+                    "owner": "Sleepy4",
+                    "status_color": "yellow",
+                    "has_debris": False,
+                    "is_spacia": False,
+                    "spy_href": None,
+                },
             ]
         }
         srv_icon = FakeSpaceInvasionServer(galaxy_systems=gal, galaxy_layout="icon_table")
@@ -151,7 +189,9 @@ class TestTier2R2(unittest.TestCase):
         with E2ETestHarness(server=srv) as h:
             h.api.get_state(include_buildings=True)
             h.api.send_command({"command": "scan_galaxy", "galaxy": 2, "system": 380, "dry_run": False})
-            spy_res = h.api.send_command({"command": "spy", "target_coords": "02:380:04", "probes": 1, "dry_run": False})
+            spy_res = h.api.send_command(
+                {"command": "spy", "target_coords": "02:380:04", "probes": 1, "dry_run": False}
+            )
             self.assertTrue(spy_res["executed"])
             h.api.send_command({"command": "sync_messages"})
 
@@ -163,8 +203,28 @@ class TestTier2R2(unittest.TestCase):
 
     def test_r2a_t2_07_boundary_coords_and_invalid_navigate_action(self) -> None:
         gal = {
-            (1, 1): [{"position": 1, "name": "MinSlot", "owner": "IdleMin", "status_color": "yellow", "has_debris": False, "is_spacia": False, "spy_href": None}],
-            (5, 499): [{"position": 16, "name": "MaxSlot", "owner": "IdleMax", "status_color": "yellow", "has_debris": False, "is_spacia": False, "spy_href": None}],
+            (1, 1): [
+                {
+                    "position": 1,
+                    "name": "MinSlot",
+                    "owner": "IdleMin",
+                    "status_color": "yellow",
+                    "has_debris": False,
+                    "is_spacia": False,
+                    "spy_href": None,
+                }
+            ],
+            (5, 499): [
+                {
+                    "position": 16,
+                    "name": "MaxSlot",
+                    "owner": "IdleMax",
+                    "status_color": "yellow",
+                    "has_debris": False,
+                    "is_spacia": False,
+                    "spy_href": None,
+                }
+            ],
         }
         srv = FakeSpaceInvasionServer(galaxy_systems=gal)
         with E2ETestHarness(server=srv) as h:
@@ -308,13 +368,24 @@ class TestTier2R2(unittest.TestCase):
 
             # Tick 1 via commander CLI main (reads throttle_cooldowns from API/SQLite): MUST pause to 0%
             rc1 = commander.main(
-                ["--api-url", h.base_url, "--live", "--once", "--config", str(h.config_path), "--log-dir", str(h.log_dir)]
+                [
+                    "--api-url",
+                    h.base_url,
+                    "--live",
+                    "--once",
+                    "--config",
+                    str(h.config_path),
+                    "--log-dir",
+                    str(h.log_dir),
+                ]
             )
             self.assertEqual(rc1, 0)
             self.assertEqual(srv.planets[12476]["economy_rates"]["resource2"], 0)
             db = GameDatabase(h.db_path)
             try:
-                throttles_1 = [a for a in db.get_recent_actions(limit=20) if a["kind"] == "THROTTLE_BUILDING" and a["executed"]]
+                throttles_1 = [
+                    a for a in db.get_recent_actions(limit=20) if a["kind"] == "THROTTLE_BUILDING" and a["executed"]
+                ]
             finally:
                 db.close()
             self.assertEqual(len(throttles_1), 1, f"Expected 1 THROTTLE_BUILDING on Tick 1, got {throttles_1}")
@@ -327,7 +398,16 @@ class TestTier2R2(unittest.TestCase):
             srv.planets[12476]["buildings"] = {"b1": 12, "b2": 6, "b3": 4, "b4": 4, "b5": 11, "b7": 2}
             srv.planets[12476]["resources"] = [80_000, 0, 50_000, 50_000]
             rc2 = commander.main(
-                ["--api-url", h.base_url, "--live", "--once", "--config", str(h.config_path), "--log-dir", str(h.log_dir)]
+                [
+                    "--api-url",
+                    h.base_url,
+                    "--live",
+                    "--once",
+                    "--config",
+                    str(h.config_path),
+                    "--log-dir",
+                    str(h.log_dir),
+                ]
             )
             self.assertEqual(rc2, 0)
             self.assertEqual(
@@ -337,7 +417,9 @@ class TestTier2R2(unittest.TestCase):
             )
             db = GameDatabase(h.db_path)
             try:
-                throttles_2 = [a for a in db.get_recent_actions(limit=20) if a["kind"] == "THROTTLE_BUILDING" and a["executed"]]
+                throttles_2 = [
+                    a for a in db.get_recent_actions(limit=20) if a["kind"] == "THROTTLE_BUILDING" and a["executed"]
+                ]
             finally:
                 db.close()
             self.assertEqual(len(throttles_2), 1)
@@ -345,13 +427,24 @@ class TestTier2R2(unittest.TestCase):
             # Tick 3 (+250s, total +310s past 300s cooldown): MUST resume Blast furnace to 100%
             clock.advance(250.0)
             rc3 = commander.main(
-                ["--api-url", h.base_url, "--live", "--once", "--config", str(h.config_path), "--log-dir", str(h.log_dir)]
+                [
+                    "--api-url",
+                    h.base_url,
+                    "--live",
+                    "--once",
+                    "--config",
+                    str(h.config_path),
+                    "--log-dir",
+                    str(h.log_dir),
+                ]
             )
             self.assertEqual(rc3, 0)
             self.assertEqual(srv.planets[12476]["economy_rates"]["resource2"], 100)
             db = GameDatabase(h.db_path)
             try:
-                throttles_3 = [a for a in db.get_recent_actions(limit=20) if a["kind"] == "THROTTLE_BUILDING" and a["executed"]]
+                throttles_3 = [
+                    a for a in db.get_recent_actions(limit=20) if a["kind"] == "THROTTLE_BUILDING" and a["executed"]
+                ]
             finally:
                 db.close()
             self.assertEqual(len(throttles_3), 2)
@@ -479,9 +572,25 @@ class TestTier2R2(unittest.TestCase):
     def test_r2c_t2_04_bash_tracker_3_24h_active_blocks_4th_yellow_spacia_exempt(self) -> None:
         clock = FakeClock()
         spy_reports = {
-            "02:380:04": {"owner": "IdleY", "resources": {"pig_iron": 10000, "metal": 10000, "kryptonite": 5000, "spice": 1000}, "fleet": {}, "defense": {}},
-            "02:380:06": {"owner": "PlayerX", "resources": {"pig_iron": 10000, "metal": 10000, "kryptonite": 5000, "spice": 1000}, "fleet": {}, "defense": {}},
-            "02:380:09": {"owner": "Spacia", "resources": {"pig_iron": 20000, "metal": 15000, "kryptonite": 8000, "spice": 2000}, "fleet": {}, "defense": {}, "is_spacia": True},
+            "02:380:04": {
+                "owner": "IdleY",
+                "resources": {"pig_iron": 10000, "metal": 10000, "kryptonite": 5000, "spice": 1000},
+                "fleet": {},
+                "defense": {},
+            },
+            "02:380:06": {
+                "owner": "PlayerX",
+                "resources": {"pig_iron": 10000, "metal": 10000, "kryptonite": 5000, "spice": 1000},
+                "fleet": {},
+                "defense": {},
+            },
+            "02:380:09": {
+                "owner": "Spacia",
+                "resources": {"pig_iron": 20000, "metal": 15000, "kryptonite": 8000, "spice": 2000},
+                "fleet": {},
+                "defense": {},
+                "is_spacia": True,
+            },
         }
         srv = FakeSpaceInvasionServer(clock=clock, spy_reports=spy_reports)
         srv.planets[12476]["buildings"]["b10"] = 20
@@ -504,7 +613,10 @@ class TestTier2R2(unittest.TestCase):
             for _ in range(3):
                 ok_atk = h.api.send_command({"command": "attack", "target_coords": "02:380:06", "dry_run": False})
                 self.assertTrue(ok_atk["executed"], ok_atk)
-            attack_fleets = lambda: [f for f in srv.launched_fleets if f.get("mission") == "1"]
+
+            def attack_fleets() -> list[dict[str, object]]:
+                return [f for f in srv.launched_fleets if f.get("mission") == "1"]
+
             self.assertEqual(len(attack_fleets()), 3)
 
             # 4th attack on active light_red MUST be blocked by 3/24h Bash tracker
@@ -584,7 +696,9 @@ class TestTier2R2(unittest.TestCase):
         with E2ETestHarness(server=srv, config=cfg) as h:
             h.api.get_state(include_buildings=True)
             h.api.send_command({"command": "scan_galaxy", "galaxy": 2, "system": 380, "dry_run": False})
-            spy_res = h.api.send_command({"command": "spy", "target_coords": "02:380:04", "probes": 1, "dry_run": False})
+            spy_res = h.api.send_command(
+                {"command": "spy", "target_coords": "02:380:04", "probes": 1, "dry_run": False}
+            )
             self.assertTrue(spy_res["executed"])
             h.api.send_command({"command": "sync_messages"})
 
@@ -646,11 +760,51 @@ class TestTier2R2(unittest.TestCase):
     def test_r2c_t2_08_target_colors_filtered_by_allow_pvp_in_az(self) -> None:
         gal = {
             (2, 380): [
-                {"position": 4, "name": "InactiveY", "owner": "IdleY", "status_color": "yellow", "has_debris": False, "is_spacia": False, "spy_href": None},
-                {"position": 6, "name": "RivalAZ", "owner": "PlayerX", "status_color": "light_red", "has_debris": False, "is_spacia": False, "spy_href": None},
-                {"position": 7, "name": "WeakBlue", "owner": "Newb", "status_color": "blue", "has_debris": False, "is_spacia": False, "spy_href": None},
-                {"position": 8, "name": "AllyGreen", "owner": "Mate", "status_color": "green", "has_debris": False, "is_spacia": False, "spy_href": None},
-                {"position": 10, "name": "StrongDark", "owner": "Titan", "status_color": "dark_red", "has_debris": False, "is_spacia": False, "spy_href": None},
+                {
+                    "position": 4,
+                    "name": "InactiveY",
+                    "owner": "IdleY",
+                    "status_color": "yellow",
+                    "has_debris": False,
+                    "is_spacia": False,
+                    "spy_href": None,
+                },
+                {
+                    "position": 6,
+                    "name": "RivalAZ",
+                    "owner": "PlayerX",
+                    "status_color": "light_red",
+                    "has_debris": False,
+                    "is_spacia": False,
+                    "spy_href": None,
+                },
+                {
+                    "position": 7,
+                    "name": "WeakBlue",
+                    "owner": "Newb",
+                    "status_color": "blue",
+                    "has_debris": False,
+                    "is_spacia": False,
+                    "spy_href": None,
+                },
+                {
+                    "position": 8,
+                    "name": "AllyGreen",
+                    "owner": "Mate",
+                    "status_color": "green",
+                    "has_debris": False,
+                    "is_spacia": False,
+                    "spy_href": None,
+                },
+                {
+                    "position": 10,
+                    "name": "StrongDark",
+                    "owner": "Titan",
+                    "status_color": "dark_red",
+                    "has_debris": False,
+                    "is_spacia": False,
+                    "spy_href": None,
+                },
             ]
         }
         spy_loot = {"pig_iron": 20000, "metal": 10000, "kryptonite": 10000, "spice": 5000}
@@ -702,7 +856,11 @@ class TestTier2R2(unittest.TestCase):
                 self.assertFalse(mirror.exists())
                 raw = json.dumps(db.get_raid_stats(), allow_nan=False)
                 self.assertNotIn(secret_tok, raw, "Raw sid leaked into SQLite raid_history!")
-                raw_hits = [s for s in re.findall(r"sid=([A-Za-z0-9_-]{6,})", raw, flags=re.IGNORECASE) if s.upper() != "REDACTED"]
+                raw_hits = [
+                    s
+                    for s in re.findall(r"sid=([A-Za-z0-9_-]{6,})", raw, flags=re.IGNORECASE)
+                    if s.upper() != "REDACTED"
+                ]
                 self.assertEqual(raw_hits, [])
             finally:
                 db.close()

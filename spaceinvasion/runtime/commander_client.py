@@ -5,16 +5,21 @@ from __future__ import annotations
 from collections.abc import Mapping
 import math
 from typing import Any, Optional
+
 import requests
 
-from spaceinvasion.core.cli_support import (
+from spaceinvasion.core.model import GameState, game_state_from_dict
+from spaceinvasion.core.redaction import redact_sensitive
+from spaceinvasion.runtime.cli_support import safe_cli_str
+from spaceinvasion.session.http_pools import (
     close_http_response as _close_http_response,
-    close_http_session as _close_http_session,
-    configure_http_session_pools as _configure_http_session_pools,
-    safe_cli_str,
 )
-from spaceinvasion.core.logging_utils import redact_sensitive
-from spaceinvasion.core.state import GameState, game_state_from_dict
+from spaceinvasion.session.http_pools import (
+    close_http_session as _close_http_session,
+)
+from spaceinvasion.session.http_pools import (
+    configure_http_session_pools as _configure_http_session_pools,
+)
 
 
 def _safe_api_timeout(raw: Any, default: float = 30.0) -> float:
@@ -98,15 +103,15 @@ class GameApiClient:
                 data = resp.json()
             except ValueError as exc:
                 body_preview = _safe_client_text(getattr(resp, "text", ""), "", max_len=200)
-                raise GameApiError(
-                    f"Non-JSON response ({resp.status_code}): {body_preview}"
-                ) from exc
+                raise GameApiError(f"Non-JSON response ({resp.status_code}): {body_preview}") from exc
             if not isinstance(data, dict):
                 raise GameApiError(
                     f"Expected JSON object response (HTTP {resp.status_code}, got {type(data).__name__})"
                 )
             if resp.status_code >= 400 or (data.get("ok") is False and "error" in data):
-                raise GameApiError(_safe_client_text(data.get("error"), f"HTTP {resp.status_code}") or f"HTTP {resp.status_code}")
+                raise GameApiError(
+                    _safe_client_text(data.get("error"), f"HTTP {resp.status_code}") or f"HTTP {resp.status_code}"
+                )
             return data
         finally:
             _close_http_response(resp)

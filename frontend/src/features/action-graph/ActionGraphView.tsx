@@ -1,6 +1,13 @@
 import React, { useEffect } from "react";
-import { safeFiniteNumber } from "../../api/httpClient";
-import { useConsole } from "../../context/ConsoleContext";
+import {
+  safeFiniteNumber } from "../../api/httpClient";
+import { useActivePage,
+  useApiOnline,
+  useConsoleActions,
+  useDashboard,
+  usePlannerJobsStatus,
+  useUiPrefs,
+} from "../../store";
 import type { ActionGraphTabKey } from "../../types/api";
 import { AiPlannerTab } from "./AiPlannerTab";
 import { ConfigOptimizerTab } from "./ConfigOptimizerTab";
@@ -26,15 +33,12 @@ function normalizeAgTab(raw: unknown): ActionGraphTabKey {
 export { AG_NUM_DEFAULTS };
 
 export const ActionGraphView: React.FC = () => {
-  const {
-    activePage,
-    dashboard,
-    apiOnline,
-    plannerJobsStatus,
-    refreshPlannerJobsStatus,
-    uiPrefs,
-    setUiPref,
-  } = useConsole();
+  const apiOnline = useApiOnline();
+  const activePage = useActivePage();
+  const dashboard = useDashboard();
+  const plannerJobsStatus = usePlannerJobsStatus();
+  const uiPrefs = useUiPrefs();
+  const { refreshPlannerJobsStatus, setUiPref } = useConsoleActions();
 
   const activeTab = normalizeAgTab(uiPrefs?.agActiveTab);
   const switchTab = (next: ActionGraphTabKey) => {

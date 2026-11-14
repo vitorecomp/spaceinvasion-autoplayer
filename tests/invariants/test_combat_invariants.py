@@ -10,23 +10,22 @@ import unittest
 
 import pytest
 
-from spaceinvasion.combat.fleet import (
-    BashTracker,
-    SpyReport,
-    parse_send_fleet_mission_block,
-    plan_escape_flight,
-    simulate_raid_outcome,
-)
-from spaceinvasion.combat.ranking import build_combat_overview, simulate_combat_matchup
+from spaceinvasion.combat.cargo import plan_escape_flight
+from spaceinvasion.combat.flight import BashTracker
+from spaceinvasion.combat.simulator import simulate_raid_outcome
+from spaceinvasion.parsing.fleet_page import parse_send_fleet_mission_block
+from spaceinvasion.parsing.models import SpyReport
+from spaceinvasion.combat.points import build_combat_overview
+from spaceinvasion.combat.simulator import simulate_combat_matchup
 from spaceinvasion.core.config import StrategyConfig
-from spaceinvasion.core.state import (
+from spaceinvasion.core.model import (
     EnergyBalance,
     FleetAlert,
     GameState,
     PlanetState,
     Resources,
 )
-from spaceinvasion.planner.strategy import plan_actions
+from spaceinvasion.planner.heuristics import plan_actions
 
 pytestmark = pytest.mark.invariants
 
@@ -220,9 +219,5 @@ class TestCombatInvariants(unittest.TestCase):
         self.assertFalse(tracker.can_attack(inactive_target, is_inactive=True, timestamp=t0 + 700.0))
         self.assertFalse(tracker.can_attack(spacia_target, is_spacia=True, timestamp=t0 + 700.0))
         # Once the server bash cooldown expires, exemptions resume.
-        self.assertTrue(
-            tracker.can_attack(inactive_target, is_inactive=True, timestamp=t0 + 600.0 + cooldown_s + 1.0)
-        )
-        self.assertTrue(
-            tracker.can_attack(spacia_target, is_spacia=True, timestamp=t0 + 600.0 + cooldown_s + 1.0)
-        )
+        self.assertTrue(tracker.can_attack(inactive_target, is_inactive=True, timestamp=t0 + 600.0 + cooldown_s + 1.0))
+        self.assertTrue(tracker.can_attack(spacia_target, is_spacia=True, timestamp=t0 + 600.0 + cooldown_s + 1.0))

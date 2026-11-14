@@ -16,9 +16,9 @@ from unittest import mock
 
 import requests
 
-from spaceinvasion.core import config as config_mod
-from spaceinvasion.core import state as state_mod
+from spaceinvasion.db import config_store as config_store_mod
 from spaceinvasion.core.config import StrategyConfig
+from spaceinvasion.parsing import overview as overview_mod, queues as queues_mod
 from tests.e2e.harness import E2ETestHarness, FakeClock, FakeSpaceInvasionServer, _ClockTimeProxy
 from tests.goldens.scenarios import GOLDEN_EPOCH, NICKNAME, SID, UNIVERSE_ID, USER_ID
 
@@ -488,9 +488,10 @@ def run_api_session(*, timeout: float = 600.0) -> dict[str, Any]:
     proxy = _ClockTimeProxy(clock)
     with ExitStack() as stack:
         stack.callback(http.close)
-        # The harness patches `time` in the runtime modules; these two also read the clock.
-        for module in (state_mod, config_mod):
-            stack.enter_context(mock.patch.object(module, "time", proxy))
+        # The harness patches `time` in the runtime/db/session modules; these parsing modules also read the clock.
+        for module in (overview_mod, queues_mod):
+            if "time" in getattr(module, "__dict__", {}):
+                stack.enter_context(mock.patch.object(module, "time", proxy))
         h = stack.enter_context(harness)
         for step in API_STEPS:
             out[step.case] = _send(http, h.base_url, step, server, clock, timeout)

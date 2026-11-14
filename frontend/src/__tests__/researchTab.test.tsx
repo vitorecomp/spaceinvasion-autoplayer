@@ -1,8 +1,8 @@
 import React, { useEffect } from "react";
 import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { App } from "../App";
-import { ConsoleProvider, resetConsoleStore, useConsole } from "../context/ConsoleContext";
+import { App, CONSOLE_PAGE_ORDER } from "../App";
+import { ConsoleProvider, resetConsoleStore, useConsoleActions } from "../store";
 import { BuildingsView } from "../features/buildings";
 import { ResearchView } from "../features/research";
 import { PAGE_TITLES, type DashboardPayload } from "../types/api";
@@ -276,7 +276,7 @@ const RESEARCH_TAB_DASHBOARD: DashboardPayload = {
 };
 
 function ActivatePage({ page }: { page: string }) {
-  const { setActivePage } = useConsole();
+  const { setActivePage } = useConsoleActions();
   useEffect(() => {
     setActivePage(page as any);
   }, [page, setActivePage]);
@@ -606,22 +606,37 @@ describe("Dedicated Research tab split from BuildingsView", () => {
     }
   });
 
-  it("mounts ResearchView immediately after BuildingsView in App and removes FeedbackBanner from .main-column", () => {
+  it("orders ResearchView immediately after BuildingsView, mounts only active page in App, and removes FeedbackBanner from .main-column", () => {
+    const bldIdx = CONSOLE_PAGE_ORDER.indexOf("buildings");
+    const resIdx = CONSOLE_PAGE_ORDER.indexOf("research");
+    expect(bldIdx).toBeGreaterThanOrEqual(0);
+    expect(resIdx).toBe(bldIdx + 1);
+
     const { container } = render(<App disableInitialFetch={true} />);
 
     const stage = container.querySelector("#view-stage");
     expect(stage).not.toBeNull();
-    const bld = stage?.querySelector("#view-buildings");
-    const res = stage?.querySelector("#view-research");
-    expect(bld).not.toBeNull();
-    expect(res).not.toBeNull();
-    expect(bld?.nextElementSibling).toBe(res);
+    // Only the active page (dashboard) is mounted initially
+    expect(stage?.querySelectorAll(".page-view")).toHaveLength(1);
+    expect(stage?.querySelector("#view-dashboard")).not.toBeNull();
+
+    // Switching to buildings mounts only BuildingsView; switching to research mounts only ResearchView
+    const navBld = container.querySelector('.sidebar-link[data-page="buildings"]') as HTMLButtonElement;
+    const navRes = container.querySelector('.sidebar-link[data-page="research"]') as HTMLButtonElement;
+    expect(navBld).not.toBeNull();
+    expect(navRes).not.toBeNull();
+    fireEvent.click(navBld);
+    expect(stage?.querySelectorAll(".page-view")).toHaveLength(1);
+    expect(stage?.querySelector("#view-buildings")).not.toBeNull();
+    fireEvent.click(navRes);
+    expect(stage?.querySelectorAll(".page-view")).toHaveLength(1);
+    expect(stage?.querySelector("#view-research")).not.toBeNull();
 
     // FeedbackBanner must no longer be mounted inside .main-column (moved to sidebar by @dash-ui)
     expect(container.querySelector(".main-column #feedback-banner")).toBeNull();
 
-    // Strict 2-SVG total invariant across full App
-    expect(container.querySelectorAll("svg")).toHaveLength(2);
+    // Strict <= 2 SVG invariant (0 on research, 1 on dashboard, 1 on ranking)
+    expect(container.querySelectorAll("svg").length).toBeLessThanOrEqual(2);
   });
 
   it("displays Config Optimizer building level goals, specialization, sorting, and inspector line in BuildingsView", async () => {

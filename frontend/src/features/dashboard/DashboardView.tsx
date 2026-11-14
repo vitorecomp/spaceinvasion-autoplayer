@@ -1,160 +1,59 @@
 import React, { useCallback, useMemo } from "react";
 import { flushSync } from "react-dom";
 import { feedbackKindForError } from "../../api/httpClient";
-import { SortableTh } from "../../components/SortableTh";
-import { GaNnScannerHud } from "../../components/layout/GaNnScannerHud";
-import { useConsole } from "../../context/ConsoleContext";
+import { ScannerHud } from "../../components/layout/ScannerHud";
 import {
-  coordsSortKey,
-  useTableSort,
-  type SortColumnMap,
-} from "../../hooks/useTableSort";
-import type {
-  BuildingResourceRequestItem,
-  PlanetData,
-  PlannedActionData,
-  QueueJobData,
-} from "../../types/api";
+  useActivePage,
+  useActivePlanet,
+  useBuildingsEtaData,
+  useConsoleActions,
+  useDashboard,
+  useNowEpochSec,
+  useSelectedPlanetId,
+  useUiPrefs,
+} from "../../store";
+import type { PlannedActionData } from "../../types/api";
 import {
   finiteNum,
-  fmtClockTime,
-  fmtHms,
   fmtInt,
-  fmtRate,
   getSelectedBlastFurnacePct,
 } from "../../utils/formatters";
 import {
   actionPayloadFor,
   buildPinPayloadFromAction,
-  cleanQueueJobTitle,
   dashboardQueueDomainForAction,
-  dashboardQueueDomainForJob,
-  execJobBaseKey,
-  formatQueueJobCargo,
-  isActiveBuildingJob,
   isPlanetConstructing,
   normalizeCoordKey,
   queueJobMatchesPlanet,
 } from "../operations/planActions";
-import { DashboardQueueCard } from "./DashboardQueueCard";
-
-interface ResourceTrackSpec {
-  idKey: "pig" | "metal" | "kryp" | "spice";
-  code: string;
-  name: string;
-  amount: unknown;
-  storage: unknown;
-  hourlyRate: unknown;
-  hasPlanet: boolean;
-}
-
-const ResourceTrackRow: React.FC<ResourceTrackSpec> = ({
-  idKey,
-  code,
-  name,
-  amount,
-  storage,
-  hourlyRate,
-  hasPlanet,
-}) => {
-
-  if (!hasPlanet) {
-    return (
-      <div className="track-row">
-        <div className="track-meta">
-          <span className="track-code tabular">{code}</span>
-          <span className="track-name">{name}</span>
-        </div>
-        <div className="track-bar-group">
-          <div className="meter-track">
-            <div className="meter-fill" id={`bar-${idKey}`} />
-          </div>
-        </div>
-        <div className="track-values tabular">
-          <span className="track-val" id={`val-${idKey}`}>
-            —
-          </span>
-          <span className="track-cap" id={`cap-${idKey}`}>
-            —
-          </span>
-          <span className="track-rate" id={`rate-${idKey}`}>
-            —/h
-          </span>
-        </div>
-      </div>
-    );
-  }
-
-  const cap = finiteNum(storage, 0);
-  const val = finiteNum(amount, null);
-  const ratioPct = cap > 0 && val !== null ? (val / cap) * 100 : 0;
-  const pct = Number.isFinite(ratioPct) ? Math.max(0, Math.min(100, Math.round(ratioPct))) : 0;
-
-  const rateNum = hourlyRate == null ? null : finiteNum(hourlyRate, null);
-  const rateText = hourlyRate == null ? "—/h" : fmtRate(hourlyRate);
-  const rateNeg = hourlyRate != null && rateNum !== null && Math.round(rateNum) < 0;
-
-  return (
-    <div className="track-row">
-      <div className="track-meta">
-        <span className="track-code tabular">{code}</span>
-        <span className="track-name">{name}</span>
-      </div>
-      <div className="track-bar-group">
-        <div className="meter-track">
-          <div
-            className={`meter-fill${pct >= 85 ? " high" : ""}`}
-            id={`bar-${idKey}`}
-            style={{ transform: `scaleX(${pct / 100})` }}
-          />
-        </div>
-      </div>
-      <div className="track-values tabular">
-        <span className="track-val" id={`val-${idKey}`}>
-          {fmtInt(amount ?? 0)}
-        </span>
-        <span className="track-cap" id={`cap-${idKey}`}>
-          {cap > 0 ? `/ ${fmtInt(cap)} (${pct}%)` : "—"}
-        </span>
-        <span className={`track-rate${rateNeg ? " is-neg" : ""}`} id={`rate-${idKey}`}>
-          {rateText}
-        </span>
-      </div>
-    </div>
-  );
-};
-
-function sumOptionalFinite(values: unknown[]): number | null {
-  let total = 0;
-  let found = false;
-  for (const raw of values) {
-    const n = finiteNum(raw, null);
-    if (n !== null) {
-      total += n;
-      found = true;
-    }
-  }
-  return found ? total : null;
-}
+import { DashboardColonyPanel } from "./DashboardColonyPanel";
+import {
+  computeScopedEcon,
+  deriveBuildingResourceRequests,
+  partitionActiveQueues,
+  sumOptionalFinite,
+} from "./dashboardDerivations";
+import { DashboardQueuesSection } from "./DashboardQueuesSection";
+import { DashboardTelemetryPanel } from "./DashboardTelemetryPanel";
 
 export const DashboardView: React.FC = () => {
+  const dashboard = useDashboard();
+  const activePage = useActivePage();
+  const selectedPlanetId = useSelectedPlanetId();
+  const activePlanet = useActivePlanet();
+  const nowEpochSec = useNowEpochSec();
+  const uiPrefs = useUiPrefs();
+  const buildingsEtaData = useBuildingsEtaData();
   const {
-    dashboard,
-    activePage,
     setActivePage,
-    selectedPlanetId,
     setSelectedPlanetId,
-    activePlanet,
-    nowEpochSec,
     showFeedback,
     apiCommand,
     loadDashboard,
-    uiPrefs,
     setUiPref,
-    buildingsEtaData,
     toggleBlastFurnaceRate,
     enqueueManualCommand,
-  } = useConsole();
+  } = useConsoleActions();
 
   const gs = dashboard?.state || null;
   const planets = useMemo(() => gs?.planets || [], [gs?.planets]);
@@ -176,39 +75,6 @@ export const DashboardView: React.FC = () => {
     }
     return ids;
   }, [activeQueues, effNowSec, gs?.active_planet_id, planets]);
-
-  const colonySortCols = useMemo<
-    SortColumnMap<PlanetData, "coords" | "colony" | "state" | "fields">
-  >(
-    () => ({
-      coords: (p) => coordsSortKey(p.coords),
-      colony: (p) => String(p.name || "Colony"),
-      state: (p) => {
-        if (constructingPlanetIds.has(Number(p.planet_id))) return "BUILDING";
-        const isActive = p.planet_id === chosenId;
-        const pigStor = finiteNum(p.storage?.pig_iron, 0);
-        const pigAmt = finiteNum(p.resources?.pig_iron, 0);
-        const spiStor = finiteNum(p.storage?.spice, 0);
-        const spiAmt = finiteNum(p.resources?.spice, 0);
-        const nearFull =
-          (pigStor > 0 && pigAmt / pigStor >= 0.85) ||
-          (spiStor > 0 && spiAmt / spiStor >= 0.85);
-        return nearFull ? "NEAR-CAP" : isActive ? "ONLINE" : "IDLE";
-      },
-      fields: {
-        accessor: (p) => {
-          const fMax = finiteNum(p.fields_max, null);
-          const fUsed = finiteNum(p.fields_used, null);
-          if (fMax !== null) return fMax * 10_000 + (fUsed ?? 0);
-          return fUsed;
-        },
-        defaultDirection: "desc",
-      },
-    }),
-    [chosenId, constructingPlanetIds]
-  );
-
-  const colonySort = useTableSort(planets, colonySortCols);
 
   const rawDashScope = String(uiPrefs.dashQueuePlanetScope || "all");
   const scopedDashPlanet = useMemo(
@@ -232,63 +98,27 @@ export const DashboardView: React.FC = () => {
       ? dashboard.planet_economies
       : null;
 
-  const scopedEcon = useMemo(() => {
-    if (isAllColoniesScope) {
-      const allHavePerPlanetEcon =
-        Boolean(planetEconMap) &&
-        planets.length > 0 &&
-        planets.every((p) => planetEconMap![String(p.planet_id)] != null);
-      if (allHavePerPlanetEcon) {
-        const econRows = planets.map((p) => planetEconMap![String(p.planet_id)]);
-        return {
-          pig_iron_per_hr: sumOptionalFinite(econRows.map((e) => e?.pig_iron_per_hr)),
-          metal_per_hr: sumOptionalFinite(econRows.map((e) => e?.metal_per_hr)),
-          kryptonite_per_hr: sumOptionalFinite(econRows.map((e) => e?.kryptonite_per_hr)),
-          spice_per_hr: sumOptionalFinite(econRows.map((e) => e?.spice_per_hr)),
-        };
-      }
-      if (rnkRates && Object.keys(rnkRates).length > 0) {
-        return {
-          pig_iron_per_hr: rnkRates.pig_iron_per_hr ?? null,
-          metal_per_hr: rnkRates.metal_per_hr ?? null,
-          kryptonite_per_hr: rnkRates.kryptonite_per_hr ?? null,
-          spice_per_hr: rnkRates.spice_per_hr ?? null,
-        };
-      }
-      return null;
-    }
-
-    if (!resourcePlanet) return null;
-    const directEcon = planetEconMap?.[String(resourcePlanet.planet_id)];
-    if (directEcon && typeof directEcon === "object") {
-      return directEcon;
-    }
-    if (
-      buildingsEtaData &&
-      buildingsEtaData.planet?.planet_id === resourcePlanet.planet_id &&
-      buildingsEtaData.planet_economy
-    ) {
-      return buildingsEtaData.planet_economy;
-    }
-    if (
-      dashboard?.buildings_eta?.planet?.planet_id === resourcePlanet.planet_id &&
-      dashboard.buildings_eta.planet_economy
-    ) {
-      return dashboard.buildings_eta.planet_economy;
-    }
-    if (planets.length <= 1) {
-      return dashboard?.buildings_eta?.planet_economy || null;
-    }
-    return null;
-  }, [
-    buildingsEtaData,
-    dashboard?.buildings_eta,
-    isAllColoniesScope,
-    planetEconMap,
-    planets,
-    resourcePlanet,
-    rnkRates,
-  ]);
+  const scopedEcon = useMemo(
+    () =>
+      computeScopedEcon({
+        isAllColoniesScope,
+        planets,
+        resourcePlanet,
+        planetEconMap,
+        rnkRates,
+        buildingsEtaData,
+        dashboardBuildingsEta: dashboard?.buildings_eta,
+      }),
+    [
+      buildingsEtaData,
+      dashboard?.buildings_eta,
+      isAllColoniesScope,
+      planetEconMap,
+      planets,
+      resourcePlanet,
+      rnkRates,
+    ]
+  );
 
   const scopedResources = useMemo(() => {
     if (isAllColoniesScope) {
@@ -409,47 +239,10 @@ export const DashboardView: React.FC = () => {
       : `Ready to claim: ${tut.reward_text || "Step reward"}`
     : "Loading tutorial steps...";
 
-  // Active queues 3 domain buckets (filtering expired cached builds & deduplicating per-planet slots)
-  const { execBuildingJobs, execFleetJobs, execResearchJobs } = useMemo(() => {
-    const bld: QueueJobData[] = [];
-    const flt: QueueJobData[] = [];
-    const res: QueueJobData[] = [];
-    const coordsByPid = new Map<number, string>();
-    for (const p of planets) {
-      const ck = normalizeCoordKey(p.coords);
-      if (ck) coordsByPid.set(Number(p.planet_id), ck);
-    }
-    const seenBuildingSlots = new Set<string>();
-    for (const job of activeQueues) {
-      const dom = dashboardQueueDomainForJob(job);
-      if (dom === "research") {
-        res.push(job);
-      } else if (dom === "fleet") {
-        flt.push(job);
-      } else {
-        if (!isActiveBuildingJob(job, effNowSec)) continue;
-        const jPid =
-          job.planet_id != null && Number.isFinite(Number(job.planet_id)) && Number(job.planet_id) > 0
-            ? Math.trunc(Number(job.planet_id))
-            : null;
-        const jCoords = normalizeCoordKey(job.origin_coords || job.planet_coords);
-        const canonOrigin =
-          jCoords ||
-          (jPid !== null ? coordsByPid.get(jPid) || `p${jPid}` : "") ||
-          (gs?.active_planet_id != null
-            ? coordsByPid.get(Number(gs.active_planet_id)) || `p${Number(gs.active_planet_id)}`
-            : "");
-        const slot = Math.max(1, Math.trunc(finiteNum(job.queue_slot, 1)));
-        if (canonOrigin) {
-          const slotKey = `${canonOrigin}:s${slot}`;
-          if (seenBuildingSlots.has(slotKey)) continue;
-          seenBuildingSlots.add(slotKey);
-        }
-        bld.push(job);
-      }
-    }
-    return { execBuildingJobs: bld, execFleetJobs: flt, execResearchJobs: res };
-  }, [activeQueues, effNowSec, gs?.active_planet_id, planets]);
+  const { execBuildingJobs, execFleetJobs, execResearchJobs } = useMemo(
+    () => partitionActiveQueues(activeQueues, planets, gs?.active_planet_id, effNowSec),
+    [activeQueues, effNowSec, gs?.active_planet_id, planets]
+  );
 
   const allPlanActions = useMemo(() => dashboard?.plan || [], [dashboard?.plan]);
   const manualList = useMemo(() => {
@@ -512,89 +305,10 @@ export const DashboardView: React.FC = () => {
     return { buildingActions: bld, fleetActions: flt, researchActions: res };
   }, [allPlanActions, scopedDashPlanet]);
 
-  const allBuildingResourceRequests = useMemo<BuildingResourceRequestItem[]>(() => {
-    if (Array.isArray(dashboard?.building_resource_requests)) {
-      return dashboard!.building_resource_requests!;
-    }
-    const derived: BuildingResourceRequestItem[] = [];
-    const planetById = new Map<number, PlanetData>();
-    const planetByCoords = new Map<string, PlanetData>();
-    for (const p of planets) {
-      planetById.set(Number(p.planet_id), p);
-      const ck = normalizeCoordKey(p.coords);
-      if (ck) planetByCoords.set(ck, p);
-    }
-
-    for (const job of execFleetJobs) {
-      const nameLow = String(job.name || "").toLowerCase();
-      const detLow = String(job.detail || "").toLowerCase();
-      const isReturning =
-        Boolean(job.returning) || detLow.includes("returning") || nameLow.includes("↩");
-      const isAttack = nameLow.includes("attack");
-      const isRecycle = nameLow.includes("recycle");
-      const isTransport =
-        !isAttack &&
-        !isRecycle &&
-        (nameLow.includes("transport") || nameLow.includes("transfer"));
-      if (!isTransport || isReturning || job.delivered) continue;
-      const bundle = job.expected_cargo || job.cargo;
-      if (!bundle) continue;
-      const pig = Math.max(0, Math.round(finiteNum(bundle.pig_iron, 0)));
-      const met = Math.max(0, Math.round(finiteNum(bundle.metal, 0)));
-      const kry = Math.max(0, Math.round(finiteNum(bundle.kryptonite, 0)));
-      const spi = Math.max(0, Math.round(finiteNum(bundle.spice, 0)));
-      if (pig + met + kry + spi <= 0) continue;
-      const mCoords = /(\d{1,2}:\d{1,3}:\d{1,2})/.exec(String(job.name || ""));
-      const destCoords = mCoords ? mCoords[1] : "";
-      const destPlanet = destCoords ? planetByCoords.get(normalizeCoordKey(destCoords)) : undefined;
-      derived.push({
-        id: `flight-${derived.length}-${job.origin_coords || ""}-${destCoords || job.name || ""}`,
-        planet_id: destPlanet?.planet_id ?? null,
-        planet_coords: destPlanet?.coords || destCoords,
-        planet_name: destPlanet?.name,
-        label: cleanQueueJobTitle(job),
-        status: "in_flight",
-        resources: { pig_iron: pig, metal: met, kryptonite: kry, spice: spi },
-        source_coords: job.origin_coords || job.planet_coords,
-        eta_seconds: finiteNum(job.remaining_seconds, null),
-        finish_ts: finiteNum(job.finish_ts, null),
-        reason: job.detail,
-      });
-    }
-
-    for (const act of allPlanActions) {
-      if (String(act.kind || "").toUpperCase() !== "TRANSPORT") continue;
-      const bundle = act.cost;
-      if (!bundle) continue;
-      const pig = Math.max(0, Math.round(finiteNum(bundle.pig_iron, 0)));
-      const met = Math.max(0, Math.round(finiteNum(bundle.metal, 0)));
-      const kry = Math.max(0, Math.round(finiteNum(bundle.kryptonite, 0)));
-      const spi = Math.max(0, Math.round(finiteNum(bundle.spice, 0)));
-      if (pig + met + kry + spi <= 0) continue;
-      const mCoords = /(\d{1,2}:\d{1,3}:\d{1,2})/.exec(String(act.target_name || ""));
-      const destCoords = mCoords ? mCoords[1] : "";
-      const destPlanet =
-        (act.target_id != null ? planetById.get(Number(act.target_id)) : undefined) ||
-        (destCoords ? planetByCoords.get(normalizeCoordKey(destCoords)) : undefined);
-      const srcPlanet = act.planet_id != null ? planetById.get(Number(act.planet_id)) : undefined;
-      derived.push({
-        id: `plan-tr-${act.planet_id ?? 0}-${destPlanet?.planet_id ?? destCoords}-${derived.length}`,
-        planet_id: destPlanet?.planet_id ?? (act.target_id ?? null),
-        planet_coords: destPlanet?.coords || destCoords,
-        planet_name: destPlanet?.name,
-        label: act.target_name || "Resource transport",
-        status: "planned",
-        resources: { pig_iron: pig, metal: met, kryptonite: kry, spice: spi },
-        source_planet_id: act.planet_id ?? null,
-        source_coords: act.planet_coords || srcPlanet?.coords,
-        source_name: srcPlanet?.name,
-        eta_seconds: finiteNum(act.total_seconds ?? act.wait_seconds, null),
-        reason: act.reason,
-      });
-    }
-
-    return derived;
-  }, [allPlanActions, dashboard?.building_resource_requests, execFleetJobs, planets]);
+  const allBuildingResourceRequests = useMemo(
+    () => deriveBuildingResourceRequests(dashboard, execFleetJobs, allPlanActions, planets),
+    [allPlanActions, dashboard, execFleetJobs, planets]
+  );
 
   const scopedBuildingResourceRequests = useMemo(() => {
     if (!scopedDashPlanet) return allBuildingResourceRequests;
@@ -713,6 +427,24 @@ export const DashboardView: React.FC = () => {
     [enqueueManualCommand]
   );
 
+  const handleSelectColony = useCallback(
+    (planetId: number) => {
+      setSelectedPlanetId(planetId);
+      if (planets.length > 1) {
+        setUiPref("dashQueuePlanetScope", String(planetId));
+      }
+    },
+    [planets.length, setSelectedPlanetId, setUiPref]
+  );
+
+  const handleSelectPlanetScope = useCallback(
+    (planetId: number) => {
+      setUiPref("dashQueuePlanetScope", String(planetId));
+      setSelectedPlanetId(planetId);
+    },
+    [setSelectedPlanetId, setUiPref]
+  );
+
   return (
     <section
       id="view-dashboard"
@@ -745,459 +477,70 @@ export const DashboardView: React.FC = () => {
 
       {/* Upper Row: Resources + Colony Matrix */}
       <div className="dash-upper-grid">
-        <article className="hud-window">
-          <div className="window-bar">
-            <div className="window-title-group">
-              <span className="module-code tabular">SEC</span>
-              <h2>Resources &amp; Hourly Net Flow</h2>
-            </div>
-            <span className="module-meta tabular" id="command-subpath">
-              <span id="planet-title">{sectorTitleText}</span>
-            </span>
-          </div>
+        <DashboardTelemetryPanel
+          sectorTitleText={sectorTitleText}
+          hasResourceScope={hasResourceScope}
+          scopedResources={scopedResources}
+          scopedStorage={scopedStorage}
+          scopedEcon={scopedEcon}
+          energyValText={energyValText}
+          energyRatioText={energyRatioText}
+          dashRankText={dashRankText}
+          dashAzText={dashAzText}
+          dashPtsHrText={dashPtsHrText}
+          dashSpiceHrText={dashSpiceHrText}
+        />
 
-          <div className="telemetry-core">
-            <div className="track-list" aria-label="Planetary resource levels and net hourly flow">
-              <ResourceTrackRow
-                key="pig"
-                idKey="pig"
-                code="PIG"
-                name="Pig Iron"
-                amount={scopedResources.pig_iron}
-                storage={scopedStorage.pig_iron}
-                hourlyRate={scopedEcon?.pig_iron_per_hr}
-                hasPlanet={hasResourceScope}
-              />
-              <ResourceTrackRow
-                key="metal"
-                idKey="metal"
-                code="MET"
-                name="Metal"
-                amount={scopedResources.metal}
-                storage={scopedStorage.metal}
-                hourlyRate={scopedEcon?.metal_per_hr}
-                hasPlanet={hasResourceScope}
-              />
-              <ResourceTrackRow
-                key="kryp"
-                idKey="kryp"
-                code="KRY"
-                name="Kryptonite"
-                amount={scopedResources.kryptonite}
-                storage={scopedStorage.kryptonite}
-                hourlyRate={scopedEcon?.kryptonite_per_hr}
-                hasPlanet={hasResourceScope}
-              />
-              <ResourceTrackRow
-                key="spice"
-                idKey="spice"
-                code="SPI"
-                name="Spice"
-                amount={scopedResources.spice}
-                storage={scopedStorage.spice}
-                hourlyRate={scopedEcon?.spice_per_hr}
-                hasPlanet={hasResourceScope}
-              />
-            </div>
-
-            <div className="digital-readout-row">
-              <div className="digital-counter">
-                <span className="digital-tag tabular">ENG</span>
-                <span className="digital-number tabular" id="val-energy">
-                  {energyValText}
-                </span>
-                <span className="digital-sub tabular" id="energy-ratio">
-                  {energyRatioText}
-                </span>
-              </div>
-              <div className="digital-counter">
-                <span className="digital-tag tabular">RNK</span>
-                <span className="digital-number tabular" id="dash-rank-val">
-                  {dashRankText}
-                </span>
-                <span className="digital-sub tabular" id="dash-az-val">
-                  {dashAzText}
-                </span>
-              </div>
-              <div className="digital-counter">
-                <span className="digital-tag tabular">FLW</span>
-                <span className="digital-number tabular" id="dash-pts-hr">
-                  {dashPtsHrText}
-                </span>
-                <span className="digital-sub tabular" id="dash-spice-hr">
-                  {dashSpiceHrText}
-                </span>
-              </div>
-            </div>
-          </div>
-        </article>
-
-        <article className="hud-window">
-          <div className="window-bar window-bar-wrap">
-            <div className="window-title-group">
-              <span className="module-code tabular">MAP</span>
-              <h2>Empire Colonies &amp; Active Queues</h2>
-              <span className="module-meta tabular" id="planet-meta">
-                {planetMetaText}
-              </span>
-            </div>
-            <div className="inline-actions">
-              <span className="module-meta tabular" id="econ-bf-status">
-                {b2Pct === 0 ? "B2: 0%" : `B2: ${b2Pct}%`}
-              </span>
-              <button
-                type="button"
-                className={b2Pct === 0 ? "btn btn-primary btn-sm" : "btn btn-secondary btn-sm"}
-                id="btn-dash-b2-toggle"
-                data-target-pct={b2Pct === 0 ? "100" : "0"}
-                onClick={() => toggleBlastFurnaceRate(b2Pct === 0 ? 100 : 0)}
-              >
-                {b2Pct === 0 ? "Resume b2 (100%)" : "Pause b2 (0% +Pig)"}
-              </button>
-              <span className="module-meta tabular" id="colony-count-tag">
-                {colonyCountTag}
-              </span>
-            </div>
-          </div>
-
-          <div className="matrix-body">
-            <div className="table-wrap table-scroll">
-              <table>
-                <thead>
-                  <tr>
-                    <SortableTh
-                      label="Coords"
-                      sortKey="coords"
-                      activeKey={colonySort.sortKey}
-                      direction={colonySort.sortDirection}
-                      onSort={colonySort.requestSort}
-                    />
-                    <SortableTh
-                      label="Colony"
-                      sortKey="colony"
-                      activeKey={colonySort.sortKey}
-                      direction={colonySort.sortDirection}
-                      onSort={colonySort.requestSort}
-                    />
-                    <SortableTh
-                      label="State"
-                      sortKey="state"
-                      activeKey={colonySort.sortKey}
-                      direction={colonySort.sortDirection}
-                      onSort={colonySort.requestSort}
-                    />
-                    <SortableTh
-                      label="Fields"
-                      sortKey="fields"
-                      activeKey={colonySort.sortKey}
-                      direction={colonySort.sortDirection}
-                      onSort={colonySort.requestSort}
-                      align="right"
-                    />
-                  </tr>
-                </thead>
-                <tbody id="colony-tbody">
-                  {colonySort.sortedRows.length === 0 ? (
-                    <tr>
-                      <td colSpan={4} className="empty-cell">
-                        {dashboard ? "No colonies discovered." : "Waiting for snapshot..."}
-                      </td>
-                    </tr>
-                  ) : (
-                    colonySort.sortedRows.map((p) => {
-                      const isActive = p.planet_id === chosenId;
-                      const isConstructing = constructingPlanetIds.has(Number(p.planet_id));
-                      const pigStor = finiteNum(p.storage?.pig_iron, 0);
-                      const pigAmt = finiteNum(p.resources?.pig_iron, 0);
-                      const spiStor = finiteNum(p.storage?.spice, 0);
-                      const spiAmt = finiteNum(p.resources?.spice, 0);
-                      const nearFull =
-                        (pigStor > 0 && pigAmt / pigStor >= 0.85) ||
-                        (spiStor > 0 && spiAmt / spiStor >= 0.85);
-                      const statusWord = isConstructing
-                        ? "BUILDING"
-                        : nearFull
-                          ? "NEAR-CAP"
-                          : isActive
-                            ? "ONLINE"
-                            : "IDLE";
-                      const statusClass = isConstructing
-                        ? "status-word is-constructing"
-                        : nearFull
-                          ? "status-word is-warn"
-                          : isActive
-                            ? "status-word is-active-idle"
-                            : "status-word is-idle";
-                      const fUsed = finiteNum(p.fields_used, null);
-                      const fMax = finiteNum(p.fields_max, null);
-
-                      return (
-                        <tr
-                          key={p.planet_id}
-                          className={`clickable-row${isActive ? " is-active" : ""}${isConstructing ? " is-constructing" : ""}`}
-                          data-constructing={isConstructing ? "true" : "false"}
-                          onClick={() => {
-                            setSelectedPlanetId(p.planet_id);
-                            if (planets.length > 1) {
-                              setUiPref("dashQueuePlanetScope", String(p.planet_id));
-                            }
-                          }}
-                        >
-                          <td className="tabular">{p.coords || "--"}</td>
-                          <td>{p.name || "Colony"}</td>
-                          <td>
-                            <span className={statusClass}>{statusWord}</span>
-                          </td>
-                          <td className="col-right tabular">
-                            {`${fUsed === null ? "—" : fUsed}/${fMax === null ? "—" : fMax}`}
-                          </td>
-                        </tr>
-                      );
-                    })
-                  )}
-                </tbody>
-              </table>
-            </div>
-
-            <div className="queue-strip">
-              <div className="queue-strip-head tabular">
-                <span>ACTIVE QUEUES</span>
-                <span id="matrix-account-line">{matrixAccountLine}</span>
-              </div>
-              <div id="active-queues-list" className="queue-summary tabular">
-                {(() => {
-                  const liveStripQueues = activeQueues.filter(
-                    (q) =>
-                      dashboardQueueDomainForJob(q) !== "building" ||
-                      isActiveBuildingJob(q, effNowSec)
-                  );
-                  if (liveStripQueues.length === 0) {
-                    return dashboard
-                      ? "No active construction or research jobs."
-                      : "No active construction jobs.";
-                  }
-                  return liveStripQueues.map((q, idx) => {
-                    const catTag = `[${String(q.category || "JOB").toUpperCase()}]`;
-                    const titleTxt = cleanQueueJobTitle(q);
-                    const cargoInfo = formatQueueJobCargo(q);
-                    const cargoSuffix =
-                      cargoInfo && !cargoInfo.isEmpty
-                        ? ` · ${cargoInfo.label}: ${cargoInfo.inline}`
-                        : "";
-                    const finTs = finiteNum(q.finish_ts, null);
-                    return (
-                      <React.Fragment key={`qstrip-${execJobBaseKey(q)}-${idx}`}>
-                        {idx > 0 ? " · " : null}
-                        <span>
-                          {finTs !== null && finTs > 0 ? (
-                            <>
-                              {`${catTag} ${titleTxt}${cargoSuffix} (`}
-                              <span data-finish-ts={String(finTs)}>
-                                {fmtHms(Math.max(0, Math.round(finTs - effNowSec)))}
-                              </span>
-                              {` · ${fmtClockTime(finTs, effNowSec)})`}
-                            </>
-                          ) : q.remaining_text ? (
-                            `${catTag} ${titleTxt}${cargoSuffix} (${q.remaining_text})`
-                          ) : (
-                            `${catTag} ${titleTxt}${cargoSuffix}`
-                          )}
-                        </span>
-                      </React.Fragment>
-                    );
-                  });
-                })()}
-              </div>
-            </div>
-          </div>
-        </article>
+        <DashboardColonyPanel
+          hasDashboard={Boolean(dashboard)}
+          planets={planets}
+          chosenId={chosenId}
+          constructingPlanetIds={constructingPlanetIds}
+          planetMetaText={planetMetaText}
+          b2Pct={b2Pct}
+          colonyCountTag={colonyCountTag}
+          matrixAccountLine={matrixAccountLine}
+          activeQueues={activeQueues}
+          effNowSec={effNowSec}
+          onToggleBlastFurnaceRate={toggleBlastFurnaceRate}
+          onSelectColony={handleSelectColony}
+        />
       </div>
 
       {/* GA + Neural Network Radial-Ring Calculation HUD */}
-      <GaNnScannerHud />
+      <ScannerHud />
 
-      {/* Lower Row Toolbar */}
-      <div className="dash-queues-toolbar" aria-label="Planned queues overview and planet scope">
-        <div className="dash-queues-toolbar-meta">
-          <span
-            className={`module-meta tabular mode-badge${isAiPlanner ? " is-ga" : ""}`}
-            id="dash-planner-mode-badge"
-          >
-            {modeLabel}
-          </span>
-          <span
-            className="module-meta tabular"
-            id="dash-pinned-count-badge"
-            hidden={pinnedCount === 0}
-          >
-            {`${pinnedCount} PINNED`}
-          </span>
-          {planets.length > 1 ? (
-            <span className="module-meta tabular" id="dash-builders-summary-badge">
-              {`${constructingPlanetIds.size}/${planets.length} BUILDING`}
-            </span>
-          ) : null}
-        </div>
-        {planets.length > 1 ? (
-          <div
-            className="filter-chips dash-planet-scope-chips"
-            role="group"
-            aria-label="Filter building and fleet queues by planet"
-          >
-            <button
-              type="button"
-              className={`chip-btn planet-scope-chip tabular${activeDashScope === "all" ? " active" : ""}`}
-              data-dash-planet-scope="all"
-              title={`Show all ${planets.length} colonies (${constructingPlanetIds.size} currently constructing)`}
-              onClick={() => setUiPref("dashQueuePlanetScope", "all")}
-            >
-              <span className="planet-chip-top">All Planets</span>
-              <span className="planet-chip-sub">
-                {`${planets.length} colonies · ${constructingPlanetIds.size} bldg`}
-              </span>
-            </button>
-            {planets.map((p) => {
-              const pidKey = String(p.planet_id);
-              const stats = planetQueueStats.get(p.planet_id) || { total: 0, ready: 0 };
-              const isConstructing = constructingPlanetIds.has(Number(p.planet_id));
-              const planetLabel = p.name || "Colony";
-              return (
-                <button
-                  key={pidKey}
-                  type="button"
-                  className={`chip-btn planet-scope-chip tabular${activeDashScope === pidKey ? " active" : ""}${isConstructing ? " is-constructing" : ""}`}
-                  data-dash-planet-scope={pidKey}
-                  data-constructing={isConstructing ? "true" : "false"}
-                  title={`${planetLabel} [${p.coords}] — ${isConstructing ? "Building in progress" : "Builder idle"} · ${stats.ready} ready / ${stats.total} queued`}
-                  onClick={() => {
-                    setUiPref("dashQueuePlanetScope", pidKey);
-                    setSelectedPlanetId(p.planet_id);
-                  }}
-                >
-                  <span className="planet-chip-top">{p.coords || planetLabel}</span>
-                  <span className="planet-chip-sub">
-                    {isConstructing
-                      ? `${planetLabel} · Building`
-                      : `${planetLabel} (${stats.total})`}
-                  </span>
-                </button>
-              );
-            })}
-          </div>
-        ) : null}
-      </div>
-
-      {/* Lower Row: 3 Side-by-Side Queues (Building, Fleet, Research) */}
-      <div className="dash-lower-grid">
-        <DashboardQueueCard
-          cardId="dash-queue-card-building"
-          moduleCode="NXQ"
-          title="Building Queue"
-          scopeBadge={
-            planets.length > 1
-              ? scopedDashPlanet
-                ? scopedDashPlanet.name && scopedDashPlanet.name.toLowerCase() !== "colony"
-                  ? `${scopedDashPlanet.name} [${scopedDashPlanet.coords || ""}]`
-                  : scopedDashPlanet.coords || scopedDashPlanet.name
-                : `ALL · ${planets.length} PLANETS`
-              : undefined
-          }
-          countId="dash-bld-q-count"
-          addBtnId="btn-dash-add-queue"
-          addBtnAriaLabel="Queue building command"
-          onAddQueueClick={() => openComposerWithKind("BUILD")}
-          gotoLabel="Buildings →"
-          gotoPageAttr="buildings"
-          onGotoClick={() => setActivePage("buildings")}
-          execTbodyId="dash-exec-building-tbody"
-          planTbodyId="dash-plan-tbody"
-          execJobs={scopedExecBuildingJobs}
-          plannedActions={buildingActions}
-          resourceRequests={scopedBuildingResourceRequests}
-          planets={planets}
-          customPlanetNames={dashboard?.custom_planet_names}
-          maxRows={dashQueueMaxRows}
-          emptyText={
-            dashboard
-              ? scopedDashPlanet
-                ? `No queued building actions on ${scopedDashPlanet.name || scopedDashPlanet.coords}.`
-                : "No queued building actions."
-              : "Run Sync to populate building actions..."
-          }
-          nowEpochSec={effNowSec}
-          onDispatch={handleDispatch}
-          onUpdateQueue={handleUpdateQueue}
-          onCancelQueue={handleCancelQueue}
-          onPinQueue={handlePinQueue}
-        />
-
-        <DashboardQueueCard
-          cardId="dash-queue-card-fleet"
-          moduleCode="FLT"
-          title="Fleet Queue"
-          scopeBadge={
-            planets.length > 1
-              ? scopedDashPlanet
-                ? scopedDashPlanet.name && scopedDashPlanet.name.toLowerCase() !== "colony"
-                  ? `${scopedDashPlanet.name} [${scopedDashPlanet.coords || ""}]`
-                  : scopedDashPlanet.coords || scopedDashPlanet.name
-                : "PER-PLANET"
-              : undefined
-          }
-          countId="dash-fleet-q-count"
-          addBtnId="btn-dash-add-fleet-queue"
-          addBtnAriaLabel="Queue fleet or ship command"
-          onAddQueueClick={() => openComposerWithKind("BUILD_SHIP")}
-          gotoLabel="Fleet →"
-          gotoPageAttr="combat"
-          onGotoClick={() => setActivePage("combat")}
-          execTbodyId="dash-exec-fleet-tbody"
-          planTbodyId="dash-plan-fleet-tbody"
-          execJobs={scopedExecFleetJobs}
-          plannedActions={fleetActions}
-          planets={planets}
-          customPlanetNames={dashboard?.custom_planet_names}
-          maxRows={dashQueueMaxRows}
-          emptyText={
-            scopedDashPlanet
-              ? `No queued fleet or ship actions on ${scopedDashPlanet.name || scopedDashPlanet.coords}.`
-              : "No queued fleet or ship actions."
-          }
-          nowEpochSec={effNowSec}
-          onDispatch={handleDispatch}
-          onUpdateQueue={handleUpdateQueue}
-          onCancelQueue={handleCancelQueue}
-          onPinQueue={handlePinQueue}
-        />
-
-        <DashboardQueueCard
-          cardId="dash-queue-card-research"
-          moduleCode="RES"
-          title="Research Queue"
-          scopeBadge={planets.length > 1 ? "GLOBAL · 1 SLOT" : undefined}
-          countId="dash-research-q-count"
-          addBtnId="btn-dash-add-res-queue"
-          addBtnAriaLabel="Queue research command"
-          onAddQueueClick={() => openComposerWithKind("RESEARCH")}
-          gotoLabel="Research →"
-          gotoBtnId="btn-dash-goto-research"
-          gotoPageAttr="research"
-          onGotoClick={handleGotoResearch}
-          execTbodyId="dash-exec-research-tbody"
-          planTbodyId="dash-plan-research-tbody"
-          execJobs={execResearchJobs}
-          plannedActions={researchActions}
-          planets={planets}
-          customPlanetNames={dashboard?.custom_planet_names}
-          maxRows={dashQueueMaxRows}
-          emptyText="No queued research actions."
-          nowEpochSec={effNowSec}
-          onDispatch={handleDispatch}
-          onUpdateQueue={handleUpdateQueue}
-          onCancelQueue={handleCancelQueue}
-          onPinQueue={handlePinQueue}
-        />
-      </div>
+      <DashboardQueuesSection
+        hasDashboard={Boolean(dashboard)}
+        isAiPlanner={isAiPlanner}
+        modeLabel={modeLabel}
+        pinnedCount={pinnedCount}
+        planets={planets}
+        constructingPlanetIds={constructingPlanetIds}
+        activeDashScope={activeDashScope}
+        scopedDashPlanet={scopedDashPlanet}
+        planetQueueStats={planetQueueStats}
+        customPlanetNames={dashboard?.custom_planet_names}
+        dashQueueMaxRows={dashQueueMaxRows}
+        effNowSec={effNowSec}
+        scopedExecBuildingJobs={scopedExecBuildingJobs}
+        buildingActions={buildingActions}
+        scopedBuildingResourceRequests={scopedBuildingResourceRequests}
+        scopedExecFleetJobs={scopedExecFleetJobs}
+        fleetActions={fleetActions}
+        execResearchJobs={execResearchJobs}
+        researchActions={researchActions}
+        onSelectAllScope={() => setUiPref("dashQueuePlanetScope", "all")}
+        onSelectPlanetScope={handleSelectPlanetScope}
+        onOpenComposerWithKind={openComposerWithKind}
+        onGotoBuildings={() => setActivePage("buildings")}
+        onGotoCombat={() => setActivePage("combat")}
+        onGotoResearch={handleGotoResearch}
+        onDispatch={handleDispatch}
+        onUpdateQueue={handleUpdateQueue}
+        onCancelQueue={handleCancelQueue}
+        onPinQueue={handlePinQueue}
+      />
     </section>
   );
 };

@@ -8,8 +8,11 @@ import re
 import time
 from typing import Any, Optional
 
-from spaceinvasion.combat.fleet import score_galaxy_scan_sectors
+from spaceinvasion.combat._scanner_batch import select_smart_galaxy_scan_batch as select_smart_galaxy_scan_batch
+from spaceinvasion.combat._scanner_sectors import score_galaxy_scan_sectors as score_galaxy_scan_sectors
+from spaceinvasion.combat._scanner_walk import order_sectors_for_smooth_walk as order_sectors_for_smooth_walk
 from spaceinvasion.core.config import StrategyConfig
+from spaceinvasion.core.coords import ARROW_NAV_MAX_DISTANCE as ARROW_NAV_MAX_DISTANCE
 
 _PLANNER_SCAN_COOLDOWN_S: float = 1800.0
 _GAL_SYS_RE = re.compile(r"(\d{1,2}):(\d{1,3})(?::(\d{1,2}))?", re.ASCII)
@@ -65,9 +68,7 @@ def select_planner_scan_system(
     cooldown_s: float = _PLANNER_SCAN_COOLDOWN_S,
 ) -> Optional[dict[str, Any]]:
     """Pick ONE smart `SCAN_GALAXY` system for the planner (2-phase: explore outward -> weighted stale refresh)."""
-    own_list: list[str] = (
-        [origin_coords] if isinstance(origin_coords, str) else [str(c) for c in origin_coords if c]
-    )
+    own_list: list[str] = [origin_coords] if isinstance(origin_coords, str) else [str(c) for c in origin_coords if c]
     if not own_list:
         return None
     eff_now = _safe_float_any(now_ts, 0.0)

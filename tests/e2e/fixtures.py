@@ -5,11 +5,21 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 import re
 from typing import Any, Mapping, Optional, Sequence
-import unittest
 
-from spaceinvasion import fleet, game_data, ranking
-from spaceinvasion.config import StrategyConfig, strategy_config_from_dict
-from spaceinvasion.state import (
+from spaceinvasion.combat.flight import BashTracker
+from spaceinvasion.combat.points import (
+    estimate_account_points,
+    estimate_hourly_economy,
+    estimate_planet_hourly_economy,
+)
+from spaceinvasion.combat.simulator import simulate_raid_outcome
+from spaceinvasion.core import catalog as game_data
+from spaceinvasion.core.catalog import SHIP_SLUG_BY_KEY
+from spaceinvasion.parsing.models import SpyReport
+from spaceinvasion.core.config import (
+    StrategyConfig,
+)
+from spaceinvasion.core.model import (
     BuildingOffer,
     EnergyBalance,
     FleetAlert,
@@ -19,7 +29,6 @@ from spaceinvasion.state import (
     ResearchOffer,
     Resources,
     TutorialStatus,
-    TutorialTask,
     UnitOffer,
 )
 
@@ -46,8 +55,10 @@ def make_building_offer(
     name = str(info.get("name") or f"Building {bid}")
     nxt_lvl = int(cur_lvl) + 1
     resolved_cost = cost if cost is not None else _res_from_dict(game_data.building_cost(bid, nxt_lvl))
-    resolved_href = href if href is not None else (
-        f"indexInternal.es?action=internalBuildItem&buildingID={bid}&sid=test#{bid}" if can_build else None
+    resolved_href = (
+        href
+        if href is not None
+        else (f"indexInternal.es?action=internalBuildItem&buildingID={bid}&sid=test#{bid}" if can_build else None)
     )
     return BuildingOffer(
         building_id=bid,
@@ -96,8 +107,10 @@ def make_research_offer(
     name = str(info.get("name") or rkey)
     nxt_lvl = int(cur_lvl) + 1
     resolved_cost = cost if cost is not None else research_cost_for_level(rkey, nxt_lvl)
-    resolved_href = href if href is not None else (
-        f"indexInternal.es?action=internalBuildItem&researchID={rid_num}&sid=test" if can_research else None
+    resolved_href = (
+        href
+        if href is not None
+        else (f"indexInternal.es?action=internalBuildItem&researchID={rid_num}&sid=test" if can_research else None)
     )
     return ResearchOffer(
         research_id=rid_num,
@@ -122,7 +135,7 @@ def make_ship_offer(
     input_name: Optional[str] = None,
     status_text: Optional[str] = None,
 ) -> UnitOffer:
-    slug = fleet.SHIP_SLUG_BY_KEY.get(f"s{sid}")
+    slug = SHIP_SLUG_BY_KEY.get(f"s{sid}")
     info = game_data.SHIPS.get(slug or "") or {}
     name = str(info.get("name") or f"Ship s{sid}")
     resolved_cost = cost if cost is not None else _res_from_dict(info.get("base_cost") or {})
@@ -180,7 +193,7 @@ def make_planet(
             if eval_e >= 0:
                 prod += eval_e
             else:
-                dem += (-eval_e)
+                dem += -eval_e
         energy = EnergyBalance(produced=prod, used=dem)
 
     offers = building_offers
@@ -243,10 +256,7 @@ def make_game_state(
     p_tuple = planets if planets is not None else (make_planet(auto_offers=True),)
     act_id = active_planet_id if active_planet_id is not None else (p_tuple[0].planet_id if p_tuple else None)
     r_map = dict(researches or {})
-    r_names = {
-        rk: str((game_data.RESEARCH_BY_ID.get(rk) or {}).get("name", rk))
-        for rk in r_map
-    }
+    r_names = {rk: str((game_data.RESEARCH_BY_ID.get(rk) or {}).get("name", rk)) for rk in r_map}
     return GameState(
         universe_id=31,
         user_id=103603,
@@ -357,8 +367,8 @@ def evaluate_sequence_score(
 ) -> SequenceEvaluation:
     """Independently simulate `actions` forward using `game_data`, `ranking`, and `fleet` only."""
     cfg = config or StrategyConfig()
-    initial_pts = float(ranking.estimate_account_points(state)["estimated_points"])
-    initial_inc = float(ranking.estimate_hourly_economy(state)["spice_eq_per_hr"])
+    initial_pts = float(estimate_account_points(state)["estimated_points"])
+    initial_inc = float(estimate_hourly_economy(state)["spice_eq_per_hr"])
 
     active_pid = state.active_planet_id or (state.planets[0].planet_id if state.planets else None)
     sim_researches = dict(state.researches or {})
@@ -366,7 +376,7 @@ def evaluate_sequence_score(
     for p in state.planets:
         b_ends: list[float] = []
         if p.planet_id == active_pid:
-            for q in (state.active_queues or ()):
+            for q in state.active_queues or ():
                 if str(getattr(q, "category", "")).lower() == "building":
                     rem_h = _parse_remaining_hours(getattr(q, "remaining_text", ""))
                     b_ends.append(rem_h if rem_h is not None else horizon_hours + 1.0)
@@ -375,7 +385,12 @@ def evaluate_sequence_score(
             b_ends.append(horizon_hours + 1.0)
         sim_planets[p.planet_id] = {
             "planet": p,
-            "resources": [float(p.resources.pig_iron), float(p.resources.metal), float(p.resources.kryptonite), float(p.resources.spice)],
+            "resources": [
+                float(p.resources.pig_iron),
+                float(p.resources.metal),
+                float(p.resources.kryptonite),
+                float(p.resources.spice),
+            ],
             "buildings": dict(p.buildings or {}),
             "ships": dict(p.ships or {}),
             "economy_rates": dict(p.economy_rates or {}),
@@ -392,7 +407,7 @@ def evaluate_sequence_score(
     elapsed_hours = 0.0
     research_busy_until = 0.0
     initial_r_busy = False
-    for q in (state.active_queues or ()):
+    for q in state.active_queues or ():
         if str(getattr(q, "category", "")).lower() == "research":
             initial_r_busy = True
             rem_h = _parse_remaining_hours(getattr(q, "remaining_text", ""))
@@ -409,7 +424,7 @@ def evaluate_sequence_score(
         for t in (state.raid_targets or ())
         if (t.get("coords") or t.get("target_coords"))
     }
-    bash = fleet.BashTracker()
+    bash = BashTracker()
 
     def _current_state_obj() -> GameState:
         plist = []
@@ -443,7 +458,7 @@ def evaluate_sequence_score(
         cur_state = _current_state_obj()
         for pid_item, sp_item in sim_planets.items():
             p_cur = next(pl for pl in cur_state.planets if pl.planet_id == pid_item)
-            econ = ranking.estimate_planet_hourly_economy(cur_state, p_cur)
+            econ = estimate_planet_hourly_economy(cur_state, p_cur)
             sp_item["resources"][0] = max(0.0, sp_item["resources"][0] + float(econ["pig_iron_per_hr"]) * dt_hours)
             sp_item["resources"][1] = max(0.0, sp_item["resources"][1] + float(econ["metal_per_hr"]) * dt_hours)
             sp_item["resources"][2] = max(0.0, sp_item["resources"][2] + float(econ["kryptonite_per_hr"]) * dt_hours)
@@ -455,7 +470,7 @@ def evaluate_sequence_score(
             return 0.0
         cur_state = _current_state_obj()
         cur_p = next(pl for pl in cur_state.planets if pl.planet_id == pid_target)
-        econ = ranking.estimate_planet_hourly_economy(cur_state, cur_p)
+        econ = estimate_planet_hourly_economy(cur_state, cur_p)
         rates = [
             float(econ["pig_iron_per_hr"]),
             float(econ["metal_per_hr"]),
@@ -503,7 +518,9 @@ def evaluate_sequence_score(
                 continue
             m = re.search(r"(\d{1,2}:\d{1,3}:\d{1,2})", str(getattr(act, "target_name", "")))
             if not m:
-                violations.append(f"Invalid or missing coordinates on executable ATTACK: {getattr(act, 'target_name', '')!r}")
+                violations.append(
+                    f"Invalid or missing coordinates on executable ATTACK: {getattr(act, 'target_name', '')!r}"
+                )
                 continue
             t_coords = m.group(1)
             raw_t = raid_targets_by_coords.get(t_coords)
@@ -520,7 +537,7 @@ def evaluate_sequence_score(
                 violations.append(f"Bash violation at {t_coords}")
                 continue
             res_map = raw_t.get("resources") if isinstance(raw_t.get("resources"), dict) else raw_t
-            rep = fleet.SpyReport(
+            rep = SpyReport(
                 target_coords=t_coords,
                 owner=str(raw_t.get("owner") or ""),
                 resources=_res_from_dict(res_map or {}),
@@ -533,7 +550,7 @@ def evaluate_sequence_score(
                 for k, v in sp["ships"].items()
                 if k in ("s4", "s5", "s6", "s7", "s13", "s14", "s15", "s16", "s1", "s2", "s3") and int(v) > 0
             }
-            combat = fleet.simulate_raid_outcome(
+            combat = simulate_raid_outcome(
                 atk_ships,
                 rep,
                 attacker_researches=sim_researches,
@@ -566,19 +583,25 @@ def evaluate_sequence_score(
                 violations.append(f"Fields exhausted on planet {pid} before b{bid}")
                 continue
             max_b_slots = 1 if p_obj.planet_type == "asteroid" else 5
-            unmet = game_data.missing_prerequisites("buildings", bid, buildings=sp["buildings"], researches=sim_researches)
+            unmet = game_data.missing_prerequisites(
+                "buildings", bid, buildings=sp["buildings"], researches=sim_researches
+            )
             if unmet and not is_exec and active_research is not None and active_research[2] <= horizon_hours:
                 dt_r = max(0.0, active_research[2] - elapsed_hours)
                 _advance_all_planets(dt_r)
                 elapsed_hours += dt_r
                 _flush_completions()
-                unmet = game_data.missing_prerequisites("buildings", bid, buildings=sp["buildings"], researches=sim_researches)
+                unmet = game_data.missing_prerequisites(
+                    "buildings", bid, buildings=sp["buildings"], researches=sim_researches
+                )
             if unmet:
                 violations.append(f"Unmet prereqs for b{bid} on planet {pid}: {unmet}")
                 continue
             cur_lvl = int(sp["buildings"].get(f"b{bid}", 0))
             if getattr(act, "target_level", None) is not None and int(getattr(act, "target_level")) <= cur_lvl:
-                violations.append(f"Invalid target_level {getattr(act, 'target_level')} <= {cur_lvl} for b{bid} on planet {pid}")
+                violations.append(
+                    f"Invalid target_level {getattr(act, 'target_level')} <= {cur_lvl} for b{bid} on planet {pid}"
+                )
                 continue
             nxt_lvl = cur_lvl + 1
             cost = game_data.building_cost(bid, nxt_lvl)
@@ -609,7 +632,9 @@ def evaluate_sequence_score(
             for i in range(4):
                 sp["resources"][i] = max(0.0, sp["resources"][i] - c_vals[i])
             base_s = float(game_data.building_level_stats(bid, nxt_lvl).get("base_time_s", 0.0) or 0.0)
-            div = max(1.0, (int(sp["buildings"].get("b7", 0)) + 1) * (2 ** int(sp["buildings"].get("b17", 0))) * speedup)
+            div = max(
+                1.0, (int(sp["buildings"].get("b7", 0)) + 1) * (2 ** int(sp["buildings"].get("b17", 0))) * speedup
+            )
             b_hrs = (base_s / div) / 3600.0
             sp["b_queue_ends"].append(elapsed_hours + b_hrs)
             if elapsed_hours + b_hrs <= horizon_hours:
@@ -622,7 +647,7 @@ def evaluate_sequence_score(
                 if edelta >= 0:
                     sp["energy_prod"] += edelta
                 else:
-                    sp["energy_used"] += (-edelta)
+                    sp["energy_used"] += -edelta
             continue
 
         if kind == "RESEARCH" and getattr(act, "target_id", None) is not None:
@@ -647,21 +672,27 @@ def evaluate_sequence_score(
                 _advance_all_planets(slot_wait)
                 elapsed_hours += slot_wait
                 _flush_completions()
-            unmet = game_data.missing_prerequisites("research", rkey, buildings=sp["buildings"], researches=sim_researches)
+            unmet = game_data.missing_prerequisites(
+                "research", rkey, buildings=sp["buildings"], researches=sim_researches
+            )
             if unmet:
                 if is_exec:
                     violations.append(f"Executable RESEARCH {rkey} with unmet prereqs {unmet}")
                 continue
             cur_rlvl = int(sim_researches.get(rkey, 0))
             if getattr(act, "target_level", None) is not None and int(getattr(act, "target_level")) <= cur_rlvl:
-                violations.append(f"Invalid target_level {getattr(act, 'target_level')} <= {cur_rlvl} for RESEARCH {rkey}")
+                violations.append(
+                    f"Invalid target_level {getattr(act, 'target_level')} <= {cur_rlvl} for RESEARCH {rkey}"
+                )
                 continue
             nxt_lvl = cur_rlvl + 1
             cost = research_cost_for_level(rkey, nxt_lvl)
             c_vals = [float(cost.pig_iron), float(cost.metal), float(cost.kryptonite), float(cost.spice)]
             if any(sp["resources"][i] + 1e-6 < c_vals[i] for i in range(4)):
                 if is_exec:
-                    violations.append(f"Insufficient resources for executable RESEARCH {rkey} L{nxt_lvl} on planet {pid}")
+                    violations.append(
+                        f"Insufficient resources for executable RESEARCH {rkey} L{nxt_lvl} on planet {pid}"
+                    )
                     continue
                 wait_h = _wait_hours_for_cost(pid, sp, c_vals)
                 if elapsed_hours + wait_h > horizon_hours:
@@ -681,7 +712,7 @@ def evaluate_sequence_score(
         if kind == "BUILD_SHIP" and getattr(act, "target_id", None) is not None:
             sid_num = int(getattr(act, "target_id"))
             skey = f"s{sid_num}"
-            slug = fleet.SHIP_SLUG_BY_KEY.get(skey)
+            slug = SHIP_SLUG_BY_KEY.get(skey)
             if not slug:
                 violations.append(f"Unknown ship id {skey} on planet {pid}")
                 continue
@@ -696,10 +727,7 @@ def evaluate_sequence_score(
                 continue
             qty = max(1, int(getattr(act, "target_level", 1) or 1))
             base_cost = (game_data.SHIPS.get(slug) or {}).get("base_cost") or {}
-            c_vals = [
-                float(base_cost.get(rk, 0) or 0) * qty
-                for rk in ("pig_iron", "metal", "kryptonite", "spice")
-            ]
+            c_vals = [float(base_cost.get(rk, 0) or 0) * qty for rk in ("pig_iron", "metal", "kryptonite", "spice")]
             if any(sp["resources"][i] + 1e-6 < c_vals[i] for i in range(4)):
                 if is_exec:
                     violations.append(f"Insufficient resources for executable BUILD_SHIP {qty}x {skey} on planet {pid}")
@@ -719,8 +747,8 @@ def evaluate_sequence_score(
         _flush_completions()
 
     final_state = _current_state_obj()
-    final_pts = float(ranking.estimate_account_points(final_state)["estimated_points"])
-    final_inc = float(ranking.estimate_hourly_economy(final_state)["spice_eq_per_hr"])
+    final_pts = float(estimate_account_points(final_state)["estimated_points"])
+    final_inc = float(estimate_hourly_economy(final_state)["spice_eq_per_hr"])
     pts_delta = final_pts - initial_pts
     inc_delta = final_inc - initial_inc
     penalty = 10_000.0 * len(violations)
