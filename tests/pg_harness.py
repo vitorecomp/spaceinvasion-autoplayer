@@ -20,6 +20,7 @@ Provides:
 from __future__ import annotations
 
 import atexit
+from collections import deque
 from collections.abc import Sequence
 import contextlib
 import os
@@ -413,6 +414,22 @@ class DisposablePostgresServer:
         self._counter = 0
         self._created_dbs: list[str] = []
         self._admin_conn: Optional[psycopg.Connection[Any]] = None
+        self._free_pool: deque[str] = deque()
+        self._checked_out_dbs: set[str] = set()
+        self._pooled_db_names: set[str] = set()
+        self._pool_conns: dict[str, psycopg.Connection[Any]] = {}
+        self._pool_conn_pids: dict[str, int] = {}
+        self._clean_dsns: set[str] = set()
+        self._template_cloned_dsns: set[str] = set()
+        self._template_all_tables: tuple[str, ...] = ()
+        self._template_truncatable_tables: tuple[str, ...] = ()
+        self._template_alembic_rev: str = ""
+        self._template_migration_events_count: int = 0
+        self._template_seq_to_table: dict[str, str] = {}
+        self._pool_probe_sql: str = ""
+        self._engine_cache_lock = threading.Lock()
+        self._shared_pg_dialect: Any = None
+        self._shared_compiled_cache: Any = None
 
     @property
     def container_id(self) -> Optional[str]:
@@ -497,7 +514,21 @@ class DisposablePostgresServer:
                 "-c",
                 "max_connections=300",
                 "-c",
-                "shared_buffers=64MB",
+                "shared_buffers=128MB",
+                "-c",
+                "work_mem=16MB",
+                "-c",
+                "maintenance_work_mem=64MB",
+                "-c",
+                "wal_level=minimal",
+                "-c",
+                "max_wal_senders=0",
+                "-c",
+                "autovacuum=off",
+                "-c",
+                "jit=off",
+                "-c",
+                "track_counts=off",
                 "-c",
                 "checkpoint_timeout=30min",
             ]
@@ -617,6 +648,45 @@ class DisposablePostgresServer:
         finally:
             store.close()
 
+        # Snapshot template table inventory & baseline metadata for O(1) dirty-table pool resets.
+        with psycopg.connect(self.template_dsn, autocommit=True) as tconn:
+            all_tbls = tuple(
+                str(r[0])
+                for r in tconn.execute(
+                    "SELECT tablename FROM pg_tables WHERE schemaname = 'public' ORDER BY tablename"
+                ).fetchall()
+            )
+            rev_row = tconn.execute("SELECT version_num FROM alembic_version LIMIT 1").fetchone()
+            ev_row = tconn.execute("SELECT COUNT(*) FROM schema_migration_events").fetchone()
+            seq_rows = tconn.execute(
+                """
+                SELECT s.relname, t.relname
+                FROM pg_class s
+                JOIN pg_depend d ON d.objid = s.oid AND d.deptype IN ('a', 'i')
+                JOIN pg_class t ON t.oid = d.refobjid
+                JOIN pg_namespace n ON n.oid = s.relnamespace
+                WHERE s.relkind = 'S' AND n.nspname = 'public'
+                """
+            ).fetchall()
+        self._template_all_tables = all_tbls
+        self._template_truncatable_tables = tuple(
+            t for t in all_tbls if t not in ("alembic_version", "schema_migration_events")
+        )
+        self._template_alembic_rev = str(rev_row[0]) if rev_row and rev_row[0] is not None else ""
+        self._template_migration_events_count = int(ev_row[0]) if ev_row and ev_row[0] is not None else 0
+        self._template_seq_to_table = {str(r[0]): str(r[1]) for r in seq_rows}
+        exists_exprs = ", ".join(f'EXISTS(SELECT 1 FROM "{t}")' for t in self._template_truncatable_tables)
+        self._pool_probe_sql = (
+            "SELECT "
+            "(SELECT count(*) FROM pg_tables WHERE schemaname = 'public'), "
+            "COALESCE((SELECT version_num FROM alembic_version LIMIT 1), ''), "
+            "(SELECT count(*) FROM schema_migration_events), "
+            "(SELECT COALESCE(array_agg(sequencename::text), ARRAY[]::text[]) "
+            "FROM pg_sequences WHERE schemaname = 'public' "
+            "AND sequencename <> 'schema_migration_events_id_seq' AND last_value IS NOT NULL)"
+            + (f", {exists_exprs}" if exists_exprs else "")
+        )
+
         # Ensure zero active connections linger on si_template before cloning
         with psycopg.connect(self.admin_dsn, autocommit=True) as conn:
             conn.execute(
@@ -634,21 +704,167 @@ class DisposablePostgresServer:
         self._admin_conn = psycopg.connect(self.admin_dsn, autocommit=True, connect_timeout=5)
         return self._admin_conn
 
+    def _get_pool_conn_unlocked(self, db_name: str) -> tuple[psycopg.Connection[Any], int]:
+        existing = self._pool_conns.get(db_name)
+        if existing is not None and not existing.closed:
+            return existing, self._pool_conn_pids[db_name]
+        pconn = psycopg.connect(self.dsn_for(db_name), autocommit=True, connect_timeout=5)
+        pid_row = pconn.execute("SELECT pg_backend_pid()").fetchone()
+        pid = int(pid_row[0]) if pid_row else 0
+        self._pool_conns[db_name] = pconn
+        self._pool_conn_pids[db_name] = pid
+        return pconn, pid
+
+    def _close_pool_conn_unlocked(self, db_name: str) -> None:
+        pconn = self._pool_conns.pop(db_name, None)
+        self._pool_conn_pids.pop(db_name, None)
+        if pconn is not None:
+            with contextlib.suppress(Exception):
+                pconn.close()
+
+    def is_harness_dsn(self, dsn: str) -> bool:
+        """Return True if `dsn` targets this running server's Unix socket directory."""
+        sock = self._socket_dir
+        return bool(self.is_running and sock is not None and str(sock) in dsn)
+
+    def is_template_cloned_dsn(self, dsn: str) -> bool:
+        """Return True if `dsn` was provisioned from `si_template` (already at Alembic head)."""
+        with self._lock:
+            return dsn in self._template_cloned_dsns
+
+    def configure_test_engine(self, dsn: str, engine: Any) -> None:
+        """Share initialized PostgreSQL dialect and compiled SQL cache across template-cloned DB engines."""
+        if not self.is_template_cloned_dsn(dsn):
+            return
+        with self._engine_cache_lock:
+            if self._shared_compiled_cache is None:
+                from sqlalchemy.util import LRUCache
+
+                self._shared_compiled_cache = LRUCache(4096)
+            if self._shared_pg_dialect is None:
+                # Ensure dialect.initialize(conn) has executed once before sharing across engines.
+                with engine.connect():
+                    pass
+                self._shared_pg_dialect = engine.dialect
+            else:
+                engine.dialect = self._shared_pg_dialect
+            engine._compiled_cache = self._shared_compiled_cache
+
+    def consume_clean_dsn(self, dsn: str) -> bool:
+        """Atomically consume the 'guaranteed empty clean DB' marker for `dsn` on first open."""
+        with self._lock:
+            if dsn in self._clean_dsns:
+                self._clean_dsns.discard(dsn)
+                return True
+            return False
+
     def create_database(self, prefix: str = "test", *, from_template: bool = True) -> str:
-        """Create a fresh isolated database (fast template clone by default) and return its Unix-socket DSN."""
+        """Acquire a fresh isolated database (pooled template DB by default) and return its Unix-socket DSN."""
         if not self.is_running:
             self.start()
         safe_prefix = _SAFE_DB_PREFIX_RE.sub("_", str(prefix or "test").strip().lower()).strip("_") or "test"
         with self._lock:
+            if from_template:
+                if self._free_pool:
+                    db_name = self._free_pool.popleft()
+                else:
+                    self._counter += 1
+                    db_name = f"{safe_prefix[:24]}_{self._counter}"
+                    conn = self._get_admin_conn_unlocked()
+                    conn.execute(f'CREATE DATABASE "{db_name}" TEMPLATE "{self.TEMPLATE_DB}"')
+                    self._created_dbs.append(db_name)
+                    self._pooled_db_names.add(db_name)
+                self._checked_out_dbs.add(db_name)
+                dsn = self.dsn_for(db_name)
+                self._clean_dsns.add(dsn)
+                self._template_cloned_dsns.add(dsn)
+                return dsn
+
             self._counter += 1
             db_name = f"{safe_prefix[:24]}_{self._counter}"
             conn = self._get_admin_conn_unlocked()
-            if from_template:
-                conn.execute(f'CREATE DATABASE "{db_name}" TEMPLATE "{self.TEMPLATE_DB}"')
-            else:
-                conn.execute(f'CREATE DATABASE "{db_name}"')
+            conn.execute(f'CREATE DATABASE "{db_name}"')
             self._created_dbs.append(db_name)
             return self.dsn_for(db_name)
+
+    def release_test_databases(self) -> None:
+        """Reset all checked-out pooled databases via dirty-table TRUNCATE and return them to the free pool."""
+        if not self.is_running:
+            return
+        with self._lock:
+            if not self._checked_out_dbs:
+                return
+            to_release = list(self._checked_out_dbs)
+            self._checked_out_dbs.clear()
+            for db_name in to_release:
+                self._clean_dsns.discard(self.dsn_for(db_name))
+
+            keep_pids = [self._pool_conn_pids[db] for db in to_release if db in self._pool_conn_pids]
+            with contextlib.suppress(Exception):
+                admin = self._get_admin_conn_unlocked()
+                admin.execute(
+                    """
+                    SELECT pg_terminate_backend(pid)
+                    FROM pg_stat_activity
+                    WHERE datname = ANY(%s)
+                      AND pid <> pg_backend_pid()
+                      AND NOT (pid = ANY(%s))
+                    """,
+                    (to_release, keep_pids),
+                )
+
+            for db_name in to_release:
+                if db_name not in self._pooled_db_names:
+                    continue
+                dsn = self.dsn_for(db_name)
+                try:
+                    pconn, _pid = self._get_pool_conn_unlocked(db_name)
+                    row = pconn.execute(self._pool_probe_sql).fetchone()
+                    if row is None:
+                        raise RuntimeError("Empty probe row")
+                    tbl_count = int(row[0])
+                    alembic_rev = str(row[1] or "")
+                    ev_count = int(row[2])
+                    dirty_seqs = [str(s) for s in (row[3] or ())]
+                    if (
+                        tbl_count != len(self._template_all_tables)
+                        or alembic_rev != self._template_alembic_rev
+                        or ev_count != self._template_migration_events_count
+                    ):
+                        # Schema DDL or migration ledger was mutated; discard and drop instead of reusing.
+                        self._close_pool_conn_unlocked(db_name)
+                        self._pooled_db_names.discard(db_name)
+                        self._template_cloned_dsns.discard(dsn)
+                        with contextlib.suppress(Exception):
+                            self._get_admin_conn_unlocked().execute(f'DROP DATABASE IF EXISTS "{db_name}"')
+                        continue
+
+                    dirty_tables = {t for t, has_rows in zip(self._template_truncatable_tables, row[4:]) if has_rows}
+                    stmts = [f'DELETE FROM "{t}"' for t in sorted(dirty_tables)] + [
+                        f'ALTER SEQUENCE "{s}" RESTART' for s in sorted(set(dirty_seqs))
+                    ]
+                    if stmts:
+                        try:
+                            pconn.execute("BEGIN; " + "; ".join(stmts) + "; COMMIT;")
+                        except Exception:
+                            with contextlib.suppress(Exception):
+                                pconn.execute("ROLLBACK")
+                            for sname in dirty_seqs:
+                                owner_tbl = self._template_seq_to_table.get(sname)
+                                if owner_tbl in self._template_truncatable_tables:
+                                    dirty_tables.add(owner_tbl)
+                                else:
+                                    pconn.execute(f'ALTER SEQUENCE "{sname}" RESTART')
+                            if dirty_tables:
+                                quoted = ", ".join(f'"{t}"' for t in sorted(dirty_tables))
+                                pconn.execute(f"TRUNCATE TABLE {quoted} RESTART IDENTITY CASCADE")
+                    self._free_pool.append(db_name)
+                except Exception:
+                    self._close_pool_conn_unlocked(db_name)
+                    self._pooled_db_names.discard(db_name)
+                    self._template_cloned_dsns.discard(dsn)
+                    with contextlib.suppress(Exception):
+                        self._get_admin_conn_unlocked().execute(f'DROP DATABASE IF EXISTS "{db_name}"')
 
     def drop_database(self, db_name: str) -> None:
         """Terminate connections and drop a test database on the disposable server."""
@@ -658,6 +874,14 @@ class DisposablePostgresServer:
         if not safe_name or safe_name in ("postgres", "template0", "template1", self.TEMPLATE_DB):
             return
         with self._lock:
+            self._close_pool_conn_unlocked(safe_name)
+            self._checked_out_dbs.discard(safe_name)
+            self._pooled_db_names.discard(safe_name)
+            with contextlib.suppress(ValueError):
+                self._free_pool.remove(safe_name)
+            dsn = self.dsn_for(safe_name)
+            self._clean_dsns.discard(dsn)
+            self._template_cloned_dsns.discard(dsn)
             with contextlib.suppress(Exception):
                 conn = self._get_admin_conn_unlocked()
                 conn.execute(
@@ -675,6 +899,15 @@ class DisposablePostgresServer:
             return
         self._stopped = True
         self._started = False
+        for db_name in list(self._pool_conns.keys()):
+            self._close_pool_conn_unlocked(db_name)
+        self._free_pool.clear()
+        self._checked_out_dbs.clear()
+        self._pooled_db_names.clear()
+        self._clean_dsns.clear()
+        self._template_cloned_dsns.clear()
+        self._shared_pg_dialect = None
+        self._shared_compiled_cache = None
         admin_conn = self._admin_conn
         self._admin_conn = None
         if admin_conn is not None:
@@ -775,6 +1008,7 @@ class PostgresTestRedirector:
         self._orig_load_cfg: Any = None
         self._orig_save_cfg: Any = None
         self._orig_load_rank_history: Any = None
+        self._orig_create_db_engine: Any = None
 
     @property
     def enabled(self) -> bool:
@@ -795,10 +1029,12 @@ class PostgresTestRedirector:
             from spaceinvasion.core import config as config_mod
             from spaceinvasion.db import config_store as config_store_mod
             from spaceinvasion.db import dsn as dsn_mod
+            from spaceinvasion.db import session as session_mod
             from spaceinvasion.runtime.bridge import _context_init as ctx_init_mod
             from spaceinvasion.runtime.bridge._db_gateway import RuntimeDatabaseGateway
 
             self._orig_open_gateway = ctx_init_mod.open_runtime_gateway
+            self._orig_create_db_engine = session_mod.create_db_engine
             self._orig_load_cfg = config_store_mod.load_strategy_config
             self._orig_save_cfg = config_store_mod.save_strategy_config
             self._orig_load_cfg_json = config_mod.load_strategy_config
@@ -835,23 +1071,43 @@ class PostgresTestRedirector:
                         _touch_pg_marker_if_outside_repo(Path(key), mapped_dsn)
                     else:
                         mapped_dsn = harness.create_database(prefix="mem", from_template=True)
+                    is_clean = harness.consume_clean_dsn(mapped_dsn)
                     gw = RuntimeDatabaseGateway.from_dsn(
                         mapped_dsn,
                         pool_size=1,
                         max_overflow=4,
+                        pool_pre_ping=False,
                         ensure_ready=False,
+                        run_startup_maintenance=not is_clean,
                     )
                     with redirector._lock:
                         redirector.redirected_count += 1
                         redirector._open_dbs.append(weakref.ref(gw))
                     return gw
 
-                gw = redirector._orig_open_gateway(
-                    target,
-                    db_backend=db_backend,
-                    pool_size=min(max(1, int(pool_size)), 2),
-                    max_overflow=min(max(1, int(max_overflow)), 4),
-                )
+                if (
+                    _SHARED_HARNESS is not None
+                    and _SHARED_HARNESS.is_harness_dsn(raw_path_s)
+                    and dsn_mod.is_postgres_dsn(raw_path_s)
+                ):
+                    is_clean = _SHARED_HARNESS.consume_clean_dsn(raw_path_s)
+                    is_tpl = _SHARED_HARNESS.is_template_cloned_dsn(raw_path_s)
+                    gw = RuntimeDatabaseGateway.from_dsn(
+                        raw_path_s,
+                        pool_size=min(max(1, int(pool_size)), 2),
+                        max_overflow=min(max(1, int(max_overflow)), 4),
+                        pool_pre_ping=False,
+                        ensure_ready=not is_tpl,
+                        verify_schema=False,
+                        run_startup_maintenance=not is_clean,
+                    )
+                else:
+                    gw = redirector._orig_open_gateway(
+                        target,
+                        db_backend=db_backend,
+                        pool_size=min(max(1, int(pool_size)), 2),
+                        max_overflow=min(max(1, int(max_overflow)), 4),
+                    )
                 with redirector._lock:
                     redirector._open_dbs.append(weakref.ref(gw))
                 return gw
@@ -882,7 +1138,9 @@ class PostgresTestRedirector:
                             mapped,
                             pool_size=1,
                             max_overflow=1,
+                            pool_pre_ping=False,
                             ensure_ready=False,
+                            run_startup_maintenance=False,
                         )
                         try:
                             return gw.get_rank_samples()
@@ -904,7 +1162,15 @@ class PostgresTestRedirector:
                         return redirector._orig_save_cfg(cfg, mapped)
                 return redirector._orig_save_cfg_json(cfg, path)
 
+            def _wrapped_create_db_engine(dsn: str, *args: Any, **kwargs: Any) -> Any:
+                eng = redirector._orig_create_db_engine(dsn, *args, **kwargs)
+                harness = _SHARED_HARNESS
+                if redirector._enabled and harness is not None and harness.is_running:
+                    harness.configure_test_engine(dsn, eng)
+                return eng
+
             ctx_init_mod.open_runtime_gateway = _wrapped_open_gateway
+            session_mod.create_db_engine = _wrapped_create_db_engine
             config_store_mod.load_strategy_config = _wrapped_load_cfg
             config_store_mod.save_strategy_config = _wrapped_save_cfg
             config_mod.load_strategy_config = _wrapped_load_cfg_json
@@ -921,7 +1187,7 @@ class PostgresTestRedirector:
         self._enabled = False
 
     def reset_test_scope(self) -> None:
-        """Close any lingering redirected `GameDatabase` pools and clear per-test path mappings."""
+        """Close lingering redirected DB pools, clear mappings, and reset pooled test DBs."""
         with self._lock:
             refs = list(self._open_dbs)
             self._open_dbs.clear()
@@ -931,6 +1197,9 @@ class PostgresTestRedirector:
             if db is not None:
                 with contextlib.suppress(Exception):
                     db.close()
+        harness = _SHARED_HARNESS
+        if harness is not None and harness.is_running:
+            harness.release_test_databases()
 
 
 _REDIRECTOR = PostgresTestRedirector()
@@ -958,12 +1227,27 @@ def open_test_db(
         normalize_backend_name(backend)
     target = postgres_url if postgres_url is not None else db_path
     if target is not None and is_postgres_dsn(str(target)):
-        gw = RuntimeDatabaseGateway.from_dsn(
-            str(target).strip(),
-            pool_size=pool_size,
-            max_overflow=max_overflow,
-            ensure_ready=ensure_ready,
-        )
+        dsn_str = str(target).strip()
+        harness = _SHARED_HARNESS
+        if harness is not None and harness.is_harness_dsn(dsn_str):
+            is_clean = harness.consume_clean_dsn(dsn_str)
+            is_tpl = harness.is_template_cloned_dsn(dsn_str)
+            gw = RuntimeDatabaseGateway.from_dsn(
+                dsn_str,
+                pool_size=pool_size,
+                max_overflow=max_overflow,
+                pool_pre_ping=False,
+                ensure_ready=False if is_tpl else ensure_ready,
+                verify_schema=False,
+                run_startup_maintenance=not is_clean,
+            )
+        else:
+            gw = RuntimeDatabaseGateway.from_dsn(
+                dsn_str,
+                pool_size=pool_size,
+                max_overflow=max_overflow,
+                ensure_ready=ensure_ready,
+            )
         with _REDIRECTOR._lock:
             _REDIRECTOR._open_dbs.append(weakref.ref(gw))
         return gw

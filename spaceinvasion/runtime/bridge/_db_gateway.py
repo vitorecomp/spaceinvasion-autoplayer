@@ -57,8 +57,10 @@ class RuntimeDatabaseGateway(
         *,
         pool_size: int = DEFAULT_POOL_SIZE,
         max_overflow: int = DEFAULT_MAX_OVERFLOW,
+        pool_pre_ping: bool = True,
         statement_timeout_ms: int = DEFAULT_STATEMENT_TIMEOUT_MS,
         ensure_ready: bool = True,
+        verify_schema: bool = True,
         backup_fn: BackupOption = NO_BACKUP,
         allow_stamp_existing: bool = True,
         run_startup_maintenance: bool = True,
@@ -68,10 +70,15 @@ class RuntimeDatabaseGateway(
             dsn,
             pool_size=pool_size,
             max_overflow=max_overflow,
+            pool_pre_ping=pool_pre_ping,
             statement_timeout_ms=statement_timeout_ms,
         )
         if ensure_ready:
-            store.ensure_ready(backup_fn=backup_fn, allow_stamp_existing=allow_stamp_existing)
+            store.ensure_ready(
+                backup_fn=backup_fn,
+                allow_stamp_existing=allow_stamp_existing,
+                verify_schema=verify_schema,
+            )
         return cls(store, postgres_url=dsn, run_startup_maintenance=run_startup_maintenance)
 
     @staticmethod
