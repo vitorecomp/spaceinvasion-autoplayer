@@ -213,6 +213,9 @@ def check_optimizer_settings(
             )
 
 
+resolve_planet_display_name = _resolve_planet_display_name
+
+
 __all__ = [
     "_apply_manual_planet_pins",
     "_empty_colony_slot",
@@ -230,4 +233,5 @@ __all__ = [
     "normalize_planet_specialization",
     "normalize_planet_specializations_map",
     "normalize_planet_target_buildings",
+    "resolve_planet_display_name",
 ]

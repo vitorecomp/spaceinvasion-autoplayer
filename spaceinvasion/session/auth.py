@@ -48,6 +48,8 @@ from spaceinvasion.session._auth_parsing import (
     detect_antibot_challenge,
     extract_universes,
     parse_login_tokens,
+    safe_portal_label,
+    safe_portal_speed,
     universes_from_portal_data,
 )
 from spaceinvasion.session.http_pools import (
@@ -277,6 +279,8 @@ __all__ = [
     "load_session_cookies",
     "login",
     "parse_login_tokens",
+    "safe_portal_label",
+    "safe_portal_speed",
     "save_session_cookies",
     "universes_from_portal_data",
     "verify_saved_session",

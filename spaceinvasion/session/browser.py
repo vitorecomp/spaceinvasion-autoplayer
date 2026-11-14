@@ -23,14 +23,14 @@ from spaceinvasion.session._browser_driver import (
     NoSuchElementException,
     WebDriverException,
     _close_driver_executor,
-    _configure_driver_timeouts,
-    _finite_bounded_timeout,
     _prepare_profile_dir,
     _resolve_cdp_host,
-    _safe_browser_err,
     _stop_service_process,
     _terminate_or_kill_process,
     close_or_detach_driver,
+    configure_driver_timeouts,
+    finite_bounded_timeout,
+    safe_browser_err,
     webdriver,
 )
 from spaceinvasion.session._browser_portal import (
@@ -128,7 +128,7 @@ def is_debug_port_open(port: int, host: str = DEFAULT_DEBUG_HOST, timeout: float
     """Return True if a Chrome DevTools debugging endpoint responds on `host:port`."""
     if isinstance(port, bool) or not isinstance(port, int) or port <= 0 or port > 65535:
         return False
-    safe_timeout = _finite_bounded_timeout(timeout, default=0.8, min_val=0.05, max_val=60.0)
+    safe_timeout = finite_bounded_timeout(timeout, default=0.8, min_val=0.05, max_val=60.0)
     resolved_host = _resolve_cdp_host(host, DEFAULT_DEBUG_HOST)
     try:
         with urllib.request.urlopen(f"http://{resolved_host}:{port}/json/version", timeout=safe_timeout) as resp:
@@ -164,7 +164,7 @@ def launch_chrome_with_debug_port(config: BrowserConfig, port: int) -> subproces
         stderr=subprocess.DEVNULL,
         start_new_session=config.detach,
     )
-    deadline = time.monotonic() + _finite_bounded_timeout(config.timeout, default=25.0, min_val=10.0, max_val=300.0)
+    deadline = time.monotonic() + finite_bounded_timeout(config.timeout, default=25.0, min_val=10.0, max_val=300.0)
     ready = False
     try:
         while time.monotonic() < deadline:
@@ -194,8 +194,8 @@ def _start_and_configure_driver(options: Any, timeout: float, err_prefix: str) -
                 else webdriver.Chrome(options=options)
             )
         except WebDriverException as exc:
-            raise SpaceInvasionAuthError(f"{err_prefix}: {_safe_browser_err(exc)}") from exc
-        _configure_driver_timeouts(driver, timeout)
+            raise SpaceInvasionAuthError(f"{err_prefix}: {safe_browser_err(exc)}") from exc
+        configure_driver_timeouts(driver, timeout)
         driver_ready = True
         return driver
     finally:
@@ -258,7 +258,7 @@ def open_browser_session(config: BrowserConfig) -> tuple[object, Optional[subpro
     return create_chrome_driver(config), None, False
 
 
-def _sync_browser_cookies(
+def sync_browser_cookies(
     driver: Any, session_dir: Path, creds: Credentials, last_url: str
 ) -> tuple[Path, tuple[str, ...]]:
     """Persist Selenium browser cookies into `.sessions/<account>.json` (`0o600`)."""
@@ -327,7 +327,7 @@ def login_with_browser(
                 enter_universe=enter_universe,
                 allow_join=allow_join,
                 require_in_game=require_in_game,
-                sync_cookies_fn=_sync_browser_cookies,
+                sync_cookies_fn=sync_browser_cookies,
             )
         )
         result = BrowserLoginResult(
@@ -364,20 +364,16 @@ __all__ = [
     "WebDriverException",
     "_click_portal_universe_dom",
     "_close_driver_executor",
-    "_configure_driver_timeouts",
     "_element_if_visible",
     "_extract_portal_universes",
-    "_finite_bounded_timeout",
     "_handle_antibot_or_raise",
     "_is_portal_authenticated",
     "_prepare_profile_dir",
     "_resolve_cdp_host",
     "_resolve_universe_choice",
-    "_safe_browser_err",
     "_select_spaceinvasion_tab",
     "_stop_service_process",
     "_submit_two_factor_if_requested",
-    "_sync_browser_cookies",
     "_terminate_or_kill_process",
     "_type_naturally",
     "_wait_for_landing_ready",
@@ -385,13 +381,17 @@ __all__ = [
     "_wait_for_universe_entry",
     "attach_chrome_driver",
     "close_or_detach_driver",
+    "configure_driver_timeouts",
     "create_chrome_driver",
     "find_and_switch_game_tab",
     "find_chrome_binary",
+    "finite_bounded_timeout",
     "is_debug_port_open",
     "is_in_game_tab",
     "launch_chrome_with_debug_port",
     "login_with_browser",
     "open_browser_session",
+    "safe_browser_err",
+    "sync_browser_cookies",
     "webdriver",
 ]

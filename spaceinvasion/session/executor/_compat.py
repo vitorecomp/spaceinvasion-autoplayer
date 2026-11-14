@@ -37,6 +37,15 @@ class ExecutorCompatMixin:
     _transmitter_ops: TransmitterOps
     _colony_ops: ColonyOps
 
+    extract_selected_planet_id = staticmethod(extract_selected_planet_id)
+    extract_internal_fleet_planet_coords = staticmethod(extract_internal_fleet_planet_coords)
+    parse_internal_fleet_slot_status = staticmethod(parse_internal_fleet_slot_status)
+    match_mission_radio = staticmethod(match_mission_radio)
+    find_newplanet_switch_target = staticmethod(find_newplanet_switch_target)
+    pick_send_fleet_form_css = staticmethod(pick_send_fleet_form_css)
+    is_unattackable_target_html = staticmethod(is_unattackable_target_html)
+    extract_mission_forbidden_reason = staticmethod(extract_mission_forbidden_reason)
+
     _extract_selected_planet_id = staticmethod(extract_selected_planet_id)
     _extract_internal_fleet_planet_coords = staticmethod(extract_internal_fleet_planet_coords)
     _parse_internal_fleet_slot_status = staticmethod(parse_internal_fleet_slot_status)
