@@ -486,6 +486,36 @@ def _run_pytest_step(*, record_coverage: bool) -> bool:
             cov_data_file.unlink(missing_ok=True)
 
 
+def _run_contract_and_hygiene_gates() -> bool:
+    steps = (
+        (
+            "ts types sync",
+            [
+                sys.executable,
+                str(REPO_ROOT / "scripts" / "generate_ts_types.py"),
+                "--check",
+                str(REPO_ROOT / "frontend" / "src" / "types" / "generated.ts"),
+            ],
+        ),
+        ("docs sync", [sys.executable, str(REPO_ROOT / "scripts" / "generate_docs.py"), "--check"]),
+        (
+            "test hygiene & invariants",
+            [
+                sys.executable,
+                str(REPO_ROOT / "scripts" / "check_test_hygiene.py"),
+                "--check-private-imports",
+                "--max-private-imports",
+                "20",
+                "--check-invariants",
+            ],
+        ),
+    )
+    ok = True
+    for label, cmd in steps:
+        ok = _run_subprocess_step(label, cmd) and ok
+    return ok
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
     if args.write_baseline:
@@ -507,20 +537,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.lint_only:
         return 0
 
-    ok = True
+    ok = _run_contract_and_hygiene_gates()
+    npm = _resolve_npm()
     if not args.skip_tests:
         ok = _run_pytest_step(record_coverage=args.record_coverage) and ok
-        npm = _resolve_npm()
         ok = _run_subprocess_step("frontend test", [npm, "--prefix", "frontend", "test"]) and ok
 
-    npm = _resolve_npm()
-    ok = (
-        _run_subprocess_step(
-            "frontend tsc",
-            [npm, "--prefix", "frontend", "exec", "--", "tsc", "-p", "frontend/tsconfig.json", "--noEmit"],
-        )
-        and ok
-    )
+    ok = _run_subprocess_step("frontend typecheck", [npm, "--prefix", "frontend", "run", "typecheck"]) and ok
     return 0 if ok else 1
 
 
