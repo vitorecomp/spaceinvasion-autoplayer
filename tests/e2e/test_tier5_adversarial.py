@@ -1690,7 +1690,7 @@ class TestTier5Adversarial(unittest.TestCase):
                 self._reply(404, '{"ok":false,"error":"not found"}')
 
         srv = ThreadingHTTPServer(("127.0.0.1", 0), _LoopMockHandler)
-        t = threading.Thread(target=srv.serve_forever, daemon=True)
+        t = threading.Thread(target=srv.serve_forever, kwargs={"poll_interval": 0.002}, daemon=True)
         t.start()
         base_url = f"http://127.0.0.1:{srv.server_address[1]}"
         try:

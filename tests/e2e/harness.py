@@ -51,6 +51,52 @@ def _fmt_dot_int(val: int) -> str:
     return f"{int(val):,}".replace(",", ".")
 
 
+_GAME_BROWSER_CLIENT_PARAMS: frozenset[str] = frozenset(inspect.signature(GameBrowserClient.__init__).parameters)
+_GAME_API_BRIDGE_SIG = inspect.signature(GameApiBridge.__init__)
+_GAME_API_BRIDGE_PARAMS: frozenset[str] = frozenset(_GAME_API_BRIDGE_SIG.parameters)
+_GAME_API_BRIDGE_HAS_VAR_KW: bool = any(
+    p.kind == inspect.Parameter.VAR_KEYWORD for p in _GAME_API_BRIDGE_SIG.parameters.values()
+)
+_CLOCK_PATCH_MODULES: Optional[tuple[Any, ...]] = None
+
+
+def _get_clock_patch_modules() -> tuple[Any, ...]:
+    global _CLOCK_PATCH_MODULES
+    if _CLOCK_PATCH_MODULES is not None:
+        return _CLOCK_PATCH_MODULES
+    import spaceinvasion.db as db_pkg
+
+    clock_mods: list[Any] = [
+        client_mod,
+        executor_mod,
+        storage_mod,
+        fleet_mod,
+        rank_history_mod,
+        fleet_ctx_mod,
+        blast_furnace_mod,
+        commander,
+    ]
+    for pkg in (bridge_pkg, api_pkg, commander_pkg, client_mod, executor_mod, db_pkg):
+        clock_mods.append(pkg)
+        if hasattr(pkg, "__path__"):
+            for mod_info in pkgutil.walk_packages(pkg.__path__, prefix=f"{pkg.__name__}."):
+                if ".migrations." in mod_info.name or mod_info.name.endswith(".migrations"):
+                    continue
+                sub = sys.modules.get(mod_info.name)
+                if sub is None:
+                    sub = importlib.import_module(mod_info.name)
+                clock_mods.append(sub)
+    seen_ids: set[int] = set()
+    unique_mods: list[Any] = []
+    for mod in clock_mods:
+        if id(mod) in seen_ids or "time" not in getattr(mod, "__dict__", {}):
+            continue
+        seen_ids.add(id(mod))
+        unique_mods.append(mod)
+    _CLOCK_PATCH_MODULES = tuple(unique_mods)
+    return _CLOCK_PATCH_MODULES
+
+
 class FakeClock:
     """Thread-safe virtual clock that never corrupts stdlib `selectors` timeouts."""
 
@@ -1490,6 +1536,8 @@ class FakeDriver:
         self.window_handles = ["game_tab"]
         self.current_window_handle = "game_tab"
         self._current_frame: Optional[str] = None
+        self._cached_top_source: Optional[str] = None
+        self._cached_top_soup: Optional[BeautifulSoup] = None
         sq = server.sid_query()
         sq_amp = f"&{sq}" if sq else ""
         self._frames: dict[str, _FrameState] = {}
@@ -1532,7 +1580,11 @@ class FakeDriver:
 
     def _active_soup(self) -> BeautifulSoup:
         if self._current_frame is None:
-            return BeautifulSoup(self.page_source, "html.parser")
+            src = self.page_source
+            if self._cached_top_soup is None or self._cached_top_source != src:
+                self._cached_top_source = src
+                self._cached_top_soup = BeautifulSoup(src, "html.parser")
+            return self._cached_top_soup
         return self._frames[self._current_frame].soup
 
     def _active_gen_id(self) -> int:
@@ -1756,7 +1808,6 @@ class E2ETestHarness:
         self.page_limiter: Optional[Any] = None
 
     def _make_client(self, _port: int) -> GameBrowserClient:
-        sig = inspect.signature(GameBrowserClient.__init__)
         kwargs: dict[str, Any] = {
             "detach_on_close": True,
             "min_nav_delay": self.min_nav_delay,
@@ -1779,10 +1830,10 @@ class E2ETestHarness:
                     break
         if chosen_limiter is not None:
             for param_name in ("page_limiter", "limiter", "page_view_limiter", "rate_limiter"):
-                if param_name in sig.parameters:
+                if param_name in _GAME_BROWSER_CLIENT_PARAMS:
                     kwargs[param_name] = chosen_limiter
                     break
-        if "max_limiter_wait" in sig.parameters:
+        if "max_limiter_wait" in _GAME_BROWSER_CLIENT_PARAMS:
             kwargs["max_limiter_wait"] = None
         client = GameBrowserClient(self.driver, **kwargs)
         self._created_clients.append(client)
@@ -1826,7 +1877,6 @@ class E2ETestHarness:
             and self.db_path is not None
             and self.env_file is not None
         )
-        bridge_sig = inspect.signature(GameApiBridge.__init__)
         bridge_kwargs: dict[str, Any] = {
             "debug_port": 0,
             "env_file": self.env_file,
@@ -1838,14 +1888,11 @@ class E2ETestHarness:
             "client_factory": self._make_client,
             "ensure_session_fn": self._ensure_session,
         }
-        if self.page_limiter is not None and (
-            "page_limiter" in bridge_sig.parameters
-            or any(p.kind == inspect.Parameter.VAR_KEYWORD for p in bridge_sig.parameters.values())
-        ):
+        if self.page_limiter is not None and ("page_limiter" in _GAME_API_BRIDGE_PARAMS or _GAME_API_BRIDGE_HAS_VAR_KW):
             bridge_kwargs["page_limiter"] = self.page_limiter
-        if "executor_max_limiter_wait" in bridge_sig.parameters:
+        if "executor_max_limiter_wait" in _GAME_API_BRIDGE_PARAMS:
             bridge_kwargs["executor_max_limiter_wait"] = self.executor_max_limiter_wait
-        elif self.executor_max_limiter_wait is not None and "max_limiter_wait" in bridge_sig.parameters:
+        elif self.executor_max_limiter_wait is not None and "max_limiter_wait" in _GAME_API_BRIDGE_PARAMS:
             bridge_kwargs["max_limiter_wait"] = self.executor_max_limiter_wait
         self.bridge = GameApiBridge(**bridge_kwargs)
         self._sync_bridge_limiter_clock()
@@ -1858,13 +1905,19 @@ class E2ETestHarness:
         self.base_url = f"http://127.0.0.1:{self.port}"
         self.server_thread = threading.Thread(
             target=self.http_server.serve_forever,
-            kwargs={"poll_interval": 0.05},
+            kwargs={"poll_interval": 0.002},
             daemon=True,
         )
         self.server_thread.start()
         self.api = GameApiClient(base_url=self.base_url, timeout=self.http_timeout)
 
     def _stop_bridge_and_server(self) -> None:
+        if self.api is not None:
+            try:
+                self.api.close()
+            except Exception:
+                pass
+            self.api = None
         if self.http_server is not None:
             try:
                 self.http_server.shutdown()
@@ -1914,33 +1967,7 @@ class E2ETestHarness:
 
             if self.patch_clocks:
                 proxy = _ClockTimeProxy(self.clock)
-                clock_mods: list[Any] = [
-                    client_mod,
-                    executor_mod,
-                    storage_mod,
-                    fleet_mod,
-                    rank_history_mod,
-                    fleet_ctx_mod,
-                    blast_furnace_mod,
-                    commander,
-                ]
-                import spaceinvasion.db as db_pkg
-
-                for pkg in (bridge_pkg, api_pkg, commander_pkg, client_mod, executor_mod, db_pkg):
-                    clock_mods.append(pkg)
-                    if hasattr(pkg, "__path__"):
-                        for mod_info in pkgutil.walk_packages(pkg.__path__, prefix=f"{pkg.__name__}."):
-                            if ".migrations." in mod_info.name or mod_info.name.endswith(".migrations"):
-                                continue
-                            sub = sys.modules.get(mod_info.name)
-                            if sub is None:
-                                sub = importlib.import_module(mod_info.name)
-                            clock_mods.append(sub)
-                seen_ids: set[int] = set()
-                for mod in clock_mods:
-                    if id(mod) in seen_ids or "time" not in getattr(mod, "__dict__", {}):
-                        continue
-                    seen_ids.add(id(mod))
+                for mod in _get_clock_patch_modules():
                     p_time = patch.object(mod, "time", proxy)
                     p_time.start()
                     self._patches.append(p_time)
