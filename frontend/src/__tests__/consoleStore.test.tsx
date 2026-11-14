@@ -8,10 +8,12 @@ import {
   CONSOLE_STORE_STORAGE_KEY,
   ConsoleProvider,
   LEGACY_SESSION_STATE_KEY,
+  buildDashboardPollUrl,
   buildPersistedPayload,
   consoleStore,
   createConsoleStore,
   flushConsoleStore,
+  mergeDashboardDeltaResponse,
   persistConsoleStateToStorage,
   readPersistedConsoleState,
   rehydrateConsoleStore,
@@ -742,5 +744,224 @@ describe("Persistent Console Store (useSyncExternalStore + localStorage)", () =>
       actionsRef!.setDashboard(SAMPLE_DASHBOARD);
     });
     expect(dashRenders).toBe(2);
+  });
+
+  it("preserves bot_control across unchanged /dashboard delta polls and applies changed paused/busy updates", async () => {
+    const initialScanned: Record<string, number> = { "1:1": 1760000001, "2:380": 1760000002 };
+    const requestedUrls: string[] = [];
+    let pollStep = 0;
+
+    const initialDeltaPayload: DashboardPayload = {
+      ok: true,
+      delta: false,
+      snapshot_generation: 1,
+      published_at: 1760000100,
+      health: { ok: true, in_game: true, debug_port_open: true, debug_port: 9222 },
+      bot_control: {
+        paused: false,
+        busy: false,
+        mode_override: "auto",
+        captcha_blocked: false,
+        scanned_systems: initialScanned,
+      },
+      state: SAMPLE_DASHBOARD.state,
+      config: SAMPLE_DASHBOARD.config,
+      ui_meta: {
+        server_boot_id: "boot-1",
+        code_version: "code-1",
+        css_version: "css-1",
+        planner_mode: "priority",
+        effective_planner_mode: "priority",
+      },
+      section_versions: {
+        bot_control: "bc_v1",
+        state: "st_v1",
+        config: "cfg_v1",
+        ui_meta: "ui_v1",
+      },
+      unchanged_sections: [],
+      hourly_production_mode: "full",
+      hourly_production_history: [
+        {
+          minute_bucket: 29000000,
+          pig_iron_per_hour: 400,
+          metal_per_hour: 250,
+          kryptonite_per_hour: 200,
+          spice_per_hour: 150,
+          total_per_hour: 1000,
+          speq_per_hour: 1000,
+        },
+      ],
+      latest_minute_bucket: 29000000,
+      loot_recycle_mode: "full",
+      loot_recycle_hourly: [
+        {
+          hour_bucket: 485000,
+          stolen_pig_iron: 2000,
+          stolen_metal: 1500,
+          stolen_kryptonite: 1000,
+          stolen_spice: 500,
+          stolen_total: 5000,
+          recycled_pig_iron: 500,
+          recycled_metal: 300,
+          recycled_kryptonite: 200,
+          recycled_spice: 0,
+          recycled_total: 1000,
+        },
+      ],
+      latest_loot_hour: 485000,
+    };
+
+    const unchangedDeltaPayload: DashboardPayload = {
+      ok: true,
+      delta: true,
+      snapshot_generation: 1,
+      published_at: 1760000105,
+      health: { ok: true, in_game: true, debug_port_open: true, debug_port: 9222 },
+      section_versions: {
+        bot_control: "bc_v1",
+        state: "st_v1",
+        config: "cfg_v1",
+        ui_meta: "ui_v1",
+      },
+      unchanged_sections: ["bot_control", "state", "config", "ui_meta"],
+      hourly_production_mode: "delta",
+      hourly_production_history: [
+        {
+          minute_bucket: 29000060,
+          pig_iron_per_hour: 500,
+          metal_per_hour: 300,
+          kryptonite_per_hour: 220,
+          spice_per_hour: 180,
+          total_per_hour: 1200,
+          speq_per_hour: 1200,
+        },
+      ],
+      latest_minute_bucket: 29000060,
+      loot_recycle_mode: "delta",
+      loot_recycle_hourly: [
+        {
+          hour_bucket: 485001,
+          stolen_pig_iron: 3000,
+          stolen_metal: 2000,
+          stolen_kryptonite: 1200,
+          stolen_spice: 800,
+          stolen_total: 7000,
+          recycled_pig_iron: 700,
+          recycled_metal: 500,
+          recycled_kryptonite: 300,
+          recycled_spice: 0,
+          recycled_total: 1500,
+        },
+      ],
+      latest_loot_hour: 485001,
+    };
+
+    const changedBotControlPayload: DashboardPayload = {
+      ok: true,
+      delta: true,
+      snapshot_generation: 2,
+      published_at: 1760000110,
+      health: { ok: true, in_game: true, debug_port_open: true, debug_port: 9222 },
+      bot_control: {
+        paused: true,
+        busy: true,
+        mode_override: "dry-run",
+        captcha_blocked: false,
+        scanned_systems: { ...initialScanned, "3:120": 1760000003 },
+      },
+      section_versions: {
+        bot_control: "bc_v2",
+        state: "st_v1",
+        config: "cfg_v1",
+        ui_meta: "ui_v1",
+      },
+      unchanged_sections: ["state", "config", "ui_meta"],
+      hourly_production_mode: "delta",
+      hourly_production_history: [],
+      latest_minute_bucket: 29000060,
+      loot_recycle_mode: "delta",
+      loot_recycle_hourly: [],
+      latest_loot_hour: 485001,
+    };
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        const u = String(url);
+        requestedUrls.push(u);
+        if (u.startsWith("/ui-version")) {
+          return { ok: true, status: 200, text: async () => JSON.stringify({ ok: true }) };
+        }
+        if (u.startsWith("/dashboard")) {
+          const payload =
+            pollStep === 0
+              ? initialDeltaPayload
+              : pollStep === 1
+                ? unchangedDeltaPayload
+                : changedBotControlPayload;
+          pollStep += 1;
+          return { ok: true, status: 200, text: async () => JSON.stringify(payload) };
+        }
+        return { ok: true, status: 200, text: async () => JSON.stringify({ ok: true }) };
+      })
+    );
+
+    let actionsRef: ReturnType<typeof useConsoleActions> | null = null;
+    let dashRef: ReturnType<typeof useDashboard> = null;
+    const DeltaProbe: React.FC = () => {
+      actionsRef = useConsoleActions();
+      dashRef = useDashboard();
+      return null;
+    };
+
+    render(
+      <ConsoleProvider disableInitialFetch>
+        <DeltaProbe />
+      </ConsoleProvider>
+    );
+
+    // 1. Initial load sends versions={} and hydrates bot_control + ui_meta + histories
+    await act(async () => {
+      await actionsRef!.loadDashboard({ refresh: false, preserveConfig: false });
+    });
+    expect(requestedUrls[0]).toContain("versions=%7B%7D");
+    expect(dashRef?.bot_control?.paused).toBe(false);
+    expect(dashRef?.bot_control?.scanned_systems).toEqual(initialScanned);
+    expect(dashRef?.code_version).toBe("code-1");
+    expect(dashRef?.loot_recycle_history).toHaveLength(1);
+
+    // 2. Unchanged poll sends tracked versions + cursors; bot_control & state stay intact and series append
+    expect(buildDashboardPollUrl(false, dashRef)).toContain("since_minute_bucket=29000000");
+    expect(buildDashboardPollUrl(true, dashRef)).toBe("/dashboard?refresh=1");
+
+    await act(async () => {
+      await actionsRef!.loadDashboard({ refresh: false, preserveConfig: true });
+    });
+    expect(requestedUrls[1]).toContain("since_minute_bucket=29000000");
+    expect(requestedUrls[1]).toContain("since_loot_hour=485000");
+    expect(dashRef?.bot_control?.paused).toBe(false);
+    expect(dashRef?.bot_control?.scanned_systems).toEqual(initialScanned);
+    expect(dashRef?.state?.nickname).toBe("ventkx86");
+    expect(dashRef?.hourly_production_history).toHaveLength(2);
+    expect(dashRef?.loot_recycle_history).toHaveLength(2);
+
+    // 3. Changed bot_control (paused/busy/mode_override) updates in-place while preserving state
+    await act(async () => {
+      await actionsRef!.loadDashboard({ refresh: false, preserveConfig: true });
+    });
+    expect(dashRef?.bot_control?.paused).toBe(true);
+    expect(dashRef?.bot_control?.busy).toBe(true);
+    expect(dashRef?.bot_control?.mode_override).toBe("dry-run");
+    expect(dashRef?.bot_control?.scanned_systems).toEqual({
+      ...initialScanned,
+      "3:120": 1760000003,
+    });
+    expect(dashRef?.section_versions?.bot_control).toBe("bc_v2");
+    expect(dashRef?.state?.nickname).toBe("ventkx86");
+
+    // Direct helper check: refresh=1 full payload drops stale section_versions when absent
+    const fullReplacement = mergeDashboardDeltaResponse(dashRef, SAMPLE_DASHBOARD);
+    expect(fullReplacement.section_versions).toBeUndefined();
   });
 });

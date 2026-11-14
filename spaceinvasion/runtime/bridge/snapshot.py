@@ -129,6 +129,7 @@ class SnapshotPublisher:
         ts = time.time() if published_at is None else float(published_at)
         merged_sections: dict[str, object] = dict(sections or {})
         merged_sections.setdefault("state", dict(state))
+        merged_sections.setdefault("bot_control", dict(bot_control))
         frozen_sections = _freeze_mapping(merged_sections)
 
         computed_versions: dict[str, str] = {}
@@ -179,11 +180,16 @@ class SnapshotPublisher:
                 if section_name == "state" and isinstance(sanitized_val, Mapping)
                 else prev.state
             )
+            next_bot_control = (
+                _freeze_mapping(sanitized_val)
+                if section_name == "bot_control" and isinstance(sanitized_val, Mapping)
+                else prev.bot_control
+            )
             snap = PublishedBridgeSnapshot(
                 generation=prev.generation + 1,
                 published_at=ts,
                 health=prev.health,
-                bot_control=prev.bot_control,
+                bot_control=next_bot_control,
                 state=next_state,
                 sections=MappingProxyType(next_sections),
                 section_versions=MappingProxyType(next_versions),
@@ -209,23 +215,31 @@ def build_dashboard_delta_response(
     """
     client_versions = client_section_versions or {}
     unchanged: list[str] = []
+    section_versions = dict(snapshot.section_versions)
     payload: dict[str, object] = {
         "ok": True,
         "delta": bool(client_versions) or since_minute_bucket is not None or since_loot_hour is not None,
         "snapshot_generation": snapshot.generation,
         "published_at": snapshot.published_at,
         "health": dict(snapshot.health),
-        "bot_control": dict(snapshot.bot_control),
-        "section_versions": dict(snapshot.section_versions),
+        "section_versions": section_versions,
         "unchanged_sections": unchanged,
     }
 
     for sec_name in sorted(snapshot.sections):
-        sec_ver = snapshot.section_versions.get(sec_name, "")
+        sec_ver = section_versions.get(sec_name, "")
         if client_versions.get(sec_name) == sec_ver:
             unchanged.append(sec_name)
         else:
             payload[sec_name] = snapshot.sections[sec_name]
+
+    if "bot_control" not in snapshot.sections:
+        bot_ver = section_versions.get("bot_control") or compute_section_version(snapshot.bot_control)
+        section_versions.setdefault("bot_control", bot_ver)
+        if client_versions.get("bot_control") == bot_ver:
+            unchanged.append("bot_control")
+        else:
+            payload["bot_control"] = dict(snapshot.bot_control)
 
     if since_minute_bucket is None:
         prod_rows = [dict(row) for row in snapshot.hourly_production_history]

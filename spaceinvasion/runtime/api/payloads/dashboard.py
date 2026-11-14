@@ -222,6 +222,17 @@ class DashboardPayload:
         default_factory=lambda: NotificationsState(unread_count=0, items=[]),
         metadata=OPT,
     )
+    delta: bool = field(default=False, metadata=OPT)
+    snapshot_generation: int | None = field(default=None, metadata=OPT)
+    published_at: float | None = field(default=None, metadata=OPT)
+    section_versions: dict[str, str] = field(default_factory=dict, metadata=OPT)
+    unchanged_sections: list[str] = field(default_factory=list, metadata=OPT)
+    hourly_production_mode: Literal["full", "delta"] | str | None = field(default=None, metadata=OPT)
+    loot_recycle_mode: Literal["full", "delta"] | str | None = field(default=None, metadata=OPT)
+    loot_recycle_hourly: list[LootRecycleBucket] = field(default_factory=list, metadata=OPT)
+    latest_minute_bucket: int | None = field(default=None, metadata=OPT)
+    latest_loot_hour: int | None = field(default=None, metadata=OPT)
+    ui_meta: JsonDict | None = field(default=None, metadata=OPT)
 
 
 @dataclass(frozen=True)
