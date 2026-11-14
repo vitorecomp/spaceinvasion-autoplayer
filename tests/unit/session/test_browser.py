@@ -469,7 +469,10 @@ class TestBrowserLogin(unittest.TestCase):
             self.assertTrue(flag_path.exists())
             return proc
 
-        with tempfile.TemporaryDirectory() as tmp:
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            unittest.mock.patch("spaceinvasion.session._browser_driver._TERMINATE_GRACE_SECONDS", 0.1),
+        ):
             tp = Path(tmp)
             # 1. close_or_detach_driver(keep_running=False) kills SIG_IGN child
             p1 = _spawn_sigign(tp / "f1.flag")

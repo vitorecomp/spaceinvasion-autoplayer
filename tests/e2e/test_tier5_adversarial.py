@@ -1804,7 +1804,8 @@ class TestTier5Adversarial(unittest.TestCase):
         try:
             ready = proc.stdout.readline().strip() if proc.stdout is not None else ""
             self.assertEqual(ready, "ready")
-            run_stack._stop_proc(proc)
+            with patch("spaceinvasion.runtime.cli_support.TERMINATE_GRACE_SECONDS", 0.1):
+                run_stack._stop_proc(proc)
             self.assertIsNotNone(proc.poll())
         finally:
             for strm in (proc.stdout, proc.stderr, proc.stdin):
@@ -1916,7 +1917,10 @@ class TestTier5Adversarial(unittest.TestCase):
                 self.assertEqual(load_strategy_config(p_cfg).playstyle, ps)
 
         # GAP-M5-01: browser cleanup reaps SIGTERM-ignoring subprocess cleanly with 0 ResourceWarning
-        with tempfile.TemporaryDirectory() as tmp_proc:
+        with (
+            tempfile.TemporaryDirectory() as tmp_proc,
+            patch("spaceinvasion.session._browser_driver._TERMINATE_GRACE_SECONDS", 0.1),
+        ):
             for idx, mode in enumerate(("close", "attach_err"), start=1):
                 flag_f = Path(tmp_proc) / f"sigign_{idx}.flag"
                 child_code = (

@@ -129,3 +129,22 @@ def test_sleep_auditor_finds_literal_sleeps_and_waits(tmp_path: Path) -> None:
     )
     sites = cth.scan_sleep_sites(tests_dir, tmp_path)
     assert [(s.call_name, s.seconds) for s in sites] == [("ev.wait", 1.5), ("time.sleep", 0.25)]
+
+
+def test_lazy_package_exports_and_capture_goldens_list() -> None:
+    import pytest
+
+    from scripts import capture_goldens
+    import spaceinvasion.db as db_pkg
+    import spaceinvasion.planner as planner_pkg
+
+    assert planner_pkg.__getattr__("heuristics") is not None
+    with pytest.raises(AttributeError):
+        _ = getattr(planner_pkg, "nonexistent_attr")
+
+    assert db_pkg.__getattr__("migrations") is not None
+    assert db_pkg.__getattr__("DatabaseStore") is not None
+    with pytest.raises(AttributeError):
+        _ = getattr(db_pkg, "nonexistent_attr")
+
+    assert capture_goldens.main(["--list"]) == 0

@@ -35,17 +35,21 @@ def maybe_reexec_venv(repo_root: Path, *, skip: bool | None = None) -> None:
         os.execv(str(venv_python), [str(venv_python), *sys.argv])
 
 
+TERMINATE_GRACE_SECONDS: float = 5.0
+
+
 def terminate_child(proc: subprocess.Popen[bytes] | subprocess.Popen[str]) -> None:
     """Terminate a child process gracefully, escalating to SIGKILL on timeout."""
     if proc.poll() is not None:
         return
+    grace = max(0.05, float(TERMINATE_GRACE_SECONDS))
     try:
         proc.terminate()
-        proc.wait(timeout=5.0)
+        proc.wait(timeout=grace)
     except subprocess.TimeoutExpired:
         proc.kill()
         try:
-            proc.wait(timeout=5.0)
+            proc.wait(timeout=grace)
         except (subprocess.TimeoutExpired, OSError):
             pass
     except OSError:

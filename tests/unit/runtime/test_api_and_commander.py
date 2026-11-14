@@ -1946,7 +1946,10 @@ class TestApiAndCommander(unittest.TestCase):
         )
 
         before_sig = signal.getsignal(signal.SIGTERM)
-        with tempfile.TemporaryDirectory() as tmp:
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            unittest.mock.patch("spaceinvasion.runtime.cli_support.TERMINATE_GRACE_SECONDS", 0.1),
+        ):
             tp = Path(tmp)
             watched = tp / "watched.py"
             watched.write_text("V = 1\n", encoding="utf-8")

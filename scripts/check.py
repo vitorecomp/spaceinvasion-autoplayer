@@ -22,17 +22,25 @@ from __future__ import annotations
 import argparse
 import ast
 from collections import Counter, defaultdict
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 import json
+import os
 from pathlib import Path
 import re
 import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from typing import Any, Sequence
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from spaceinvasion.core.env import get_process_env  # noqa: E402
+
 BASELINE_PATH = REPO_ROOT / "scripts" / "quality_baseline.json"
 COVERAGE_BASELINE_PATH = REPO_ROOT / "scripts" / "coverage_baseline.json"
 PROD_ROOTS = ("spaceinvasion", "bin", "scripts")
@@ -419,6 +427,17 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Run pytest with coverage and record per-module coverage to scripts/coverage_baseline.json.",
     )
     parser.add_argument(
+        "--check-coverage",
+        action="store_true",
+        help="Run pytest with coverage and verify >= Phase 0 baseline via scripts/check_test_hygiene.py.",
+    )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=min(8, max(1, os.cpu_count() or 1)),
+        help="Number of parallel file-sharded pytest worker processes (default: min(8, cpu_count)).",
+    )
+    parser.add_argument(
         "--write-baseline",
         action="store_true",
         help="Regenerate scripts/quality_baseline.json from the current workspace.",
@@ -460,30 +479,170 @@ def _write_coverage_baseline(raw_cov_json: Path) -> None:
     _emit(f"Wrote coverage baseline to {COVERAGE_BASELINE_PATH.relative_to(REPO_ROOT)} ({len(files_out)} files)")
 
 
-def _run_pytest_step(*, record_coverage: bool) -> bool:
+_HEAVY_TEST_FILES: frozenset[str] = frozenset(
+    {
+        "tests/goldens/test_reference_outputs.py",
+        "tests/unit/runtime/test_api_goldens_parity.py",
+        "tests/unit/runtime/test_api_and_commander.py",
+        "tests/unit/runtime/test_r2_throttle.py",
+        "tests/e2e/test_tier5_adversarial.py",
+        "tests/e2e/test_tier2_r2.py",
+        "tests/e2e/test_tier4_workflows.py",
+        "tests/unit/combat/test_smart_galaxy_scan.py",
+        "tests/unit/runtime/test_settings_and_ts_codegen.py",
+    }
+)
+
+
+def _collect_test_shards(pytest_base: Sequence[str], workers: int) -> list[list[str]]:
+    proc = subprocess.run(
+        [*pytest_base, "-p", "no:cacheprovider", "--collect-only", "-q"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(f"pytest --collect-only failed ({proc.returncode}): {proc.stdout}\n{proc.stderr}")
+    files: list[str] = []
+    seen: set[str] = set()
+    for line in proc.stdout.splitlines():
+        if "::" not in line:
+            continue
+        rel = line.split("::", 1)[0].strip()
+        if rel not in seen and (REPO_ROOT / rel).is_file():
+            seen.add(rel)
+            files.append(rel)
+    if workers <= 1 or len(files) <= 1:
+        return [files] if files else []
+    n_shards = min(workers, len(files))
+    weighted = sorted(
+        files,
+        key=lambda rel: ((REPO_ROOT / rel).stat().st_size + (400_000 if rel in _HEAVY_TEST_FILES else 0), rel),
+        reverse=True,
+    )
+    shards: list[list[str]] = [[] for _ in range(n_shards)]
+    loads = [0] * n_shards
+    for rel in weighted:
+        w = (REPO_ROOT / rel).stat().st_size + (400_000 if rel in _HEAVY_TEST_FILES else 0)
+        idx = min(range(n_shards), key=lambda i: loads[i])
+        shards[idx].append(rel)
+        loads[idx] += w
+    return [s for s in shards if s]
+
+
+def _run_pytest_shard(
+    idx: int,
+    total: int,
+    shard_files: Sequence[str],
+    pytest_base: Sequence[str],
+    cov_file: Path | None,
+) -> tuple[int, int, float, str]:
+    t0 = time.monotonic()
+    cmd = [*pytest_base, "-p", "no:cacheprovider", "-q"]
+    env = get_process_env()
+    if cov_file is not None:
+        cmd.extend(["--cov=spaceinvasion", "--cov=bin", "--cov=scripts", "--cov-report="])
+        env["COVERAGE_FILE"] = str(cov_file)
+    cmd.extend(shard_files)
+    proc = subprocess.run(cmd, cwd=REPO_ROOT, env=env, capture_output=True, text=True, check=False)
+    elapsed = time.monotonic() - t0
+    out = (proc.stdout or "") + (proc.stderr or "")
+    summary = out.strip().splitlines()[-1] if out.strip() else f"rc={proc.returncode}"
+    _emit(f"  [shard {idx + 1}/{total}] ({elapsed:.1f}s) {summary}")
+    return idx, proc.returncode, elapsed, out
+
+
+def _finalize_coverage(cov_dir: Path, cov_files: Sequence[Path], cov_json: Path) -> bool:
+    env = get_process_env()
+    env["COVERAGE_FILE"] = str(cov_dir / ".coverage")
+    cov_tool = _resolve_python_tool("coverage")
+    if len(cov_files) > 1:
+        comb = subprocess.run(
+            [*cov_tool, "combine", "--keep", *[str(p) for p in cov_files]],
+            cwd=REPO_ROOT,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if comb.returncode != 0:
+            _emit(f"[FAIL] coverage combine failed:\n{comb.stdout}\n{comb.stderr}", err=True)
+            return False
+    elif cov_files and cov_files[0].is_file():
+        shutil.copyfile(cov_files[0], cov_dir / ".coverage")
+    rep = subprocess.run(
+        [*cov_tool, "json", "-o", str(cov_json)],
+        cwd=REPO_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if rep.returncode != 0 or not cov_json.is_file():
+        _emit(f"[FAIL] coverage json failed:\n{rep.stdout}\n{rep.stderr}", err=True)
+        return False
+    return True
+
+
+def _run_pytest_step(*, workers: int, record_coverage: bool, check_coverage: bool) -> bool:
     pytest_base = _resolve_python_tool("pytest")
-    if not record_coverage:
-        return _run_subprocess_step("pytest", pytest_base)
-    cov_data_file = REPO_ROOT / ".coverage"
+    collect_cov = record_coverage or check_coverage
+    if workers <= 1 and not collect_cov:
+        return _run_subprocess_step("pytest", [*pytest_base, "-p", "no:cacheprovider"])
+
+    t0 = time.monotonic()
     with tempfile.TemporaryDirectory(prefix="si_cov_") as tmp_dir:
-        cov_json = Path(tmp_dir) / "coverage.json"
-        cmd = [
-            *pytest_base,
-            "--cov=spaceinvasion",
-            "--cov=bin",
-            "--cov=scripts",
-            f"--cov-report=json:{cov_json}",
-        ]
-        try:
-            ok = _run_subprocess_step("pytest (with coverage)", cmd)
-            if cov_json.is_file():
-                _write_coverage_baseline(cov_json)
-            elif ok:
-                _emit("[FAIL] Coverage JSON report was not produced", err=True)
-                return False
-            return ok
-        finally:
-            cov_data_file.unlink(missing_ok=True)
+        cov_dir = Path(tmp_dir)
+        cov_json = cov_dir / "coverage.json"
+        if workers <= 1:
+            cmd = [
+                *pytest_base,
+                "-p",
+                "no:cacheprovider",
+                "--cov=spaceinvasion",
+                "--cov=bin",
+                "--cov=scripts",
+                f"--cov-report=json:{cov_json}",
+            ]
+            env = {**get_process_env(), "COVERAGE_FILE": str(cov_dir / ".coverage")}
+            _emit(f"==> pytest (with coverage): {' '.join(cmd)}")
+            ok = subprocess.run(cmd, cwd=REPO_ROOT, env=env, check=False).returncode == 0
+        else:
+            shards = _collect_test_shards(pytest_base, workers)
+            _emit(f"==> pytest ({len(shards)} parallel shards, cov={collect_cov})")
+            cov_files = [cov_dir / f".coverage.{i}" for i in range(len(shards))] if collect_cov else []
+            with ThreadPoolExecutor(max_workers=len(shards)) as pool:
+                futs = [
+                    pool.submit(
+                        _run_pytest_shard, i, len(shards), s, pytest_base, cov_files[i] if collect_cov else None
+                    )
+                    for i, s in enumerate(shards)
+                ]
+                results = [f.result() for f in futs]
+            failed = [r for r in results if r[1] != 0]
+            for idx, rc, _elapsed, out in failed:
+                _emit(f"[FAIL] pytest shard {idx + 1} exited with {rc}:\n{out}", err=True)
+            ok = not failed
+            if ok and collect_cov:
+                ok = _finalize_coverage(cov_dir, cov_files, cov_json)
+            _emit(f"[{'PASS' if ok else 'FAIL'}] pytest ({len(shards)} shards in {time.monotonic() - t0:.2f}s)")
+        if ok and record_coverage and cov_json.is_file():
+            _write_coverage_baseline(cov_json)
+        if ok and check_coverage:
+            ok = _run_subprocess_step(
+                "coverage baseline check",
+                [
+                    sys.executable,
+                    str(REPO_ROOT / "scripts" / "check_test_hygiene.py"),
+                    "--check-coverage",
+                    "--baseline",
+                    str(COVERAGE_BASELINE_PATH),
+                    "--coverage-json",
+                    str(cov_json),
+                ],
+            )
+        return ok
 
 
 def _run_contract_and_hygiene_gates() -> bool:
@@ -540,7 +699,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     ok = _run_contract_and_hygiene_gates()
     npm = _resolve_npm()
     if not args.skip_tests:
-        ok = _run_pytest_step(record_coverage=args.record_coverage) and ok
+        ok = (
+            _run_pytest_step(
+                workers=max(1, int(args.workers)),
+                record_coverage=args.record_coverage,
+                check_coverage=args.check_coverage,
+            )
+            and ok
+        )
         ok = _run_subprocess_step("frontend test", [npm, "--prefix", "frontend", "test"]) and ok
 
     ok = _run_subprocess_step("frontend typecheck", [npm, "--prefix", "frontend", "run", "typecheck"]) and ok

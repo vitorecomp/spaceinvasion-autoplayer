@@ -171,6 +171,24 @@ def test_coercion_and_json_sanitization_parity() -> None:
     assert catalog.sanitize_json_tree(cyclic) == game_data.sanitize_json_tree(cyclic)
     assert catalog.safe_key((1, "x", frozenset({"b", "a"}))) == game_data.safe_key((1, "x", frozenset({"b", "a"})))
 
+    class _CustomDict(dict):
+        pass
+
+    class _CustomList(list):
+        pass
+
+    class _BadPath:
+        def __fspath__(self) -> str:
+            raise OSError("bad fspath")
+
+    slow_payload: dict[object, object] = _CustomDict(
+        {
+            Path("/tmp/si_sample"): _CustomList([bytearray(b"ok"), float("inf"), True, {1, 2}, _BadPath()]),
+        }
+    )
+    sanitized_slow = catalog.sanitize_json_tree(slow_payload)
+    assert isinstance(sanitized_slow, dict) and sanitized_slow["/tmp/si_sample"][0] == "ok"
+
 
 def test_catalog_imports_stdlib_only_and_meets_size_standards() -> None:
     stdlib = sys.stdlib_module_names

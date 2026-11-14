@@ -436,6 +436,55 @@ class TestPostgresDialectAndBackendControl(unittest.TestCase):
             self.assertEqual(len(rm_calls), 1)
             self.assertIn("deadcid123", rm_calls[0])
 
+    def test_postgres_ctl_status_and_container_start_helpers(self) -> None:
+        from types import SimpleNamespace
+        from spaceinvasion.runtime import postgres_ctl
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
+            with (
+                patch("spaceinvasion.runtime.postgres_ctl.shutil.which", side_effect=lambda b: f"/usr/bin/{b}"),
+                patch(
+                    "spaceinvasion.runtime.postgres_ctl.subprocess.run",
+                    return_value=SimpleNamespace(returncode=0, stdout="running|Up 2m\n", stderr=""),
+                ),
+            ):
+                st = postgres_ctl.get_podman_postgres_status(force=True)
+                self.assertTrue(st["container_running"])
+
+            with (
+                patch(
+                    "spaceinvasion.runtime.postgres_ctl.ping_postgres",
+                    side_effect=[(False, 1.0, "down"), (True, 1.2, "PG16")],
+                ),
+                patch("spaceinvasion.runtime.postgres_ctl.check_postgres_tcp_open", return_value=True),
+                patch("spaceinvasion.runtime.postgres_ctl.shutil.which", side_effect=lambda b: f"/usr/bin/{b}"),
+                patch(
+                    "spaceinvasion.runtime.postgres_ctl.subprocess.run",
+                    return_value=SimpleNamespace(returncode=0, stdout="", stderr=""),
+                ),
+                patch(
+                    "spaceinvasion.runtime.postgres_ctl.get_postgres_container_status",
+                    return_value={"container_running": True},
+                ),
+            ):
+                res = postgres_ctl.ensure_postgres_container_ready(
+                    "postgresql://postgres:pw@127.0.0.1:5433/spaceinvasion",
+                    root_dir=root,
+                    auto_start=True,
+                )
+                self.assertTrue(res["ok"])
+                self.assertTrue(res["started_container"])
+
+            with patch("spaceinvasion.runtime.postgres_ctl.ping_postgres", return_value=(False, 1.0, "down")):
+                res_no = postgres_ctl.ensure_postgres_container_ready(
+                    "postgresql://postgres:pw@127.0.0.1:5433/spaceinvasion",
+                    root_dir=root,
+                    auto_start=False,
+                )
+                self.assertFalse(res_no["ok"])
+
 
 if __name__ == "__main__":
     unittest.main()

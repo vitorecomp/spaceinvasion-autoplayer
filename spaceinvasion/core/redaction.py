@@ -15,7 +15,6 @@ _KT = TypeVar("_KT")
 SECRET_DICT_KEYS: frozenset[str] = frozenset("sid password passwd cookie api_key secret authorization".split())
 _SECRET_STEMS: tuple[str, ...] = tuple("password passwd cookie api_key api-key secret authorization sid".split())
 _BENIGN_PREFIXES = frozenset("has no non without is allow require enable disable need check use missing empty".split())
-_FAST_MARKERS: tuple[str, ...] = tuple("sid pass cookie api_key api-key secret auth bearer".split())
 _CONFUSABLES: tuple[str, ...] = ("\u0130", "\u0131", "\u017f", "\u212a")
 _SAFE_ERRS = (TypeError, ValueError, OSError, RuntimeError, AttributeError, LookupError, OverflowError, RecursionError)
 _MAX_KEY_NODES, _MAX_KEY_CHARS, _MAX_TREE_NODES, _MAX_TREE_DEPTH = 256, 4096, 32_768, 64
@@ -180,6 +179,7 @@ _TEXT_RULES = (
     (_SID_RE, "sid", "sid"),
     (_KV_RE, "kv", "kv"),
 )
+_FAST_MARKER_RE = re.compile(r"sid|pass|cookie|api_key|api-key|secret|auth|bearer")
 
 
 def redact_text(text: str) -> str:
@@ -188,7 +188,7 @@ def redact_text(text: str) -> str:
         return text
     low = text.lower()
     has_dsn = "://" in text and "@" in text and "postgres" in low
-    if not has_dsn and not any(m in low for m in _FAST_MARKERS):
+    if not has_dsn and _FAST_MARKER_RE.search(low) is None:
         if text.isascii() or not any(c in text for c in _CONFUSABLES):
             return text
     out = _DSN_RE.sub(r"\1***\2", text) if has_dsn else text
@@ -327,21 +327,22 @@ def _redact_tree(obj: object, api: bool, depth: int, seen: set[int], budget: lis
         return obj
     if isinstance(obj, str):
         return obj if (len(obj) < 5 and obj.isascii()) else redact_text(obj)
-    if isinstance(obj, (bytes, bytearray)):
-        return redact_text(bytes(obj).decode("utf-8", errors="replace"))
-    if isinstance(obj, (BaseException, os.PathLike)):
-        err_tok = "<unprintable>" if api else f"<{type(obj).__name__}>"
-        out = redact_text(_safe_text(obj, err_tok, 0, set(), [_MAX_KEY_NODES]))
-        return out[:2048] if api and isinstance(obj, BaseException) and len(out) > 2048 else out
-    if not isinstance(obj, (Mapping, list, tuple, set, frozenset)):
-        return obj
+    if not isinstance(obj, (dict, list, tuple)):
+        if isinstance(obj, (bytes, bytearray)):
+            return redact_text(bytes(obj).decode("utf-8", errors="replace"))
+        if isinstance(obj, (BaseException, os.PathLike)):
+            err_tok = "<unprintable>" if api else f"<{type(obj).__name__}>"
+            out = redact_text(_safe_text(obj, err_tok, 0, set(), [_MAX_KEY_NODES]))
+            return out[:2048] if api and isinstance(obj, BaseException) and len(out) > 2048 else out
+        if not isinstance(obj, (Mapping, set, frozenset)):
+            return obj
     vid = id(obj)
     if vid in seen or depth >= _MAX_TREE_DEPTH or budget[0] <= 0:
         return "[Cycle]" if vid in seen else "[Truncated]"
     budget[0] -= 1
     seen.add(vid)
     try:
-        if isinstance(obj, Mapping):
+        if isinstance(obj, dict) or (not isinstance(obj, (list, tuple, set, frozenset)) and isinstance(obj, Mapping)):
             out_map: dict[object, object] = {}
             for k, v in obj.items():
                 if budget[0] <= 0:
@@ -358,7 +359,7 @@ def _redact_tree(obj: object, api: bool, depth: int, seen: set[int], budget: lis
                     out_map[ck] = _redact_tree(v, api, depth + 1, seen, budget)
             return out_map
         out_list: list[object] = []
-        for item in obj:
+        for item in obj if isinstance(obj, (list, tuple, set, frozenset)) else ():
             if budget[0] <= 0:
                 out_list.append("[Truncated]")
                 break

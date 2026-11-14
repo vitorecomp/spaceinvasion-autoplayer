@@ -109,20 +109,24 @@ def finite_bounded_timeout(
 _finite_bounded_timeout = finite_bounded_timeout
 
 
+_TERMINATE_GRACE_SECONDS: float = 5.0
+
+
 def _terminate_or_kill_process(proc: Optional[subprocess.Popen[Any]]) -> None:
     """Terminate a child process and escalate to SIGKILL + wait so no orphan/ResourceWarning leaks."""
     if proc is None or proc.poll() is not None:
         return
+    grace = max(0.05, float(_TERMINATE_GRACE_SECONDS))
     try:
         proc.terminate()
-        proc.wait(timeout=5.0)
+        proc.wait(timeout=grace)
     except subprocess.TimeoutExpired:
         try:
             proc.kill()
         except OSError as exc:
             _LOGGER.debug("Process kill failed after terminate timeout: %s", exc)
         try:
-            proc.wait(timeout=5.0)
+            proc.wait(timeout=grace)
         except (subprocess.TimeoutExpired, OSError) as exc:
             _LOGGER.debug("Process wait failed after kill: %s", exc)
     except OSError:

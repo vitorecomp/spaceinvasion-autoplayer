@@ -18,7 +18,10 @@ class TestRunnerDebugPortLifecycle(unittest.TestCase):
         import time
         import run_stack
 
-        with tempfile.TemporaryDirectory() as tmp:
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            patch("spaceinvasion.runtime.cli_support.TERMINATE_GRACE_SECONDS", 0.1),
+        ):
             ready_file = Path(tmp) / "ready.txt"
             child_code = (
                 "import signal, time; "
