@@ -80,7 +80,7 @@ def _resolve_cdp_host(host: str, default_host: str = "127.0.0.1") -> str:
         return raw
 
 
-def _finite_bounded_timeout(
+def finite_bounded_timeout(
     raw: object,
     *,
     default: float,
@@ -104,6 +104,9 @@ def _finite_bounded_timeout(
     if not math.isfinite(val):
         return default
     return max(min_val, min(max_val, val))
+
+
+_finite_bounded_timeout = finite_bounded_timeout
 
 
 def _terminate_or_kill_process(proc: Optional[subprocess.Popen[Any]]) -> None:
@@ -130,16 +133,19 @@ def _terminate_or_kill_process(proc: Optional[subprocess.Popen[Any]]) -> None:
                 _LOGGER.debug("Process wait failed after OSError: %s", exc)
 
 
-def _safe_browser_err(exc: BaseException) -> str:
+def safe_browser_err(exc: BaseException) -> str:
     res = redact_sensitive(exc)
     if isinstance(res, str):
         return res
     return f"<{type(exc).__name__}>"
 
 
-def _configure_driver_timeouts(driver: Any, timeout: float) -> None:
+_safe_browser_err = safe_browser_err
+
+
+def configure_driver_timeouts(driver: Any, timeout: float) -> None:
     """Apply finite page-load, script, and WebDriver HTTP command timeouts."""
-    bounded = _finite_bounded_timeout(timeout, default=25.0, min_val=15.0, max_val=300.0)
+    bounded = finite_bounded_timeout(timeout, default=25.0, min_val=15.0, max_val=300.0)
     driver.set_page_load_timeout(bounded)
     set_script = getattr(driver, "set_script_timeout", None)
     if callable(set_script):
@@ -166,6 +172,9 @@ def _configure_driver_timeouts(driver: Any, timeout: float) -> None:
                     executor._conn = get_mgr()
             except BROWSER_DOM_ERRORS as exc:
                 _LOGGER.debug("Failed applying command_executor timeout: %s", exc)
+
+
+_configure_driver_timeouts = configure_driver_timeouts
 
 
 def _close_driver_executor(driver: Any) -> None:
@@ -238,5 +247,8 @@ __all__ = [
     "_stop_service_process",
     "_terminate_or_kill_process",
     "close_or_detach_driver",
+    "configure_driver_timeouts",
+    "finite_bounded_timeout",
+    "safe_browser_err",
     "webdriver",
 ]

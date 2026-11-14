@@ -11,7 +11,7 @@ from spaceinvasion.session.client.frames import FrameNavigator
 from spaceinvasion.session.client.galaxy import GalaxyNavigator
 from spaceinvasion.session.client.guards import PageGuardChecker
 from spaceinvasion.session.client.messages import MessageInboxOps
-from spaceinvasion.session.client.reader import StateSnapshotReader
+from spaceinvasion.session.client.reader import StateSnapshotReader, extract_selected_planet_id
 from spaceinvasion.session.limiter import (
     _DEFAULT_PAGE_VIEW_LIMITER,
     DEFAULT_MAX_VIEWS_PER_MINUTE,
@@ -67,6 +67,7 @@ __all__ = [
     "_safe_clamp_cooldown",
     "_safe_clamped_int",
     "append_crash_debug_log",
+    "extract_selected_planet_id",
     "find_and_switch_game_tab",
     "get_default_page_view_limiter",
     "is_server_rate_limit_html",

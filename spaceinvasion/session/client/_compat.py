@@ -102,5 +102,9 @@ class ClientCompatMixin:
         return self._galaxy._dom._finalize_arrow_click(res, fallback_js=fallback_js, step_dir=step_dir)
 
     @staticmethod
+    def extract_selected_planet_id(html: str, url: str = "") -> int | None:
+        return extract_selected_planet_id(html, url)
+
+    @staticmethod
     def _extract_selected_planet_id(html: str, url: str = "") -> int | None:
         return extract_selected_planet_id(html, url)

@@ -75,6 +75,7 @@ from spaceinvasion.planner.config_optimizer.params import (
     normalize_planet_specialization,
     normalize_planet_specializations_map,
     normalize_planet_target_buildings,
+    resolve_planet_display_name,
 )
 from spaceinvasion.planner.config_optimizer.projection import compute_yearly_ships_per_week_projection
 from spaceinvasion.planner.config_optimizer.rows import (
@@ -193,6 +194,7 @@ __all__ = [
     "research_time_divisor",
     "research_upgrade_cost_spice_eq",
     "research_upgrade_costs",
+    "resolve_planet_display_name",
     "resource_peaks",
     "run_config_optimizer",
     "run_genetic_algorithm",

@@ -186,7 +186,7 @@ def _extract_balanced_block(text: str, start_idx: int, open_ch: str, close_ch: s
     return None
 
 
-def _safe_portal_speed(raw: object) -> Optional[float]:
+def safe_portal_speed(raw: object) -> Optional[float]:
     if raw is None:
         return None
     if isinstance(raw, (bool, Mapping, list, tuple, set, frozenset)):
@@ -207,7 +207,7 @@ def _safe_portal_speed(raw: object) -> Optional[float]:
     return val if math.isfinite(val) else 1.0
 
 
-def _safe_portal_label(raw_name: object) -> str:
+def safe_portal_label(raw_name: object) -> str:
     if isinstance(raw_name, int) and not isinstance(raw_name, bool):
         if abs(raw_name).bit_length() >= 12000:
             sign = "-" if raw_name < 0 else ""
@@ -215,6 +215,10 @@ def _safe_portal_label(raw_name: object) -> str:
             return f"{sign}~1e{digits}"
         return str(raw_name)
     return game_data.safe_key(raw_name)
+
+
+_safe_portal_speed = safe_portal_speed
+_safe_portal_label = safe_portal_label
 
 
 def _coerce_portal_uid(raw_id: object) -> int | None:
@@ -278,12 +282,12 @@ def universes_from_portal_data(
         launch_url = urljoin(base_url, f"?action=externalLogin&instance={uid}{sid_q}")
         options.append(
             UniverseOption(
-                label=_safe_portal_label(raw_name),
+                label=safe_portal_label(raw_name),
                 url=launch_url,
                 universe_id=uid,
                 is_si2=bool(item.get("si2")),
-                speed=_safe_portal_speed(item.get("speed")),
-                flight_speed=_safe_portal_speed(item.get("flightSpeed")),
+                speed=safe_portal_speed(item.get("speed")),
+                flight_speed=safe_portal_speed(item.get("flightSpeed")),
                 has_account=has_acc,
             )
         )
@@ -327,8 +331,8 @@ def _extract_portal_js_universes(html: str, base_url: str) -> tuple[UniverseOpti
                 url=urljoin(base_url, f"?action=externalLogin&instance={uid}{sid_q}"),
                 universe_id=uid,
                 is_si2=bool(si2_m and si2_m.group(1) == "true"),
-                speed=_safe_portal_speed(spd_m.group(1)) if spd_m else None,
-                flight_speed=_safe_portal_speed(fspd_m.group(1)) if fspd_m else None,
+                speed=safe_portal_speed(spd_m.group(1)) if spd_m else None,
+                flight_speed=safe_portal_speed(fspd_m.group(1)) if fspd_m else None,
                 has_account=has_acc,
             )
         )
@@ -372,5 +376,7 @@ __all__ = [
     "detect_antibot_challenge",
     "extract_universes",
     "parse_login_tokens",
+    "safe_portal_label",
+    "safe_portal_speed",
     "universes_from_portal_data",
 ]

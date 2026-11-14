@@ -2,18 +2,75 @@
 
 from __future__ import annotations
 
+from spaceinvasion.planner.heuristics._actions import (
+    _make_build_action as make_build_action,
+)
+from spaceinvasion.planner.heuristics._actions import (
+    _make_research_action as make_research_action,
+)
+from spaceinvasion.planner.heuristics._actions import (
+    _pick_best_power_building as pick_best_power_building,
+)
 from spaceinvasion.planner.heuristics._assembly_rank import summarize_plan as summarize_plan
 from spaceinvasion.planner.heuristics._cargo_helpers import (
+    _in_flight_ship_counts as in_flight_ship_counts,
+)
+from spaceinvasion.planner.heuristics._cargo_helpers import (
     compute_infra_transport_targets as compute_infra_transport_targets,
+)
+from spaceinvasion.planner.heuristics._common import (
+    _is_building_allowed_on_planet as is_building_allowed_on_planet,
 )
 from spaceinvasion.planner.heuristics._common import (
     _is_stale_remote_resource_wait as _is_stale_remote_resource_wait,
 )
 from spaceinvasion.planner.heuristics._common import (
+    _norm_planet_type as norm_planet_type,
+)
+from spaceinvasion.planner.heuristics._common import (
+    _offer_map as offer_map,
+)
+from spaceinvasion.planner.heuristics._common import (
+    _research_offer_map as research_offer_map,
+)
+from spaceinvasion.planner.heuristics._common import (
     _resources_from_dict as _resources_from_dict,
+)
+from spaceinvasion.planner.heuristics._common import (
+    _safe_strategy_float as safe_strategy_float,
+)
+from spaceinvasion.planner.heuristics._common import (
+    _safe_strategy_int as safe_strategy_int,
+)
+from spaceinvasion.planner.heuristics._common import (
+    _ship_offer_map as ship_offer_map,
 )
 from spaceinvasion.planner.heuristics._queues import (
     _count_planet_building_queues as _count_planet_building_queues,
+)
+from spaceinvasion.planner.heuristics._queues import (
+    _count_planet_building_queues as count_planet_building_queues,
+)
+from spaceinvasion.planner.heuristics._queues import (
+    _effective_building_levels_and_energy as effective_building_levels_and_energy,
+)
+from spaceinvasion.planner.heuristics._queues import (
+    _max_build_slots as max_build_slots,
+)
+from spaceinvasion.planner.heuristics._queues import (
+    _queued_building_counts as queued_building_counts,
+)
+from spaceinvasion.planner.heuristics._shipyard_research import (
+    _plan_fleet_research_actions as plan_fleet_research_actions,
+)
+from spaceinvasion.planner.heuristics._shipyard_targets import (
+    _plan_planet_shipyard_targets as plan_planet_shipyard_targets,
+)
+from spaceinvasion.planner.heuristics._shipyard_unlocks import (
+    _plan_unlock_and_advisory_actions as plan_unlock_and_advisory_actions,
+)
+from spaceinvasion.planner.heuristics._tutorial_fleet import (
+    _plan_tutorial_fleet_milestones as plan_tutorial_fleet_milestones,
 )
 from spaceinvasion.planner.heuristics._tutorial_tasks import (
     _tutorial_colonize_task as _tutorial_colonize_task,
@@ -118,6 +175,9 @@ from spaceinvasion.planner.heuristics.assembly import (
     plan_fleet_and_attack_actions as plan_fleet_and_attack_actions,
 )
 from spaceinvasion.planner.heuristics.blast_furnace import (
+    _plan_blast_furnace_throttle as plan_blast_furnace_throttle,
+)
+from spaceinvasion.planner.heuristics.blast_furnace import (
     p1_metal_shortfall as p1_metal_shortfall,
 )
 from spaceinvasion.planner.heuristics.blast_furnace import (
@@ -140,6 +200,9 @@ from spaceinvasion.planner.heuristics.transport_station import (
 )
 from spaceinvasion.planner.heuristics.transport_station import (
     plan_interplanet_transports as plan_interplanet_transports,
+)
+from spaceinvasion.planner.heuristics.tutorial import (
+    _plan_tutorial_actions as plan_tutorial_actions,
 )
 
 __all__ = [
@@ -176,14 +239,35 @@ __all__ = [
     "attach_action_etas",
     "compute_infra_transport_targets",
     "compute_spare_ship_budget",
+    "count_planet_building_queues",
+    "effective_building_levels_and_energy",
     "filter_shipyard_actions_by_spare_budget",
+    "in_flight_ship_counts",
+    "is_building_allowed_on_planet",
+    "make_build_action",
+    "make_research_action",
+    "max_build_slots",
     "merge_manual_queue_actions",
+    "norm_planet_type",
+    "offer_map",
     "p1_metal_shortfall",
+    "pick_best_power_building",
     "plan_actions",
     "plan_ai_blast_furnace_throttles",
+    "plan_blast_furnace_throttle",
     "plan_fleet_and_attack_actions",
+    "plan_fleet_research_actions",
     "plan_interplanet_stationing",
     "plan_interplanet_transports",
     "plan_p1_metal_resume_throttle",
+    "plan_planet_shipyard_targets",
+    "plan_tutorial_actions",
+    "plan_tutorial_fleet_milestones",
+    "plan_unlock_and_advisory_actions",
+    "queued_building_counts",
+    "research_offer_map",
+    "safe_strategy_float",
+    "safe_strategy_int",
+    "ship_offer_map",
     "summarize_plan",
 ]

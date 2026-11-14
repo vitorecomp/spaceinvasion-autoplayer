@@ -41,31 +41,31 @@ MAIN_NODE_MODULES = Path(
 
 
 def _parse_frontend_config_schema_items() -> dict[str, dict[str, object]]:
-    """Extract non-removed items (key, control, defaultValue, min, max, step) from `configSchema.ts`."""
-    src = (FRONTEND_DIR / "src" / "features" / "config" / "configSchema.ts").read_text(encoding="utf-8")
-    blocks = re.split(r"(?=\n\s*\{\s*\n\s*key:\s*\")", src)
+    """Extract non-removed items from `GENERATED_SETTINGS_SCHEMA` consumed by `configSchema.ts`."""
+    schema_ts = (FRONTEND_DIR / "src" / "features" / "config" / "configSchema.ts").read_text(encoding="utf-8")
+    assert "GENERATED_SETTINGS_SCHEMA.groups.map(toConfigGroupSpec)" in schema_ts
+
+    gen_ts = (FRONTEND_DIR / "src" / "types" / "generated.ts").read_text(encoding="utf-8")
+    marker = "export const GENERATED_SETTINGS_SCHEMA: SettingsSchemaPayload = "
+    start = gen_ts.index(marker) + len(marker)
+    end = gen_ts.index("\n};", start) + 2
+    payload = json.loads(gen_ts[start:end])
+
     items: dict[str, dict[str, object]] = {}
-    for block in blocks:
-        m_key = re.search(r'key:\s*"([^"]+)"', block)
-        if not m_key:
-            continue
-        key = m_key.group(1)
-        if key in REMOVED_GA_NN_FIELDS:
-            continue
-        entry: dict[str, object] = {"key": key}
-        m_ctrl = re.search(r'control:\s*"([^"]+)"', block)
-        if m_ctrl:
-            entry["control"] = m_ctrl.group(1)
-        m_def = re.search(r"defaultValue:\s*([^,\n]+)", block)
-        if m_def:
-            raw_def = m_def.group(1).strip()
-            entry["defaultValue"] = json.loads(raw_def)
-        for num_field in ("min", "max", "step"):
-            m_num = re.search(rf"\b{num_field}:\s*(-?\d+(?:\.\d+)?)", block)
-            if m_num:
-                val_s = m_num.group(1)
-                entry[num_field] = float(val_s) if "." in val_s else int(val_s)
-        items[key] = entry
+    for grp in payload.get("groups") or []:
+        for raw in grp.get("items") or []:
+            key = str(raw["key"])
+            if key in REMOVED_GA_NN_FIELDS:
+                continue
+            entry: dict[str, object] = {
+                "key": key,
+                "control": raw["control"],
+                "defaultValue": raw["defaultValue"],
+            }
+            for num_field in ("min", "max", "step"):
+                if num_field in raw and raw[num_field] is not None:
+                    entry[num_field] = raw[num_field]
+            items[key] = entry
     return items
 
 

@@ -10,6 +10,14 @@ from pathlib import Path
 
 from spaceinvasion.core._config_coerce import (
     _SAFE_COERCE_ERRORS,
+    safe_cfg_bool,
+    safe_cfg_exc_text,
+    safe_cfg_float,
+    safe_cfg_int,
+    safe_cfg_key,
+    safe_cfg_key_repr,
+    safe_cfg_optional_int,
+    sanitize_cfg_json_tree,
 )
 from spaceinvasion.core._config_coerce import (
     canonicalize_fleet_research_key as _canonicalize_fleet_research_key,
@@ -303,6 +311,14 @@ __all__ = [
     "_serialize_strategy_config_json",
     "load_strategy_config",
     "normalize_planner_mode",
+    "safe_cfg_bool",
+    "safe_cfg_exc_text",
+    "safe_cfg_float",
+    "safe_cfg_int",
+    "safe_cfg_key",
+    "safe_cfg_key_repr",
+    "safe_cfg_optional_int",
+    "sanitize_cfg_json_tree",
     "save_strategy_config",
     "strategy_config_from_dict",
 ]

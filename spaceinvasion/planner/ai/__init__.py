@@ -7,6 +7,9 @@ from spaceinvasion.planner.ai._problem_in_progress import (
     compute_in_progress_build_rem_by_planet,
     compute_in_progress_research_rem_seconds,
 )
+from spaceinvasion.planner.ai._problem_in_progress import (
+    _extract_live_in_progress_state as extract_live_in_progress_state,
+)
 from spaceinvasion.planner.ai._problem_queues import (
     compute_inbound_friendly_cargo_by_planet,
     estimate_interplanet_transport_seconds,
@@ -25,6 +28,7 @@ from spaceinvasion.planner.ai._types import (
     PATH_MINE_KEYS,
     PATH_NEVER,
     REALIZED_INCOME_BASIS,
+    safe_speedup,
 )
 from spaceinvasion.planner.ai._types import (
     safe_speedup as _safe_speedup,
@@ -37,8 +41,10 @@ from spaceinvasion.planner.ai.live_fill import (
     AI_FILL_MIN_PATIENCE,
     AI_FILL_POOL_LEAD_HOURS,
     AI_FILL_REASON_PREFIX,
+    AI_STEP_SEQ_RE,
     _hours_until_paid,
     _plan_fill_patience,
+    plan_fill_patience,
     plan_live_fill_actions,
 )
 from spaceinvasion.planner.ai.live_reconcile import reconcile_live_ai_actions
@@ -61,6 +67,7 @@ __all__ = [
     "AI_FILL_MIN_PATIENCE",
     "AI_FILL_POOL_LEAD_HOURS",
     "AI_FILL_REASON_PREFIX",
+    "AI_STEP_SEQ_RE",
     "DEFAULT_AI_PLANNER_PARAMS",
     "DEFAULT_MEDIAN_ROUND_TRIP_SECONDS",
     "PATH_ACCELERATOR_KEYS",
@@ -89,13 +96,16 @@ __all__ = [
     "diagnose_ai_colony_idle_states",
     "estimate_interplanet_transport_seconds",
     "export_ai_planner_txt",
+    "extract_live_in_progress_state",
     "fmt_path_time",
     "is_realized_income_basis",
     "path_fitness_key",
+    "plan_fill_patience",
     "plan_live_fill_actions",
     "planet_hourly_output",
     "reconcile_live_ai_actions",
     "run_ai_planner",
+    "safe_speedup",
     "strategy_from_genes",
     "summarize_blast_furnace_entries",
     "summarize_live_blast_furnace_state",

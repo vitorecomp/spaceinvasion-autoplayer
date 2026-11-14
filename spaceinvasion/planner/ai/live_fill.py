@@ -40,7 +40,7 @@ _AI_FILL_NEVER_HOURS: float = AI_FILL_NEVER_HOURS
 _AI_STEP_SEQ_RE = AI_STEP_SEQ_RE
 
 
-def _plan_fill_patience(plan_result: Mapping[str, object]) -> float:
+def plan_fill_patience(plan_result: Mapping[str, object]) -> float:
     """Share of a fill step's own duration by which it may hold the waiting step back."""
     raw: object = None
     search = plan_result.get("search") if isinstance(plan_result, Mapping) else None
@@ -54,6 +54,9 @@ def _plan_fill_patience(plan_result: Mapping[str, object]) -> float:
             raw = meta.get("patience")
     val = coerce_finite_float(raw, AI_FILL_MIN_PATIENCE)
     return min(AI_FILL_MAX_PATIENCE, max(AI_FILL_MIN_PATIENCE, val))
+
+
+_plan_fill_patience = plan_fill_patience
 
 
 def _evaluate_fill_step(
@@ -219,7 +222,9 @@ __all__ = [
     "AI_FILL_MIN_PATIENCE",
     "AI_FILL_POOL_LEAD_HOURS",
     "AI_FILL_REASON_PREFIX",
+    "AI_STEP_SEQ_RE",
     "_hours_until_paid",
     "_plan_fill_patience",
+    "plan_fill_patience",
     "plan_live_fill_actions",
 ]

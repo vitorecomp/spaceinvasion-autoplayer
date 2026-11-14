@@ -12,7 +12,9 @@ import time
 from typing import Mapping, Optional, Sequence
 
 from spaceinvasion.core.env import get_env, get_process_env
-from spaceinvasion.runtime.cli_support import terminate_child as _terminate_child
+from spaceinvasion.runtime.cli_support import terminate_child
+
+_terminate_child = terminate_child
 
 RELOAD_CHILD_ENV = "SPACEINVASION_RELOAD_CHILD"
 
