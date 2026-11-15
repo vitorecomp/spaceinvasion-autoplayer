@@ -964,4 +964,126 @@ describe("Persistent Console Store (useSyncExternalStore + localStorage)", () =>
     const fullReplacement = mergeDashboardDeltaResponse(dashRef, SAMPLE_DASHBOARD);
     expect(fullReplacement.section_versions).toBeUndefined();
   });
+
+  it("ignores stale localStorage versions on delta poll and breaks repeat hot-reload loops via sessionStorage", async () => {
+    localStorage.setItem(
+      CONSOLE_STORE_STORAGE_KEY,
+      JSON.stringify({
+        v: 1,
+        savedAt: Date.now(),
+        activePage: "dashboard",
+        dashboard: {
+          ...SAMPLE_DASHBOARD,
+          server_boot_id: "boot-stale",
+          code_version: "code-stale",
+          css_version: "css-stale",
+          ui_version: "code-stale:css-stale",
+          ui_meta: {
+            server_boot_id: "boot-stale",
+            code_version: "code-stale",
+            css_version: "css-stale",
+            ui_version: "code-stale:css-stale",
+          },
+        },
+        apiOnline: true,
+        lastHydratedAt: Date.now(),
+      })
+    );
+    resetConsoleStore({ clearStorage: false });
+    setConsoleStorePersistenceForTests(true);
+
+    let liveCodeVer = "code-live-1";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        const u = String(url);
+        if (u.startsWith("/ui-version")) {
+          return {
+            ok: true,
+            status: 200,
+            text: async () =>
+              JSON.stringify({
+                ok: true,
+                server_boot_id: "boot-live-1",
+                code_version: liveCodeVer,
+                css_version: "css-live-1",
+                ui_version: `${liveCodeVer}:css-live-1`,
+              }),
+          };
+        }
+        if (u.startsWith("/dashboard")) {
+          return {
+            ok: true,
+            status: 200,
+            text: async () =>
+              JSON.stringify({
+                ...SAMPLE_DASHBOARD,
+                delta: true,
+                server_boot_id: "boot-live-1",
+                code_version: liveCodeVer,
+                css_version: "css-live-1",
+                ui_version: `${liveCodeVer}:css-live-1`,
+                section_versions: { state: "st_v1", ui_meta: "ui_v1" },
+                unchanged_sections: ["state", "ui_meta"],
+              }),
+          };
+        }
+        return { ok: true, status: 200, text: async () => JSON.stringify({ ok: true }) };
+      })
+    );
+
+    let actionsRef: ReturnType<typeof useConsoleActions> | null = null;
+    let dashRef: ReturnType<typeof useDashboard> = null;
+    const HotReloadProbe: React.FC = () => {
+      actionsRef = useConsoleActions();
+      dashRef = useDashboard();
+      return null;
+    };
+
+    sessionStorage.clear();
+    render(
+      <ConsoleProvider>
+        <HotReloadProbe />
+      </ConsoleProvider>
+    );
+
+    // 1. Live /ui-version and delta /dashboard agree -> stale localStorage tokens overwritten with zero reload
+    await waitFor(() => {
+      expect(dashRef?.code_version).toBe("code-live-1");
+    });
+    expect(sessionStorage.getItem("si_hot_reload_guard")).toBeNull();
+
+    // 2. First real code change writes sessionStorage guard and schedules reload; second poll for same target suppresses loop
+    liveCodeVer = "code-live-2";
+    let didReloadFirst = false;
+    await act(async () => {
+      didReloadFirst = await actionsRef!.loadDashboard({ refresh: false, preserveConfig: true });
+    });
+    expect(didReloadFirst).toBe(false);
+    expect(sessionStorage.getItem("si_hot_reload_guard")).toContain("boot-live-1|code-live-2");
+
+    let didReloadSecond = false;
+    await act(async () => {
+      didReloadSecond = await actionsRef!.loadDashboard({ refresh: false, preserveConfig: true });
+    });
+    expect(didReloadSecond).toBe(true);
+    expect(dashRef?.code_version).toBe("code-live-2");
+
+    // 3. Vite dev document (<script type="module" src="/src/main.tsx">) skips full-page code reload cleanly
+    const viteScript = document.createElement("script");
+    viteScript.type = "module";
+    viteScript.src = "/src/main.tsx";
+    document.body.appendChild(viteScript);
+    try {
+      sessionStorage.clear();
+      liveCodeVer = "code-live-3";
+      await act(async () => {
+        await actionsRef!.checkApiHealthAndHotReload();
+      });
+      expect(sessionStorage.getItem("si_hot_reload_guard")).toBeNull();
+    } finally {
+      viteScript.remove();
+      sessionStorage.clear();
+    }
+  });
 });

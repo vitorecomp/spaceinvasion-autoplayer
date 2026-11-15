@@ -8,11 +8,14 @@ import { isPlainObject } from "./compaction";
 const MAX_HOURLY_PRODUCTION_POINTS = 1440;
 const MAX_LOOT_RECYCLE_BUCKETS = 168;
 
-const UI_META_KEYS = [
+const UI_VERSION_KEYS = [
   "server_boot_id",
   "ui_version",
   "code_version",
   "css_version",
+] as const;
+
+const UI_META_NON_VERSION_KEYS = [
   "planner_mode",
   "effective_planner_mode",
   "fallback_reason",
@@ -110,10 +113,25 @@ export function mergeDashboardDeltaResponse(
   }
 
   if (isPlainObject(merged.ui_meta)) {
-    for (const metaKey of UI_META_KEYS) {
+    for (const metaKey of UI_META_NON_VERSION_KEYS) {
       if (metaKey in merged.ui_meta && merged.ui_meta[metaKey] !== undefined) {
         (merged as Record<string, any>)[metaKey] = merged.ui_meta[metaKey];
       }
+    }
+  }
+
+  // Fresh top-level version headers from incoming ALWAYS take precedence; never overwrite with stale ui_meta/localStorage
+  const incomingMeta = isPlainObject(incoming.ui_meta) ? incoming.ui_meta : null;
+  for (const verKey of UI_VERSION_KEYS) {
+    const rawIn = (incoming as Record<string, any>)[verKey];
+    if (typeof rawIn === "string" && rawIn.length > 0) {
+      (merged as Record<string, any>)[verKey] = rawIn;
+    } else if (
+      incomingMeta &&
+      typeof incomingMeta[verKey] === "string" &&
+      incomingMeta[verKey].length > 0
+    ) {
+      (merged as Record<string, any>)[verKey] = incomingMeta[verKey];
     }
   }
 

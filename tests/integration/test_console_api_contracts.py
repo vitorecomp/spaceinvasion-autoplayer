@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+from contextlib import ExitStack
+import json
+import os
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import threading
+import time
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -247,3 +251,41 @@ def test_generated_ts_types_in_sync_with_python_contracts() -> None:
         timeout=30.0,
     )
     assert res.returncode == 0, f"{res.stdout}\n{res.stderr}"
+
+
+def test_ui_version_and_dashboard_versions_match_across_spaceinvasion_ui_dir_and_touch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`/ui-version`, `/dashboard?refresh=0`, and delta `/dashboard` agree under `SPACEINVASION_UI_DIR` and `touch`."""
+    env_ui = tmp_path / "opt_spaceinvasion_ui"
+    env_ui.mkdir(parents=True)
+    (env_ui / "index.html").write_text("<!doctype html><div>OPT_UI</div>", encoding="utf-8")
+    (env_ui / "app.js").write_text("console.log('opt-ui-v1');", encoding="utf-8")
+    (env_ui / "styles.css").write_text("body{color:#16ec98;}", encoding="utf-8")
+    monkeypatch.setenv("SPACEINVASION_UI_DIR", str(env_ui))
+
+    with ExitStack() as stack:
+        h = stack.enter_context(E2ETestHarness(config=StrategyConfig()))
+        r_ver = requests.get(f"{h.base_url}/ui-version", timeout=5.0).json()
+        r_full = requests.get(f"{h.base_url}/dashboard?refresh=0", timeout=5.0).json()
+        r_seed = requests.get(f"{h.base_url}/dashboard?refresh=0&versions=%7B%7D", timeout=5.0).json()
+        sec_vers = r_seed["section_versions"]
+        r_delta = requests.get(
+            f"{h.base_url}/dashboard",
+            params={"refresh": "0", "versions": json.dumps(sec_vers)},
+            timeout=5.0,
+        ).json()
+
+        for key in ("server_boot_id", "ui_version", "code_version", "css_version"):
+            assert r_ver[key], f"Missing {key} in /ui-version"
+            assert r_full[key] == r_ver[key], f"/dashboard?refresh=0 {key} mismatched /ui-version"
+            assert r_seed[key] == r_ver[key], f"/dashboard?versions={{}} {key} mismatched /ui-version"
+            assert r_delta[key] == r_ver[key], f"delta /dashboard {key} mismatched /ui-version"
+
+        # Content-SHA1 digests must stay identical across mtime-only changes (e.g. podman cp / touch)
+        future_ts = time.time() + 123.0
+        for name in ("index.html", "app.js", "styles.css"):
+            os.utime(env_ui / name, (future_ts, future_ts))
+        r_touched = requests.get(f"{h.base_url}/ui-version", timeout=5.0).json()
+        for key in ("ui_version", "code_version", "css_version"):
+            assert r_touched[key] == r_ver[key]

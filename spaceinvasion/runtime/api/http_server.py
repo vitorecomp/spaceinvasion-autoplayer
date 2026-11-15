@@ -150,16 +150,15 @@ class _BaseApiRequestHandler(BaseHTTPRequestHandler):
             qs = parse_qs(query)
             ref = qs.get("refresh", ["0"])[0].lower() in ("1", "true", "yes")
             delta_args = parse_dashboard_delta_query(qs) if not ref else None
+            ui_assets = compute_ui_assets_state(self.ui_dir)
             if delta_args is not None:
                 c_ver, s_min, s_loot = delta_args
-                self._send_json(
-                    HTTPStatus.OK,
-                    self.bridge.dashboard_delta(
-                        client_section_versions=c_ver, since_minute_bucket=s_min, since_loot_hour=s_loot
-                    ),
+                dash_body = self.bridge.dashboard_delta(
+                    client_section_versions=c_ver, since_minute_bucket=s_min, since_loot_hour=s_loot
                 )
             else:
-                self._send_json(HTTPStatus.OK, self.bridge.dashboard(refresh=ref))
+                dash_body = self.bridge.dashboard(refresh=ref)
+            self._send_json(HTTPStatus.OK, {**dash_body, **ui_assets})
             return
         if path == "/state":
             qs = parse_qs(query)
