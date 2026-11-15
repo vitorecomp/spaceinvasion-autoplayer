@@ -29,6 +29,7 @@ export {
 } from "./consoleStore";
 
 export { createConsoleActions } from "./actions";
+export { buildDashboardPollUrl, mergeDashboardDeltaResponse } from "./dashboardDelta";
 export { ConsoleProvider } from "./ConsoleProvider";
 export type { ConsoleProviderProps } from "./ConsoleProvider";
 export { buildClientFallbackActionGraph, selectActivePlanet } from "./fallbackActionGraph";

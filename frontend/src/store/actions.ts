@@ -14,6 +14,7 @@ import {
   PageKey,
 } from "../types/api";
 import { buildClientFallbackActionGraph } from "./fallbackActionGraph";
+import { buildDashboardPollUrl, mergeDashboardDeltaResponse } from "./dashboardDelta";
 import { normalizePageKey } from "./persistence";
 import { createViewRefreshActions } from "./refreshActions";
 import { ConsoleActions, ConsoleStore, UiPrefs } from "./types";
@@ -245,16 +246,18 @@ export function createConsoleActions(
       inFlightDashboardCount: prev.inFlightDashboardCount + 1,
     }));
     try {
-      const dash = await rawApiGet<DashboardPayload>(
-        `/dashboard?refresh=${refresh ? 1 : 0}`,
+      const prevBeforeFetch = store.getSnapshot().dashboard;
+      const rawDash = await rawApiGet<DashboardPayload>(
+        buildDashboardPollUrl(refresh, prevBeforeFetch),
         15000
       );
       if (reqSeq !== store.getRuntimeSnapshot().dashboardSeq) return false;
+      const prevSnap = store.getSnapshot();
+      const dash = mergeDashboardDeltaResponse(prevSnap.dashboard ?? prevBeforeFetch, rawDash);
       if (applyVersionSnapshot(dash)) return false;
       setApiStatus(true);
 
       const rtNow = store.getRuntimeSnapshot();
-      const prevSnap = store.getSnapshot();
       const preserveUnsavedCfg =
         (rtNow.configDirty || rtNow.configSaving > 0) && preserveConfig;
       const nextDash: DashboardPayload =

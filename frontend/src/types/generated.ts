@@ -1021,6 +1021,17 @@ export interface DashboardPayload {
   galaxy_sweep?: GalaxySweepPayload | null;
   universe_research_max?: UniverseResearchMaxRow[];
   notifications?: NotificationsState;
+  delta?: boolean;
+  snapshot_generation?: number | null;
+  published_at?: number | null;
+  section_versions?: Record<string, string>;
+  unchanged_sections?: string[];
+  hourly_production_mode?: "full" | "delta" | string | null;
+  loot_recycle_mode?: "full" | "delta" | string | null;
+  loot_recycle_hourly?: LootRecycleBucket[];
+  latest_minute_bucket?: number | null;
+  latest_loot_hour?: number | null;
+  ui_meta?: Record<string, any> | null;
   [key: string]: any;
 }
 

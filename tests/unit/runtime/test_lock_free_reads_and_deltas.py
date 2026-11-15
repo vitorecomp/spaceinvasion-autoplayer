@@ -121,9 +121,14 @@ def test_lock_free_health_bot_status_and_db_commands_under_held_browser_lock() -
 
 @pytest.mark.usefixtures("pg_dsn")
 def test_versioned_dashboard_delta_payload_under_50kb_when_unchanged() -> None:
-    """Phase 4.3 delta dashboard omits unchanged sections and stays well under 50 KB."""
+    """Phase 4.3 delta dashboard omits unchanged sections (incl. 8,000-system bot_control) and stays < 5 KB."""
     with ExitStack() as stack:
         h, http = _boot_modular_harness(stack)
+        bridge = h.bridge
+        assert isinstance(bridge, ModularGameApiBridge)
+        scanned_8k = {f"{(i // 400) + 1}:{(i % 400) + 1}": 1_760_000_000.0 + i for i in range(8_000)}
+        bridge.views.bind_hooks(on_get_scanned_systems=lambda: scanned_8k)
+        bridge.publish_snapshot()
         http.post(f"{h.base_url}/command", json={"command": "plan", "dry_run": True}, timeout=15)
 
         r_full_compat = http.get(f"{h.base_url}/dashboard?refresh=0", timeout=5.0)
@@ -135,8 +140,9 @@ def test_versioned_dashboard_delta_payload_under_50kb_when_unchanged() -> None:
         r_init = http.get(f"{h.base_url}/dashboard?refresh=0&versions=%7B%7D", timeout=5.0)
         assert r_init.status_code == 200
         init_body = r_init.json()
+        assert len(init_body["bot_control"]["scanned_systems"]) == 8_000
         sec_versions = init_body["section_versions"]
-        assert isinstance(sec_versions, dict) and len(sec_versions) >= 5
+        assert isinstance(sec_versions, dict) and "bot_control" in sec_versions and len(sec_versions) >= 5
         latest_min = init_body.get("latest_minute_bucket")
         latest_loot = init_body.get("latest_loot_hour")
 
@@ -148,12 +154,24 @@ def test_versioned_dashboard_delta_payload_under_50kb_when_unchanged() -> None:
 
         r_delta = http.get(f"{h.base_url}/dashboard", params=params, timeout=5.0)
         assert r_delta.status_code == 200
-        assert len(r_delta.content) < 50_000, f"Unchanged delta response too large: {len(r_delta.content)} bytes"
+        assert len(r_delta.content) < 5_000, f"Unchanged delta response too large: {len(r_delta.content)} bytes"
         delta_body = r_delta.json()
         assert delta_body["delta"] is True
+        assert "bot_control" not in delta_body
         assert set(delta_body["unchanged_sections"]) == set(sec_versions.keys())
         assert delta_body["hourly_production_history"] == []
         assert delta_body["loot_recycle_hourly"] == []
+
+        # Changing bot_control state ships only updated bot_control and refreshes its version token
+        r_pause = http.post(f"{h.base_url}/command", json={"command": "bot_control", "paused": True}, timeout=5.0)
+        assert r_pause.status_code == 200
+        r_changed = http.get(f"{h.base_url}/dashboard", params=params, timeout=5.0)
+        assert r_changed.status_code == 200
+        changed_body = r_changed.json()
+        assert "bot_control" in changed_body
+        assert "bot_control" not in changed_body["unchanged_sections"]
+        assert changed_body["bot_control"]["paused"] is True
+        assert changed_body["section_versions"]["bot_control"] != sec_versions["bot_control"]
 
 
 @pytest.mark.usefixtures("pg_dsn")

@@ -326,6 +326,58 @@ def test_dashboard_delta_omits_unchanged_sections_and_stays_under_5kb() -> None:
     assert len(inc["loot_recycle_hourly"]) == 2  # type: ignore[arg-type]
 
 
+def test_dashboard_delta_versions_bot_control_with_8000_scanned_systems_under_5kb() -> None:
+    """Omitting unchanged bot_control (8,000 scanned systems) keeps delta < 5 KB and reflects paused/busy updates."""
+    publisher = SnapshotPublisher()
+    scanned_systems = {f"{(i // 400) + 1}:{(i % 400) + 1}": 1_760_000_000.0 + i for i in range(8_000)}
+    snap = publisher.publish(
+        health={"ok": True, "in_game": True, "debug_port": 9222, "bot_control": {"paused": False}},
+        bot_control={
+            "ok": True,
+            "paused": False,
+            "busy": False,
+            "mode_override": "auto",
+            "captcha_blocked": False,
+            "scanned_systems": scanned_systems,
+        },
+        state={"universe_id": 31, "user_id": 103603, "active_planet_id": 100, "planets": []},
+        sections={"plan": [], "notifications": {"unread_count": 0, "items": []}},
+        published_at=1_760_008_000.0,
+    )
+    assert "bot_control" in snap.section_versions
+
+    initial = build_dashboard_delta_response(snap)
+    initial_bytes = len(json.dumps(initial, separators=(",", ":")).encode("utf-8"))
+    assert initial_bytes > 100_000
+    assert len(initial["bot_control"]["scanned_systems"]) == 8_000  # type: ignore[index]
+
+    unchanged = build_dashboard_delta_response(snap, client_section_versions=snap.section_versions)
+    unchanged_bytes = len(json.dumps(unchanged, separators=(",", ":")).encode("utf-8"))
+    assert unchanged_bytes < 5_000, f"Unchanged delta with 8,000 scanned_systems too large: {unchanged_bytes} bytes"
+    assert "bot_control" not in unchanged
+    assert "bot_control" in unchanged["unchanged_sections"]  # type: ignore[operator]
+
+    snap_paused = publisher.publish_section(
+        "bot_control",
+        {
+            "ok": True,
+            "paused": True,
+            "busy": True,
+            "mode_override": "dry-run",
+            "captcha_blocked": False,
+            "scanned_systems": scanned_systems,
+        },
+    )
+    assert snap_paused.section_versions["bot_control"] != snap.section_versions["bot_control"]
+    changed = build_dashboard_delta_response(snap_paused, client_section_versions=snap.section_versions)
+    assert "bot_control" in changed
+    assert "bot_control" not in changed["unchanged_sections"]  # type: ignore[operator]
+    assert changed["bot_control"]["paused"] is True  # type: ignore[index]
+    assert changed["bot_control"]["busy"] is True  # type: ignore[index]
+    assert changed["bot_control"]["mode_override"] == "dry-run"  # type: ignore[index]
+    assert len(changed["bot_control"]["scanned_systems"]) == 8_000  # type: ignore[index]
+
+
 def test_command_reference_markdown_is_deterministic() -> None:
     reg = _build_registry()
     md1 = generate_command_reference_markdown(reg)
