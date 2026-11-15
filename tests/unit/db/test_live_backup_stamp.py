@@ -8,15 +8,17 @@ import shutil
 import subprocess
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from spaceinvasion.db.migrations import (
     BASELINE_REVISION,
+    NO_BACKUP,
     get_current_revision,
     stamp_baseline_database,
+    upgrade_database,
     verify_models_match_migrations,
 )
-from spaceinvasion.db.models import Base, SchemaMigration, SchemaMigrationEvent
+from spaceinvasion.db.models import SchemaMigration, SchemaMigrationEvent
 from spaceinvasion.db.session import DatabaseEngine, db_uow
 from tests.pg_harness import DisposablePostgresServer
 
@@ -95,14 +97,16 @@ def _restore_dump_into_disposable_db(
 
 
 def _assert_restored_db_matches_and_stamps(restored_dsn: str) -> None:
-    """Assert zero ORM schema drift and clean `14 -> 14` Alembic baseline stamping."""
+    """Assert clean `14 -> 14` Alembic baseline stamping followed by zero-drift upgrade to `0004`."""
     with DatabaseEngine.from_dsn(restored_dsn, pool_size=1, max_overflow=0) as db:
         assert get_current_revision(db) is None
-        assert verify_models_match_migrations(db) == []
 
-        result = stamp_baseline_database(db, verify_schema=True)
+        result = stamp_baseline_database(db, verify_schema=False)
         assert result.current_revision == BASELINE_REVISION
         assert get_current_revision(db) == BASELINE_REVISION
+
+        up_res = upgrade_database(db, "head", backup_fn=NO_BACKUP)
+        assert up_res.current_revision == "0004"
         assert verify_models_match_migrations(db) == []
 
         with db_uow(db) as session:
@@ -126,7 +130,10 @@ def test_synthetic_backup_restore_matches_models_and_stamps_cleanly(
     """Restoring a synthetic custom-format dump of a V14 DB verifies zero drift and stamps `14 -> 14`."""
     src_dsn = pg_harness.create_database(prefix="synth_src", from_template=False)
     with DatabaseEngine.from_dsn(src_dsn, pool_size=1, max_overflow=0) as src_db:
-        Base.metadata.create_all(src_db.engine)
+        upgrade_database(src_db, BASELINE_REVISION, backup_fn=NO_BACKUP)
+        with src_db.engine.begin() as conn:
+            conn.execute(text("DROP TABLE alembic_version"))
+            conn.execute(text("DELETE FROM schema_migration_events"))
         with db_uow(src_db) as session:
             session.add(
                 SchemaMigration(

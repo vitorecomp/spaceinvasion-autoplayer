@@ -12,6 +12,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.exc import InvalidRequestError
 from sqlalchemy.orm import RelationshipProperty, Session, selectinload
 
+from spaceinvasion.db.migrations import BASELINE_REVISION, NO_BACKUP, upgrade_database
 from spaceinvasion.db.models import (
     Base,
     ColonyCandidateHot,
@@ -275,11 +276,28 @@ def test_orm_metadata_covers_exact_required_tables() -> None:
 def test_orm_schema_matches_migrated_postgres_catalog_exactly(
     pg_harness: DisposablePostgresServer,
 ) -> None:
-    """`Base.metadata.create_all` matches migrated `si_template` catalog 1:1."""
+    """`Base.metadata.create_all` matches Alembic `head` (`0004`) catalog 1:1 and `0001` matches `si_template`."""
     migrated_schema = _introspect_pg_schema(
         pg_harness.template_dsn,
         exclude_tables=_INTERNAL_EMULATION_TABLES,
     )
+
+    alembic_dsn = pg_harness.create_database(prefix="orm_alembic", from_template=False)
+    alembic_eng = create_engine(_sqlalchemy_url(alembic_dsn))
+    try:
+        upgrade_database(alembic_eng, BASELINE_REVISION, backup_fn=NO_BACKUP)
+        upgrade_database(alembic_eng, "head", backup_fn=NO_BACKUP)
+    finally:
+        alembic_eng.dispose()
+    head_schema = _introspect_pg_schema(
+        alembic_dsn,
+        exclude_tables=_INTERNAL_EMULATION_TABLES | {"alembic_version"},
+    )
+    assert set(head_schema.keys()) == set(migrated_schema.keys())
+    for tbl in sorted(migrated_schema.keys()):
+        assert head_schema[tbl].columns == migrated_schema[tbl].columns, f"head col mismatch on {tbl}"
+        assert head_schema[tbl].constraints == migrated_schema[tbl].constraints, f"head con mismatch on {tbl}"
+        assert head_schema[tbl].indexes == migrated_schema[tbl].indexes, f"head idx mismatch on {tbl}"
 
     orm_dsn = pg_harness.create_database(prefix="orm_equiv", from_template=False)
     engine = create_engine(_sqlalchemy_url(orm_dsn))
@@ -289,21 +307,21 @@ def test_orm_schema_matches_migrated_postgres_catalog_exactly(
         engine.dispose()
 
     orm_schema = _introspect_pg_schema(orm_dsn)
-    assert set(orm_schema.keys()) == set(migrated_schema.keys())
+    assert set(orm_schema.keys()) == set(head_schema.keys())
     assert set(orm_schema.keys()) == set(GAME_REQUIRED_TABLES)
 
-    for tbl in sorted(migrated_schema.keys()):
-        expected = migrated_schema[tbl]
+    for tbl in sorted(head_schema.keys()):
+        expected = head_schema[tbl]
         actual = orm_schema[tbl]
         assert actual.columns == expected.columns, f"Column mismatch on {tbl}"
-        assert actual.constraints == expected.constraints, f"Constraint on {tbl}"
+        assert actual.constraints == expected.constraints, f"Constraint mismatch on {tbl}"
         assert actual.indexes == expected.indexes, f"Index mismatch on {tbl}"
 
     all_indexes = [idx for spec in orm_schema.values() for idx in spec.indexes]
     non_pk = [idx for idx in all_indexes if not idx.is_primary]
     explicit_non_unique = [idx for idx in non_pk if not idx.is_unique]
-    assert len(non_pk) == 46
-    assert len(explicit_non_unique) == 42
+    assert len(non_pk) == 70
+    assert len(explicit_non_unique) == 66
 
 
 def test_models_package_standards_layering_and_lazy_policy() -> None:

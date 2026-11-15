@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from sqlalchemy import Index, text
+from sqlalchemy import CheckConstraint, Index, desc, text
 from sqlalchemy.orm import Mapped, mapped_column
 
-from spaceinvasion.db.models.base import Base, identity_pk
+from spaceinvasion.db.models.base import Base, JsonbText, identity_pk
 
 
 class UiNotification(Base):
@@ -13,8 +13,16 @@ class UiNotification(Base):
 
     __tablename__ = "ui_notifications"
     __table_args__ = (
+        CheckConstraint("status IN ('unread', 'read', 'dismissed')", name="ck_ui_notifications_status"),
+        CheckConstraint("severity IN ('info', 'warning', 'error', 'critical')", name="ck_ui_notifications_severity"),
         Index("idx_ui_notifications_dedupe", "dedupe_key", "status"),
         Index("idx_ui_notifications_status_ts", "status", "updated_ts"),
+        Index(
+            "idx_ui_notifications_unread",
+            desc("updated_ts"),
+            desc("id"),
+            postgresql_where=text("status = 'unread'"),
+        ),
     )
 
     id: Mapped[int] = mapped_column(identity_pk(), primary_key=True)
@@ -32,7 +40,7 @@ class UiNotification(Base):
     occurrence_count: Mapped[int] = mapped_column(server_default=text("1"))
     status: Mapped[str] = mapped_column(server_default=text("'unread'"))
     acknowledged_ts: Mapped[float | None] = mapped_column()
-    details_json: Mapped[str] = mapped_column(server_default=text("'{}'"))
+    details_json: Mapped[str] = mapped_column(JsonbText(), server_default=text("'{}'::jsonb"))
 
 
 __all__ = ["UiNotification"]

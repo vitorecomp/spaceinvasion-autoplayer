@@ -6567,7 +6567,7 @@
     "raid_history": 0,
     "rank_snapshots": 2,
     "recycle_reports": 0,
-    "schema_migration_events": 1,
+    "schema_migration_events": 4,
     "schema_migrations": 0,
     "spy_reports": 1,
     "spy_targets": 9,
@@ -6993,12 +6993,12 @@
      "raid_history": 0,
      "rank_snapshots": 2,
      "recycle_reports": 0,
-     "schema_migration_events": 1,
+     "schema_migration_events": 4,
      "spy_reports": 1,
      "state_snapshots": 1,
      "universe_research_max_history": 0
     },
-    "history_total_rows": 104,
+    "history_total_rows": 107,
     "hot": [
      "meta",
      "latest_state_hot",
