@@ -1,4 +1,4 @@
-"""Unit & notebook mathematical parity tests for `spaceinvasion/planner/config_optimizer.py`."""
+"""Unit & notebook mathematical parity tests for `backend/planner/config_optimizer.py`."""
 
 from __future__ import annotations
 
@@ -12,17 +12,17 @@ import unittest
 
 import numpy as np
 
-from spaceinvasion.core import catalog as game_data
-from spaceinvasion.core.model import (
+from backend.core import catalog as game_data
+from backend.core.model import (
     EnergyBalance,
     GameState,
     PlanetState,
     Resources,
 )
-from spaceinvasion.planner import config_optimizer as co
+from backend.planner import config_optimizer as co
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-PACKAGE_DIR = REPO_ROOT / "spaceinvasion" / "planner" / "config_optimizer"
+PACKAGE_DIR = REPO_ROOT / "backend" / "planner" / "config_optimizer"
 NOTEBOOK_PATH = REPO_ROOT / "notebooks" / "config_optimizer.ipynb"
 
 
@@ -95,7 +95,7 @@ class ConfigOptimizerUnitTests(unittest.TestCase):
                 elif isinstance(node, ast.ImportFrom) and node.module:
                     found.add(node.module.split(".")[0])
             self.assertNotIn("9222", source, f"{path} mentions debug port 9222")
-            self.assertNotIn("spaceinvasion.db", source, f"{path} imports spaceinvasion.db")
+            self.assertNotIn("backend.db", source, f"{path} imports backend.db")
         self.assertEqual(found & forbidden, set())
 
     def test_default_params_match_contract(self) -> None:
@@ -813,7 +813,7 @@ class ConfigOptimizerUnitTests(unittest.TestCase):
         self.assertEqual(exported["summary"]["central_planet_name"], "Titan Capital")
 
         # Downstream AI-Planner inherits custom names from target_config cleanly.
-        from spaceinvasion.planner import ai as ap
+        from backend.planner import ai as ap
 
         ai_plan = ap.run_ai_planner(
             state,
@@ -1032,8 +1032,8 @@ class ConfigOptimizerUnitTests(unittest.TestCase):
 
     def test_manual_planet_override_yearly_projection_and_ingame_planet_name_sync(self) -> None:
         from unittest.mock import MagicMock
-        from spaceinvasion.runtime.bridge import GameApiBridge
-        from spaceinvasion.session.executor import ActionExecutor
+        from backend.runtime.bridge import GameApiBridge
+        from backend.session.executor import ActionExecutor
 
         p1 = _make_planet(
             601,

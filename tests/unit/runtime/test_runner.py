@@ -1,4 +1,4 @@
-"""Unit tests for run_stack, game_api, login, commander, and logging redaction."""
+"""Unit tests for game_api, login, commander, and logging redaction."""
 
 from __future__ import annotations
 
@@ -7,130 +7,22 @@ from pathlib import Path
 import unittest
 from unittest.mock import MagicMock, patch
 
-from spaceinvasion.session.auth import SpaceInvasionAuthError
+from backend.session.auth import SpaceInvasionAuthError
 
 
 class TestRunnerDebugPortLifecycle(unittest.TestCase):
-    def test_run_stack_stop_proc_kills_sigterm_ignoring_child_and_wait_health_early_exit(self) -> None:
-        import subprocess
-        import sys
-        import tempfile
-        import time
-        import run_stack
-
-        with (
-            tempfile.TemporaryDirectory() as tmp,
-            patch("spaceinvasion.runtime.cli_support.TERMINATE_GRACE_SECONDS", 0.1),
-        ):
-            ready_file = Path(tmp) / "ready.txt"
-            child_code = (
-                "import signal, time; "
-                "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
-                f"open({str(ready_file)!r}, 'w', encoding='utf-8').write('1'); "
-                "time.sleep(60)"
-            )
-            proc = subprocess.Popen(
-                [sys.executable, "-c", child_code],
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-            try:
-                deadline = time.monotonic() + 5.0
-                while not ready_file.exists() and time.monotonic() < deadline:
-                    time.sleep(0.05)
-                self.assertTrue(ready_file.exists())
-                run_stack._stop_proc(proc)
-                self.assertIsNotNone(proc.poll())
-            finally:
-                if proc.poll() is None:
-                    proc.kill()
-                proc.wait(timeout=5.0)
-
-            dead_proc = subprocess.Popen(
-                [sys.executable, "-c", "raise SystemExit(2)"],
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-            try:
-                dead_proc.wait(timeout=5.0)
-                run_stack._stop_proc(dead_proc)
-                self.assertEqual(dead_proc.returncode, 2)
-                self.assertFalse(run_stack._wait_api_health("http://127.0.0.1:1", timeout=5.0, proc=dead_proc))
-            finally:
-                dead_proc.wait(timeout=5.0)
-
-            grace_ready = Path(tmp) / "grace.txt"
-            grace_code = (
-                "import signal, sys, time; "
-                "signal.signal(signal.SIGTERM, lambda *_: sys.exit(0)); "
-                f"open({str(grace_ready)!r}, 'w', encoding='utf-8').write('1'); "
-                "time.sleep(60)"
-            )
-            grace_proc = subprocess.Popen(
-                [sys.executable, "-c", grace_code],
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-            try:
-                deadline = time.monotonic() + 5.0
-                while not grace_ready.exists() and time.monotonic() < deadline:
-                    time.sleep(0.05)
-                self.assertTrue(grace_ready.exists())
-                run_stack._stop_proc(grace_proc)
-                self.assertIsNotNone(grace_proc.poll())
-            finally:
-                if grace_proc.poll() is None:
-                    grace_proc.kill()
-                grace_proc.wait(timeout=5.0)
-
-    def test_run_stack_and_game_api_main_redaction_reload_sigterm_and_cleanup(self) -> None:
+    def test_game_api_main_redaction_reload_sigterm_and_cleanup(self) -> None:
         import io
         import signal
         import tempfile
         import game_api
-        import run_stack
-        from spaceinvasion.runtime.bridge import GameApiBridge
+        from backend.runtime.bridge import GameApiBridge
 
         before_sig = signal.getsignal(signal.SIGTERM)
         with patch("sys.stdout", new_callable=io.StringIO):
-            with self.assertRaises(SystemExit) as cm_rs:
-                run_stack.main(["--help"])
-            self.assertEqual(cm_rs.exception.code, 0)
             with self.assertRaises(SystemExit) as cm_ga:
                 game_api.main(["--help"])
             self.assertEqual(cm_ga.exception.code, 0)
-
-        err_buf = io.StringIO()
-        with (
-            patch(
-                "run_stack.ensure_debug_browser_ready",
-                side_effect=SpaceInvasionAuthError("bad ?sid=topsecret_stack_99"),
-            ),
-            patch("sys.stderr", err_buf),
-        ):
-            rc = run_stack.main(["--debug-port", "9222"])
-        self.assertEqual(rc, 1)
-        self.assertNotIn("topsecret_stack_99", err_buf.getvalue())
-        self.assertIn("REDACTED", err_buf.getvalue())
-        self.assertEqual(signal.getsignal(signal.SIGTERM), before_sig)
-
-        # run_stack interrupt cleanup calls _stop_proc and restores SIGTERM
-        proc1 = MagicMock()
-        proc2 = MagicMock()
-        with (
-            patch("run_stack.ensure_debug_browser_ready", return_value=None),
-            patch("run_stack.subprocess.Popen", side_effect=[proc1, proc2]),
-            patch("run_stack._wait_api_health", return_value=True),
-            patch("run_stack.time.sleep", side_effect=KeyboardInterrupt),
-            patch("run_stack._stop_proc") as mock_stop,
-        ):
-            rc_int = run_stack.main(["--debug-port", "9222", "--api-port", "8787"])
-        self.assertEqual(rc_int, 0)
-        self.assertEqual(mock_stop.call_count, 2)
-        self.assertEqual(signal.getsignal(signal.SIGTERM), before_sig)
 
         # game_api --reload delegation + auth redaction + clean server/DB/SIGTERM shutdown
         with (
@@ -186,13 +78,10 @@ class TestRunnerDebugPortLifecycle(unittest.TestCase):
             self.assertTrue(created_bridges[0].ctx.db_closed)
             self.assertEqual(signal.getsignal(signal.SIGTERM), before_sig)
 
-    def test_r7_run_stack_and_logging_redaction_and_bounds(self) -> None:
-        import io
-        import math
+    def test_r7_logging_redaction_and_bounds(self) -> None:
         import tempfile
-        import run_stack
-        from spaceinvasion.runtime.logs import append_tick_logs
-        from spaceinvasion.core.model import (
+        from backend.runtime.logs import append_tick_logs
+        from backend.core.model import (
             EnergyBalance,
             GameState,
             PlanetState,
@@ -200,7 +89,7 @@ class TestRunnerDebugPortLifecycle(unittest.TestCase):
             TutorialStatus,
             TutorialTask,
         )
-        from spaceinvasion.core.model import PlannedAction
+        from backend.core.model import PlannedAction
 
         secret = "SECRET_RUNNER_SID_999"
         planet = PlanetState(
@@ -260,35 +149,11 @@ class TestRunnerDebugPortLifecycle(unittest.TestCase):
             self.assertTrue(jl.exists() and tl.exists())
             self.assertNotIn(secret, tl.read_text(encoding="utf-8"))
 
-        # run_stack clamps --interval inf before forwarding to commander.py
-        popen_cmds: list[list[str]] = []
-        p_mock1, p_mock2 = MagicMock(), MagicMock()
-        p_mock1.poll.return_value = 0
-        p_mock2.poll.return_value = 0
-
-        def _capture_popen(cmd: list[str], **_kw: object) -> MagicMock:
-            popen_cmds.append(list(cmd))
-            return p_mock1 if len(popen_cmds) == 1 else p_mock2
-
-        with (
-            patch("run_stack.ensure_debug_browser_ready", return_value=None),
-            patch("run_stack.subprocess.Popen", side_effect=_capture_popen),
-            patch("run_stack._wait_api_health", return_value=True),
-            patch("run_stack.time.sleep", return_value=None),
-            patch("sys.stdout", new_callable=io.StringIO),
-        ):
-            rc_rs = run_stack.main(["--interval", "inf"])
-        self.assertEqual(rc_rs, 0)
-        cmd_line = popen_cmds[1]
-        iv_idx = cmd_line.index("--interval") + 1
-        self.assertTrue(math.isfinite(float(cmd_line[iv_idx])))
-        self.assertEqual(float(cmd_line[iv_idx]), 20.0)
-
     def test_r8_append_tick_logs_and_api_log_huge_10e5000_tick_and_status(self) -> None:
         import json
         import tempfile
-        from spaceinvasion.runtime.logs import append_api_log, append_tick_logs
-        from spaceinvasion.core.model import (
+        from backend.runtime.logs import append_api_log, append_tick_logs
+        from backend.core.model import (
             EnergyBalance,
             GameState,
             PlanetState,
@@ -345,7 +210,7 @@ class TestRunnerDebugPortLifecycle(unittest.TestCase):
 
     def test_r9_append_api_log_method_redaction(self) -> None:
         import tempfile
-        from spaceinvasion.runtime.logs import append_api_log
+        from backend.runtime.logs import append_api_log
 
         secret = "R9_RUNBOT_SID_777"
         with tempfile.TemporaryDirectory() as tmp:
@@ -363,14 +228,9 @@ class TestRunnerDebugPortLifecycle(unittest.TestCase):
             self.assertNotIn(secret, atl.read_text(encoding="utf-8"))
             self.assertIn("REDACTED", atl.read_text(encoding="utf-8"))
 
-    def test_r10_runner_stack_intervals_and_cli_json_redaction(self) -> None:
+    def test_r10_cli_json_redaction(self) -> None:
         import json
         import login as login_cli
-        import run_stack
-
-        self.assertEqual(run_stack._safe_interval(10**5000), 86400.0)
-        self.assertEqual(run_stack._safe_interval(b"7.5"), 7.5)
-        self.assertEqual(run_stack._safe_interval("\u0665"), 20.0)
 
         out = login_cli._safe_cli_json(
             {
@@ -389,14 +249,14 @@ class TestRunnerDebugPortLifecycle(unittest.TestCase):
         import json
         import tempfile
         import login as login_cli
-        from spaceinvasion.session.auth import (
+        from backend.session.auth import (
             Credentials,
             LoginResult,
         )
-        from spaceinvasion.session.browser import BrowserLoginResult
-        from spaceinvasion.core.redaction import redact_sensitive
-        from spaceinvasion.runtime.logs import append_api_log, append_tick_logs
-        from spaceinvasion.core.model import (
+        from backend.session.browser import BrowserLoginResult
+        from backend.core.redaction import redact_sensitive
+        from backend.runtime.logs import append_api_log, append_tick_logs
+        from backend.core.model import (
             EnergyBalance,
             GameState,
             PlanetState,
@@ -527,8 +387,7 @@ class TestRunnerDebugPortLifecycle(unittest.TestCase):
     def test_r12_logging_utils_full_secret_redaction_exceptions_and_broken_path(self) -> None:
         import tempfile
         import game_api as game_api_cli
-        import run_stack as run_stack_cli
-        from spaceinvasion.core.redaction import redact_sensitive
+        from backend.core.redaction import redact_sensitive
 
         class _RaiseFspath:
             def __fspath__(self) -> str:
@@ -578,8 +437,8 @@ class TestRunnerDebugPortLifecycle(unittest.TestCase):
             self.assertNotIn(sec, dumped)
         self.assertIn("authorization: bearer redacted", dumped.lower())
 
-        from spaceinvasion.runtime.logs import append_tick_logs
-        from spaceinvasion.core.model import (
+        from backend.runtime.logs import append_tick_logs
+        from backend.core.model import (
             EnergyBalance,
             GameState,
             PlanetState,
@@ -624,29 +483,21 @@ class TestRunnerDebugPortLifecycle(unittest.TestCase):
                 for sec in ("TICK_NICK_SEC", "TICK_RES_PW", "TICK_DICT_AUTH"):
                     self.assertNotIn(sec, ltxt)
 
-        for err_txt in (
-            run_stack_cli._safe_err_text(RuntimeError(10**5000, "Authorization: Bearer RS_SEC")),
-            game_api_cli._safe_err_text(RuntimeError(10**5000, "Authorization: Bearer GA_SEC")),
-        ):
-            self.assertIsInstance(err_txt, str)
-            for sec in ("RS_SEC", "GA_SEC"):
-                self.assertNotIn(sec, err_txt)
+        err_txt = game_api_cli._safe_err_text(RuntimeError(10**5000, "Authorization: Bearer GA_SEC"))
+        self.assertIsInstance(err_txt, str)
+        self.assertNotIn("GA_SEC", err_txt)
 
     def test_r13_logging_and_cli_nested_exc_compound_secrets_unicode_and_quoted_bearer(self) -> None:
         import time
         import game_api as game_api_cli
-        import run_stack as run_stack_cli
-        from spaceinvasion.core.redaction import is_secret_dict_key, redact_sensitive
+        from backend.core.redaction import is_secret_dict_key, redact_sensitive
 
         cyc = RuntimeError("cyc")
         cyc.args = (10**5000, cyc)
         dag: BaseException = RuntimeError(10**5000, "?password=CLI_DAG_PW")
         for _ in range(18):
             dag = RuntimeError(10**5000, dag, dag, dag, dag, dag, dag, dag)
-        for fn in (
-            run_stack_cli._safe_err_text,
-            game_api_cli._safe_err_text,
-        ):
+        for fn in (game_api_cli._safe_err_text,):
             self.assertIsInstance(fn(cyc), str)
             t0 = time.perf_counter()
             out_dag = fn(dag)
@@ -699,10 +550,9 @@ class TestRunnerDebugPortLifecycle(unittest.TestCase):
 
     def test_r14_logging_urlenc_json_esc_quotes_pct20_redos_and_cli_dag20_cycles(self) -> None:
         import time
-        from spaceinvasion.core import redaction as lu
-        import login as login_mod
+        from backend.core import redaction as lu
+        import login as login_cli
         import commander as cmd_mod
-        import run_stack as rs_mod
         import game_api as ga_mod
 
         vectors = (
@@ -760,9 +610,8 @@ class TestRunnerDebugPortLifecycle(unittest.TestCase):
         t1 = time.perf_counter()
         for fn in (
             lu.redact_sensitive,
-            login_mod._safe_cli_str,
+            login_cli._safe_cli_str,
             cmd_mod._safe_cmd_str,
-            rs_mod._safe_err_text,
             ga_mod._safe_err_text,
         ):
             s_cyc = fn(exc_cyc)
@@ -771,7 +620,7 @@ class TestRunnerDebugPortLifecycle(unittest.TestCase):
             self.assertNotIn("LU_MAP_SEC", s_cyc)
             self.assertNotIn("LU_DAG_SEC", s_dag)
             self.assertIsInstance(fn(_RaiseFspath()), str)
-        self.assertEqual(login_mod._coerce_cli_json_scalars(cyc), ["[Cycle]"])
+        self.assertEqual(login_cli._coerce_cli_json_scalars(cyc), ["[Cycle]"])
         self.assertLess((time.perf_counter() - t1) * 1000.0, 150.0)
 
 

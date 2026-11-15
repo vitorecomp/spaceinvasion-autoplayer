@@ -21,17 +21,17 @@ from tests.e2e.fixtures import (
     make_ship_offer,
 )
 from tests.e2e.harness import E2ETestHarness
-from spaceinvasion.core import catalog as game_data
-from spaceinvasion.core.config import (
+from backend.core import catalog as game_data
+from backend.core.config import (
     StrategyConfig,
     strategy_config_from_dict,
 )
-from spaceinvasion.db.config_store import (
+from backend.db.config_store import (
     load_strategy_config,
     save_strategy_config,
 )
-from spaceinvasion.session.executor import ActionExecutor
-from spaceinvasion.core.model import (
+from backend.session.executor import ActionExecutor
+from backend.core.model import (
     EnergyBalance,
     FleetAlert,
     GameState,
@@ -41,8 +41,8 @@ from spaceinvasion.core.model import (
     TutorialTask,
 )
 from tests.pg_harness import open_test_db as GameDatabase
-from spaceinvasion.core.model import PlannedAction
-from spaceinvasion.planner.heuristics import (
+from backend.core.model import PlannedAction
+from backend.planner.heuristics import (
     BLAST_FURNACE,
     FUSION_PLANT,
     PIG_IRON_WAREHOUSE,
@@ -319,11 +319,7 @@ class TestTier1R1(unittest.TestCase):
             [
                 sys.executable,
                 "-c",
-                (
-                    "import spaceinvasion.core.config, "
-                    "spaceinvasion.planner.heuristics, spaceinvasion.runtime.bridge; "
-                    "print('OK')"
-                ),
+                ("import backend.core.config, backend.planner.heuristics, backend.runtime.bridge; print('OK')"),
             ],
             capture_output=True,
             text=True,
@@ -707,7 +703,7 @@ class TestTier1R1(unittest.TestCase):
         secret_tok = "SECRET_SID_99887766"
 
         with tempfile.TemporaryDirectory(prefix="si_r1_a4_t2_") as tmp:
-            db_path = Path(tmp) / "state" / "spaceinvasion.db"
+            db_path = Path(tmp) / "state" / "backend.db"
             db = GameDatabase(db_path=db_path)
             try:
                 self.assertTrue(
@@ -777,7 +773,7 @@ class TestTier1R1(unittest.TestCase):
         self.assertFalse(data_file.exists(), "Legacy data/attack_history.json must be retired into SQLite")
 
         with tempfile.TemporaryDirectory(prefix="si_r1_a4_db_") as tmp:
-            db_p = Path(tmp) / "spaceinvasion.db"
+            db_p = Path(tmp) / "backend.db"
             db = GameDatabase(db_p)
             try:
                 db.record_raid(

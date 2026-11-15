@@ -8,9 +8,9 @@ import sys
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 FOUNDATION_MODULES = (
-    "spaceinvasion/core/redaction.py",
-    "spaceinvasion/core/coercion.py",
-    "spaceinvasion/core/coords.py",
+    "backend/core/redaction.py",
+    "backend/core/coercion.py",
+    "backend/core/coords.py",
 )
 FORBIDDEN_PARSING_PACKAGES = frozenset({"combat", "db", "planner", "session", "runtime", "bin"})
 
@@ -65,8 +65,8 @@ def _check_prod_smells(rel: str, tree: ast.AST) -> None:
 def test_section4_engineering_standards_and_layering_rules() -> None:
     """Enforce <=400 LOC modules/classes, <=100 LOC funcs, stdlib-only core, and parsing layering."""
     stdlib_names = set(sys.stdlib_module_names) | {"__future__"}
-    parsing_files = sorted((REPO_ROOT / "spaceinvasion" / "parsing").rglob("*.py"))
-    assert parsing_files, "Expected spaceinvasion/parsing modules to exist"
+    parsing_files = sorted((REPO_ROOT / "backend" / "parsing").rglob("*.py"))
+    assert parsing_files, "Expected backend/parsing modules to exist"
 
     prod_files = [REPO_ROOT / rel for rel in FOUNDATION_MODULES] + parsing_files
     test_files = [
@@ -89,7 +89,7 @@ def test_section4_engineering_standards_and_layering_rules() -> None:
                 assert top in stdlib_names, f"{rel} imports non-stdlib module {top!r}"
         else:
             for top, second in imports:
-                if top == "spaceinvasion":
+                if top == "backend":
                     assert second in ("core", "parsing"), f"{rel} violates parsing layering: spaceinvasion.{second}"
                     assert second not in FORBIDDEN_PARSING_PACKAGES
                 else:

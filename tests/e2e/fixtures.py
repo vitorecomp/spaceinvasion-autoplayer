@@ -6,20 +6,20 @@ from dataclasses import dataclass, field, replace
 import re
 from typing import Any, Mapping, Optional, Sequence
 
-from spaceinvasion.combat.flight import BashTracker
-from spaceinvasion.combat.points import (
+from backend.combat.flight import BashTracker
+from backend.combat.points import (
     estimate_account_points,
     estimate_hourly_economy,
     estimate_planet_hourly_economy,
 )
-from spaceinvasion.combat.simulator import simulate_raid_outcome
-from spaceinvasion.core import catalog as game_data
-from spaceinvasion.core.catalog import SHIP_SLUG_BY_KEY
-from spaceinvasion.parsing.models import SpyReport
-from spaceinvasion.core.config import (
+from backend.combat.simulator import simulate_raid_outcome
+from backend.core import catalog as game_data
+from backend.core.catalog import SHIP_SLUG_BY_KEY
+from backend.parsing.models import SpyReport
+from backend.core.config import (
     StrategyConfig,
 )
-from spaceinvasion.core.model import (
+from backend.core.model import (
     BuildingOffer,
     EnergyBalance,
     FleetAlert,

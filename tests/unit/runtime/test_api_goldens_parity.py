@@ -15,10 +15,10 @@ import pytest
 import requests
 
 from scripts.capture_goldens import BACKEND_SPECIFIC_PATHS, REFERENCE_DIR, _drop_path, render
-from spaceinvasion.core import config as config_mod
-from spaceinvasion.core import model as state_mod
-import spaceinvasion.runtime.api as api_pkg
-import spaceinvasion.runtime.bridge as bridge_pkg
+from backend.core import config as config_mod
+from backend.core import model as state_mod
+import backend.runtime.api as api_pkg
+import backend.runtime.bridge as bridge_pkg
 from tests.e2e.harness import E2ETestHarness, _ClockTimeProxy
 from tests.goldens.api_scenario import (
     API_STEPS,

@@ -23,29 +23,29 @@ LAYER_RANK: dict[str, int] = {
 
 NOTEBOOK_SHIM_FILES: frozenset[str] = frozenset(
     {
-        "spaceinvasion/core/game_data.py",
-        "spaceinvasion/core/state.py",
-        "spaceinvasion/core/logging_utils.py",
-        "spaceinvasion/combat/fleet.py",
-        "spaceinvasion/combat/ranking.py",
-        "spaceinvasion/db/storage.py",
+        "backend/core/game_data.py",
+        "backend/core/state.py",
+        "backend/core/logging_utils.py",
+        "backend/combat/fleet.py",
+        "backend/combat/ranking.py",
+        "backend/db/storage.py",
     }
 )
 
 RETIRED_MONOLITHS: frozenset[str] = frozenset(
     {
-        "spaceinvasion.core.game_data",
-        "spaceinvasion.core.state",
-        "spaceinvasion.core.logging_utils",
-        "spaceinvasion.combat.fleet",
-        "spaceinvasion.combat.ranking",
-        "spaceinvasion.planner.strategy",
-        "spaceinvasion.planner.ai_planner",
-        "spaceinvasion.planner.action_graph",
-        "spaceinvasion.db.storage",
-        "spaceinvasion.db.postgres",
-        "spaceinvasion.db.backend",
-        "spaceinvasion.runtime.api_server",
+        "backend.core.game_data",
+        "backend.core.state",
+        "backend.core.logging_utils",
+        "backend.combat.fleet",
+        "backend.combat.ranking",
+        "backend.planner.strategy",
+        "backend.planner.ai_planner",
+        "backend.planner.action_graph",
+        "backend.db.storage",
+        "backend.db.postgres",
+        "backend.db.backend",
+        "backend.runtime.api_server",
     }
 )
 
@@ -74,22 +74,22 @@ FLAT_ALIASES: frozenset[str] = frozenset(
 
 def _layer_of(mod: str) -> str:
     parts = mod.split(".")
-    return parts[1] if parts[0] == "spaceinvasion" and len(parts) > 1 else parts[0]
+    return parts[1] if parts[0] == "backend" and len(parts) > 1 else parts[0]
 
 
 def _src_layer(rel: str) -> str:
     parts = Path(rel).parts
-    return parts[1] if parts[0] == "spaceinvasion" and len(parts) > 2 else parts[0]
+    return parts[1] if parts[0] == "backend" and len(parts) > 2 else parts[0]
 
 
 @pytest.mark.invariants
 def test_strict_downward_architecture_layers() -> None:
     """Assert strict downward DAG bin -> runtime -> {session, planner, db} -> {parsing, combat} -> core."""
     violations: list[str] = []
-    for root in ("spaceinvasion", "bin", "scripts"):
+    for root in ("backend", "bin", "scripts"):
         for path in sorted((REPO_ROOT / root).rglob("*.py")):
             rel = path.relative_to(REPO_ROOT).as_posix()
-            if rel.startswith("spaceinvasion/ui/") or rel in NOTEBOOK_SHIM_FILES:
+            if rel.startswith("backend/ui/") or rel in NOTEBOOK_SHIM_FILES:
                 continue
             src = _src_layer(rel)
             if src not in LAYER_RANK:
@@ -101,12 +101,12 @@ def test_strict_downward_architecture_layers() -> None:
                     mods = [
                         alias.name
                         for alias in node.names
-                        if alias.name == "spaceinvasion" or alias.name.startswith("spaceinvasion.")
+                        if alias.name == "backend" or alias.name.startswith("backend.")
                     ]
                 elif isinstance(node, ast.ImportFrom) and node.module:
-                    if node.module == "spaceinvasion":
-                        mods = [f"spaceinvasion.{alias.name}" for alias in node.names]
-                    elif node.module.startswith("spaceinvasion."):
+                    if node.module == "backend":
+                        mods = [f"backend.{alias.name}" for alias in node.names]
+                    elif node.module.startswith("backend."):
                         mods = [node.module] + [f"{node.module}.{alias.name}" for alias in node.names]
                 for mod in mods:
                     if mod in RETIRED_MONOLITHS:

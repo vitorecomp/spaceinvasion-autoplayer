@@ -12,8 +12,8 @@ REPO_ROOT: Path = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from spaceinvasion.core.settings import generate_settings_reference_markdown  # noqa: E402
-from spaceinvasion.runtime.api.registry import (  # noqa: E402
+from backend.core.settings import generate_settings_reference_markdown  # noqa: E402
+from backend.runtime.api.registry import (  # noqa: E402
     CommandRegistry,
     generate_command_reference_markdown,
 )
@@ -22,7 +22,7 @@ SETTINGS_DOC_PATH: Path = REPO_ROOT / "docs" / "settings-reference.md"
 API_COMMANDS_DOC_PATH: Path = REPO_ROOT / "docs" / "api-commands.md"
 
 # Canonical 60-command fallback matching `generate_command_reference_markdown(build_command_registry())`.
-# Used only before Wave 4 merges `spaceinvasion/runtime/api/handlers/`; once present, live introspection runs.
+# Used only before Wave 4 merges `backend/runtime/api/handlers/`; once present, live introspection runs.
 # Top-level split("|", 5): name|needs_browser|mutates|params_class|summary|params_semi_list
 # Each param entry split("~", 4): name~type~required~default~constraints
 _FALLBACK_COMMAND_ROWS: str = """
@@ -138,7 +138,7 @@ def _render_fallback_api_commands_markdown() -> str:
 def render_api_commands_markdown() -> str:
     """Render `docs/api-commands.md` from live `build_command_registry()` or the canonical fallback."""
     try:
-        handlers_mod = importlib.import_module("spaceinvasion.runtime.api.handlers")
+        handlers_mod = importlib.import_module("backend.runtime.api.handlers")
     except ModuleNotFoundError:
         return _render_fallback_api_commands_markdown()
     builder = handlers_mod.__dict__.get("build_command_registry")

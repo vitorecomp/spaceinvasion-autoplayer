@@ -9,9 +9,9 @@ from pathlib import Path
 
 import pytest
 
-from spaceinvasion.core import catalog as game_data
-from spaceinvasion.core import coercion, coords, redaction
-from spaceinvasion.core import config as cfg_mod
+from backend.core import catalog as game_data
+from backend.core import coercion, coords, redaction
+from backend.core import config as cfg_mod
 
 
 class _RaiseFspath:

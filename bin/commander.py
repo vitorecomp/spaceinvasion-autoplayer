@@ -14,12 +14,12 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from spaceinvasion.core.model import PlannedAction  # noqa: E402, F401
-from spaceinvasion.planner.heuristics import plan_actions as _DEFAULT_PLAN_ACTIONS  # noqa: E402
-from spaceinvasion.runtime import commander as _cmd  # noqa: E402
-from spaceinvasion.runtime.commander import _executor_plan  # noqa: E402
-from spaceinvasion.runtime.commander_client import GameApiClient  # noqa: E402
-from spaceinvasion.runtime.reloader import should_spawn_reloader  # noqa: E402
+from backend.core.model import PlannedAction  # noqa: E402, F401
+from backend.planner.heuristics import plan_actions as _DEFAULT_PLAN_ACTIONS  # noqa: E402
+from backend.runtime import commander as _cmd  # noqa: E402
+from backend.runtime.commander import _executor_plan  # noqa: E402
+from backend.runtime.commander_client import GameApiClient  # noqa: E402
+from backend.runtime.reloader import should_spawn_reloader  # noqa: E402
 
 WATCH_PATHS: tuple[Path, ...] = _cmd.discover_commander_watch_paths(_REPO_ROOT, Path(__file__))
 plan_actions = _DEFAULT_PLAN_ACTIONS
@@ -31,7 +31,7 @@ is_galaxy_scan_busy_error = _cmd.is_galaxy_scan_busy_error
 
 
 def run_commander_tick(*args: Any, **kwargs: Any) -> Any:
-    """Delegate to ``spaceinvasion.runtime.commander.run_commander_tick``, honoring patched ``plan_actions``."""
+    """Delegate to ``backend.runtime.commander.run_commander_tick``, honoring patched ``plan_actions``."""
     if plan_actions is _DEFAULT_PLAN_ACTIONS:
         return _cmd.run_commander_tick(*args, **kwargs)
     plan_mod: Any = _executor_plan

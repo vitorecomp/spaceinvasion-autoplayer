@@ -1,1 +1,1 @@
-"""Unit tests for `spaceinvasion.combat`."""
+"""Unit tests for `backend.combat`."""

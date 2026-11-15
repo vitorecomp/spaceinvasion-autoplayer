@@ -1,11 +1,11 @@
-"""Unit tests for wiki-synced `spaceinvasion.game_data` catalog and helpers."""
+"""Unit tests for wiki-synced `backend.core.catalog` and helpers."""
 
 from __future__ import annotations
 
 import unittest
 
-from spaceinvasion.core import catalog as game_data
-from spaceinvasion.core.model import Resources
+from backend.core import catalog as game_data
+from backend.core.model import Resources
 
 
 class TestGameData(unittest.TestCase):
@@ -248,7 +248,7 @@ class TestGameData(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp_tables:
             sync_wiki_data.write_catalog_tables(payload, Path(tmp_tables))
-            tables_dir = Path("spaceinvasion/core/catalog/tables")
+            tables_dir = Path("backend/core/catalog/tables")
             for fname in ("buildings.json", "research.json", "ships.json", "defenses.json"):
                 self.assertEqual(
                     json.loads((Path(tmp_tables) / fname).read_text(encoding="utf-8")),
@@ -293,7 +293,7 @@ class TestGameData(unittest.TestCase):
         import json
         from pathlib import Path
         from scripts import sync_wiki_data
-        from spaceinvasion.core import catalog as game_data
+        from backend.core import catalog as game_data
 
         class _RaiseFspath:
             def __fspath__(self) -> str:
@@ -364,7 +364,7 @@ class TestGameData(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp_tables:
             sync_wiki_data.write_catalog_tables(payload, Path(tmp_tables))
-            tables_dir = Path("spaceinvasion/core/catalog/tables")
+            tables_dir = Path("backend/core/catalog/tables")
             for fname in ("buildings.json", "research.json", "ships.json", "defenses.json"):
                 self.assertEqual(
                     json.loads((Path(tmp_tables) / fname).read_text(encoding="utf-8")),
@@ -374,7 +374,7 @@ class TestGameData(unittest.TestCase):
     def test_r14_safe_key_and_sanitize_json_dag20_cycles_and_sync_parity(self) -> None:
         import time
         from pathlib import Path
-        from spaceinvasion.core import catalog as gd
+        from backend.core import catalog as gd
         from scripts import sync_wiki_data as swd
 
         cyc_list: list[object] = []
@@ -399,7 +399,7 @@ class TestGameData(unittest.TestCase):
         elapsed_ms = (time.perf_counter() - t0) * 1000.0
         self.assertLess(elapsed_ms, 50.0)
 
-        from spaceinvasion.core.catalog import json_sanitize as gd_sanitize
+        from backend.core.catalog import json_sanitize as gd_sanitize
 
         self.assertIn("_MAX_TREE_NODES = 32_768", swd._HELPER_CODE)
         self.assertIn('"[Cycle]"', Path(gd_sanitize.__file__).read_text(encoding="utf-8"))

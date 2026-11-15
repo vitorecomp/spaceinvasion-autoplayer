@@ -11,9 +11,9 @@ import threading
 
 import pytest
 
-from spaceinvasion.core.model import PlannedAction, QueueJob, Resources
-from spaceinvasion.planner.ai import run_ai_planner
-from spaceinvasion.planner.graph import (
+from backend.core.model import PlannedAction, QueueJob, Resources
+from backend.planner.ai import run_ai_planner
+from backend.planner.graph import (
     EDGE_TYPE_PRIORITY,
     build_action_graph,
     build_ai_planner_graph,
@@ -21,10 +21,10 @@ from spaceinvasion.planner.graph import (
     freeze_sig_tree,
     merge_strategy_config_overrides,
 )
-from spaceinvasion.planner.heuristics import plan_actions
-from spaceinvasion.runtime.bridge._helpers_sig import freeze_sig_tree as legacy_freeze_sig_tree
-from spaceinvasion.session import client as legacy_client
-from spaceinvasion.session.limiter import (
+from backend.planner.heuristics import plan_actions
+from backend.runtime.bridge._helpers_sig import freeze_sig_tree as legacy_freeze_sig_tree
+from backend.session import client as legacy_client
+from backend.session.limiter import (
     PageViewLimiter,
     RateLimitError,
     get_default_page_view_limiter,
@@ -34,8 +34,8 @@ from spaceinvasion.session.limiter import (
 from tests.goldens.scenarios import AI_PLANNER_PARAMS, CONFIGS, STATES, ai_target_config
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
-_GRAPH_DIR = _REPO_ROOT / "spaceinvasion" / "planner" / "graph"
-_LIMITER_PATH = _REPO_ROOT / "spaceinvasion" / "session" / "limiter.py"
+_GRAPH_DIR = _REPO_ROOT / "backend" / "planner" / "graph"
+_LIMITER_PATH = _REPO_ROOT / "backend" / "session" / "limiter.py"
 
 
 class _FakeClock:
@@ -428,14 +428,14 @@ def test_section4_ast_loc_and_layering_constraints() -> None:
     all_prod = [*graph_files, _LIMITER_PATH]
 
     forbidden_graph_prefixes = (
-        "spaceinvasion.db",
-        "spaceinvasion.session",
-        "spaceinvasion.runtime",
-        "spaceinvasion.ui",
-        "spaceinvasion.combat.fleet",
-        "spaceinvasion.combat.ranking",
-        "spaceinvasion.planner.optimizer",
-        "spaceinvasion.planner.action_graph",
+        "backend.db",
+        "backend.session",
+        "backend.runtime",
+        "backend.ui",
+        "backend.combat.fleet",
+        "backend.combat.ranking",
+        "backend.planner.optimizer",
+        "backend.planner.action_graph",
     )
 
     for path in all_prod:
@@ -480,6 +480,6 @@ def test_section4_ast_loc_and_layering_constraints() -> None:
                         assert top in sys.stdlib_module_names, f"Non-stdlib import {alias.name} in limiter.py"
                 elif isinstance(node, ast.ImportFrom) and node.module:
                     top = node.module.split(".", 1)[0]
-                    assert top in sys.stdlib_module_names or node.module.startswith("spaceinvasion.core"), (
+                    assert top in sys.stdlib_module_names or node.module.startswith("backend.core"), (
                         f"Forbidden import {node.module} in limiter.py"
                     )

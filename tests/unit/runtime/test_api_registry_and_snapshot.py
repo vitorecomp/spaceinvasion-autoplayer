@@ -11,13 +11,13 @@ import time
 
 import pytest
 
-from spaceinvasion.runtime.api import (
+from backend.runtime.api import (
     ApiRequestError,
     CommandRegistry,
     FieldBounds,
     generate_command_reference_markdown,
 )
-from spaceinvasion.runtime.bridge import (
+from backend.runtime.bridge import (
     PublishedBridgeSnapshot,
     SnapshotPublisher,
     build_dashboard_delta_response,
@@ -391,8 +391,8 @@ def test_command_reference_markdown_is_deterministic() -> None:
 
 def test_phase4_runtime_modules_obey_layering_and_section4_standards() -> None:
     dirs = (
-        REPO_ROOT / "spaceinvasion" / "runtime" / "api",
-        REPO_ROOT / "spaceinvasion" / "runtime" / "bridge",
+        REPO_ROOT / "backend" / "runtime" / "api",
+        REPO_ROOT / "backend" / "runtime" / "bridge",
     )
     for folder in dirs:
         for path in sorted(folder.glob("*.py")):
@@ -401,7 +401,7 @@ def test_phase4_runtime_modules_obey_layering_and_section4_standards() -> None:
             tree = ast.parse(src)
             for node in ast.walk(tree):
                 if isinstance(node, ast.ImportFrom) and node.module:
-                    assert not node.module.startswith("spaceinvasion.ui"), f"{path} imports ui/"
+                    assert not node.module.startswith("backend.ui"), f"{path} imports ui/"
                 if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.end_lineno:
                     assert (node.end_lineno - node.lineno + 1) <= 100, f"{path}:{node.name} >100 LOC"
                 if isinstance(node, ast.ClassDef) and node.end_lineno:

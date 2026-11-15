@@ -20,6 +20,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import tomllib
 import types
 import unittest
 import warnings
@@ -29,9 +30,9 @@ import pytest
 import numpy as np
 import pandas as pd
 
-from spaceinvasion.core import catalog as game_data
-from spaceinvasion.planner.eta import compute_action_eta
-from spaceinvasion.core.model import (
+from backend.core import catalog as game_data
+from backend.planner.eta import compute_action_eta
+from backend.core.model import (
     BuildingOffer,
     EnergyBalance,
     GameState,
@@ -39,7 +40,7 @@ from spaceinvasion.core.model import (
     PlannedAction,
     Resources,
 )
-from spaceinvasion.planner.heuristics import plan_actions
+from backend.planner.heuristics import plan_actions
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 ATTACK_HISTORY_PATH = REPO_ROOT / "state" / "spaceinvasion.db"
@@ -285,7 +286,7 @@ FULL_PLANNER_SHARED_WITH_OPTIMIZER = {
     "building_level_flows",
     "warehouse_level_for",
 }
-# requirements.txt distributions whose import name differs from the distribution name.
+# pyproject.toml dependencies whose import name differs from the distribution name.
 REQUIREMENT_IMPORT_NAMES = {"python-dotenv": "dotenv", "beautifulsoup4": "bs4"}
 
 # Runs a notebook in a fresh interpreter with some modules made unimportable, then reports what was imported.
@@ -1240,7 +1241,7 @@ class TestFullPlannerNotebook(unittest.TestCase):
                 imported_names.update((alias.asname or alias.name).split(".")[0] for alias in node.names)
             elif isinstance(node, ast.ImportFrom):
                 imported_names.update(alias.asname or alias.name for alias in node.names)
-                if (node.module or "").split(".")[0] == "spaceinvasion":
+                if (node.module or "").split(".")[0] == "backend":
                     self.assertEqual(
                         importlib.import_module(node.module).__name__,
                         node.module,
@@ -1329,19 +1330,14 @@ class TestFullPlannerNotebook(unittest.TestCase):
         )
 
     def test_pip_cell_installs_exactly_what_the_notebook_imports(self) -> None:
-        requirements = {
-            _requirement_name(line): line.strip()
-            for line in (REPO_ROOT / "requirements.txt").read_text(encoding="utf-8").splitlines()
-            if line.strip() and not line.strip().startswith("#")
-        }
+        deps = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]["dependencies"]
+        requirements = {_requirement_name(line): line.strip() for line in deps}
         installed = {
             _requirement_name(spec): spec for spec in re.findall(r'"([^"]+)"', _cell_source(self.code_cells[0]))
         }
         self.assertGreater(len(installed), 0)
         for name, spec in installed.items():
-            self.assertEqual(
-                requirements.get(name), spec, f"The pip cell must use the requirements.txt range of {name}"
-            )
+            self.assertEqual(requirements.get(name), spec, f"The pip cell must use the pyproject.toml range of {name}")
 
         # A fresh interpreter in which every requirement the pip cell leaves out cannot be imported.
         left_out = sorted(REQUIREMENT_IMPORT_NAMES.get(name, name) for name in set(requirements) - set(installed))
@@ -1436,7 +1432,7 @@ class TestFullPlannerNotebook(unittest.TestCase):
             sys.path[:] = [
                 entry
                 for entry in sys.path
-                if entry and not (Path(entry).resolve() / "spaceinvasion" / "__init__.py").is_file()
+                if entry and not (Path(entry).resolve() / "backend" / "__init__.py").is_file()
             ]
             self.assertEqual(ns["resolve_repo_root"](), REPO_ROOT.resolve())
         finally:
@@ -1446,11 +1442,11 @@ class TestFullPlannerNotebook(unittest.TestCase):
     # ------------------------------------------------------------------ static metadata
 
     def test_metadata_files_agree_with_the_game_catalog(self) -> None:
-        from spaceinvasion.core.catalog import (
+        from backend.core.catalog import (
             DEFENSE_SLUG_BY_KEY,
             SHIP_SLUG_BY_KEY,
         )
-        from spaceinvasion.core.config import StrategyConfig
+        from backend.core.config import StrategyConfig
 
         docs = {
             name: json.loads((FULL_PLANNER_METADATA_DIR / name).read_text(encoding="utf-8"))
@@ -3692,7 +3688,7 @@ class TestConfigOptimizerNotebook(unittest.TestCase):
                 imported_names.update((alias.asname or alias.name).split(".")[0] for alias in node.names)
             elif isinstance(node, ast.ImportFrom):
                 imported_names.update(alias.asname or alias.name for alias in node.names)
-                if (node.module or "").split(".")[0] == "spaceinvasion":
+                if (node.module or "").split(".")[0] == "backend":
                     self.assertEqual(
                         importlib.import_module(node.module).__name__,
                         node.module,
@@ -3797,19 +3793,14 @@ class TestConfigOptimizerNotebook(unittest.TestCase):
         )
 
     def test_pip_cell_installs_exactly_what_the_notebook_imports(self) -> None:
-        requirements = {
-            _requirement_name(line): line.strip()
-            for line in (REPO_ROOT / "requirements.txt").read_text(encoding="utf-8").splitlines()
-            if line.strip() and not line.strip().startswith("#")
-        }
+        deps = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]["dependencies"]
+        requirements = {_requirement_name(line): line.strip() for line in deps}
         installed = {
             _requirement_name(spec): spec for spec in re.findall(r'"([^"]+)"', _cell_source(self.code_cells[0]))
         }
         self.assertGreater(len(installed), 0)
         for name, spec in installed.items():
-            self.assertEqual(
-                requirements.get(name), spec, f"The pip cell must use the requirements.txt range of {name}"
-            )
+            self.assertEqual(requirements.get(name), spec, f"The pip cell must use the pyproject.toml range of {name}")
 
         # A fresh interpreter in which every requirement the pip cell leaves out cannot be imported. The run
         # saves its result into a copy of the metadata folder.

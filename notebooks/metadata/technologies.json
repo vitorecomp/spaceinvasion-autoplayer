@@ -1,5 +1,5 @@
 {
-  "description": "Static descriptions of researches r1-r15 for notebooks/full_planner.ipynb. 'per_level_bonus_pct' is the bonus each level adds; the notebook derives its attack, shield, hull, energy and ship-speed multipliers from it (r1's bonus is applied inside game_data.mine_production_per_hour). 'cost_scale_factor' is the nominal cost ratio between consecutive levels of every research. 'name' must match spaceinvasion.core.game_data (checked when the notebook loads the file).",
+  "description": "Static descriptions of researches r1-r15 for notebooks/full_planner.ipynb. 'per_level_bonus_pct' is the bonus each level adds; the notebook derives its attack, shield, hull, energy and ship-speed multipliers from it (r1's bonus is applied inside game_data.mine_production_per_hour). 'cost_scale_factor' is the nominal cost ratio between consecutive levels of every research. 'name' must match backend.core.game_data (checked when the notebook loads the file).",
   "cost_scale_factor": 2.0,
   "technologies": {
     "r1": {

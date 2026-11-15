@@ -9,13 +9,13 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from spaceinvasion.core.model import (
+from backend.core.model import (
     EnergyBalance,
     GameState,
     PlanetState,
     Resources,
 )
-from spaceinvasion.planner import config_optimizer as co
+from backend.planner import config_optimizer as co
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
@@ -139,7 +139,7 @@ def test_config_optimizer_exports_and_core_math_invariants() -> None:
         "search_in_rounds",
     )
     for sym in expected:
-        assert sym in co.__all__, f"Missing export {sym} from spaceinvasion.planner.config_optimizer"
+        assert sym in co.__all__, f"Missing export {sym} from backend.planner.config_optimizer"
 
     ctx0 = {"speedup_factor": 5.0, "planet_temperature_c": 20, "r1_mining_tech": 0, "r2_energy_tech": 0}
     ctx10 = {"speedup_factor": 5.0, "planet_temperature_c": 20, "r1_mining_tech": 10, "r2_energy_tech": 0}
@@ -229,7 +229,7 @@ def test_manual_planet_override_pinning_and_yearly_projections_3y_5y_10y_15y() -
 
 
 def test_section4_standards_and_layering_for_config_optimizer() -> None:
-    co_files = sorted((REPO_ROOT / "spaceinvasion/planner/config_optimizer").glob("*.py"))
+    co_files = sorted((REPO_ROOT / "backend/planner/config_optimizer").glob("*.py"))
     assert len(co_files) >= 10
     for path in co_files:
         src = path.read_text(encoding="utf-8")
@@ -264,10 +264,10 @@ def test_section4_standards_and_layering_for_config_optimizer() -> None:
                             "selenium",
                             "pandas",
                             "requests",
-                            "spaceinvasion.db",
-                            "spaceinvasion.session",
-                            "spaceinvasion.runtime",
-                            "spaceinvasion.planner.strategy",
+                            "backend.db",
+                            "backend.session",
+                            "backend.runtime",
+                            "backend.planner.strategy",
                             "bin",
                         )
                     ), f"{path}: forbidden import {mod}"

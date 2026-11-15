@@ -1,20 +1,20 @@
 # SpaceInvasion Autoplayer — PostgreSQL Database MER & Migration Architecture
 
-`spaceinvasion-autoplayer` uses **PostgreSQL 16 exclusively** (in both Docker/Podman and Host modes) through a typed **SQLAlchemy 2.0 ORM** layer (`spaceinvasion/db/`) and **Alembic** schema migrations (`spaceinvasion/db/alembic_migrations/`). All telemetry, history, and audit tables are strictly **append-only** (zero destructive `DELETE FROM` or `DROP TABLE` operations).
+`spaceinvasion-autoplayer` uses **PostgreSQL 16 exclusively** inside the Podman stack through a typed **SQLAlchemy 2.0 ORM** layer (`backend/db/`) and **Alembic** schema migrations (`backend/db/migrations/`). All telemetry, history, and audit tables are strictly **append-only** (zero destructive `DELETE FROM` or `DROP TABLE` operations).
 
 ---
 
-## 1. Database Layer Modules (`spaceinvasion/db/`)
+## 1. Database Layer Modules (`backend/db/`)
 
 | Module | Responsibility |
 |---|---|
-| `spaceinvasion/db/models/` | Typed SQLAlchemy 2.0 declarative models covering all **40 PostgreSQL tables**, grouped by family (`colonies`, `galaxy`, `intel`, `messages`, `notifications`, `planner_runs`, `queue`, `raids`, `settings`, `snapshots`, `telemetry`). All relationships set `lazy="raise_on_sql"`. |
-| `spaceinvasion/db/session.py` | Pooled `DatabaseEngine` (`psycopg` 3 driver), `statement_timeout` enforcement, atomic `UnitOfWork` / `db_uow`, and `count_statements` test instrumentation. |
-| `spaceinvasion/db/repos/` | 11 domain repositories (`ColoniesRepository`, `GalaxyRepository`, `IntelRepository`, `ManualQueueRepository`, `MessagesRepository`, `NotificationsRepository`, `PlannerRunsRepository`, `RaidsRepository`, `SettingsRepository`, `SnapshotsRepository`, `TelemetryRepository`) using batched `INSERT ... ON CONFLICT` upserts and returning immutable DTOs. |
-| `spaceinvasion/db/queries/` | Set-based SQLAlchemy read queries (`colonies`, `dashboard`, `galaxy`, `intel`, `raids`) pushing aggregation and ranking into PostgreSQL. |
-| `spaceinvasion/db/dto/` | Immutable dataclass records crossing the `db/` package boundary (ORM entities never leak outside `db/`). |
-| `spaceinvasion/db/store.py` | `DatabaseStore` composition root wiring `DatabaseEngine`, Alembic `ensure_ready`, repositories, and `summary()` / `verify()`. |
-| `spaceinvasion/db/alembic_migrations/` | Programmatic Alembic runner (`upgrade_database` with mandatory pre-upgrade `pg_dump` backup callback, `stamp_baseline_database`, `verify_models_match_migrations`) and versioned revision scripts (`versions/0001..0004`). |
+| `backend/db/models/` | Typed SQLAlchemy 2.0 declarative models covering all **40 PostgreSQL tables**, grouped by family (`colonies`, `galaxy`, `intel`, `messages`, `notifications`, `planner_runs`, `queue`, `raids`, `settings`, `snapshots`, `telemetry`). All relationships set `lazy="raise_on_sql"`. |
+| `backend/db/session.py` | Pooled `DatabaseEngine` (`psycopg` 3 driver), `statement_timeout` enforcement, atomic `UnitOfWork` / `db_uow`, and `count_statements` test instrumentation. |
+| `backend/db/repos/` | 11 domain repositories (`ColoniesRepository`, `GalaxyRepository`, `IntelRepository`, `ManualQueueRepository`, `MessagesRepository`, `NotificationsRepository`, `PlannerRunsRepository`, `RaidsRepository`, `SettingsRepository`, `SnapshotsRepository`, `TelemetryRepository`) using batched `INSERT ... ON CONFLICT` upserts and returning immutable DTOs. |
+| `backend/db/queries/` | Set-based SQLAlchemy read queries (`colonies`, `dashboard`, `galaxy`, `intel`, `raids`) pushing aggregation and ranking into PostgreSQL. |
+| `backend/db/dto/` | Immutable dataclass records crossing the `db/` package boundary (ORM entities never leak outside `db/`). |
+| `backend/db/store.py` | `DatabaseStore` composition root wiring `DatabaseEngine`, Alembic `ensure_ready`, repositories, and `summary()` / `verify()`. |
+| `backend/db/migrations/` | Programmatic Alembic runner (`upgrade_database` with mandatory pre-upgrade `pg_dump` backup callback, `stamp_baseline_database`, `verify_models_match_migrations`) and versioned revision scripts (`versions/0001..0004`). |
 
 ---
 
@@ -98,7 +98,7 @@ erDiagram
 
 ## 4. Alembic Migrations & Native PostgreSQL Tuning
 
-Schema evolution is managed exclusively by **Alembic** (`spaceinvasion/db/alembic_migrations/`). Every upgrade records an audit row in `schema_migration_events` and requires an explicit `pg_dump` backup callback before executing DDL.
+Schema evolution is managed exclusively by **Alembic** (`backend/db/migrations/`). Every upgrade records an audit row in `schema_migration_events` and requires an explicit `pg_dump` backup callback before executing DDL.
 
 | Revision | Script | Summary |
 |---|---|---|
@@ -109,7 +109,7 @@ Schema evolution is managed exclusively by **Alembic** (`spaceinvasion/db/alembi
 
 ### Statement Performance Monitoring (`pg_stat_statements`)
 
-`docker-compose.yml` configures PostgreSQL 16 with `shared_preload_libraries=pg_stat_statements` and `log_min_duration_statement=50`. Inspect live query rankings read-only with:
+`podman-compose.yml` configures PostgreSQL 16 with `shared_preload_libraries=pg_stat_statements` and `log_min_duration_statement=50`. Inspect live query rankings read-only with:
 
 ```bash
 .venv/bin/python3 scripts/enable_pg_stats.py --report --limit 40

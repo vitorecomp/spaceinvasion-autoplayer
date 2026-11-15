@@ -18,23 +18,23 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from spaceinvasion.runtime.cli_support import maybe_reexec_venv, safe_cli_str  # noqa: E402
+from backend.runtime.cli_support import maybe_reexec_venv, safe_cli_str  # noqa: E402
 
 maybe_reexec_venv(_REPO_ROOT)
 
-from spaceinvasion.core.env import get_env  # noqa: E402
-from spaceinvasion.core.redaction import redact_sensitive  # noqa: E402
-from spaceinvasion.runtime.api.http_server import create_api_server  # noqa: E402
-from spaceinvasion.runtime.bridge import GameApiBridge, ensure_debug_browser_ready  # noqa: E402
-from spaceinvasion.runtime.postgres_ctl import is_container_runtime  # noqa: E402
-from spaceinvasion.runtime.reloader import (  # noqa: E402
+from backend.core.env import get_env  # noqa: E402
+from backend.core.redaction import redact_sensitive  # noqa: E402
+from backend.runtime.api.http_server import create_api_server  # noqa: E402
+from backend.runtime.bridge import GameApiBridge, ensure_debug_browser_ready  # noqa: E402
+from backend.runtime.postgres_ctl import is_container_runtime  # noqa: E402
+from backend.runtime.reloader import (  # noqa: E402
     current_python_cmd,
     discover_watch_paths,
     should_spawn_reloader,
     watch_and_run,
 )
-from spaceinvasion.session.auth import AntiBotChallengeError, SpaceInvasionAuthError  # noqa: E402
-from spaceinvasion.session.browser import (  # noqa: E402
+from backend.session.auth import AntiBotChallengeError, SpaceInvasionAuthError  # noqa: E402
+from backend.session.browser import (  # noqa: E402
     DEFAULT_DEBUG_HOST,
     DEFAULT_DEBUG_PORT,
     is_debug_port_open,
@@ -102,7 +102,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--ui-dir",
         type=Path,
         default=Path(ui_dir_env) if (ui_dir_env := get_env("SPACEINVASION_UI_DIR").strip()) else None,
-        help="Optional directory serving the compiled Web Operator Console bundle (defaults to SPACEINVASION_UI_DIR or spaceinvasion/ui).",
+        help="Optional directory serving the compiled Web Operator Console bundle (defaults to SPACEINVASION_UI_DIR or backend/ui).",
     )
     parser.add_argument(
         "--reload",
@@ -149,7 +149,7 @@ def main(argv: list[str] | None = None) -> int:
         return watch_and_run(
             label="API",
             cmd=current_python_cmd(Path(__file__).resolve(), raw_argv),
-            watch_paths=(*WATCH_PATHS, _REPO_ROOT / "spaceinvasion"),
+            watch_paths=(*WATCH_PATHS, _REPO_ROOT / "backend"),
         )
 
     ok_ready, startup_auth_exc = _prepare_browser_or_defer(args)

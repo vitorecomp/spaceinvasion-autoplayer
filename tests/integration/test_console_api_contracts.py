@@ -16,16 +16,16 @@ from unittest.mock import MagicMock, patch
 import pytest
 import requests
 
-from spaceinvasion.core.config import StrategyConfig
-from spaceinvasion.core.model import EnergyBalance, GameState, PlanetState, Resources
-from spaceinvasion.db.config_store import load_strategy_config
-import spaceinvasion.runtime.api.http_server as http_mod
-from spaceinvasion.runtime.api.http_server import create_api_server
-from spaceinvasion.runtime.bridge import GameApiBridge, compute_ui_assets_state
+from backend.core.config import StrategyConfig
+from backend.core.model import EnergyBalance, GameState, PlanetState, Resources
+from backend.db.config_store import load_strategy_config
+import backend.runtime.api.http_server as http_mod
+from backend.runtime.api.http_server import create_api_server
+from backend.runtime.bridge import GameApiBridge, compute_ui_assets_state
 from tests.e2e.harness import E2ETestHarness
 
 REPO_ROOT: Path = Path(__file__).resolve().parents[2]
-UI_DIR_DEFAULT: Path = REPO_ROOT / "spaceinvasion" / "ui"
+UI_DIR_DEFAULT: Path = REPO_ROOT / "backend" / "ui"
 
 
 def _sample_state() -> GameState:

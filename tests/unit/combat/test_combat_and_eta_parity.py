@@ -9,15 +9,15 @@ import sys
 
 import pytest
 
-from spaceinvasion.combat import (
+from backend.combat import (
     cargo,
     colonies,
     flight,
     points,
     simulator,
 )
-from spaceinvasion.core.coords import coords_distance, flight_distance
-from spaceinvasion.core.model import (
+from backend.core.coords import coords_distance, flight_distance
+from backend.core.model import (
     BuildingOffer,
     EnergyBalance,
     GameState,
@@ -27,9 +27,9 @@ from spaceinvasion.core.model import (
     Resources,
     UnitOffer,
 )
-from spaceinvasion.parsing.fleet_page import parse_send_fleet_mission_block
-from spaceinvasion.parsing.models import GalaxySlot, SpyReport
-from spaceinvasion.planner import eta
+from backend.parsing.fleet_page import parse_send_fleet_mission_block
+from backend.parsing.models import GalaxySlot, SpyReport
+from backend.planner import eta
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
@@ -387,7 +387,7 @@ def test_points_ranking_economy_and_eta_parity() -> None:
 
 def test_combat_and_eta_modules_obey_layering_and_section4_standards() -> None:
     combat_files = [
-        REPO_ROOT / "spaceinvasion" / "combat" / name
+        REPO_ROOT / "backend" / "combat" / name
         for name in (
             "cargo.py",
             "flight.py",
@@ -399,16 +399,16 @@ def test_combat_and_eta_modules_obey_layering_and_section4_standards() -> None:
         )
     ]
     planner_files = [
-        REPO_ROOT / "spaceinvasion" / "planner" / name for name in ("eta.py", "_eta_helpers.py", "_eta_tables.py")
+        REPO_ROOT / "backend" / "planner" / name for name in ("eta.py", "_eta_helpers.py", "_eta_tables.py")
     ]
     forbidden_global = ("sqlite3", "psycopg", "sqlalchemy", "bs4", "selenium")
     forbidden_mods = (
-        "spaceinvasion.db",
-        "spaceinvasion.session",
-        "spaceinvasion.runtime",
-        "spaceinvasion.ui",
-        "spaceinvasion.combat.fleet",
-        "spaceinvasion.combat.ranking",
+        "backend.db",
+        "backend.session",
+        "backend.runtime",
+        "backend.ui",
+        "backend.combat.fleet",
+        "backend.combat.ranking",
     )
 
     for path in [*combat_files, *planner_files]:
@@ -443,4 +443,4 @@ def test_combat_and_eta_modules_obey_layering_and_section4_standards() -> None:
                 for bad in forbidden_mods:
                     assert not node.module.startswith(bad), f"{path.name} imports forbidden {node.module}"
                 if is_combat:
-                    assert not node.module.startswith("spaceinvasion.planner"), f"{path.name} imports planner/"
+                    assert not node.module.startswith("backend.planner"), f"{path.name} imports planner/"

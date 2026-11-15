@@ -9,7 +9,7 @@ COPY frontend/index.html frontend/tsconfig.json frontend/vite.config.ts ./
 COPY frontend/scripts ./scripts
 COPY frontend/src ./src
 
-RUN mkdir -p /app/spaceinvasion/ui && npm run build
+RUN mkdir -p /app/backend/ui && npm run build
 
 FROM docker.io/library/python:3.12-slim
 
@@ -31,13 +31,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-COPY requirements.txt /app/requirements.txt
-RUN pip install --no-cache-dir -r /app/requirements.txt
+COPY pyproject.toml /app/pyproject.toml
+RUN python3 -c "import pathlib, tomllib; print('\n'.join(tomllib.loads(pathlib.Path('/app/pyproject.toml').read_text())['project']['dependencies']))" > /tmp/deps.txt \
+  && pip install --no-cache-dir -r /tmp/deps.txt \
+  && rm -f /tmp/deps.txt
 
-COPY --from=ui-builder /app/spaceinvasion/ui /opt/spaceinvasion-ui
-COPY spaceinvasion/ui/bell.svg spaceinvasion/ui/favicon.svg spaceinvasion/ui/favicon.ico /opt/spaceinvasion-ui/
+COPY --from=ui-builder /app/backend/ui /opt/spaceinvasion-ui
+COPY backend/ui/bell.svg backend/ui/favicon.svg backend/ui/favicon.ico /opt/spaceinvasion-ui/
 COPY bin /app/bin
-COPY spaceinvasion /app/spaceinvasion
+COPY backend /app/backend
 COPY scripts /app/scripts
 
 EXPOSE 8787

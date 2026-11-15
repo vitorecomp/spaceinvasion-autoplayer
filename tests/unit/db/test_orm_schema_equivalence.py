@@ -12,7 +12,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.exc import InvalidRequestError
 from sqlalchemy.orm import RelationshipProperty, Session, selectinload
 
-from spaceinvasion.db.models import (
+from backend.db.models import (
     Base,
     ColonyCandidateHot,
     GalaxyScan,
@@ -24,7 +24,7 @@ from spaceinvasion.db.models import (
     StrategyConfigStore,
     UiNotification,
 )
-from spaceinvasion.db.queries import (
+from backend.db.queries import (
     GAME_REQUIRED_TABLES,
     HISTORY_TABLES,
     HOT_TABLES,
@@ -34,15 +34,15 @@ from tests.pg_harness import DisposablePostgresServer
 # Internal catalog/versioning tables excluded from 40-table ORM metadata comparison.
 _INTERNAL_EMULATION_TABLES: frozenset[str] = frozenset({"_pg_pragma_meta", "alembic_version"})
 _REPO_ROOT: Path = Path(__file__).resolve().parents[3]
-_MODELS_DIR: Path = _REPO_ROOT / "spaceinvasion" / "db" / "models"
+_MODELS_DIR: Path = _REPO_ROOT / "backend" / "db" / "models"
 _FORBIDDEN_MODEL_IMPORTS: frozenset[str] = frozenset(
     {
         "bin",
-        "spaceinvasion.combat",
-        "spaceinvasion.parsing",
-        "spaceinvasion.planner",
-        "spaceinvasion.runtime",
-        "spaceinvasion.session",
+        "backend.combat",
+        "backend.parsing",
+        "backend.planner",
+        "backend.runtime",
+        "backend.session",
     }
 )
 

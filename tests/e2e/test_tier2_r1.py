@@ -16,17 +16,17 @@ from tests.e2e.fixtures import (
     make_ship_offer,
 )
 from tests.e2e.harness import E2ETestHarness
-from spaceinvasion.core.config import (
+from backend.core.config import (
     StrategyConfig,
     strategy_config_from_dict,
 )
-from spaceinvasion.core.model import (
+from backend.core.model import (
     EnergyBalance,
     FleetAlert,
     GameState,
     Resources,
 )
-from spaceinvasion.planner.heuristics import (
+from backend.planner.heuristics import (
     BLAST_FURNACE,
     PIG_IRON_MINE,
     SOLAR_CELLS_ID,

@@ -7,23 +7,23 @@ import tempfile
 import unittest
 from unittest.mock import MagicMock
 
-from spaceinvasion.core.config import StrategyConfig
-from spaceinvasion.core.model import (
+from backend.core.config import StrategyConfig
+from backend.core.model import (
     EnergyBalance,
     GameState,
     PlanetState,
     Resources,
     count_allocated_normal_planets,
 )
-from spaceinvasion.parsing.account_pages import (
+from backend.parsing.account_pages import (
     parse_daily_login_bonus,
     parse_transmitter_page,
 )
 from tests.pg_harness import open_test_db as GameDatabase
-from spaceinvasion.core.model import PlannedAction
-from spaceinvasion.planner.heuristics import plan_actions
-from spaceinvasion.runtime.bridge import GameApiBridge
-from spaceinvasion.session.executor import ActionExecutor
+from backend.core.model import PlannedAction
+from backend.planner.heuristics import plan_actions
+from backend.runtime.bridge import GameApiBridge
+from backend.session.executor import ActionExecutor
 
 
 _IDT_FREE_HTML_BEFORE = """
@@ -530,7 +530,7 @@ class TestSweepAndTransmitter(unittest.TestCase):
             self.assertEqual(res["action"]["planet_coords"], "02:380:12")
 
     def test_wait_frame_ready_accepts_post_internal_transmitter_without_query_action(self) -> None:
-        from spaceinvasion.session.client import GameBrowserClient
+        from backend.session.client import GameBrowserClient
 
         driver = MagicMock()
         driver.execute_script.return_value = {
@@ -715,8 +715,8 @@ class TestSweepAndTransmitter(unittest.TestCase):
             self.assertEqual(res_full["debris_found"], 2)
 
     def test_building_and_home_active_queues_extract_executing_timers_and_finish_ts(self) -> None:
-        from spaceinvasion.parsing.overview import parse_home_metadata
-        from spaceinvasion.parsing.queues import parse_building_queue
+        from backend.parsing.overview import parse_home_metadata
+        from backend.parsing.queues import parse_building_queue
 
         ref_ts = 1_794_890_000.0
         b_html = """
@@ -787,13 +787,13 @@ class TestSweepAndTransmitter(unittest.TestCase):
 
     def test_galaxy_json_colonize_metadata_click_delay_jitter_and_discard_colony_candidate(self) -> None:
         from unittest.mock import MagicMock, patch
-        from spaceinvasion.parsing.galaxy import parse_galaxy_system_html
-        from spaceinvasion.parsing.models import (
+        from backend.parsing.galaxy import parse_galaxy_system_html
+        from backend.parsing.models import (
             GalaxySlot,
             SpyReport,
         )
-        from spaceinvasion.runtime.api.validation import ApiRequestError
-        from spaceinvasion.runtime.bridge import GameApiBridge
+        from backend.runtime.api.validation import ApiRequestError
+        from backend.runtime.bridge import GameApiBridge
 
         # 1. Passive #json-element colonize extraction on 2D Galaxy view
         gal_2d_html = """
@@ -899,10 +899,10 @@ class TestSweepAndTransmitter(unittest.TestCase):
     def test_retro_free_slot_ecology_probing_priority_and_noop_batch_continuation(self) -> None:
         from unittest.mock import MagicMock
         import bin.commander as commander_mod
-        from spaceinvasion.combat.colonies import grade_colony_candidate
-        from spaceinvasion.parsing.models import GalaxySlot
-        from spaceinvasion.session.executor import ActionExecutor
-        from spaceinvasion.runtime.bridge import GameApiBridge
+        from backend.combat.colonies import grade_colony_candidate
+        from backend.parsing.models import GalaxySlot
+        from backend.session.executor import ActionExecutor
+        from backend.runtime.bridge import GameApiBridge
 
         # 1. Range-based ecology grading (140-340 fields @ 28C -> Grade S, meets 300+ target; 100-220 -> Grade D, skipped)
         g_prime = grade_colony_candidate(
@@ -987,7 +987,7 @@ class TestSweepAndTransmitter(unittest.TestCase):
                 "system": system,
             }
 
-        _fake_dispatch_spy.__module__ = "spaceinvasion.session.client"
+        _fake_dispatch_spy.__module__ = "backend.session.client"
         fake_browser.dispatch_galaxy_spy = _fake_dispatch_spy
 
         exec_inst = ActionExecutor(dry_run=False, action_delay_range=(0.0, 0.0))
@@ -1081,7 +1081,7 @@ class TestSweepAndTransmitter(unittest.TestCase):
 
     def test_undersized_colony_auto_deletion_and_top_queue_colony_priority(self) -> None:
         from dataclasses import replace
-        from spaceinvasion.core.model import (
+        from backend.core.model import (
             EnergyBalance,
             QueueJob,
             homeworld_planet_id,
@@ -1453,7 +1453,7 @@ class TestSweepAndTransmitter(unittest.TestCase):
 
     def test_captcha_freeze_stops_all_browser_refreshes_until_confirmed_in_ui(self) -> None:
         from unittest.mock import patch
-        from spaceinvasion.session.auth import AntiBotChallengeError
+        from backend.session.auth import AntiBotChallengeError
 
         client_open_count = 0
 
@@ -1468,7 +1468,7 @@ class TestSweepAndTransmitter(unittest.TestCase):
 
         with tempfile.TemporaryDirectory(prefix="si_cap_freeze_") as tmp_dir:
             tp = Path(tmp_dir)
-            with patch("spaceinvasion.session.browser.is_debug_port_open", return_value=True):
+            with patch("backend.session.browser.is_debug_port_open", return_value=True):
                 bridge = GameApiBridge(
                     debug_port=19996,
                     config_path=tp / "cfg.json",
@@ -1522,7 +1522,7 @@ class TestSweepAndTransmitter(unittest.TestCase):
 
     def test_parallel_colonize_bounded_by_planet_slots_and_spy_colonize_attack_fleet_priority(self) -> None:
         from dataclasses import replace
-        from spaceinvasion.core.model import QueueJob
+        from backend.core.model import QueueJob
 
         now = 1_700_000_300.0
         home = PlanetState(
@@ -1639,7 +1639,7 @@ class TestSweepAndTransmitter(unittest.TestCase):
     def test_smart_galaxy_sweep_explores_unscanned_first_then_weighted_near_and_frequent_attack_refresh(self) -> None:
         import time as _time
         from unittest.mock import patch
-        from spaceinvasion.parsing.models import GalaxySlot
+        from backend.parsing.models import GalaxySlot
 
         with tempfile.TemporaryDirectory(prefix="si_smart_sweep_") as tmp:
             tp = Path(tmp)
@@ -1757,7 +1757,7 @@ class TestSweepAndTransmitter(unittest.TestCase):
                 bridge.close()
 
     def test_planner_scan_galaxy_prefers_unscanned_then_near_and_frequent_attack_sectors(self) -> None:
-        from spaceinvasion.combat.scanner import select_planner_scan_system
+        from backend.combat.scanner import select_planner_scan_system
 
         now = 1_700_100_000.0
         cfg = StrategyConfig(allow_galaxy_scan=True)
@@ -1827,7 +1827,7 @@ class TestSweepAndTransmitter(unittest.TestCase):
 
     def test_espionage_intel_attaches_origin_and_distances(self) -> None:
         import json
-        from spaceinvasion.parsing.models import (
+        from backend.parsing.models import (
             GalaxySlot,
             SpyReport,
         )

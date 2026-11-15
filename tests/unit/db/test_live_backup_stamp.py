@@ -10,14 +10,14 @@ import subprocess
 import pytest
 from sqlalchemy import select
 
-from spaceinvasion.db.migrations import (
+from backend.db.migrations import (
     BASELINE_REVISION,
     get_current_revision,
     stamp_baseline_database,
     verify_models_match_migrations,
 )
-from spaceinvasion.db.models import Base, SchemaMigration, SchemaMigrationEvent
-from spaceinvasion.db.session import DatabaseEngine, db_uow
+from backend.db.models import Base, SchemaMigration, SchemaMigrationEvent
+from backend.db.session import DatabaseEngine, db_uow
 from tests.pg_harness import DisposablePostgresServer
 
 LIVE_BACKUP_ENV_VAR: str = "SPACEINVASION_LIVE_BACKUP_DUMP"

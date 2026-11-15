@@ -27,39 +27,37 @@ SACRED_INVARIANT_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
 )
 
 RETIRED_BASELINE_MODULES: frozenset[str] = frozenset(
-    "bin/advisor.py bin/run_bot.py scripts/sync_db.py spaceinvasion/db/postgres.py spaceinvasion/planner/optimizer.py".split()
+    "bin/advisor.py bin/run_bot.py scripts/sync_db.py backend/db/postgres.py backend/planner/optimizer.py".split()
 )
 
 
 def _g(pkg: str, csv: str, *extra: str) -> tuple[str, ...]:
-    return tuple(f"spaceinvasion/{pkg}/{p}" for p in csv.split(",")) + tuple(f"spaceinvasion/{e}" for e in extra)
+    return tuple(f"backend/{pkg}/{p}" for p in csv.split(",")) + tuple(f"backend/{e}" for e in extra)
 
 
 SPLIT_PACKAGE_PREFIXES: dict[str, tuple[str, ...]] = {
-    "bin/commander.py": ("bin/commander.py", "spaceinvasion/runtime/commander/"),
-    "spaceinvasion/combat/fleet.py": _g(
+    "bin/commander.py": ("bin/commander.py", "backend/runtime/commander/"),
+    "backend/combat/fleet.py": _g(
         "combat", "fleet.py,cargo.py,flight.py,simulator.py,colonies.py,scanner.py,_scanner_", "parsing/"
     ),
-    "spaceinvasion/combat/ranking.py": _g(
+    "backend/combat/ranking.py": _g(
         "combat", "ranking.py,points.py,_points_helpers.py,_combat_overview.py,_rank_history.py"
     )
     + _g("planner", "eta.py,_eta_"),
-    "spaceinvasion/core/config.py": _g("core", "config.py,settings/", "db/config_store.py"),
-    "spaceinvasion/core/game_data.py": _g("core", "game_data.py,catalog/"),
-    "spaceinvasion/core/logging_utils.py": _g("core", "logging_utils.py,redaction.py", "runtime/logs/"),
-    "spaceinvasion/core/state.py": _g(
-        "core", "state.py,model.py,_model_,_inflight.py,coercion.py,coords.py", "parsing/"
-    ),
-    "spaceinvasion/db/backend.py": _g("db", "backend.py,dsn.py,session.py", "runtime/postgres_ctl.py"),
-    "spaceinvasion/db/migrations.py": _g("db", "migrations,alembic_migrations"),
-    "spaceinvasion/db/storage.py": _g("db", "storage.py,store.py,models/,repos/,queries/,dto/,session.py"),
-    "spaceinvasion/planner/action_graph.py": ("spaceinvasion/planner/graph/",),
-    "spaceinvasion/planner/ai_planner.py": ("spaceinvasion/planner/ai/",),
-    "spaceinvasion/planner/config_optimizer.py": _g("planner", "config_optimizer,config_opt/"),
-    "spaceinvasion/planner/strategy.py": ("spaceinvasion/planner/heuristics/",),
-    "spaceinvasion/runtime/api_server.py": _g("runtime", "api_server.py,bridge/,api/"),
-    "spaceinvasion/session/client.py": _g("session", "client,browser_client/,limiter.py"),
-    "spaceinvasion/session/executor.py": _g("session", "executor,exec_ops/"),
+    "backend/core/config.py": _g("core", "config.py,settings/", "db/config_store.py"),
+    "backend/core/game_data.py": _g("core", "game_data.py,catalog/"),
+    "backend/core/logging_utils.py": _g("core", "logging_utils.py,redaction.py", "runtime/logs/"),
+    "backend/core/state.py": _g("core", "state.py,model.py,_model_,_inflight.py,coercion.py,coords.py", "parsing/"),
+    "backend/db/backend.py": _g("db", "backend.py,dsn.py,session.py", "runtime/postgres_ctl.py"),
+    "backend/db/migrations.py": _g("db", "migrations,alembic_migrations"),
+    "backend/db/storage.py": _g("db", "storage.py,store.py,models/,repos/,queries/,dto/,session.py"),
+    "backend/planner/action_graph.py": ("backend/planner/graph/",),
+    "backend/planner/ai_planner.py": ("backend/planner/ai/",),
+    "backend/planner/config_optimizer.py": _g("planner", "config_optimizer,config_opt/"),
+    "backend/planner/strategy.py": ("backend/planner/heuristics/",),
+    "backend/runtime/api_server.py": _g("runtime", "api_server.py,bridge/,api/"),
+    "backend/session/client.py": _g("session", "client,browser_client/,limiter.py"),
+    "backend/session/executor.py": _g("session", "executor,exec_ops/"),
 }
 
 
@@ -98,7 +96,7 @@ def _is_priv(name: str) -> bool:
 
 
 def scan_private_imports(tests_root: Path = DEFAULT_TESTS_ROOT, repo_root: Path = REPO_ROOT) -> list[PrivateImportHit]:
-    """AST-scan tests for ``from spaceinvasion... import _sym`` and ``mod._sym`` accesses."""
+    """AST-scan tests for ``from backend... import _sym`` and ``mod._sym`` accesses."""
     hits: list[PrivateImportHit] = []
     for path in _iter_test_files(tests_root):
         rel = path.relative_to(repo_root).as_posix()
@@ -107,9 +105,9 @@ def scan_private_imports(tests_root: Path = DEFAULT_TESTS_ROOT, repo_root: Path 
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
                 for alias in node.names:
-                    if alias.name == "spaceinvasion" or alias.name.startswith("spaceinvasion."):
+                    if alias.name == "backend" or alias.name.startswith("backend."):
                         si_mod_aliases[alias.asname or alias.name.split(".")[0]] = alias.name
-            elif isinstance(node, ast.ImportFrom) and node.module and node.module.startswith("spaceinvasion"):
+            elif isinstance(node, ast.ImportFrom) and node.module and node.module.startswith("backend"):
                 for alias in node.names:
                     if _is_priv(alias.name):
                         hits.append(PrivateImportHit(rel, node.lineno, node.module, alias.name, "import"))

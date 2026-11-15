@@ -12,11 +12,11 @@ from unittest.mock import MagicMock, patch
 from selenium.common.exceptions import ElementClickInterceptedException, NoSuchElementException
 from selenium.webdriver.common.by import By
 
-from spaceinvasion.session.auth import (
+from backend.session.auth import (
     AntiBotChallengeError,
     SpaceInvasionAuthError,
 )
-from spaceinvasion.session.client import (
+from backend.session.client import (
     GameBrowserClient,
     PageViewLimiter,
     RateLimitError,
@@ -467,7 +467,7 @@ class TestPageViewLimiterAndClient(unittest.TestCase):
 
         client = GameBrowserClient(driver, page_limiter=limiter, min_nav_delay=(0.0, 0.0), timeout=2.0)
         with patch.object(driver, "execute_script", side_effect=_exec_keeping_stale_token):
-            with patch("spaceinvasion.session.client.time.sleep", return_value=None):
+            with patch("backend.session.client.time.sleep", return_value=None):
                 html = client.open_galaxy(galaxy=2, system=381)
         self.assertIn("New381", html)
         self.assertNotIn("Old380", html)
@@ -488,7 +488,7 @@ class TestPageViewLimiterAndClient(unittest.TestCase):
                     main.nav_token = None
 
         main.on_navigate = _on_fleet_poll
-        with patch("spaceinvasion.session.client.time.sleep", return_value=None):
+        with patch("backend.session.client.time.sleep", return_value=None):
             send_html = client._wait_frame_ready(
                 "F_Hauptframe",
                 expected_action="internalSendFleet",
@@ -518,7 +518,7 @@ class TestPageViewLimiterAndClient(unittest.TestCase):
         # (a) Rate limit HTML on URL lacking expected_action raises RateLimitError on poll #1
         main.href = "https://spaceinvasion.bitmeup.com/indexInternal.es?error=limit"
         main.html = "<div>You've made more than 30 page views at last minute.</div>"
-        with patch("spaceinvasion.session.client.time.sleep", side_effect=_fail_on_excess_sleep):
+        with patch("backend.session.client.time.sleep", side_effect=_fail_on_excess_sleep):
             with self.assertRaises(RateLimitError):
                 client._wait_frame_ready("F_Hauptframe", expected_action="internalBuildings")
         self.assertEqual(sleep_calls[0], 0)
@@ -527,7 +527,7 @@ class TestPageViewLimiterAndClient(unittest.TestCase):
         # (b) Cloudflare turnstile raises AntiBotChallengeError immediately
         limiter.reset()
         main.html = "<div class='cf-turnstile'>Verify</div>"
-        with patch("spaceinvasion.session.client.time.sleep", side_effect=_fail_on_excess_sleep):
+        with patch("backend.session.client.time.sleep", side_effect=_fail_on_excess_sleep):
             with self.assertRaises(AntiBotChallengeError):
                 client._wait_frame_ready("F_Hauptframe", expected_action="internalBuildings")
         self.assertEqual(sleep_calls[0], 0)
@@ -1830,7 +1830,7 @@ class TestPageViewLimiterAndClient(unittest.TestCase):
 
         with (
             patch.object(limiter, "clear_throttle_recovery", side_effect=_spy_clear),
-            patch("spaceinvasion.session.client.find_and_switch_game_tab", return_value=True),
+            patch("backend.session.client.find_and_switch_game_tab", return_value=True),
         ):
             client.ensure_in_game(priority="interactive")
         self.assertEqual(lock_owned_on_tab_clear, [False])
@@ -1839,7 +1839,7 @@ class TestPageViewLimiterAndClient(unittest.TestCase):
         try:
             for sp in spy_patches:
                 sp.start()
-            with patch("spaceinvasion.session.client.find_and_switch_game_tab", return_value=True):
+            with patch("backend.session.client.find_and_switch_game_tab", return_value=True):
                 client.ensure_in_game(priority="interactive")
             drv.frames["F_planets"].html = "<div>You've made more than 30 page views at last minute!</div>"
             with self.assertRaises(RateLimitError):
@@ -2102,7 +2102,7 @@ class TestPageViewLimiterAndClient(unittest.TestCase):
         with (
             patch.object(lim_f, "rate_limit_remaining", side_effect=_gated_rem),
             patch(
-                "spaceinvasion.session.client.find_and_switch_game_tab",
+                "backend.session.client.find_and_switch_game_tab",
                 side_effect=_switch_tab_recover,
             ),
         ):
@@ -2163,7 +2163,7 @@ class TestPageViewLimiterAndClient(unittest.TestCase):
             c.read_full_snapshot(include_home=False, include_buildings=False)
 
         # Off-internalHome F_Hauptframe redirecting to BitMeUp login or universe picker raises SpaceInvasionAuthError
-        from spaceinvasion.core.model import GameState
+        from backend.core.model import GameState
 
         haupt_el = MagicMock()
         haupt_el.get_attribute.return_value = "indexInternal.es?action=internalBuildings"
@@ -2354,8 +2354,8 @@ class TestPageViewLimiterAndClient(unittest.TestCase):
         self.assertLessEqual(lim_huge.views_last_60s(), 10_000)
 
     def test_r10_bytes_nonascii_bounds_and_commander_client_timeout(self) -> None:
-        from spaceinvasion.runtime.commander_client import GameApiClient
-        from spaceinvasion.session.client import GameBrowserClient
+        from backend.runtime.commander_client import GameApiClient
+        from backend.session.client import GameBrowserClient
 
         lim = PageViewLimiter(
             max_views_per_minute=b"30",  # type: ignore[arg-type]
@@ -2390,12 +2390,12 @@ class TestPageViewLimiterAndClient(unittest.TestCase):
         import tempfile
         from pathlib import Path
         from unittest.mock import patch
-        from spaceinvasion.session.client import (
+        from backend.session.client import (
             GameBrowserClient,
             RateLimitError,
             is_server_rate_limit_html,
         )
-        from spaceinvasion.runtime.logs import append_crash_debug_log
+        from backend.runtime.logs import append_crash_debug_log
 
         # 1. Hidden unpopulated `internalGalaxy` modal does NOT trigger false RateLimitError
         gal_modal_html = (
@@ -2424,7 +2424,7 @@ class TestPageViewLimiterAndClient(unittest.TestCase):
 
         drv.find_element.side_effect = NoSuchElementException("no F_planets in popup")
         cli_pop = GameBrowserClient(drv)
-        with patch("spaceinvasion.session.client.find_and_switch_game_tab", return_value=True) as mock_switch:
+        with patch("backend.session.client.find_and_switch_game_tab", return_value=True) as mock_switch:
             cli_pop.ensure_in_game()
         mock_switch.assert_called_once_with(drv)
 
@@ -2459,7 +2459,7 @@ class TestPageViewLimiterAndClient(unittest.TestCase):
                 '<div>You\'ve made more than <span id="pageview-amount">0</span> page views.</div>'
             )
         )
-        from spaceinvasion.core.redaction import redact_sensitive
+        from backend.core.redaction import redact_sensitive
 
         self.assertEqual(
             redact_sensitive('<input type="password" name="password" value="p@ss\'word123">'),
@@ -2475,7 +2475,7 @@ class TestPageViewLimiterAndClient(unittest.TestCase):
         )
 
         # Full Metal warehouse (`metal >= storage.metal`) must NOT flip `resource2=100` to `0` on `#metall=0`
-        from spaceinvasion.core.model import (
+        from backend.core.model import (
             EnergyBalance,
             GameState,
             PlanetState,
@@ -2536,7 +2536,7 @@ class TestPageViewLimiterAndClient(unittest.TestCase):
 
         # Commander `sync_economy` propagates HTTP 429 rate-limit instead of swallowing it
         import commander
-        from spaceinvasion.runtime.commander_client import GameApiError
+        from backend.runtime.commander_client import GameApiError
         from dataclasses import asdict
 
         fake_api = MagicMock()
@@ -2703,7 +2703,7 @@ class TestPageViewLimiterAndClient(unittest.TestCase):
             drv.execute_script.side_effect = _exec
             return drv, state
 
-        with patch("spaceinvasion.session.client.time.sleep"):
+        with patch("backend.session.client.time.sleep"):
             # 1. Forward dist=1 -> single +1 arrow click, zero si.navigate calls
             drv1, st1 = _make_driver(2, 380)
             cli1 = GameBrowserClient(drv1, min_nav_delay=(0.0, 0.0), timeout=2.0)
@@ -2794,7 +2794,7 @@ class TestPageViewLimiterAndClient(unittest.TestCase):
         script_timeouts: list[float] = []
         drv_rec.set_script_timeout.side_effect = lambda v: script_timeouts.append(float(v))
         cli_rec = GameBrowserClient(drv_rec, min_nav_delay=(0.0, 0.0), timeout=25.0)
-        with patch("spaceinvasion.session.client.time.sleep"):
+        with patch("backend.session.client.time.sleep"):
             cli_rec._recover_renderer_timeout()
         self.assertEqual(script_timeouts, [3.0, 25.0])
         stop_calls = [
@@ -3012,7 +3012,7 @@ class TestPageViewLimiterAndClient(unittest.TestCase):
 
         drv1.execute_script.side_effect = _exec1
         cli1 = GameBrowserClient(drv1, min_nav_delay=(0.0, 0.0), timeout=2.0)
-        with patch.object(cli1, "_switch_frame"), patch("spaceinvasion.session.client.time.sleep"):
+        with patch.object(cli1, "_switch_frame"), patch("backend.session.client.time.sleep"):
             _h, g1, s1 = cli1.step_galaxy_system(galaxy=9, system=344, pace=False)
             self.assertEqual((g1, s1), (1, 344))
             self.assertEqual(cli1.last_galaxy_max_galaxies, 8)
@@ -3068,8 +3068,8 @@ class TestPageViewLimiterAndClient(unittest.TestCase):
         cli_w = GameBrowserClient(drv_w, min_nav_delay=(0.0, 0.0), timeout=4.0)
         with (
             patch.object(cli_w, "_switch_frame"),
-            patch("spaceinvasion.session.client.time.sleep"),
-            patch("spaceinvasion.session.client.time.monotonic", side_effect=_fake_mono),
+            patch("backend.session.client.time.sleep"),
+            patch("backend.session.client.time.monotonic", side_effect=_fake_mono),
         ):
             _hw, gw, sw = cli_w.step_galaxy_system(galaxy=2, system=381, pace=False)
         self.assertEqual((gw, sw), (2, 381))

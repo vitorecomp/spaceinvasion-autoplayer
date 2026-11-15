@@ -204,7 +204,7 @@ def summarize_actions(actions: Sequence[Any]) -> dict[str, Any]:
 
 
 def _plan(state: Any, cfg: Any) -> list[Any]:
-    from spaceinvasion.planner.heuristics import plan_actions
+    from backend.planner.heuristics import plan_actions
     from tests.goldens.scenarios import GOLDEN_EPOCH
 
     return plan_actions(state, config=cfg, scanned_systems={}, throttle_cooldowns={}, now_ts=GOLDEN_EPOCH)
@@ -228,7 +228,7 @@ def capture_planner() -> dict[str, Any]:
 
 def capture_action_graph() -> dict[str, Any]:
     """Heuristic action graph (`build_action_graph`) and the fleet-planner graph built from the same plan."""
-    from spaceinvasion.planner.graph import build_action_graph, build_fleet_planner_graph
+    from backend.planner.graph import build_action_graph, build_fleet_planner_graph
     from tests.goldens.scenarios import CONFIGS, GOLDEN_EPOCH, STATES, default_config, full_auto_config
 
     out: dict[str, Any] = {}
@@ -260,9 +260,9 @@ def capture_action_graph() -> dict[str, Any]:
 
 def capture_ai_planner() -> dict[str, Any]:
     """AI-Planner: the planned path, the live actions reconciled from it, and `build_ai_planner_graph`."""
-    from spaceinvasion.core.config import StrategyConfig
-    from spaceinvasion.planner import ai as ai_planner
-    from spaceinvasion.planner.graph import build_ai_planner_graph
+    from backend.core.config import StrategyConfig
+    from backend.planner import ai as ai_planner
+    from backend.planner.graph import build_ai_planner_graph
     from tests.goldens.scenarios import AI_PLANNER_PARAMS, GOLDEN_EPOCH, STATES, ai_target_config
 
     out: dict[str, Any] = {}

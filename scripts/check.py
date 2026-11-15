@@ -5,7 +5,7 @@ Runs:
   1. `ruff check` (ratcheted per-file/rule against `scripts/quality_baseline.json`)
   2. `mypy` (ratcheted per-file against `scripts/quality_baseline.json`)
   3. AST engineering-standards ratchet on production Python (excluding
-     `spaceinvasion/core/game_data.py` and `spaceinvasion/ui/`):
+     `backend/core/game_data.py` and `backend/ui/`):
        - module <= 800 LOC
        - class <= 400 LOC
        - function/method <= 100 LOC
@@ -39,12 +39,12 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from spaceinvasion.core.env import get_process_env  # noqa: E402
+from backend.core.env import get_process_env  # noqa: E402
 
 BASELINE_PATH = REPO_ROOT / "scripts" / "quality_baseline.json"
 COVERAGE_BASELINE_PATH = REPO_ROOT / "scripts" / "coverage_baseline.json"
-PROD_ROOTS = ("spaceinvasion", "bin", "scripts")
-EXCLUDED_AST_FILES = frozenset({"spaceinvasion/core/game_data.py"})
+PROD_ROOTS = ("backend", "bin", "scripts")
+EXCLUDED_AST_FILES = frozenset({"backend/core/game_data.py"})
 
 MAX_MODULE_LOC = 800
 MAX_CLASS_LOC = 400
@@ -99,7 +99,7 @@ def _iter_prod_python_files() -> list[Path]:
             continue
         for path in sorted(root_dir.rglob("*.py")):
             rel = path.relative_to(REPO_ROOT).as_posix()
-            if rel.startswith("spaceinvasion/ui/") or "/__pycache__/" in f"/{rel}/":
+            if rel.startswith("backend/ui/") or "/__pycache__/" in f"/{rel}/":
                 continue
             if rel in EXCLUDED_AST_FILES:
                 continue
@@ -542,7 +542,7 @@ def _run_pytest_shard(
     cmd = [*pytest_base, "-p", "no:cacheprovider", "-q"]
     env = get_process_env()
     if cov_file is not None:
-        cmd.extend(["--cov=spaceinvasion", "--cov=bin", "--cov=scripts", "--cov-report="])
+        cmd.extend(["--cov=backend", "--cov=bin", "--cov=scripts", "--cov-report="])
         env["COVERAGE_FILE"] = str(cov_file)
     cmd.extend(shard_files)
     proc = subprocess.run(cmd, cwd=REPO_ROOT, env=env, capture_output=True, text=True, check=False)
@@ -600,7 +600,7 @@ def _run_pytest_step(*, workers: int, record_coverage: bool, check_coverage: boo
                 *pytest_base,
                 "-p",
                 "no:cacheprovider",
-                "--cov=spaceinvasion",
+                "--cov=backend",
                 "--cov=bin",
                 "--cov=scripts",
                 f"--cov-report=json:{cov_json}",

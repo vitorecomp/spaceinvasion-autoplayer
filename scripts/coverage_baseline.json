@@ -1,5 +1,208 @@
 {
   "files": {
+    "backend/__init__.py": {
+      "covered_lines": 42,
+      "excluded_lines": 0,
+      "missing_lines": 4,
+      "num_statements": 46,
+      "percent_covered": 91.3
+    },
+    "backend/combat/__init__.py": {
+      "covered_lines": 9,
+      "excluded_lines": 0,
+      "missing_lines": 1,
+      "num_statements": 10,
+      "percent_covered": 90.0
+    },
+    "backend/combat/fleet.py": {
+      "covered_lines": 2733,
+      "excluded_lines": 0,
+      "missing_lines": 397,
+      "num_statements": 3130,
+      "percent_covered": 87.32
+    },
+    "backend/combat/ranking.py": {
+      "covered_lines": 970,
+      "excluded_lines": 0,
+      "missing_lines": 142,
+      "num_statements": 1112,
+      "percent_covered": 87.23
+    },
+    "backend/core/__init__.py": {
+      "covered_lines": 9,
+      "excluded_lines": 0,
+      "missing_lines": 1,
+      "num_statements": 10,
+      "percent_covered": 90.0
+    },
+    "backend/core/config.py": {
+      "covered_lines": 894,
+      "excluded_lines": 0,
+      "missing_lines": 205,
+      "num_statements": 1099,
+      "percent_covered": 81.35
+    },
+    "backend/core/game_data.py": {
+      "covered_lines": 471,
+      "excluded_lines": 0,
+      "missing_lines": 77,
+      "num_statements": 548,
+      "percent_covered": 85.95
+    },
+    "backend/core/logging_utils.py": {
+      "covered_lines": 478,
+      "excluded_lines": 0,
+      "missing_lines": 90,
+      "num_statements": 568,
+      "percent_covered": 84.15
+    },
+    "backend/core/state.py": {
+      "covered_lines": 1660,
+      "excluded_lines": 0,
+      "missing_lines": 217,
+      "num_statements": 1877,
+      "percent_covered": 88.44
+    },
+    "backend/db/__init__.py": {
+      "covered_lines": 10,
+      "excluded_lines": 0,
+      "missing_lines": 0,
+      "num_statements": 10,
+      "percent_covered": 100.0
+    },
+    "backend/db/backend.py": {
+      "covered_lines": 316,
+      "excluded_lines": 3,
+      "missing_lines": 119,
+      "num_statements": 435,
+      "percent_covered": 72.64
+    },
+    "backend/db/migrations.py": {
+      "covered_lines": 1074,
+      "excluded_lines": 0,
+      "missing_lines": 418,
+      "num_statements": 1492,
+      "percent_covered": 71.98
+    },
+    "backend/db/postgres.py": {
+      "covered_lines": 566,
+      "excluded_lines": 0,
+      "missing_lines": 126,
+      "num_statements": 692,
+      "percent_covered": 81.79
+    },
+    "backend/db/storage.py": {
+      "covered_lines": 3946,
+      "excluded_lines": 0,
+      "missing_lines": 581,
+      "num_statements": 4527,
+      "percent_covered": 87.17
+    },
+    "backend/planner/__init__.py": {
+      "covered_lines": 10,
+      "excluded_lines": 0,
+      "missing_lines": 0,
+      "num_statements": 10,
+      "percent_covered": 100.0
+    },
+    "backend/planner/action_graph.py": {
+      "covered_lines": 1483,
+      "excluded_lines": 0,
+      "missing_lines": 116,
+      "num_statements": 1599,
+      "percent_covered": 92.75
+    },
+    "backend/planner/ai_planner.py": {
+      "covered_lines": 3870,
+      "excluded_lines": 0,
+      "missing_lines": 424,
+      "num_statements": 4294,
+      "percent_covered": 90.13
+    },
+    "backend/planner/config_optimizer.py": {
+      "covered_lines": 2016,
+      "excluded_lines": 1,
+      "missing_lines": 191,
+      "num_statements": 2207,
+      "percent_covered": 91.35
+    },
+    "backend/planner/optimizer.py": {
+      "covered_lines": 4904,
+      "excluded_lines": 196,
+      "missing_lines": 717,
+      "num_statements": 5621,
+      "percent_covered": 87.24
+    },
+    "backend/planner/strategy.py": {
+      "covered_lines": 3826,
+      "excluded_lines": 2,
+      "missing_lines": 467,
+      "num_statements": 4293,
+      "percent_covered": 89.12
+    },
+    "backend/runtime/__init__.py": {
+      "covered_lines": 5,
+      "excluded_lines": 0,
+      "missing_lines": 5,
+      "num_statements": 10,
+      "percent_covered": 50.0
+    },
+    "backend/runtime/api_server.py": {
+      "covered_lines": 7188,
+      "excluded_lines": 8,
+      "missing_lines": 1630,
+      "num_statements": 8818,
+      "percent_covered": 81.52
+    },
+    "backend/runtime/commander_client.py": {
+      "covered_lines": 139,
+      "excluded_lines": 0,
+      "missing_lines": 38,
+      "num_statements": 177,
+      "percent_covered": 78.53
+    },
+    "backend/runtime/reloader.py": {
+      "covered_lines": 149,
+      "excluded_lines": 0,
+      "missing_lines": 48,
+      "num_statements": 197,
+      "percent_covered": 75.63
+    },
+    "backend/session/__init__.py": {
+      "covered_lines": 5,
+      "excluded_lines": 0,
+      "missing_lines": 5,
+      "num_statements": 10,
+      "percent_covered": 50.0
+    },
+    "backend/session/auth.py": {
+      "covered_lines": 433,
+      "excluded_lines": 0,
+      "missing_lines": 52,
+      "num_statements": 485,
+      "percent_covered": 89.28
+    },
+    "backend/session/browser.py": {
+      "covered_lines": 434,
+      "excluded_lines": 9,
+      "missing_lines": 212,
+      "num_statements": 646,
+      "percent_covered": 67.18
+    },
+    "backend/session/client.py": {
+      "covered_lines": 1367,
+      "excluded_lines": 0,
+      "missing_lines": 475,
+      "num_statements": 1842,
+      "percent_covered": 74.21
+    },
+    "backend/session/executor.py": {
+      "covered_lines": 1732,
+      "excluded_lines": 0,
+      "missing_lines": 452,
+      "num_statements": 2184,
+      "percent_covered": 79.3
+    },
     "bin/__init__.py": {
       "covered_lines": 0,
       "excluded_lines": 0,
@@ -41,13 +244,6 @@
       "missing_lines": 90,
       "num_statements": 260,
       "percent_covered": 65.38
-    },
-    "bin/run_stack.py": {
-      "covered_lines": 155,
-      "excluded_lines": 0,
-      "missing_lines": 46,
-      "num_statements": 201,
-      "percent_covered": 77.11
     },
     "scripts/capture_goldens.py": {
       "covered_lines": 177,
@@ -97,209 +293,6 @@
       "missing_lines": 446,
       "num_statements": 446,
       "percent_covered": 0.0
-    },
-    "spaceinvasion/__init__.py": {
-      "covered_lines": 42,
-      "excluded_lines": 0,
-      "missing_lines": 4,
-      "num_statements": 46,
-      "percent_covered": 91.3
-    },
-    "spaceinvasion/combat/__init__.py": {
-      "covered_lines": 9,
-      "excluded_lines": 0,
-      "missing_lines": 1,
-      "num_statements": 10,
-      "percent_covered": 90.0
-    },
-    "spaceinvasion/combat/fleet.py": {
-      "covered_lines": 2733,
-      "excluded_lines": 0,
-      "missing_lines": 397,
-      "num_statements": 3130,
-      "percent_covered": 87.32
-    },
-    "spaceinvasion/combat/ranking.py": {
-      "covered_lines": 970,
-      "excluded_lines": 0,
-      "missing_lines": 142,
-      "num_statements": 1112,
-      "percent_covered": 87.23
-    },
-    "spaceinvasion/core/__init__.py": {
-      "covered_lines": 9,
-      "excluded_lines": 0,
-      "missing_lines": 1,
-      "num_statements": 10,
-      "percent_covered": 90.0
-    },
-    "spaceinvasion/core/config.py": {
-      "covered_lines": 894,
-      "excluded_lines": 0,
-      "missing_lines": 205,
-      "num_statements": 1099,
-      "percent_covered": 81.35
-    },
-    "spaceinvasion/core/game_data.py": {
-      "covered_lines": 471,
-      "excluded_lines": 0,
-      "missing_lines": 77,
-      "num_statements": 548,
-      "percent_covered": 85.95
-    },
-    "spaceinvasion/core/logging_utils.py": {
-      "covered_lines": 478,
-      "excluded_lines": 0,
-      "missing_lines": 90,
-      "num_statements": 568,
-      "percent_covered": 84.15
-    },
-    "spaceinvasion/core/state.py": {
-      "covered_lines": 1660,
-      "excluded_lines": 0,
-      "missing_lines": 217,
-      "num_statements": 1877,
-      "percent_covered": 88.44
-    },
-    "spaceinvasion/db/__init__.py": {
-      "covered_lines": 10,
-      "excluded_lines": 0,
-      "missing_lines": 0,
-      "num_statements": 10,
-      "percent_covered": 100.0
-    },
-    "spaceinvasion/db/backend.py": {
-      "covered_lines": 316,
-      "excluded_lines": 3,
-      "missing_lines": 119,
-      "num_statements": 435,
-      "percent_covered": 72.64
-    },
-    "spaceinvasion/db/migrations.py": {
-      "covered_lines": 1074,
-      "excluded_lines": 0,
-      "missing_lines": 418,
-      "num_statements": 1492,
-      "percent_covered": 71.98
-    },
-    "spaceinvasion/db/postgres.py": {
-      "covered_lines": 566,
-      "excluded_lines": 0,
-      "missing_lines": 126,
-      "num_statements": 692,
-      "percent_covered": 81.79
-    },
-    "spaceinvasion/db/storage.py": {
-      "covered_lines": 3946,
-      "excluded_lines": 0,
-      "missing_lines": 581,
-      "num_statements": 4527,
-      "percent_covered": 87.17
-    },
-    "spaceinvasion/planner/__init__.py": {
-      "covered_lines": 10,
-      "excluded_lines": 0,
-      "missing_lines": 0,
-      "num_statements": 10,
-      "percent_covered": 100.0
-    },
-    "spaceinvasion/planner/action_graph.py": {
-      "covered_lines": 1483,
-      "excluded_lines": 0,
-      "missing_lines": 116,
-      "num_statements": 1599,
-      "percent_covered": 92.75
-    },
-    "spaceinvasion/planner/ai_planner.py": {
-      "covered_lines": 3870,
-      "excluded_lines": 0,
-      "missing_lines": 424,
-      "num_statements": 4294,
-      "percent_covered": 90.13
-    },
-    "spaceinvasion/planner/config_optimizer.py": {
-      "covered_lines": 2016,
-      "excluded_lines": 1,
-      "missing_lines": 191,
-      "num_statements": 2207,
-      "percent_covered": 91.35
-    },
-    "spaceinvasion/planner/optimizer.py": {
-      "covered_lines": 4904,
-      "excluded_lines": 196,
-      "missing_lines": 717,
-      "num_statements": 5621,
-      "percent_covered": 87.24
-    },
-    "spaceinvasion/planner/strategy.py": {
-      "covered_lines": 3826,
-      "excluded_lines": 2,
-      "missing_lines": 467,
-      "num_statements": 4293,
-      "percent_covered": 89.12
-    },
-    "spaceinvasion/runtime/__init__.py": {
-      "covered_lines": 5,
-      "excluded_lines": 0,
-      "missing_lines": 5,
-      "num_statements": 10,
-      "percent_covered": 50.0
-    },
-    "spaceinvasion/runtime/api_server.py": {
-      "covered_lines": 7188,
-      "excluded_lines": 8,
-      "missing_lines": 1630,
-      "num_statements": 8818,
-      "percent_covered": 81.52
-    },
-    "spaceinvasion/runtime/commander_client.py": {
-      "covered_lines": 139,
-      "excluded_lines": 0,
-      "missing_lines": 38,
-      "num_statements": 177,
-      "percent_covered": 78.53
-    },
-    "spaceinvasion/runtime/reloader.py": {
-      "covered_lines": 149,
-      "excluded_lines": 0,
-      "missing_lines": 48,
-      "num_statements": 197,
-      "percent_covered": 75.63
-    },
-    "spaceinvasion/session/__init__.py": {
-      "covered_lines": 5,
-      "excluded_lines": 0,
-      "missing_lines": 5,
-      "num_statements": 10,
-      "percent_covered": 50.0
-    },
-    "spaceinvasion/session/auth.py": {
-      "covered_lines": 433,
-      "excluded_lines": 0,
-      "missing_lines": 52,
-      "num_statements": 485,
-      "percent_covered": 89.28
-    },
-    "spaceinvasion/session/browser.py": {
-      "covered_lines": 434,
-      "excluded_lines": 9,
-      "missing_lines": 212,
-      "num_statements": 646,
-      "percent_covered": 67.18
-    },
-    "spaceinvasion/session/client.py": {
-      "covered_lines": 1367,
-      "excluded_lines": 0,
-      "missing_lines": 475,
-      "num_statements": 1842,
-      "percent_covered": 74.21
-    },
-    "spaceinvasion/session/executor.py": {
-      "covered_lines": 1732,
-      "excluded_lines": 0,
-      "missing_lines": 452,
-      "num_statements": 2184,
-      "percent_covered": 79.3
     }
   },
   "schema_version": 1,

@@ -238,7 +238,7 @@ def install_log_artifact_guard() -> None:
     with _GUARD_LOCK:
         if _LOG_GUARD_INSTALLED:
             return
-        from spaceinvasion.runtime import logs as logs_mod
+        from backend.runtime import logs as logs_mod
 
         hermetic_tmp = _ensure_hermetic_tmp_dir()
         repo_root_resolved = REPO_ROOT.resolve()
@@ -631,8 +631,8 @@ class DisposablePostgresServer:
         )
 
     def _build_template_database(self) -> None:
-        from spaceinvasion.db.migrations import NO_BACKUP
-        from spaceinvasion.db.store import DatabaseStore
+        from backend.db.migrations import NO_BACKUP
+        from backend.db.store import DatabaseStore
 
         with psycopg.connect(self.admin_dsn, autocommit=True) as conn:
             conn.execute(f'DROP DATABASE IF EXISTS "{self.TEMPLATE_DB}"')
@@ -1025,13 +1025,13 @@ class PostgresTestRedirector:
         with self._lock:
             if self._installed:
                 return
-            from spaceinvasion.combat import points as points_mod
-            from spaceinvasion.core import config as config_mod
-            from spaceinvasion.db import config_store as config_store_mod
-            from spaceinvasion.db import dsn as dsn_mod
-            from spaceinvasion.db import session as session_mod
-            from spaceinvasion.runtime.bridge import _context_init as ctx_init_mod
-            from spaceinvasion.runtime.bridge._db_gateway import RuntimeDatabaseGateway
+            from backend.combat import points as points_mod
+            from backend.core import config as config_mod
+            from backend.db import config_store as config_store_mod
+            from backend.db import dsn as dsn_mod
+            from backend.db import session as session_mod
+            from backend.runtime.bridge import _context_init as ctx_init_mod
+            from backend.runtime.bridge._db_gateway import RuntimeDatabaseGateway
 
             self._orig_open_gateway = ctx_init_mod.open_runtime_gateway
             self._orig_create_db_engine = session_mod.create_db_engine
@@ -1219,9 +1219,9 @@ def open_test_db(
     ensure_ready: bool = True,
 ) -> Any:
     """Open an isolated PostgreSQL `RuntimeDatabaseGateway` for unit and E2E tests."""
-    from spaceinvasion.db.dsn import is_postgres_dsn, normalize_backend_name
-    from spaceinvasion.runtime.bridge import _context_init as ctx_init_mod
-    from spaceinvasion.runtime.bridge._db_gateway import RuntimeDatabaseGateway
+    from backend.db.dsn import is_postgres_dsn, normalize_backend_name
+    from backend.runtime.bridge import _context_init as ctx_init_mod
+    from backend.runtime.bridge._db_gateway import RuntimeDatabaseGateway
 
     if backend is not None and str(backend).strip().lower() not in ("", "auto"):
         normalize_backend_name(backend)

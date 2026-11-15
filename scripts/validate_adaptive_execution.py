@@ -126,7 +126,7 @@ def _furnace_capacity_per_hour(
     """Metal per hour with every furnace at 100% (needs the repo's game data; `None` when unavailable)."""
     try:
         sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-        from spaceinvasion.core import catalog as game_data
+        from backend.core import catalog as game_data
     except (ImportError, OSError, AttributeError, ValueError, TypeError):
         return None
     total = 0.0

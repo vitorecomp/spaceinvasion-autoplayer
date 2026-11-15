@@ -8,9 +8,9 @@ from pathlib import Path
 
 from sqlalchemy.orm import DeclarativeBase
 
-from spaceinvasion.db.models import BattleReport, RecycleReport
-from spaceinvasion.db.queries import query_colony_attempts_summary, query_colony_candidates
-from spaceinvasion.db.repos import (
+from backend.db.models import BattleReport, RecycleReport
+from backend.db.queries import query_colony_attempts_summary, query_colony_candidates
+from backend.db.repos import (
     ColoniesRepository,
     ColonyCandidateHotInput,
     ManualQueueRepository,
@@ -20,7 +20,7 @@ from spaceinvasion.db.repos import (
     TelemetryRepository,
     UniverseResearchMaxInput,
 )
-from spaceinvasion.db.session import DatabaseEngine, count_statements, db_uow
+from backend.db.session import DatabaseEngine, count_statements, db_uow
 from tests.pg_harness import DisposablePostgresServer
 from tests.unit.db.reference_workload import (
     WAVE_A_TABLES,
@@ -31,21 +31,21 @@ from tests.unit.db.reference_workload import (
 
 _REPO_ROOT: Path = Path(__file__).resolve().parents[3]
 _WAVE_A_DIRS: tuple[Path, ...] = (
-    _REPO_ROOT / "spaceinvasion" / "db" / "dto",
-    _REPO_ROOT / "spaceinvasion" / "db" / "repos",
-    _REPO_ROOT / "spaceinvasion" / "db" / "queries",
+    _REPO_ROOT / "backend" / "db" / "dto",
+    _REPO_ROOT / "backend" / "db" / "repos",
+    _REPO_ROOT / "backend" / "db" / "queries",
 )
 _FORBIDDEN_IMPORTS: frozenset[str] = frozenset(
     {
         "bin",
-        "spaceinvasion.combat",
-        "spaceinvasion.db.backend",
-        "spaceinvasion.db.postgres",
-        "spaceinvasion.db.storage",
-        "spaceinvasion.parsing",
-        "spaceinvasion.planner",
-        "spaceinvasion.runtime",
-        "spaceinvasion.session",
+        "backend.combat",
+        "backend.db.backend",
+        "backend.db.postgres",
+        "backend.db.storage",
+        "backend.parsing",
+        "backend.planner",
+        "backend.runtime",
+        "backend.session",
     }
 )
 

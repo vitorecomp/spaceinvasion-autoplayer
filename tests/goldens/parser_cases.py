@@ -12,23 +12,23 @@ import json
 from pathlib import Path
 from typing import Any, Callable
 
-from spaceinvasion.parsing.account_pages import (
+from backend.parsing.account_pages import (
     parse_daily_login_bonus,
     parse_transmitter_page,
     parse_universe_research_records,
 )
-from spaceinvasion.parsing.fleet_page import parse_send_fleet_mission_block
-from spaceinvasion.parsing.galaxy import (
+from backend.parsing.fleet_page import parse_send_fleet_mission_block
+from backend.parsing.galaxy import (
     extract_galaxy_coords_from_html,
     extract_galaxy_system_coords,
     extract_galaxy_universe_bounds,
     parse_galaxy_system_html,
 )
-from spaceinvasion.parsing.inbox import (
+from backend.parsing.inbox import (
     extract_message_folder_links,
     parse_inbox_messages_html,
 )
-from spaceinvasion.parsing.overview import (
+from backend.parsing.overview import (
     parse_home_metadata,
     parse_menu_messages,
     parse_menu_status,
@@ -36,7 +36,7 @@ from spaceinvasion.parsing.overview import (
     parse_ticker_rates,
     parse_unread_banner_count,
 )
-from spaceinvasion.parsing.pages import (
+from backend.parsing.pages import (
     parse_building_queue,
     parse_buildings_page,
     parse_economy_rates,
@@ -44,9 +44,9 @@ from spaceinvasion.parsing.pages import (
     parse_research_queue_timer,
     parse_unit_factory_page,
 )
-from spaceinvasion.parsing.spy import parse_spy_messages_html, parse_spy_report_html
-from spaceinvasion.parsing.tutorial import parse_tutorial_from_home
-from spaceinvasion.session.executor import ActionExecutor
+from backend.parsing.spy import parse_spy_messages_html, parse_spy_report_html
+from backend.parsing.tutorial import parse_tutorial_from_home
+from backend.session.executor import ActionExecutor
 from tests.goldens.scenarios import GOLDEN_EPOCH
 
 OWN_COORDS = "03:120:07"

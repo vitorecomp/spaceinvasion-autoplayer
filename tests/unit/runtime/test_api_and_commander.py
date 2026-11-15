@@ -12,23 +12,23 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 import commander
-from spaceinvasion.runtime.api.http_server import create_api_server
-from spaceinvasion.runtime.api.validation import ApiRequestError
-from spaceinvasion.runtime.bridge import GameApiBridge
-from spaceinvasion.runtime.commander_client import (
+from backend.runtime.api.http_server import create_api_server
+from backend.runtime.api.validation import ApiRequestError
+from backend.runtime.bridge import GameApiBridge
+from backend.runtime.commander_client import (
     GameApiClient,
     GameApiError,
 )
-from spaceinvasion.core.config import StrategyConfig
-from spaceinvasion.core.redaction import redact_sensitive
-from spaceinvasion.runtime.logs import append_tick_logs
-from spaceinvasion.runtime.reloader import (
+from backend.core.config import StrategyConfig
+from backend.core.redaction import redact_sensitive
+from backend.runtime.logs import append_tick_logs
+from backend.runtime.reloader import (
     RELOAD_CHILD_ENV,
     should_spawn_reloader,
     snapshot_mtimes,
     strip_reload_args,
 )
-from spaceinvasion.core.model import (
+from backend.core.model import (
     BuildingOffer,
     EnergyBalance,
     FleetAlert,
@@ -40,8 +40,8 @@ from spaceinvasion.core.model import (
     TutorialTask,
     game_state_from_dict,
 )
-from spaceinvasion.core.model import PlannedAction
-from spaceinvasion.planner.heuristics import (
+from backend.core.model import PlannedAction
+from backend.planner.heuristics import (
     FUSION_PLANT,
     PIG_IRON_MINE,
 )
@@ -127,7 +127,7 @@ class TestApiAndCommander(unittest.TestCase):
         fake_client.read_full_snapshot.return_value = state
         fake_client.navigate_menu.return_value = "<html>ok</html>"
 
-        from spaceinvasion.runtime.bridge import UI_DIR
+        from backend.runtime.bridge import UI_DIR
 
         ui_tmp: tempfile.TemporaryDirectory[str] | None = None
         ui_dir_override: Path | None = None
@@ -154,7 +154,7 @@ class TestApiAndCommander(unittest.TestCase):
 
         try:
             api = GameApiClient(base_url=f"http://127.0.0.1:{port}")
-            with patch("spaceinvasion.session.browser.is_debug_port_open", return_value=True):
+            with patch("backend.session.browser.is_debug_port_open", return_value=True):
                 h = api.health()
             self.assertTrue(h["ok"])
             self.assertTrue(h["in_game"])
@@ -209,7 +209,7 @@ class TestApiAndCommander(unittest.TestCase):
             self.assertTrue(tick_res["ok"])
             self.assertTrue(tick_res["dry_run"])
 
-            with patch("spaceinvasion.session.browser.is_debug_port_open", return_value=True):
+            with patch("backend.session.browser.is_debug_port_open", return_value=True):
                 dash = requests.get(f"http://127.0.0.1:{port}/dashboard?refresh=0", timeout=5).json()
             self.assertTrue(dash["ok"])
             self.assertTrue(dash["bot_control"]["paused"])
@@ -303,7 +303,7 @@ class TestApiAndCommander(unittest.TestCase):
                 server.shutdown()
                 server.server_close()
 
-            self.assertTrue((Path(tmp) / "state" / "postgres").exists())
+            self.assertTrue((Path(tmp) / "data" / "postgres").exists())
             self.assertIsNotNone(bridge._db)
             summary = bridge._db.summary()
             bridge._db.close()
@@ -356,7 +356,7 @@ class TestApiAndCommander(unittest.TestCase):
         )
 
     def test_commander_maps_throttle_building_command_payload(self) -> None:
-        from spaceinvasion.core.model import PlannedAction
+        from backend.core.model import PlannedAction
 
         act = PlannedAction(
             priority="P1",
@@ -429,7 +429,7 @@ class TestApiAndCommander(unittest.TestCase):
         self.assertIn("allow_raids", atk_res["message"])
 
     def test_ui_version_detects_css_and_code_changes(self) -> None:
-        from spaceinvasion.runtime.bridge import compute_ui_assets_state
+        from backend.runtime.bridge import compute_ui_assets_state
 
         with tempfile.TemporaryDirectory() as tmp:
             ui_dir = Path(tmp)
@@ -467,7 +467,7 @@ class TestApiAndCommander(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             logs_dir = Path(tmp) / "logs"
-            db_path = Path(tmp) / "state" / "spaceinvasion.db"
+            db_path = Path(tmp) / "state" / "backend.db"
             cfg_path = Path(tmp) / "config.json"
 
             fake_client = MagicMock()
@@ -514,7 +514,7 @@ class TestApiAndCommander(unittest.TestCase):
                 self.assertEqual(st1["raid_stats"]["overall"]["attempts"], 2)
                 self.assertIn("02:380:04", st1["raid_stats"]["per_target"])
 
-                with patch("spaceinvasion.runtime.bridge.plan_assembly.plan_actions", return_value=[]) as mock_plan:
+                with patch("backend.runtime.bridge.plan_assembly.plan_actions", return_value=[]) as mock_plan:
                     bridge.plan_assembly.plan_with_context(state)
                     passed_state = mock_plan.call_args.args[0]
                     self.assertEqual(passed_state.raid_stats["overall"]["attempts"], 2)
@@ -663,27 +663,27 @@ class TestApiAndCommander(unittest.TestCase):
             self.assertIsNone(res_ga["optimizer_summary"])
             self.assertEqual(bridge.strategy_config.planner_mode, "priority")
 
-            with patch("spaceinvasion.session.browser.is_debug_port_open", return_value=True):
+            with patch("backend.session.browser.is_debug_port_open", return_value=True):
                 dash_pri = bridge.dashboard(refresh=False)
             self.assertEqual(dash_pri["planner_mode"], "priority")
             self.assertIsNone(dash_pri["optimizer_summary"])
 
             # Switching config to ai_planner updates planner_mode cleanly; optimizer_summary remains None
             bridge.handle_command({"command": "update_config", "config": {"planner_mode": "ai_planner"}})
-            with patch("spaceinvasion.session.browser.is_debug_port_open", return_value=True):
+            with patch("backend.session.browser.is_debug_port_open", return_value=True):
                 dash_ai = bridge.dashboard(refresh=False)
             self.assertEqual(dash_ai["planner_mode"], "ai_planner")
             self.assertIsNone(dash_ai["optimizer_summary"])
 
             bridge.handle_command({"command": "update_config", "config": {"planner_mode": "priority"}})
-            with patch("spaceinvasion.session.browser.is_debug_port_open", return_value=True):
+            with patch("backend.session.browser.is_debug_port_open", return_value=True):
                 dash_after = bridge.dashboard(refresh=False)
             self.assertEqual(dash_after["planner_mode"], "priority")
             self.assertIsNone(dash_after["optimizer_summary"])
 
     def test_all_action_and_early_abort_responses_include_all_nine_eta_fields(self) -> None:
         from dataclasses import replace as dc_replace
-        from spaceinvasion.core.model import PlannedAction
+        from backend.core.model import PlannedAction
 
         eta_keys = (
             "wait_hours",
@@ -754,7 +754,7 @@ class TestApiAndCommander(unittest.TestCase):
             reason="Waiting",
             executable_now=False,
         )
-        with patch("spaceinvasion.runtime.bridge.plan_assembly.plan_actions", return_value=[non_exec]):
+        with patch("backend.runtime.bridge.plan_assembly.plan_actions", return_value=[non_exec]):
             tick_wait = bridge.handle_command({"command": "tick_once", "dry_run": True})
             self.assertFalse(tick_wait["executed"])
             for k in eta_keys:
@@ -765,7 +765,7 @@ class TestApiAndCommander(unittest.TestCase):
 
     def test_sid_and_uppercase_sid_redaction_across_api_endpoints(self) -> None:
         from dataclasses import replace as dc_replace
-        from spaceinvasion.parsing.models import GalaxySlot
+        from backend.parsing.models import GalaxySlot
 
         secret = "secretToken_XYZ999"
         base = _sample_state()
@@ -808,7 +808,7 @@ class TestApiAndCommander(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            db_path = tmp_path / "state" / "spaceinvasion.db"
+            db_path = tmp_path / "state" / "backend.db"
             cfg_path = tmp_path / "config.json"
             nav_html = (
                 f'<a href="indexInternal.es?action=internalHome&SID={secret}" '
@@ -851,7 +851,7 @@ class TestApiAndCommander(unittest.TestCase):
                 self.assertNotIn(secret, json.dumps(tick_wait))
                 self.assertIn("Waiting:", tick_wait["message"])
 
-                with patch("spaceinvasion.session.browser.is_debug_port_open", return_value=True):
+                with patch("backend.session.browser.is_debug_port_open", return_value=True):
                     dash = bridge.dashboard(refresh=False)
                 self.assertNotIn(secret, json.dumps(dash))
 
@@ -979,7 +979,7 @@ class TestApiAndCommander(unittest.TestCase):
 
                 bridge_a.ctx.last_state = None
                 bridge_a.handle_command({"command": "update_config", "config": {"ga_generations": 3}})
-                with patch("spaceinvasion.session.browser.is_debug_port_open", return_value=False):
+                with patch("backend.session.browser.is_debug_port_open", return_value=False):
                     dash_cleared = bridge_a.dashboard(refresh=False)
                 self.assertIsNone(dash_cleared["optimizer_summary"])
             finally:
@@ -1082,8 +1082,8 @@ class TestApiAndCommander(unittest.TestCase):
 
     def test_iteration3_config_parity_simulate_combat_command_bounds_and_sid_redaction(self) -> None:
         import requests
-        from spaceinvasion.session.auth import SpaceInvasionAuthError
-        from spaceinvasion.session.client import RateLimitError
+        from backend.session.auth import SpaceInvasionAuthError
+        from backend.session.client import RateLimitError
 
         secret_plain = "rawToken_ABC987"
         secret_enc = "encTok_999"
@@ -1108,7 +1108,7 @@ class TestApiAndCommander(unittest.TestCase):
             tmp_path = Path(tmp)
             cfg_path = tmp_path / "config.json"
             logs_dir = tmp_path / "logs"
-            db_path = tmp_path / "state" / "spaceinvasion.db"
+            db_path = tmp_path / "state" / "backend.db"
             bridge = GameApiBridge(
                 debug_port=9222,
                 config_path=cfg_path,
@@ -1264,8 +1264,8 @@ class TestApiAndCommander(unittest.TestCase):
                     bridge._db.close()
 
     def test_tier5_sid_pct3d_log_redaction_stale_research_active_prereqs_and_commander_asteroid_cap(self) -> None:
-        from spaceinvasion.runtime.logs import append_api_log
-        from spaceinvasion.core.model import (
+        from backend.runtime.logs import append_api_log
+        from backend.core.model import (
             QueueJob,
             ResearchOffer,
             UnitOffer,
@@ -1416,10 +1416,10 @@ class TestApiAndCommander(unittest.TestCase):
             self.assertEqual(mock_api.get_state.call_count, 1)
 
     def test_unnormalized_coords_api_guards_external_research_cancel_and_deep_sid_redaction(self) -> None:
-        from spaceinvasion.runtime.bridge._helpers import redact_api_payload as _redact_api_payload
-        from spaceinvasion.core.model import ResearchOffer
+        from backend.runtime.bridge._helpers import redact_api_payload as _redact_api_payload
+        from backend.core.model import ResearchOffer
         from dataclasses import replace
-        from spaceinvasion.planner.heuristics import plan_actions
+        from backend.planner.heuristics import plan_actions
 
         # 1. BUG-08: Multi-encoded sid%253D, JSON "sid": "...", and dict/Mapping "sid"/"SID" redaction
         sec_enc = "DOUBLE_ENC_SECRET_991"
@@ -1485,7 +1485,7 @@ class TestApiAndCommander(unittest.TestCase):
             try:
                 assert bridge._db is not None
                 # 2. BUG-01: Unnormalized "2:380:4" blocked on own planet, "2:380:9" blocked on blue, "2:380:11" exempt
-                from spaceinvasion.parsing.models import GalaxySlot
+                from backend.parsing.models import GalaxySlot
 
                 bridge._db.record_galaxy_slots(
                     [
@@ -1590,8 +1590,8 @@ class TestApiAndCommander(unittest.TestCase):
                 self.assertFalse(corrupt_dry_atk["executed"])
 
                 # GAP-03: Zero-cost active ResearchOffer after external cancel restores true catalog cost
-                from spaceinvasion.planner.eta import compute_action_eta
-                from spaceinvasion.core.model import ResearchOffer
+                from backend.planner.eta import compute_action_eta
+                from backend.core.model import ResearchOffer
 
                 p_lab = replace(
                     st0.planets[0],
@@ -1634,9 +1634,9 @@ class TestApiAndCommander(unittest.TestCase):
     def test_attack_blocks_dark_red_and_state_dashboard_log_huge_ints_safe(self) -> None:
         import math
         import requests
-        from spaceinvasion.core import catalog as game_data
-        from spaceinvasion.parsing.models import GalaxySlot
-        from spaceinvasion.runtime.logs import append_api_log
+        from backend.core import catalog as game_data
+        from backend.parsing.models import GalaxySlot
+        from backend.runtime.logs import append_api_log
 
         with tempfile.TemporaryDirectory() as tmp:
             tp = Path(tmp)
@@ -1691,7 +1691,7 @@ class TestApiAndCommander(unittest.TestCase):
                     [GalaxySlot("05:010:03", 3, "DarkTarget", "Titan", "dark_red")],
                     ts=1_700_000_000.0,
                 )
-                with patch("spaceinvasion.session.browser.is_debug_port_open", return_value=True):
+                with patch("backend.session.browser.is_debug_port_open", return_value=True):
                     r_atk = requests.post(
                         f"http://127.0.0.1:{port}/command",
                         json={"command": "attack", "target_coords": "05:010:03", "dry_run": False},
@@ -1940,7 +1940,7 @@ class TestApiAndCommander(unittest.TestCase):
         import subprocess
         import sys
         import time
-        from spaceinvasion.runtime.reloader import (
+        from backend.runtime.reloader import (
             terminate_child,
             watch_and_run,
         )
@@ -1948,7 +1948,7 @@ class TestApiAndCommander(unittest.TestCase):
         before_sig = signal.getsignal(signal.SIGTERM)
         with (
             tempfile.TemporaryDirectory() as tmp,
-            unittest.mock.patch("spaceinvasion.runtime.cli_support.TERMINATE_GRACE_SECONDS", 0.1),
+            unittest.mock.patch("backend.runtime.cli_support.TERMINATE_GRACE_SECONDS", 0.1),
         ):
             tp = Path(tmp)
             watched = tp / "watched.py"
@@ -2028,10 +2028,10 @@ class TestApiAndCommander(unittest.TestCase):
         import urllib.request
         from unittest.mock import MagicMock
         import commander
-        from spaceinvasion.core import catalog as game_data
-        from spaceinvasion.runtime.api.http_server import create_api_server
-        from spaceinvasion.runtime.bridge import GameApiBridge, MAX_REQUEST_BYTES
-        from spaceinvasion.core.model import PlannedAction
+        from backend.core import catalog as game_data
+        from backend.runtime.api.http_server import create_api_server
+        from backend.runtime.bridge import GameApiBridge, MAX_REQUEST_BYTES
+        from backend.core.model import PlannedAction
 
         # GAP-M5-03: direct commander._action_to_command_payload 10**5000 boundary across all kinds
         for kind in (
@@ -2130,11 +2130,11 @@ class TestApiAndCommander(unittest.TestCase):
         import math
         import requests
         import commander
-        from spaceinvasion.runtime.api.http_server import create_api_server
-        from spaceinvasion.runtime.api.validation import ApiRequestError
-        from spaceinvasion.runtime.bridge import GameApiBridge
-        from spaceinvasion.runtime.commander_client import GameApiClient
-        from spaceinvasion.core.model import PlannedAction
+        from backend.runtime.api.http_server import create_api_server
+        from backend.runtime.api.validation import ApiRequestError
+        from backend.runtime.bridge import GameApiBridge
+        from backend.runtime.commander_client import GameApiClient
+        from backend.core.model import PlannedAction
 
         # GameApiClient timeout validation
         for bad_t in (float("inf"), float("nan"), -5.0, 0.0, None, True):
@@ -2205,14 +2205,14 @@ class TestApiAndCommander(unittest.TestCase):
         import json
         import requests
         import commander
-        from spaceinvasion.runtime.api.http_server import create_api_server
-        from spaceinvasion.runtime.api.validation import ApiRequestError
-        from spaceinvasion.runtime.bridge import GameApiBridge
-        from spaceinvasion.runtime.commander_client import (
+        from backend.runtime.api.http_server import create_api_server
+        from backend.runtime.api.validation import ApiRequestError
+        from backend.runtime.bridge import GameApiBridge
+        from backend.runtime.commander_client import (
             GameApiClient,
             GameApiError,
         )
-        from spaceinvasion.core.model import PlannedAction
+        from backend.core.model import PlannedAction
 
         # 1. GameApiClient held-exception Keep-Alive HTTP/1.1 shutdown check
         class _ApiErrKeepAlive(BaseHTTPRequestHandler):
@@ -2329,7 +2329,7 @@ class TestApiAndCommander(unittest.TestCase):
 
     def test_r9_api_playstyle_validation_bridge_wait_bounds_scan_coords_and_def_research(self) -> None:
         import requests
-        from spaceinvasion.runtime.api.validation import ApiRequestError
+        from backend.runtime.api.validation import ApiRequestError
 
         base_p = _sample_state().planets[0]
         huge_coords_p = PlanetState(
@@ -2448,14 +2448,14 @@ class TestApiAndCommander(unittest.TestCase):
         import threading
         import requests
         from pathlib import Path
-        from spaceinvasion.runtime.api.http_server import create_api_server
-        from spaceinvasion.runtime.api.validation import ApiRequestError
-        from spaceinvasion.runtime.bridge import GameApiBridge
-        from spaceinvasion.session.client import RateLimitError
+        from backend.runtime.api.http_server import create_api_server
+        from backend.runtime.api.validation import ApiRequestError
+        from backend.runtime.bridge import GameApiBridge
+        from backend.session.client import RateLimitError
         import commander
 
-        # Verify commander.py and spaceinvasion/runtime/commander_client.py remain 100% selenium-free
-        for fname in ("bin/commander.py", "spaceinvasion/runtime/commander_client.py"):
+        # Verify commander.py and backend/runtime/commander_client.py remain 100% selenium-free
+        for fname in ("bin/commander.py", "backend/runtime/commander_client.py"):
             tree = ast.parse(Path(fname).read_text(encoding="utf-8"))
             for node in ast.walk(tree):
                 if isinstance(node, ast.Import):
@@ -2552,10 +2552,10 @@ class TestApiAndCommander(unittest.TestCase):
     ) -> None:
         from types import MappingProxyType
         import requests
-        from spaceinvasion.core.model import PlannedAction
-        from spaceinvasion.runtime.api.validation import ApiRequestError
-        from spaceinvasion.runtime.bridge._helpers import sanitize_finite_json as _sanitize_finite_json
-        from spaceinvasion.runtime.bridge._helpers_validation import (
+        from backend.core.model import PlannedAction
+        from backend.runtime.api.validation import ApiRequestError
+        from backend.runtime.bridge._helpers import sanitize_finite_json as _sanitize_finite_json
+        from backend.runtime.bridge._helpers_validation import (
             parse_command_int as _parse_command_int,
             validate_strict_float as _validate_strict_float,
             validate_strict_int as _validate_strict_int,
@@ -2825,11 +2825,11 @@ class TestApiAndCommander(unittest.TestCase):
     def test_r12_http_error_resilience_huge_exc_args_full_secret_redaction_and_dashboard_speed(self) -> None:
         import time
         import requests
-        from spaceinvasion.runtime.bridge._helpers import (
+        from backend.runtime.bridge._helpers import (
             redact_api_payload as _redact_api_payload,
             sanitize_finite_json as _sanitize_finite_json,
         )
-        from spaceinvasion.session.client import RateLimitError
+        from backend.session.client import RateLimitError
 
         class _RaiseFspath:
             def __fspath__(self) -> str:
@@ -2967,10 +2967,10 @@ class TestApiAndCommander(unittest.TestCase):
         import subprocess
         import sys
         from types import SimpleNamespace
-        from spaceinvasion.core.redaction import redact_sensitive
-        from spaceinvasion.runtime import commander_client as cc
-        import spaceinvasion.runtime.bridge._helpers as api_mod
-        from spaceinvasion.runtime.cli_support import safe_cli_str
+        from backend.core.redaction import redact_sensitive
+        from backend.runtime import commander_client as cc
+        import backend.runtime.bridge._helpers as api_mod
+        from backend.runtime.cli_support import safe_cli_str
 
         class _RaiseFspath:
             def __fspath__(self) -> str:
@@ -3035,7 +3035,7 @@ class TestApiAndCommander(unittest.TestCase):
             [
                 sys.executable,
                 "-c",
-                "import sys; sys.path.insert(0, 'bin'); import commander, spaceinvasion.runtime.commander_client, spaceinvasion.runtime.logs; "
+                "import sys; sys.path.insert(0, 'bin'); import commander, backend.runtime.commander_client, backend.runtime.logs; "
                 "assert not any(m == 'selenium' or m.startswith('selenium.') for m in sys.modules)",
             ],
             env=env,
@@ -3080,10 +3080,10 @@ class TestApiAndCommander(unittest.TestCase):
         import time
         from pathlib import Path
         from unittest.mock import patch
-        import spaceinvasion.runtime.bridge._helpers as api_mod
-        from spaceinvasion.session.auth import SpaceInvasionAuthError
-        from spaceinvasion.session.client import RateLimitError
-        from spaceinvasion.core.model import (
+        import backend.runtime.bridge._helpers as api_mod
+        from backend.session.auth import SpaceInvasionAuthError
+        from backend.session.client import RateLimitError
+        from backend.core.model import (
             BuildingOffer,
             EnergyBalance,
             GameState,
@@ -3263,13 +3263,13 @@ class TestApiAndCommander(unittest.TestCase):
         from pathlib import Path
         from unittest.mock import MagicMock
         import commander
-        from spaceinvasion.core.model import (
+        from backend.core.model import (
             EnergyBalance,
             GameState,
             PlanetState,
             Resources,
         )
-        from spaceinvasion.parsing.overview import (
+        from backend.parsing.overview import (
             parse_home_metadata,
             parse_ticker_rates,
         )
@@ -3359,16 +3359,16 @@ class TestApiAndCommander(unittest.TestCase):
         from pathlib import Path
         from unittest.mock import MagicMock, patch
         import commander
-        from spaceinvasion.runtime.api.validation import ApiRequestError
-        from spaceinvasion.session.executor import ExecutionResult
-        from spaceinvasion.core.model import (
+        from backend.runtime.api.validation import ApiRequestError
+        from backend.session.executor import ExecutionResult
+        from backend.core.model import (
             EnergyBalance,
             FleetAlert,
             GameState,
             PlanetState,
             Resources,
         )
-        from spaceinvasion.core.model import PlannedAction
+        from backend.core.model import PlannedAction
 
         # 1. Commander `_action_to_command_payload` maps ESCAPE_FLIGHT -> `escape_flight`
         esc_act = PlannedAction(
@@ -3489,19 +3489,15 @@ class TestApiAndCommander(unittest.TestCase):
                 bridge.handle_command({"command": "update_config", "config": {"allow_fleetsave": True}})
                 mono_now = [5000.0]
                 with (
+                    patch("backend.runtime.bridge._exec_postprocess.time.monotonic", side_effect=lambda: mono_now[0]),
+                    patch("backend.runtime.bridge._views_health.time.monotonic", side_effect=lambda: mono_now[0]),
+                    patch("backend.runtime.bridge._ledgers_fleet.time.monotonic", side_effect=lambda: mono_now[0]),
+                    patch("backend.runtime.bridge.state_cache.time.monotonic", side_effect=lambda: mono_now[0]),
                     patch(
-                        "spaceinvasion.runtime.bridge._exec_postprocess.time.monotonic", side_effect=lambda: mono_now[0]
-                    ),
-                    patch("spaceinvasion.runtime.bridge._views_health.time.monotonic", side_effect=lambda: mono_now[0]),
-                    patch(
-                        "spaceinvasion.runtime.bridge._ledgers_fleet.time.monotonic", side_effect=lambda: mono_now[0]
-                    ),
-                    patch("spaceinvasion.runtime.bridge.state_cache.time.monotonic", side_effect=lambda: mono_now[0]),
-                    patch(
-                        "spaceinvasion.runtime.api.handlers._browser_session.time.monotonic",
+                        "backend.runtime.api.handlers._browser_session.time.monotonic",
                         side_effect=lambda: mono_now[0],
                     ),
-                    patch("spaceinvasion.session.browser.is_debug_port_open", return_value=True),
+                    patch("backend.session.browser.is_debug_port_open", return_value=True),
                 ):
                     bridge.ctx.last_snapshot_at = 5000.0
                     bridge.ctx.last_home_at = 5000.0
@@ -3597,9 +3593,9 @@ class TestApiAndCommander(unittest.TestCase):
     def test_action_graph_command_isolated_simulation_zero_mutation_and_zero_browser_views(self) -> None:
         from dataclasses import asdict
         import requests
-        from spaceinvasion.core.config import StrategyConfig
-        from spaceinvasion.db.config_store import save_strategy_config
-        from spaceinvasion.core.model import (
+        from backend.core.config import StrategyConfig
+        from backend.db.config_store import save_strategy_config
+        from backend.core.model import (
             BuildingOffer,
             ResearchOffer,
         )
@@ -3607,7 +3603,7 @@ class TestApiAndCommander(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="si_ag_iso_") as tmp:
             tmp_path = Path(tmp)
             cfg_path = tmp_path / "config.json"
-            db_path = tmp_path / "state" / "spaceinvasion.db"
+            db_path = tmp_path / "state" / "backend.db"
             log_dir = tmp_path / "logs"
             db_path.parent.mkdir(parents=True, exist_ok=True)
             log_dir.mkdir(parents=True, exist_ok=True)
@@ -3780,8 +3776,8 @@ class TestApiAndCommander(unittest.TestCase):
 
     def test_action_graph_validation_errors_and_update_config_apply_persistence(self) -> None:
         import requests
-        from spaceinvasion.core.config import StrategyConfig
-        from spaceinvasion.db.config_store import (
+        from backend.core.config import StrategyConfig
+        from backend.db.config_store import (
             load_strategy_config,
             save_strategy_config,
         )
@@ -3789,7 +3785,7 @@ class TestApiAndCommander(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="si_ag_val_") as tmp:
             tmp_path = Path(tmp)
             cfg_path = tmp_path / "config.json"
-            db_path = tmp_path / "state" / "spaceinvasion.db"
+            db_path = tmp_path / "state" / "backend.db"
             log_dir = tmp_path / "logs"
             db_path.parent.mkdir(parents=True, exist_ok=True)
             log_dir.mkdir(parents=True, exist_ok=True)
@@ -3911,12 +3907,12 @@ class TestApiAndCommander(unittest.TestCase):
     def test_bash_protection_timeout_persistence_across_db_json_and_planners(self) -> None:
         from dataclasses import replace as dc_replace
         import time
-        from spaceinvasion.session.executor import ExecutionResult
-        from spaceinvasion.parsing.models import (
+        from backend.session.executor import ExecutionResult
+        from backend.parsing.models import (
             GalaxySlot,
             SpyReport,
         )
-        from spaceinvasion.planner.heuristics import plan_actions
+        from backend.planner.heuristics import plan_actions
 
         base = _sample_state()
         p0 = dc_replace(
@@ -3927,7 +3923,7 @@ class TestApiAndCommander(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            db_path = tmp_path / "state" / "spaceinvasion.db"
+            db_path = tmp_path / "state" / "backend.db"
             cfg_path = tmp_path / "config.json"
             cfg_path.write_text('{"allow_raids": true, "allow_galaxy_scan": true}', encoding="utf-8")
 
@@ -4017,10 +4013,10 @@ class TestApiAndCommander(unittest.TestCase):
 
     def test_tutorial_step9_recycler_build_scan_dispatch_and_debris_clear(self) -> None:
         from dataclasses import replace as dc_replace
-        from spaceinvasion.session.executor import ExecutionResult
-        from spaceinvasion.parsing.models import GalaxySlot
-        from spaceinvasion.core.model import PlannedAction
-        from spaceinvasion.planner.heuristics import plan_actions
+        from backend.session.executor import ExecutionResult
+        from backend.parsing.models import GalaxySlot
+        from backend.core.model import PlannedAction
+        from backend.planner.heuristics import plan_actions
         import commander
 
         base = _sample_state()
@@ -4081,7 +4077,7 @@ class TestApiAndCommander(unittest.TestCase):
         # 3) Once debris is discovered (even on a free slot or battle planet), planner emits RECYCLE and API clears has_debris
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            db_path = tmp_path / "state" / "spaceinvasion.db"
+            db_path = tmp_path / "state" / "backend.db"
             cfg_path = tmp_path / "config.json"
             cfg_path.write_text('{"allow_raids": true, "allow_galaxy_scan": true}', encoding="utf-8")
 
@@ -4161,7 +4157,7 @@ class TestApiAndCommander(unittest.TestCase):
         import io
         import threading
         import requests
-        from spaceinvasion.session.auth import AntiBotChallengeError
+        from backend.session.auth import AntiBotChallengeError
         import commander
 
         fake_client = MagicMock()
@@ -4226,7 +4222,7 @@ class TestApiAndCommander(unittest.TestCase):
 
                 out_buf = io.StringIO()
                 with (
-                    patch("spaceinvasion.session.browser.is_debug_port_open", return_value=True),
+                    patch("backend.session.browser.is_debug_port_open", return_value=True),
                     patch("commander.time.sleep", side_effect=_fake_sleep),
                     contextlib.redirect_stdout(out_buf),
                 ):
@@ -4296,15 +4292,15 @@ class TestApiAndCommander(unittest.TestCase):
     def test_batch_interval_spy_inbox_sync_and_exact_build_wakeup_timers(self) -> None:
         from dataclasses import replace as dc_replace
         import commander
-        from spaceinvasion.db.config_store import (
+        from backend.db.config_store import (
             load_strategy_config,
             save_strategy_config,
         )
-        from spaceinvasion.session.executor import ExecutionResult
-        from spaceinvasion.parsing.models import GalaxySlot
-        from spaceinvasion.core.model import QueueJob
-        from spaceinvasion.parsing.overview import parse_unread_banner_count
-        from spaceinvasion.core.model import PlannedAction
+        from backend.session.executor import ExecutionResult
+        from backend.parsing.models import GalaxySlot
+        from backend.core.model import QueueJob
+        from backend.parsing.overview import parse_unread_banner_count
+        from backend.core.model import PlannedAction
 
         # 1) Top banner unread count ("You have 13 unread Messages!") & German/RETRO inbox spy reports
         self.assertEqual(parse_unread_banner_count("<div>✉️ You have 13 unread Messages! [i]</div>"), 13)
@@ -4324,7 +4320,7 @@ class TestApiAndCommander(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             cfg_path = tmp_path / "config.json"
-            db_path = tmp_path / "state" / "spaceinvasion.db"
+            db_path = tmp_path / "state" / "backend.db"
             save_strategy_config(
                 StrategyConfig(action_batch_interval_seconds=180, allow_raids=True, allow_galaxy_scan=True),
                 cfg_path,
@@ -4376,7 +4372,7 @@ class TestApiAndCommander(unittest.TestCase):
 
                 # Record a second spy report + uninhabited colony probe and verify append-only spy_reports table
                 import time
-                from spaceinvasion.parsing.models import SpyReport
+                from backend.parsing.models import SpyReport
 
                 bridge._db.record_spy_report(
                     SpyReport(
@@ -4408,7 +4404,7 @@ class TestApiAndCommander(unittest.TestCase):
                 self.assertEqual(bridge._db.summary()["counts"]["spy_reports"], 3)
 
                 # Power building selection blocks Thermosolar plant (b6) when fields are tight (<=40 free) or b6 >= 6
-                from spaceinvasion.planner.heuristics import pick_best_power_building
+                from backend.planner.heuristics import pick_best_power_building
 
                 tight_cold = PlanetState(
                     planet_id=12476,
@@ -4506,8 +4502,8 @@ class TestApiAndCommander(unittest.TestCase):
     def test_realistic_5_planet_dashboard_refresh_false_latency_under_20ms(self) -> None:
         import statistics
         import time
-        from spaceinvasion.db.config_store import save_strategy_config
-        from spaceinvasion.core.model import (
+        from backend.db.config_store import save_strategy_config
+        from backend.core.model import (
             FleetAlert,
             ResearchOffer,
             UnitOffer,
@@ -4516,7 +4512,7 @@ class TestApiAndCommander(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             cfg_path = tmp_path / "config.json"
-            db_path = tmp_path / "spaceinvasion.db"
+            db_path = tmp_path / "backend.db"
             log_dir = tmp_path / "logs"
             log_dir.mkdir(parents=True, exist_ok=True)
             save_strategy_config(
@@ -4654,11 +4650,11 @@ class TestApiAndCommander(unittest.TestCase):
 
     def test_full_sqlite_state_persistence_across_bridge_restarts(self) -> None:
         import time
-        from spaceinvasion.parsing.models import (
+        from backend.parsing.models import (
             GalaxySlot,
             SpyReport,
         )
-        from spaceinvasion.core.model import (
+        from backend.core.model import (
             FleetAlert,
             QueueJob,
             ResearchOffer,
@@ -4668,7 +4664,7 @@ class TestApiAndCommander(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="si_full_db_") as tmp:
             tmp_path = Path(tmp)
             cfg_path = tmp_path / "config.json"
-            db_path = tmp_path / "spaceinvasion.db"
+            db_path = tmp_path / "backend.db"
             log_dir = tmp_path / "logs"
             log_dir.mkdir(parents=True, exist_ok=True)
 
@@ -4933,7 +4929,7 @@ class TestApiAndCommander(unittest.TestCase):
     def test_archive_messages_delete_in_game_after_db_commit_and_append_only_universe_history(self) -> None:
         import time
         from dataclasses import replace as dc_replace
-        from spaceinvasion.parsing.models import (
+        from backend.parsing.models import (
             GalaxySlot,
             SpyReport,
         )
@@ -4941,7 +4937,7 @@ class TestApiAndCommander(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="si_msg_archive_") as tmp:
             tmp_path = Path(tmp)
             cfg_path = tmp_path / "config.json"
-            db_path = tmp_path / "spaceinvasion.db"
+            db_path = tmp_path / "backend.db"
             log_dir = tmp_path / "logs"
             log_dir.mkdir(parents=True, exist_ok=True)
 
@@ -5159,9 +5155,9 @@ class TestApiAndCommander(unittest.TestCase):
         from dataclasses import fields as dc_fields
         import threading
         import requests
-        from spaceinvasion.runtime.api.validation import ApiRequestError
-        import spaceinvasion.runtime.bridge._views_cache as views_cache_mod
-        from spaceinvasion.runtime.bridge._helpers_validation import validate_config_patch as _validate_config_patch
+        from backend.runtime.api.validation import ApiRequestError
+        import backend.runtime.bridge._views_cache as views_cache_mod
+        from backend.runtime.bridge._helpers_validation import validate_config_patch as _validate_config_patch
 
         # Every field of StrategyConfig must be covered by _validate_config_patch
         for f in dc_fields(StrategyConfig):
@@ -5197,7 +5193,7 @@ class TestApiAndCommander(unittest.TestCase):
             raid_stats={"per_target": {"01:042:08": {"wins": 3}}},
         )
         with (
-            patch("spaceinvasion.session.browser.is_debug_port_open", return_value=False),
+            patch("backend.session.browser.is_debug_port_open", return_value=False),
             tempfile.TemporaryDirectory() as td,
         ):
             td_path = Path(td)
@@ -5266,7 +5262,7 @@ class TestApiAndCommander(unittest.TestCase):
         self.assertEqual(p_none.energy, EnergyBalance())
 
         with (
-            patch("spaceinvasion.session.browser.is_debug_port_open", return_value=False),
+            patch("backend.session.browser.is_debug_port_open", return_value=False),
             tempfile.TemporaryDirectory() as td2,
         ):
             td2_path = Path(td2)
@@ -5318,8 +5314,8 @@ class TestApiAndCommander(unittest.TestCase):
     def test_demolish_building_command_guards_cache_invalidation_and_null_planet_offers(self) -> None:
         import requests
         import time
-        from spaceinvasion.session.executor import ExecutionResult
-        from spaceinvasion.planner.heuristics import plan_actions
+        from backend.session.executor import ExecutionResult
+        from backend.planner.heuristics import plan_actions
 
         # R3-N1: PlanetState(..., building_offers=None, ship_offers=None, defense_offers=None) safe in plan_actions / action_graph
         p_null_offers = PlanetState(
@@ -5397,7 +5393,7 @@ class TestApiAndCommander(unittest.TestCase):
         )
 
         with (
-            patch("spaceinvasion.session.browser.is_debug_port_open", return_value=False),
+            patch("backend.session.browser.is_debug_port_open", return_value=False),
             tempfile.TemporaryDirectory() as td,
         ):
             td_path = Path(td)
@@ -5642,7 +5638,7 @@ class TestApiAndCommander(unittest.TestCase):
     def test_intel_views_colonize_forbid_solar_and_game_messages_report_backfill(self) -> None:
         import time
         import requests
-        from spaceinvasion.parsing.models import (
+        from backend.parsing.models import (
             GalaxySlot,
             SpyReport,
         )
@@ -5884,7 +5880,7 @@ class TestApiAndCommander(unittest.TestCase):
                 self.assertEqual(r_rec["other_emails"][0]["category"], "fleet_return")
                 self.assertNotIn("86.812", r_rec["other_emails"][0]["body_text"])
 
-                with patch("spaceinvasion.session.browser.is_debug_port_open", return_value=True):
+                with patch("backend.session.browser.is_debug_port_open", return_value=True):
                     r_col_sim = requests.post(
                         f"{base_url}/command",
                         json={"command": "colonize", "target_coords": "02:380:09", "planet_id": 12476, "dry_run": True},
@@ -5903,8 +5899,8 @@ class TestApiAndCommander(unittest.TestCase):
         import time
         import requests
         from commander import run_commander_tick
-        from spaceinvasion.runtime.commander_client import GameApiClient
-        from spaceinvasion.session.executor import ExecutionResult
+        from backend.runtime.commander_client import GameApiClient
+        from backend.session.executor import ExecutionResult
 
         p_home = PlanetState(
             planet_id=12476,
@@ -6022,7 +6018,7 @@ class TestApiAndCommander(unittest.TestCase):
                     )
 
                 with (
-                    patch("spaceinvasion.session.browser.is_debug_port_open", return_value=True),
+                    patch("backend.session.browser.is_debug_port_open", return_value=True),
                     patch.object(bridge._live_executor, "execute_action", side_effect=_mock_live_exec),
                     GameApiClient(base_url=base_url) as api_cli,
                 ):
@@ -6063,8 +6059,8 @@ class TestApiAndCommander(unittest.TestCase):
     def test_static_assets_traversal_guard_attack_free_cooldown_and_universe_research_sync(self) -> None:
         import time
         import requests
-        from spaceinvasion.session.executor import ExecutionResult
-        from spaceinvasion.parsing.models import GalaxySlot
+        from backend.session.executor import ExecutionResult
+        from backend.parsing.models import GalaxySlot
 
         with tempfile.TemporaryDirectory(prefix="si_api_assets_") as tmp:
             tp = Path(tmp)
@@ -6141,7 +6137,7 @@ class TestApiAndCommander(unittest.TestCase):
                         )
 
                     with (
-                        patch("spaceinvasion.session.browser.is_debug_port_open", return_value=True),
+                        patch("backend.session.browser.is_debug_port_open", return_value=True),
                         patch.object(bridge._live_executor, "execute_action", side_effect=_no_atk_radio) as mock_ex,
                     ):
                         atk1 = requests.post(
@@ -6179,7 +6175,7 @@ class TestApiAndCommander(unittest.TestCase):
                         )
 
                     with (
-                        patch("spaceinvasion.session.browser.is_debug_port_open", return_value=True),
+                        patch("backend.session.browser.is_debug_port_open", return_value=True),
                         patch.object(bridge._live_executor, "execute_action", side_effect=_free_spy_reject),
                     ):
                         spy_free = requests.post(
@@ -6191,7 +6187,7 @@ class TestApiAndCommander(unittest.TestCase):
                     self.assertEqual(bridge._db.unread_notification_count(), unread_before)
 
                     # 3. universe_research_max sync merges live server records into SQLite and dashboard
-                    with patch("spaceinvasion.session.browser.is_debug_port_open", return_value=True):
+                    with patch("backend.session.browser.is_debug_port_open", return_value=True):
                         uni_res = requests.post(
                             f"{base_url}/command",
                             json={"command": "universe_research_max", "sync": True},
@@ -6240,9 +6236,9 @@ class TestApiAndCommander(unittest.TestCase):
 
     def test_transport_api_command_commander_payload_and_4tier_slot_holds(self) -> None:
         """Verify TRANSPORT API command, commander payload, config sync, and 4-tier slot reservation holds."""
-        from spaceinvasion.session.executor import ExecutionResult
-        from spaceinvasion.core.model import QueueJob
-        from spaceinvasion.core.model import PlannedAction
+        from backend.session.executor import ExecutionResult
+        from backend.core.model import QueueJob
+        from backend.core.model import PlannedAction
 
         # 1. Commander payload mapping for TRANSPORT
         tr_act = PlannedAction(
@@ -6403,7 +6399,7 @@ class TestApiAndCommander(unittest.TestCase):
                     )
 
                 with (
-                    patch("spaceinvasion.session.browser.is_debug_port_open", return_value=True),
+                    patch("backend.session.browser.is_debug_port_open", return_value=True),
                     patch.object(bridge._live_executor, "execute_action", side_effect=_ok_tr),
                 ):
                     res_live = bridge.handle_command(
@@ -6554,7 +6550,7 @@ class TestApiAndCommander(unittest.TestCase):
         import os
         import sys
         import time
-        from spaceinvasion.runtime.reloader import watch_and_run
+        from backend.runtime.reloader import watch_and_run
 
         with tempfile.TemporaryDirectory() as tmp:
             tp = Path(tmp)
@@ -6610,7 +6606,7 @@ class TestApiAndCommander(unittest.TestCase):
                 db_path=tp / "test.db",
             )
             try:
-                with patch("spaceinvasion.session.browser.is_debug_port_open", return_value=True):
+                with patch("backend.session.browser.is_debug_port_open", return_value=True):
                     bridge.ctx.last_state = _sample_state()
                     bridge.ctx.last_snapshot_at = time.monotonic()
                     bridge.ctx.last_bot_control_payload = bridge.get_bot_control()
@@ -6648,9 +6644,9 @@ class TestApiAndCommander(unittest.TestCase):
     def test_station_command_per_planet_slot_holds_and_commander_mapping(self) -> None:
         """Verify POST /command station (dry-run, live, own-planet/raid/s9/allow_transport guards),
         strictly per-planet _apply_fleet_slot_holds + Tier #3.5 STATION reservation, and commander.py STATION mapping."""
-        from spaceinvasion.runtime.api.validation import ApiRequestError
-        from spaceinvasion.session.executor import ExecutionResult
-        from spaceinvasion.core.model import PlannedAction
+        from backend.runtime.api.validation import ApiRequestError
+        from backend.session.executor import ExecutionResult
+        from backend.core.model import PlannedAction
 
         # 1. commander.py _action_to_command_payload maps STATION with parsed ships dict + _hold_busy_fleet_slots holds STATION
         st_action = PlannedAction(
@@ -6813,7 +6809,7 @@ class TestApiAndCommander(unittest.TestCase):
                     )
 
                 # Live station blocked when allow_transport=False
-                with patch("spaceinvasion.session.browser.is_debug_port_open", return_value=True):
+                with patch("backend.session.browser.is_debug_port_open", return_value=True):
                     res_blocked = bridge.handle_command(
                         {
                             "command": "station",
@@ -6858,7 +6854,7 @@ class TestApiAndCommander(unittest.TestCase):
                     )
 
                 with (
-                    patch("spaceinvasion.session.browser.is_debug_port_open", return_value=True),
+                    patch("backend.session.browser.is_debug_port_open", return_value=True),
                     patch.object(bridge._live_executor, "execute_action", side_effect=_ok_st),
                 ):
                     res_live = bridge.handle_command(
@@ -6956,9 +6952,9 @@ class TestApiAndCommander(unittest.TestCase):
         import requests
         from selenium.common.exceptions import TimeoutException
         import bin.commander as commander_cli
-        from spaceinvasion.core.redaction import format_clean_error
-        from spaceinvasion.runtime.logs import strip_webdriver_stacktrace
-        from spaceinvasion.runtime.commander_client import GameApiError
+        from backend.core.redaction import format_clean_error
+        from backend.runtime.logs import strip_webdriver_stacktrace
+        from backend.runtime.commander_client import GameApiError
 
         noisy_msg = (
             "timeout: Timed out receiving message from renderer: 20.000 "
@@ -7050,7 +7046,7 @@ class TestApiAndCommander(unittest.TestCase):
 
     def test_4tab_config_optimizer_ai_planner_fleet_planner_and_exports_sync_and_async(self) -> None:
         import time
-        from spaceinvasion.core.model import (
+        from backend.core.model import (
             BuildingOffer,
             EnergyBalance,
             GameState,
@@ -7059,7 +7055,7 @@ class TestApiAndCommander(unittest.TestCase):
             UnitOffer,
         )
         from tests.pg_harness import open_test_db as GameDatabase
-        from spaceinvasion.runtime.api.validation import ApiRequestError
+        from backend.runtime.api.validation import ApiRequestError
 
         p1 = PlanetState(
             planet_id=701,
@@ -7328,7 +7324,7 @@ class TestApiAndCommander(unittest.TestCase):
     def test_all_colonies_gate_hybrid_ai_planner_field_conflicts_and_commander_tick(self) -> None:
         from dataclasses import replace
         import time
-        from spaceinvasion.core.model import (
+        from backend.core.model import (
             BuildingOffer,
             EnergyBalance,
             GameState,
@@ -7336,7 +7332,7 @@ class TestApiAndCommander(unittest.TestCase):
             Resources,
             UnitOffer,
         )
-        from spaceinvasion.runtime.api.validation import ApiRequestError
+        from backend.runtime.api.validation import ApiRequestError
 
         p1 = PlanetState(
             planet_id=801,
@@ -7394,7 +7390,7 @@ class TestApiAndCommander(unittest.TestCase):
         st_2col = replace(st_1col, planets=(p1, p2))
 
         with (
-            patch("spaceinvasion.session.browser.is_debug_port_open", return_value=False),
+            patch("backend.session.browser.is_debug_port_open", return_value=False),
             tempfile.TemporaryDirectory() as td,
         ):
             td_path = Path(td)
@@ -7637,7 +7633,7 @@ class TestApiAndCommander(unittest.TestCase):
 
     def test_ai_planner_auto_bootstrap_and_http_4tab_commands_redaction(self) -> None:
         import requests
-        from spaceinvasion.core.model import (
+        from backend.core.model import (
             EnergyBalance,
             GameState,
             PlanetState,
@@ -7724,19 +7720,19 @@ class TestApiAndCommander(unittest.TestCase):
     def test_live_recycle_pre_dispatch_aborts_clean_planet_and_trims_qty_for_live_debris(self) -> None:
         from dataclasses import replace as dc_replace
         import time
-        from spaceinvasion.parsing.models import GalaxySlot
-        from spaceinvasion.core.model import (
+        from backend.parsing.models import GalaxySlot
+        from backend.core.model import (
             PlanetState,
             Resources,
         )
-        from spaceinvasion.core.model import PlannedAction
-        from spaceinvasion.session.executor import ExecutionResult
+        from backend.core.model import PlannedAction
+        from backend.session.executor import ExecutionResult
 
         with tempfile.TemporaryDirectory(prefix="si_rec_verify_") as tmp:
             tmp_path = Path(tmp)
             cfg_path = tmp_path / "config.json"
             cfg_path.write_text('{"allow_raids": true, "allow_galaxy_scan": true}', encoding="utf-8")
-            db_path = tmp_path / "spaceinvasion.db"
+            db_path = tmp_path / "backend.db"
 
             base_st = _sample_state()
             p0 = dc_replace(base_st.planets[0], ships={"s11": 46})
@@ -7906,14 +7902,14 @@ class TestApiAndCommander(unittest.TestCase):
 
     def test_spacia_spy_and_attack_pre_dispatch_galaxy_verification(self) -> None:
         from dataclasses import replace as dc_replace
-        from spaceinvasion.parsing.models import GalaxySlot
-        from spaceinvasion.session.executor import ExecutionResult
+        from backend.parsing.models import GalaxySlot
+        from backend.session.executor import ExecutionResult
 
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             cfg_path = tmp_path / "config.json"
             cfg_path.write_text('{"allow_raids": true, "allow_galaxy_scan": true}', encoding="utf-8")
-            db_path = tmp_path / "spaceinvasion.db"
+            db_path = tmp_path / "backend.db"
 
             base_st = _sample_state()
             p0 = dc_replace(base_st.planets[0], ships={"s1": 25, "s10": 5})
@@ -8123,7 +8119,7 @@ class TestApiAndCommander(unittest.TestCase):
     def test_hybrid_ai_planner_blast_furnace_auto_throttle_and_manual_queue_override(self) -> None:
         from dataclasses import replace as dc_replace
         import time
-        from spaceinvasion.core.model import (
+        from backend.core.model import (
             BuildingOffer,
             EnergyBalance,
             GameState,
@@ -8220,7 +8216,7 @@ class TestApiAndCommander(unittest.TestCase):
         }
 
         with (
-            patch("spaceinvasion.session.browser.is_debug_port_open", return_value=False),
+            patch("backend.session.browser.is_debug_port_open", return_value=False),
             tempfile.TemporaryDirectory() as td,
         ):
             td_path = Path(td)
@@ -8418,7 +8414,7 @@ class TestApiAndCommander(unittest.TestCase):
                 self.assertIn("Metal storage full", th_ovf[0]["reason"])
 
                 # Execute the live overflow pause via throttle_building command
-                from spaceinvasion.session.executor import ExecutionResult
+                from backend.session.executor import ExecutionResult
 
                 p_metal_100_paused = dc_replace(
                     p_metal_100,
@@ -8516,7 +8512,7 @@ class TestApiAndCommander(unittest.TestCase):
                 self.assertIn(852, bridge2.ctx.metal_overflow_paused_planets)
 
                 # Execute auto-resume 100% -> clears tracked overflow flag!
-                from spaceinvasion.session.executor import ExecutionResult
+                from backend.session.executor import ExecutionResult
 
                 p_metal_94_resumed = dc_replace(
                     p_metal_94,
@@ -8570,8 +8566,8 @@ class TestApiAndCommander(unittest.TestCase):
     def test_fleet_research_config_validation_merge_and_hybrid_ai_plan(self) -> None:
         import time
         from dataclasses import replace as dc_replace
-        from spaceinvasion.runtime.api.validation import ApiRequestError
-        from spaceinvasion.core.model import (
+        from backend.runtime.api.validation import ApiRequestError
+        from backend.core.model import (
             BuildingOffer,
             EnergyBalance,
             GameState,
@@ -8787,14 +8783,14 @@ class TestApiAndCommander(unittest.TestCase):
     def test_ai_planner_early_transport_in_progress_and_reruns_with_dispatch_delay(self) -> None:
         from dataclasses import replace as dc_replace
         import time
-        from spaceinvasion.core.model import (
+        from backend.core.model import (
             EnergyBalance,
             GameState,
             PlanetState,
             QueueJob,
             Resources,
         )
-        from spaceinvasion.runtime.api.validation import ApiRequestError
+        from backend.runtime.api.validation import ApiRequestError
 
         donor = PlanetState(
             planet_id=951,
@@ -8873,7 +8869,7 @@ class TestApiAndCommander(unittest.TestCase):
 
         client_factory = MagicMock()
         with (
-            patch("spaceinvasion.session.browser.is_debug_port_open", return_value=False),
+            patch("backend.session.browser.is_debug_port_open", return_value=False),
             tempfile.TemporaryDirectory() as td,
         ):
             td_path = Path(td)
@@ -9028,7 +9024,7 @@ class TestApiAndCommander(unittest.TestCase):
 
     def test_flight_expected_delivered_enrichment_planet_renaming_building_requests_and_v014_dashboard(self) -> None:
         import time as _time
-        from spaceinvasion.parsing.models import (
+        from backend.parsing.models import (
             GalaxySlot,
             InboxMessage,
             SpyReport,
@@ -9549,9 +9545,9 @@ class TestApiAndCommander(unittest.TestCase):
                 )
                 fake_ai_mod.compute_early_transport_needs.return_value = {}
                 with (
-                    patch("spaceinvasion.runtime.bridge._plan_hybrid.ai_mod", fake_ai_mod),
+                    patch("backend.runtime.bridge._plan_hybrid.ai_mod", fake_ai_mod),
                     patch(
-                        "spaceinvasion.runtime.bridge._plan_hybrid.plan_fleet_and_attack_actions",
+                        "backend.runtime.bridge._plan_hybrid.plan_fleet_and_attack_actions",
                         return_value=[
                             PlannedAction(
                                 priority="P1",
@@ -9574,7 +9570,7 @@ class TestApiAndCommander(unittest.TestCase):
                         ],
                     ),
                     patch(
-                        "spaceinvasion.runtime.bridge._plan_hybrid.plan_ai_blast_furnace_throttles",
+                        "backend.runtime.bridge._plan_hybrid.plan_ai_blast_furnace_throttles",
                         return_value=[
                             PlannedAction(
                                 priority="P1",
@@ -9800,8 +9796,8 @@ class TestApiAndCommander(unittest.TestCase):
         """Verify spy_reserved_slots_only validation/holds/live guard, fleet planner slot fields, and config_optimizer_goals."""
         from dataclasses import replace
         import time
-        from spaceinvasion.db.config_store import save_strategy_config
-        from spaceinvasion.planner.graph import build_fleet_planner_graph
+        from backend.db.config_store import save_strategy_config
+        from backend.planner.graph import build_fleet_planner_graph
 
         p1 = PlanetState(
             planet_id=101,
@@ -9978,7 +9974,7 @@ class TestApiAndCommander(unittest.TestCase):
     def test_plan_v2_adaptive_config_24h_history_buckets_and_ai_planner_get(self) -> None:
         """Verify Plan v2 Step 0/4a API contracts: ai_adaptive_execution config, 24h history limit, 10m idle buckets, transport util EWMA, and ai_planner_get enrichment."""
         import time
-        from spaceinvasion.db.config_store import save_strategy_config
+        from backend.db.config_store import save_strategy_config
 
         now_ts = time.time()
         p1 = PlanetState(
@@ -10240,7 +10236,7 @@ class TestApiAndCommander(unittest.TestCase):
                 self.assertEqual(tf_big["realized_utilization"], bridge.ctx.transport_realized_utilization)
 
                 # F6: ai_planner_get gracefully degrades if diagnose_ai_colony_idle_states raises
-                import spaceinvasion.planner.ai as _ai_mod_err
+                import backend.planner.ai as _ai_mod_err
 
                 with patch.object(_ai_mod_err, "diagnose_ai_colony_idle_states", side_effect=RuntimeError("boom")):
                     ai_get_err = bridge.handle_command({"command": "ai_planner_get"})
@@ -10268,7 +10264,7 @@ class TestApiAndCommander(unittest.TestCase):
         """Verify hybrid wiring (inbound cargo, in-progress rem, donor smelting, transport_demand) and Step 6 drift auto-replan + 30m cooldown without _lock deadlock."""
         from dataclasses import replace
         import time
-        from spaceinvasion.db.config_store import save_strategy_config
+        from backend.db.config_store import save_strategy_config
 
         now_ts = time.time()
         p1 = PlanetState(
@@ -10376,7 +10372,7 @@ class TestApiAndCommander(unittest.TestCase):
                     )
                     with (
                         patch(
-                            "spaceinvasion.runtime.bridge._ledgers_budgets.compute_spare_ship_budget",
+                            "backend.runtime.bridge._ledgers_budgets.compute_spare_ship_budget",
                             return_value={
                                 "available_budget": {"pig_iron": 0.0, "metal": 0.0, "kryptonite": 0.0, "spice": 0.0},
                                 "infra_transport_budget": {"metal": 50_000.0, "kryptonite": 30_000.0},
@@ -10384,11 +10380,11 @@ class TestApiAndCommander(unittest.TestCase):
                             },
                         ) as m_budget,
                         patch(
-                            "spaceinvasion.runtime.bridge._plan_hybrid.plan_fleet_and_attack_actions",
+                            "backend.runtime.bridge._plan_hybrid.plan_fleet_and_attack_actions",
                             return_value=[],
                         ) as m_fleet,
                         patch(
-                            "spaceinvasion.runtime.bridge._plan_hybrid.plan_ai_blast_furnace_throttles",
+                            "backend.runtime.bridge._plan_hybrid.plan_ai_blast_furnace_throttles",
                             return_value=[],
                         ) as m_bf,
                     ):
@@ -10573,7 +10569,7 @@ class TestApiAndCommander(unittest.TestCase):
                 self.assertEqual(len(calls), 4)
 
                 # F1: warm_start_genes passed to one auto_drift run NEVER persists or leaks into later manual runs
-                import spaceinvasion.planner.ai as _ai_mod_warm
+                import backend.planner.ai as _ai_mod_warm
 
                 captured_params: list[dict[str, object]] = []
 

@@ -73,7 +73,7 @@ function toConfigGroupSpec(raw: SettingGroupSchemaPayload): ConfigGroupSpec {
   };
 }
 
-/** Canonical StrategyConfig UI groups generated from `spaceinvasion.core.settings`. */
+/** Canonical StrategyConfig UI groups generated from `backend.core.settings`. */
 export const CONFIG_GROUPS: ConfigGroupSpec[] =
   GENERATED_SETTINGS_SCHEMA.groups.map(toConfigGroupSpec);
 

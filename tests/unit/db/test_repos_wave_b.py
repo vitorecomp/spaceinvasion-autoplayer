@@ -7,8 +7,8 @@ from pathlib import Path
 
 from sqlalchemy.orm import DeclarativeBase
 
-from spaceinvasion.db.models import Base
-from spaceinvasion.db.queries import (
+from backend.db.models import Base
+from backend.db.queries import (
     query_active_debris_targets,
     query_bash_window,
     query_galaxy_coverage,
@@ -16,7 +16,7 @@ from spaceinvasion.db.queries import (
     query_raid_stats,
     query_spy_targets,
 )
-from spaceinvasion.db.repos import (
+from backend.db.repos import (
     BattleReportInput,
     GalaxyRepository,
     GalaxySlotInput,
@@ -31,7 +31,7 @@ from spaceinvasion.db.repos import (
     SpyTargetUpsertInput,
     StateSnapshotInput,
 )
-from spaceinvasion.db.session import DatabaseEngine, count_statements, db_uow
+from backend.db.session import DatabaseEngine, count_statements, db_uow
 from tests.pg_harness import DisposablePostgresServer
 from tests.unit.db.reference_workload import WAVE_A_TABLES, snapshot_tables
 from tests.unit.db.reference_workload_b import WAVE_B_TABLES, run_gateway_workload_b, run_orm_workload_b
@@ -394,5 +394,5 @@ def test_all_40_tables_covered_and_wave_b_standards() -> None:
     assert len(covered) == 40
 
     for subdir in ("dto", "repos", "queries"):
-        for path in sorted((_REPO_ROOT / "spaceinvasion" / "db" / subdir).rglob("*.py")):
+        for path in sorted((_REPO_ROOT / "backend" / "db" / subdir).rglob("*.py")):
             _audit_module_standards(path)

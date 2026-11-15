@@ -7,9 +7,9 @@ from pathlib import Path
 
 import pytest
 
-from spaceinvasion.core.config import StrategyConfig
-from spaceinvasion.db.config_store import load_strategy_config, save_strategy_config
-from spaceinvasion.db.dsn import (
+from backend.core.config import StrategyConfig
+from backend.db.config_store import load_strategy_config, save_strategy_config
+from backend.db.dsn import (
     DEFAULT_DB_BACKEND,
     DEFAULT_PG_PORT,
     build_default_postgres_url,
@@ -21,11 +21,11 @@ from spaceinvasion.db.dsn import (
     redact_db_url,
     resolve_database_config,
 )
-from spaceinvasion.db.migrations.cli import main as migrations_cli_main
-from spaceinvasion.db.storage import GameDatabase as NotebookShimGameDatabase
-from spaceinvasion.parsing.models import GalaxySlot, InboxMessage, Resources, SpyReport
-from spaceinvasion.runtime.bridge._db_gateway import RuntimeDatabaseGateway
-from spaceinvasion.runtime.postgres_ctl import (
+from backend.db.migrations.cli import main as migrations_cli_main
+from backend.db.storage import GameDatabase as NotebookShimGameDatabase
+from backend.parsing.models import GalaxySlot, InboxMessage, Resources, SpyReport
+from backend.runtime.bridge._db_gateway import RuntimeDatabaseGateway
+from backend.runtime.postgres_ctl import (
     DEFAULT_COMPOSE_FILENAME,
     DEFAULT_PODMAN_CONTAINER_NAME,
     check_postgres_tcp_open,
@@ -79,7 +79,7 @@ def test_dsn_helpers_notebook_shim_and_postgres_ctl_pure_contracts() -> None:
 
     assert DEFAULT_DB_BACKEND == "postgres"
     assert DEFAULT_PG_PORT == 5433
-    assert DEFAULT_COMPOSE_FILENAME == "docker-compose.yml"
+    assert DEFAULT_COMPOSE_FILENAME == "podman-compose.yml"
     assert DEFAULT_PODMAN_CONTAINER_NAME == "spaceinvasion_postgres"
     assert is_postgres_dsn("postgresql://user:secret@127.0.0.1:5433/spaceinvasion")
     assert not is_postgres_dsn("sqlite:///tmp/test.db")
@@ -346,8 +346,8 @@ def test_runtime_db_gateway_config_store_and_migrations_cli_end_to_end(
 def test_runtime_gateway_and_postgres_ctl_obey_section_4_standards() -> None:
     """All `_db_gateway*.py` and `postgres_ctl.py` modules obey LOC, zero-SQLAlchemy, and typing rules."""
     files = [
-        _REPO_ROOT / "spaceinvasion" / "runtime" / "postgres_ctl.py",
-        *sorted((_REPO_ROOT / "spaceinvasion" / "runtime" / "bridge").glob("_db_gateway*.py")),
+        _REPO_ROOT / "backend" / "runtime" / "postgres_ctl.py",
+        *sorted((_REPO_ROOT / "backend" / "runtime" / "bridge").glob("_db_gateway*.py")),
     ]
     assert len(files) >= 6
     for path in files:

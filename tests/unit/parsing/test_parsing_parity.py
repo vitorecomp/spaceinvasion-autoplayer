@@ -1,4 +1,4 @@
-"""Byte-for-byte golden parity tests proving ``spaceinvasion.parsing`` reproduces all 23 parser goldens."""
+"""Byte-for-byte golden parity tests proving ``backend.parsing`` reproduces all 23 parser goldens."""
 
 from __future__ import annotations
 
@@ -11,8 +11,8 @@ from types import ModuleType
 
 import pytest
 
-from spaceinvasion import parsing
-from spaceinvasion.session.executor import ActionExecutor
+from backend import parsing
+from backend.session.executor import ActionExecutor
 from tests.goldens.scenarios import GOLDEN_EPOCH
 
 REPO_ROOT = Path(__file__).resolve().parents[3]

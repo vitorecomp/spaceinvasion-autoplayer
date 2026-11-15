@@ -15,15 +15,15 @@ import urllib.error
 import urllib.request
 
 import bin.commander as commander_mod
-from spaceinvasion.core.config import (
+from backend.core.config import (
     StrategyConfig,
     strategy_config_from_dict,
 )
-from spaceinvasion.db.config_store import (
+from backend.db.config_store import (
     load_strategy_config,
     save_strategy_config,
 )
-from spaceinvasion.core.model import (
+from backend.core.model import (
     BuildingOffer,
     EnergyBalance,
     FleetAlert,
@@ -31,10 +31,10 @@ from spaceinvasion.core.model import (
     PlanetState,
     Resources,
 )
-from spaceinvasion.runtime.api.http_server import create_api_server
-from spaceinvasion.runtime.api.validation import ApiRequestError
-from spaceinvasion.runtime.bridge import GalaxyScanInProgressError, GameApiBridge
-from spaceinvasion.runtime.bridge._helpers_validation import validate_config_patch as _validate_config_patch
+from backend.runtime.api.http_server import create_api_server
+from backend.runtime.api.validation import ApiRequestError
+from backend.runtime.bridge import GalaxyScanInProgressError, GameApiBridge
+from backend.runtime.bridge._helpers_validation import validate_config_patch as _validate_config_patch
 
 
 def _make_galaxy_html(galaxy: int, system: int) -> str:
@@ -179,7 +179,7 @@ class GalaxyScanExclusivityTest(unittest.TestCase):
                 ),
                 cfg_path,
             )
-            with patch("spaceinvasion.session.browser.is_debug_port_open", return_value=True):
+            with patch("backend.session.browser.is_debug_port_open", return_value=True):
                 bridge = GameApiBridge(
                     debug_port=19981,
                     config_path=cfg_path,
@@ -326,7 +326,7 @@ class GalaxyScanExclusivityTest(unittest.TestCase):
                 ),
                 cfg_path,
             )
-            with patch("spaceinvasion.session.browser.is_debug_port_open", return_value=True):
+            with patch("backend.session.browser.is_debug_port_open", return_value=True):
                 bridge = GameApiBridge(
                     debug_port=19982,
                     config_path=cfg_path,

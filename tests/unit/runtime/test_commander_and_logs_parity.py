@@ -13,8 +13,8 @@ import sys
 import pytest
 import requests
 
-from spaceinvasion.core.config import StrategyConfig
-from spaceinvasion.core.model import (
+from backend.core.config import StrategyConfig
+from backend.core.model import (
     EnergyBalance,
     GameState,
     PlanetState,
@@ -22,8 +22,8 @@ from spaceinvasion.core.model import (
     QueueJob,
     Resources,
 )
-from spaceinvasion.runtime import logs as new_logs
-from spaceinvasion.runtime.commander import (
+from backend.runtime import logs as new_logs
+from backend.runtime.commander import (
     CommanderOptions,
     action_to_command_payload,
     compute_next_wakeup_seconds,
@@ -40,7 +40,7 @@ from spaceinvasion.runtime.commander import (
     run_commander_tick,
     wait_for_api_reconnect,
 )
-from spaceinvasion.runtime.commander_client import GameApiError
+from backend.runtime.commander_client import GameApiError
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
@@ -135,7 +135,7 @@ class _FakeApi:
 def test_zero_selenium_imports_in_runtime_logs_and_commander() -> None:
     code = (
         "import sys; "
-        "import spaceinvasion.runtime.logs, spaceinvasion.runtime.commander; "
+        "import backend.runtime.logs, backend.runtime.commander; "
         "bad = [m for m in sys.modules if m == 'selenium' or m.startswith('selenium.')]; "
         "assert not bad, f'Unexpected selenium imports: {bad}'"
     )
@@ -465,9 +465,9 @@ def test_commander_loop_captcha_passive_wait_reconnect_and_rate_limit(tmp_path: 
 
 def test_section4_standards_and_layering_for_runtime_logs_and_commander() -> None:
     runtime_files = [
-        REPO_ROOT / "spaceinvasion/runtime/_logs_helpers.py",
-        REPO_ROOT / "spaceinvasion/runtime/logs.py",
-        *sorted((REPO_ROOT / "spaceinvasion/runtime/commander").glob("*.py")),
+        REPO_ROOT / "backend/runtime/_logs_helpers.py",
+        REPO_ROOT / "backend/runtime/logs.py",
+        *sorted((REPO_ROOT / "backend/runtime/commander").glob("*.py")),
     ]
     for path in runtime_files:
         src = path.read_text(encoding="utf-8")
@@ -497,14 +497,14 @@ def test_section4_standards_and_layering_for_runtime_logs_and_commander() -> Non
                     else ([node.module] if node.module else [])
                 )
                 for mod in mods:
-                    assert not mod.startswith(("selenium", "spaceinvasion.db", "spaceinvasion.session")), (
+                    assert not mod.startswith(("selenium", "backend.db", "backend.session")), (
                         f"{path}: bad import {mod}"
                     )
                     if path.name in ("logs.py", "_logs_helpers.py"):
-                        assert not mod.startswith(("spaceinvasion.planner", "spaceinvasion.combat")), (
+                        assert not mod.startswith(("backend.planner", "backend.combat")), (
                             f"{path}: logs must not import {mod}"
                         )
                     else:
-                        assert not mod.startswith("spaceinvasion.combat"), f"{path}: commander must not import {mod}"
+                        assert not mod.startswith("backend.combat"), f"{path}: commander must not import {mod}"
             if isinstance(node, ast.Name) and node.id == "Any":
                 raise AssertionError(f"{path}: forbidden Any")

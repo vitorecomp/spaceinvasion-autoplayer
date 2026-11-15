@@ -88,7 +88,7 @@ class GoldenSuiteContract(unittest.TestCase):
                 self.assertEqual(capture.capture_group(group), capture.capture_group(group))
 
     def test_api_session_skips_removed_and_ga_nn_commands(self) -> None:
-        from spaceinvasion.runtime.api.handlers import build_command_registry
+        from backend.runtime.api.handlers import build_command_registry
         from tests.goldens.api_scenario import API_STEPS, REMOVED_COMMANDS
 
         sent = [step.command for step in API_STEPS if step.command is not None]

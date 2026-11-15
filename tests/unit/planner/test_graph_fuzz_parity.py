@@ -5,8 +5,8 @@ from __future__ import annotations
 import json
 import random
 
-from spaceinvasion.core.config import StrategyConfig
-from spaceinvasion.core.model import (
+from backend.core.config import StrategyConfig
+from backend.core.model import (
     BuildingOffer,
     EnergyBalance,
     FleetAlert,
@@ -14,8 +14,8 @@ from spaceinvasion.core.model import (
     PlanetState,
     Resources,
 )
-from spaceinvasion.planner import graph as new_graph
-from spaceinvasion.planner.heuristics import plan_actions
+from backend.planner import graph as new_graph
+from backend.planner.heuristics import plan_actions
 
 _FUZZ_SEED = 4321
 _FUZZ_CASES = 60

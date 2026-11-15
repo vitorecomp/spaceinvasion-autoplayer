@@ -14,7 +14,7 @@ import requests
 import commander
 from tests.e2e.fixtures import make_midgame_state
 from tests.e2e.harness import E2ETestHarness, FakeClock, FakeSpaceInvasionServer
-from spaceinvasion.core.config import StrategyConfig
+from backend.core.config import StrategyConfig
 from tests.pg_harness import open_test_db as GameDatabase
 
 
@@ -325,7 +325,7 @@ class TestTier2R2(unittest.TestCase):
         with E2ETestHarness(server=srv, clock=clock) as h:
             h.api.get_state(include_buildings=True)
             lim = h.page_limiter
-            self.assertIsNotNone(lim, "PageViewLimiter missing from spaceinvasion.client")
+            self.assertIsNotNone(lim, "PageViewLimiter missing from backend.session.client")
             # Fill background reads right up to soft cap (max_views - reserved)
             cap_bg = lim.max_views_per_minute - lim.reserved_interactive_views
             while lim.views_last_60s() < cap_bg:
@@ -841,7 +841,7 @@ class TestTier2R2(unittest.TestCase):
         secret_tok = "SID_SHOULD_BE_REDACTED_445566"
 
         with tempfile.TemporaryDirectory(prefix="si_r2c_t2_09_") as tmp:
-            db_path = Path(tmp) / "state" / "spaceinvasion.db"
+            db_path = Path(tmp) / "state" / "backend.db"
             db = GameDatabase(db_path=db_path)
             try:
                 self.assertTrue(hasattr(db, "get_raid_stats"), "GameDatabase missing get_raid_stats() (F19)")
@@ -870,7 +870,7 @@ class TestTier2R2(unittest.TestCase):
 
     def test_r2c_t2_10_complete_raid_history_and_telemetry_aggregates_survive_reopen(self) -> None:
         with tempfile.TemporaryDirectory(prefix="si_r2c_t2_10_") as tmp:
-            db_path = Path(tmp) / "state" / "spaceinvasion.db"
+            db_path = Path(tmp) / "state" / "backend.db"
             db1 = GameDatabase(db_path=db_path)
             try:
                 self.assertTrue(hasattr(db1, "get_raid_stats"), "GameDatabase missing get_raid_stats() (F19)")

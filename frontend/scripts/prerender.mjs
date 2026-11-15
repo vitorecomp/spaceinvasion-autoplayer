@@ -7,7 +7,7 @@ import { createServer } from "vite";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const frontendRoot = path.resolve(__dirname, "..");
-const outDir = path.resolve(frontendRoot, "../spaceinvasion/ui");
+const outDir = path.resolve(frontendRoot, "../backend/ui");
 
 async function prerender() {
   const vite = await createServer({

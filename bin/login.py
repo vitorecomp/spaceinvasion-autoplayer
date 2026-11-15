@@ -22,13 +22,13 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from spaceinvasion.runtime.cli_support import maybe_reexec_venv, safe_cli_str  # noqa: E402
+from backend.runtime.cli_support import maybe_reexec_venv, safe_cli_str  # noqa: E402
 
 maybe_reexec_venv(_REPO_ROOT)
 
-from spaceinvasion.core import catalog as game_data  # noqa: E402
-from spaceinvasion.core.redaction import redact_sensitive  # noqa: E402
-from spaceinvasion.session.auth import (  # noqa: E402
+from backend.core import catalog as game_data  # noqa: E402
+from backend.core.redaction import redact_sensitive  # noqa: E402
+from backend.session.auth import (  # noqa: E402
     DEFAULT_SESSIONS_DIR,
     Credentials,
     SpaceInvasionAuthError,
@@ -37,7 +37,7 @@ from spaceinvasion.session.auth import (  # noqa: E402
     login,
     verify_saved_session,
 )
-from spaceinvasion.session.browser import (  # noqa: E402
+from backend.session.browser import (  # noqa: E402
     DEFAULT_DEBUG_HOST,
     DEFAULT_DEBUG_PORT,
     DEFAULT_PROFILE_ROOT,

@@ -14,8 +14,8 @@ import sys
 
 import pytest
 
-from spaceinvasion.core.config import StrategyConfig
-from spaceinvasion.core.settings import (
+from backend.core.config import StrategyConfig
+from backend.core.settings import (
     ALL_SETTING_SPECS,
     REMOVED_GA_NN_FIELDS,
     SETTING_GROUPS,
@@ -28,9 +28,9 @@ from spaceinvasion.core.settings import (
     normalize_planner_mode,
     validate_config_patch,
 )
-from spaceinvasion.runtime.api.payloads import PAYLOAD_MODELS
-from spaceinvasion.runtime.api.validation import ApiRequestError
-from spaceinvasion.runtime.bridge._helpers_validation import validate_config_patch as _validate_config_patch
+from backend.runtime.api.payloads import PAYLOAD_MODELS
+from backend.runtime.api.validation import ApiRequestError
+from backend.runtime.bridge._helpers_validation import validate_config_patch as _validate_config_patch
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 GEN_SCRIPT = REPO_ROOT / "scripts" / "generate_ts_types.py"
@@ -292,10 +292,10 @@ def test_generated_ts_compiles_against_real_react_console_with_tsc(tmp_path: Pat
 
 def test_settings_and_codegen_modules_obey_layering_and_section4_standards() -> None:
     stdlib = sys.stdlib_module_names
-    settings_dir = REPO_ROOT / "spaceinvasion" / "core" / "settings"
-    payloads_dir = REPO_ROOT / "spaceinvasion" / "runtime" / "api" / "payloads"
+    settings_dir = REPO_ROOT / "backend" / "core" / "settings"
+    payloads_dir = REPO_ROOT / "backend" / "runtime" / "api" / "payloads"
 
-    # core/settings must import ONLY stdlib + spaceinvasion.core.settings
+    # core/settings must import ONLY stdlib + backend.core.settings
     for path in sorted(settings_dir.glob("*.py")):
         src = path.read_text(encoding="utf-8")
         tree = ast.parse(src)
@@ -305,7 +305,7 @@ def test_settings_and_codegen_modules_obey_layering_and_section4_standards() -> 
                     assert alias.name.split(".")[0] in stdlib, f"{path.name} imports non-stdlib {alias.name}"
             elif isinstance(node, ast.ImportFrom) and node.module:
                 top = node.module.split(".")[0]
-                allowed = top in stdlib or node.module.startswith("spaceinvasion.core.settings")
+                allowed = top in stdlib or node.module.startswith("backend.core.settings")
                 assert allowed, f"{path.name} imports forbidden module {node.module}"
 
     all_new_prod = [*sorted(settings_dir.glob("*.py")), *sorted(payloads_dir.glob("*.py")), GEN_SCRIPT]
@@ -329,5 +329,5 @@ def test_settings_and_codegen_modules_obey_layering_and_section4_standards() -> 
             if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
                 assert not (node.value.id == "os" and node.attr in ("environ", "getenv")), f"os.environ in {path}"
             if isinstance(node, ast.ImportFrom) and node.module:
-                assert not node.module.startswith("spaceinvasion.ui"), f"{path} imports ui/"
+                assert not node.module.startswith("backend.ui"), f"{path} imports ui/"
                 assert not node.module.startswith("selenium"), f"{path} imports selenium"

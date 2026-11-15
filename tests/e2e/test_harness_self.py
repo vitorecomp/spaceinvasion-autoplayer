@@ -26,14 +26,14 @@ from tests.e2e.harness import (
     FakeDriver,
     FakeSpaceInvasionServer,
 )
-from spaceinvasion.session.client import (
+from backend.session.client import (
     GameBrowserClient,
     RateLimitError,
 )
-from spaceinvasion.runtime.commander_client import GameApiError
-from spaceinvasion.core.config import StrategyConfig
-from spaceinvasion.core.model import Resources
-from spaceinvasion.core.model import PlannedAction
+from backend.runtime.commander_client import GameApiError
+from backend.core.config import StrategyConfig
+from backend.core.model import Resources
+from backend.core.model import PlannedAction
 
 
 class TestHarnessSelf(unittest.TestCase):
@@ -119,7 +119,7 @@ class TestHarnessSelf(unittest.TestCase):
         self.assertIn("Pig iron mine", b_html)
 
     def test_self_03_fake_server_rolling_throttle_and_stale_f_planets(self) -> None:
-        import spaceinvasion.session.client as client_mod
+        import backend.session.client as client_mod
 
         clock = FakeClock()
         srv = FakeSpaceInvasionServer(clock=clock, rate_limit_threshold=3, server_cooldown_s=50.0)
@@ -271,9 +271,9 @@ class TestHarnessSelf(unittest.TestCase):
                     h8.api.send_command({"command": "build", "building_id": 1, "dry_run": False})
 
     def test_self_07_enter_exception_rolls_back_patches_and_tmpdir(self) -> None:
-        import spaceinvasion.combat._rank_history as rank_history_mod
-        import spaceinvasion.session.browser as browser_mod
-        import spaceinvasion.session.client as client_mod
+        import backend.combat._rank_history as rank_history_mod
+        import backend.session.browser as browser_mod
+        import backend.session.client as client_mod
 
         orig_client_time = client_mod.time
         orig_ranking_time = rank_history_mod.time

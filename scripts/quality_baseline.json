@@ -3,7 +3,7 @@
     "broad_except": {},
     "class_loc": {},
     "environ_reads": {
-      "spaceinvasion/core/env.py": 2
+      "backend/core/env.py": 2
     },
     "function_loc": {},
     "module_loc": {},

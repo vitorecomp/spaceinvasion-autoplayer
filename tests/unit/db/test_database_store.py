@@ -8,9 +8,9 @@ from pathlib import Path
 import pytest
 from sqlalchemy.orm import DeclarativeBase
 
-from spaceinvasion.db.migrations import BASELINE_REVISION, NO_BACKUP
-from spaceinvasion.db.models import Base, SchemaMigration
-from spaceinvasion.db.queries import (
+from backend.db.migrations import BASELINE_REVISION, NO_BACKUP
+from backend.db.models import Base, SchemaMigration
+from backend.db.queries import (
     GAME_REQUIRED_TABLES,
     HISTORY_TABLES,
     HOT_TABLES,
@@ -18,10 +18,10 @@ from spaceinvasion.db.queries import (
     query_dashboard_time_series,
     query_db_summary,
 )
-from spaceinvasion.db.repos import BattleReportInput, RecycleReportInput
-from spaceinvasion.db.session import DatabaseEngine, count_statements, db_uow
-from spaceinvasion.db.store import DatabaseStore
-from spaceinvasion.runtime.bridge._db_gateway import RuntimeDatabaseGateway
+from backend.db.repos import BattleReportInput, RecycleReportInput
+from backend.db.session import DatabaseEngine, count_statements, db_uow
+from backend.db.store import DatabaseStore
+from backend.runtime.bridge._db_gateway import RuntimeDatabaseGateway
 from tests.pg_harness import DisposablePostgresServer
 from tests.unit.db.reference_workload_b import run_orm_workload_b
 from tests.unit.db.test_repos_wave_a import _audit_module_standards
@@ -323,8 +323,8 @@ def test_query_config_optimizer_goals_and_store_uow_atomicity(
 def test_store_and_dashboard_modules_obey_section_4_standards() -> None:
     """`store.py`, `queries/dashboard.py`, and `dto/dashboard.py` pass Section 4 limits and layering."""
     for rel in (
-        "spaceinvasion/db/store.py",
-        "spaceinvasion/db/queries/dashboard.py",
-        "spaceinvasion/db/dto/dashboard.py",
+        "backend/db/store.py",
+        "backend/db/queries/dashboard.py",
+        "backend/db/dto/dashboard.py",
     ):
         _audit_module_standards(_REPO_ROOT / rel)

@@ -28,7 +28,7 @@ export default defineConfig({
     },
   },
   build: {
-    outDir: path.resolve(__dirname, "../spaceinvasion/ui"),
+    outDir: path.resolve(__dirname, "../backend/ui"),
     emptyOutDir: false,
     cssCodeSplit: false,
     minify: false,

@@ -8,16 +8,16 @@ import tempfile
 import unittest
 from unittest.mock import MagicMock, patch
 
-from spaceinvasion.parsing.models import GalaxySlot
-from spaceinvasion.core.model import (
+from backend.parsing.models import GalaxySlot
+from backend.core.model import (
     EnergyBalance,
     GameState,
     PlanetState,
     Resources,
 )
-from spaceinvasion.core.model import PlannedAction
-from spaceinvasion.runtime.bridge import GameApiBridge
-from spaceinvasion.session.executor import ExecutionResult
+from backend.core.model import PlannedAction
+from backend.runtime.bridge import GameApiBridge
+from backend.session.executor import ExecutionResult
 
 
 def _planet(
@@ -262,7 +262,7 @@ class TestColonyAttemptsApi(unittest.TestCase):
 
     def test_abandon_colony_handle_command_invalidates_caches_without_attribute_error(self) -> None:
         from unittest.mock import MagicMock, patch
-        from spaceinvasion.session.executor import ExecutionResult
+        from backend.session.executor import ExecutionResult
 
         home = _planet(101, "02:380:12")
         col = _planet(202, "02:381:08", fields_max=180, fields_used=0, temperature=-12, buildings={}, ships={})

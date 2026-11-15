@@ -11,7 +11,7 @@ from unittest.mock import MagicMock
 
 import requests
 
-from spaceinvasion.session.auth import (
+from backend.session.auth import (
     AntiBotChallengeError,
     ConfigurationError,
     Credentials,
@@ -314,7 +314,7 @@ class TestLoginFlow(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            with unittest.mock.patch("spaceinvasion.session.auth.load_session_cookies") as mock_load:
+            with unittest.mock.patch("backend.session.auth.load_session_cookies") as mock_load:
                 mock_sess = MagicMock()
                 mock_sess.get.return_value = _mock_response(text=SAMPLE_PORTAL_HTML, url="https://bitmeup.com/portal")
                 mock_load.return_value = (mock_sess, {"last_url": "https://bitmeup.com/portal"})
@@ -330,7 +330,7 @@ class TestLoginFlow(unittest.TestCase):
                 self.assertFalse(ok2)
 
     def test_universes_from_portal_data_handles_empty_and_malformed_speeds(self) -> None:
-        from spaceinvasion.session.auth import universes_from_portal_data
+        from backend.session.auth import universes_from_portal_data
 
         uni_opts = universes_from_portal_data(
             "sid123",
@@ -353,7 +353,7 @@ class TestLoginFlow(unittest.TestCase):
         self.assertEqual(by_id[34].flight_speed, 2.5)
 
     def test_universes_from_portal_data_skips_non_mapping_entries(self) -> None:
-        from spaceinvasion.session.auth import universes_from_portal_data
+        from backend.session.auth import universes_from_portal_data
 
         uni_opts = universes_from_portal_data(
             "sid123",
@@ -376,7 +376,7 @@ class TestLoginFlow(unittest.TestCase):
     def test_r7_http_keepalive_login_and_verify_saved_session_close_session_cleanly(self) -> None:
         from http.server import BaseHTTPRequestHandler, HTTPServer
         import threading
-        from spaceinvasion.session.auth import universes_from_portal_data
+        from backend.session.auth import universes_from_portal_data
 
         mode = {"reject": False}
 
@@ -571,8 +571,8 @@ class TestLoginFlow(unittest.TestCase):
             srv_thread.join(timeout=2.0)
 
     def test_r10_portal_ascii_bytes_and_safe_key_metadata(self) -> None:
-        from spaceinvasion.session import auth
-        from spaceinvasion.session.auth import (
+        from backend.session import auth
+        from backend.session.auth import (
             extract_universes,
             save_session_cookies,
             universes_from_portal_data,
@@ -629,7 +629,7 @@ class TestLoginFlow(unittest.TestCase):
 
     def test_r13_load_session_cookies_malformed_json_raises_configuration_error(self) -> None:
         from unittest.mock import patch
-        from spaceinvasion.session.auth import (
+        from backend.session.auth import (
             ConfigurationError,
             SpaceInvasionAuthError,
             load_session_cookies,
@@ -668,7 +668,7 @@ class TestLoginFlow(unittest.TestCase):
 
             fake_sess.close = _track  # type: ignore[method-assign]
             with (
-                patch("spaceinvasion.session.auth.build_http_session", return_value=fake_sess),
+                patch("backend.session.auth.build_http_session", return_value=fake_sess),
                 patch.object(fake_sess.cookies, "set", side_effect=RuntimeError("jar boom")),
             ):
                 with self.assertRaises(RuntimeError):
@@ -676,7 +676,7 @@ class TestLoginFlow(unittest.TestCase):
             self.assertTrue(closed)
 
     def test_detect_antibot_challenge_ignores_passive_turnstile_script_and_hidden_modal(self) -> None:
-        from spaceinvasion.session.auth import detect_antibot_challenge
+        from backend.session.auth import detect_antibot_challenge
 
         passive_game_shell_html = """
         <html>

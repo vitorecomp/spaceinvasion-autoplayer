@@ -1,4 +1,4 @@
-"""Seeded fuzz invariant suite for ``spaceinvasion.combat.*`` and ``spaceinvasion.planner.eta``."""
+"""Seeded fuzz invariant suite for ``backend.combat.*`` and ``backend.planner.eta``."""
 
 from __future__ import annotations
 
@@ -8,11 +8,11 @@ import random
 
 import pytest
 
-from spaceinvasion.combat import cargo, colonies, flight, simulator
-from spaceinvasion.core.model import EnergyBalance, GameState, PlanetState, Resources
-from spaceinvasion.parsing.fleet_page import parse_send_fleet_mission_block
-from spaceinvasion.parsing.models import SpyReport
-from spaceinvasion.planner import eta
+from backend.combat import cargo, colonies, flight, simulator
+from backend.core.model import EnergyBalance, GameState, PlanetState, Resources
+from backend.parsing.fleet_page import parse_send_fleet_mission_block
+from backend.parsing.models import SpyReport
+from backend.planner import eta
 
 _SHIPS: tuple[str, ...] = tuple(f"s{i}" for i in range(1, 17))
 _DEFS: tuple[str, ...] = tuple(f"d{i}" for i in range(1, 10))

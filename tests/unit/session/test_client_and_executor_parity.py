@@ -8,10 +8,10 @@ import typing
 
 import pytest
 
-from spaceinvasion.core.model import PlannedAction, Resources as ModelResources
-from spaceinvasion.core.state import Resources as LegacyResources
-from spaceinvasion.session.auth import AntiBotChallengeError
-from spaceinvasion.session.client import (
+from backend.core.model import PlannedAction, Resources as ModelResources
+from backend.core.state import Resources as LegacyResources
+from backend.session.auth import AntiBotChallengeError
+from backend.session.client import (
     GameBrowserClient,
     PageViewLimiter,
     RateLimitError,
@@ -19,13 +19,13 @@ from spaceinvasion.session.client import (
     get_default_page_view_limiter,
     is_server_rate_limit_html,
 )
-from spaceinvasion.session.executor import ActionExecutor, ExecutionResult, Select
-from spaceinvasion.session.limiter import PageViewLimiter as LimiterClass
+from backend.session.executor import ActionExecutor, ExecutionResult, Select
+from backend.session.limiter import PageViewLimiter as LimiterClass
 from tests.e2e.harness import FakeClock, FakeDriver, FakeSpaceInvasionServer
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
-_CLIENT_DIR = _REPO_ROOT / "spaceinvasion" / "session" / "client"
-_EXEC_DIR = _REPO_ROOT / "spaceinvasion" / "session" / "executor"
+_CLIENT_DIR = _REPO_ROOT / "backend" / "session" / "client"
+_EXEC_DIR = _REPO_ROOT / "backend" / "session" / "executor"
 
 
 def _make_client(**server_kwargs: object) -> tuple[FakeSpaceInvasionServer, GameBrowserClient]:
@@ -437,23 +437,21 @@ def test_section4_ast_loc_and_strict_session_layering() -> None:
     all_files = [*client_files, *exec_files]
 
     common_forbidden = (
-        "spaceinvasion.planner",
-        "spaceinvasion.combat",
-        "spaceinvasion.db",
-        "spaceinvasion.runtime",
-        "spaceinvasion.ui",
-        "spaceinvasion.core.game_data",
-        "spaceinvasion.core.state",
-        "spaceinvasion.core.cli_support",
-        "spaceinvasion.core.logging_utils",
-        "spaceinvasion.session.browser_client",
-        "spaceinvasion.session.exec_ops",
+        "backend.planner",
+        "backend.combat",
+        "backend.db",
+        "backend.runtime",
+        "backend.ui",
+        "backend.core.game_data",
+        "backend.core.state",
+        "backend.core.cli_support",
+        "backend.core.logging_utils",
+        "backend.session.browser_client",
+        "backend.session.exec_ops",
     )
 
     for path in all_files:
-        forbidden = (
-            (*common_forbidden, "spaceinvasion.session.executor") if path.parent == _CLIENT_DIR else common_forbidden
-        )
+        forbidden = (*common_forbidden, "backend.session.executor") if path.parent == _CLIENT_DIR else common_forbidden
         src = path.read_text(encoding="utf-8")
         lines = src.splitlines()
         assert len(lines) <= 400, f"{path.name} has {len(lines)} lines (>400)"

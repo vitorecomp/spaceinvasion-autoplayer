@@ -11,7 +11,7 @@ import pytest
 from sqlalchemy import select, text
 from sqlalchemy.exc import OperationalError
 
-from spaceinvasion.db.migrations import (
+from backend.db.migrations import (
     BASELINE_REVISION,
     NO_BACKUP,
     SchemaDriftError,
@@ -23,7 +23,7 @@ from spaceinvasion.db.migrations import (
     verify_models_match_migrations,
     verify_schema_against_models,
 )
-from spaceinvasion.db.models import (
+from backend.db.models import (
     Base,
     ManualQueueItem,
     MetaEntry,
@@ -31,7 +31,7 @@ from spaceinvasion.db.models import (
     SchemaMigrationEvent,
     UiNotification,
 )
-from spaceinvasion.db.session import (
+from backend.db.session import (
     DatabaseEngine,
     StatementCountExceededError,
     TransitionalSessionBridge,
@@ -47,15 +47,13 @@ from tests.pg_harness import DisposablePostgresServer
 from tests.unit.db.test_orm_schema_equivalence import _introspect_pg_schema
 
 _REPO_ROOT: Path = Path(__file__).resolve().parents[3]
-_SESSION_MODULE: Path = _REPO_ROOT / "spaceinvasion" / "db" / "session.py"
-_DSN_MODULE: Path = _REPO_ROOT / "spaceinvasion" / "db" / "dsn.py"
-_CONFIG_STORE_MODULE: Path = _REPO_ROOT / "spaceinvasion" / "db" / "config_store.py"
-_ALEMBIC_DIR: Path = _REPO_ROOT / "spaceinvasion" / "db" / "migrations"
+_SESSION_MODULE: Path = _REPO_ROOT / "backend" / "db" / "session.py"
+_DSN_MODULE: Path = _REPO_ROOT / "backend" / "db" / "dsn.py"
+_CONFIG_STORE_MODULE: Path = _REPO_ROOT / "backend" / "db" / "config_store.py"
+_ALEMBIC_DIR: Path = _REPO_ROOT / "backend" / "db" / "migrations"
 _EXCLUDED_CATALOG_TABLES: frozenset[str] = frozenset({"_pg_pragma_meta", "alembic_version"})
 _FORBIDDEN_DB_IMPORTS: frozenset[str] = frozenset(
-    (
-        "bin spaceinvasion.combat spaceinvasion.parsing spaceinvasion.planner spaceinvasion.runtime spaceinvasion.session"
-    ).split()
+    ("bin backend.combat backend.parsing backend.planner backend.runtime backend.session").split()
 )
 
 

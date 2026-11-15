@@ -11,7 +11,7 @@
     "researches": 30
   },
   "empire": {
-    "description": "Planet roster of Sections 6 and 8. 'max_planets' counts normal planets; 11 is the default of the bot's own colony cap (StrategyConfig.max_planets in spaceinvasion/core/config.py) and the 'typically 11 base' of docs/specifications/05-fleet-missions-and-progression.md. Every planet still missing becomes a generic planet (an empty colony slot) with 'empty_colony_fields' fields at 'empty_colony_temperature_c'; the catalog and level tables of Section 6 are computed for such a planet. 'fallback_planet_fields' is the size assumed for an owned planet whose size was not recorded.",
+    "description": "Planet roster of Sections 6 and 8. 'max_planets' counts normal planets; 11 is the default of the bot's own colony cap (StrategyConfig.max_planets in backend/core/config.py) and the 'typically 11 base' of docs/specifications/05-fleet-missions-and-progression.md. Every planet still missing becomes a generic planet (an empty colony slot) with 'empty_colony_fields' fields at 'empty_colony_temperature_c'; the catalog and level tables of Section 6 are computed for such a planet. 'fallback_planet_fields' is the size assumed for an owned planet whose size was not recorded.",
     "max_planets": 11,
     "empty_colony_fields": 300,
     "empty_colony_temperature_c": 0,

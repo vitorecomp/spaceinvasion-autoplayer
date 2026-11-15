@@ -23,8 +23,8 @@ if str(REPO_ROOT) not in sys.path:
 
 def main(argv: Sequence[str] | None = None) -> int:
     """Run the Alembic database migration CLI with host environment and Podman lifecycle hooks."""
-    from spaceinvasion.db.migrations.cli import main as run_migrations_cli
-    from spaceinvasion.runtime.postgres_ctl import (
+    from backend.db.migrations.cli import main as run_migrations_cli
+    from backend.runtime.postgres_ctl import (
         create_postgres_backup,
         ensure_postgres_container_ready,
         get_process_env,

@@ -77,13 +77,13 @@ export const RuntimeExecutionSection: React.FC<RuntimeExecutionSectionProps> = (
             </code>
           </div>
           <p className="config-item-desc">
-            Docker / Podman Compose runs exclusively on PostgreSQL (<code>./data/postgres</code>), while containerless <code>./starter.sh</code> uses local SQLite (<code>state/spaceinvasion.db</code>). Sync both databases anytime with <code>./scripts/sync_db.py</code>. Active target:{" "}
+            Podman Compose runs exclusively on PostgreSQL 16 (<code>./data/postgres</code>). Active target:{" "}
             <code className="tabular">{activeDbTarget}</code>
           </p>
         </div>
         <div className="config-item-control">
           <span className="nav-badge tabular" id="badge-active-db-backend">
-            {activeDbBackend === "postgres" ? "POSTGRESQL · DOCKER" : "SQLITE · LOCAL"}
+            {activeDbBackend === "postgres" ? "POSTGRESQL · PODMAN" : "POSTGRESQL"}
           </span>
         </div>
       </div>
