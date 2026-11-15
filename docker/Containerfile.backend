@@ -2,8 +2,8 @@ FROM docker.io/library/node:22-slim AS ui-builder
 
 WORKDIR /app/frontend
 
-COPY frontend/package.json frontend/package-lock.json ./
-RUN npm ci --registry=https://registry.npmjs.org --no-audit --no-fund
+COPY frontend/package.json ./
+RUN npm install --registry=https://registry.npmjs.org --no-audit --no-fund
 
 COPY frontend/index.html frontend/tsconfig.json frontend/vite.config.ts ./
 COPY frontend/scripts ./scripts
