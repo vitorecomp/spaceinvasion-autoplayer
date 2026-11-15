@@ -182,6 +182,8 @@ class TestPostgresDialectAndBackendControl(unittest.TestCase):
             planets=(),
             active_planet_id=0,
         )
+        root_logs = (REPO_ROOT / "commander.jsonl", REPO_ROOT / "commander.log")
+        before = {p: (p.stat().st_mtime_ns, p.stat().st_size) if p.exists() else None for p in root_logs}
         for bad_dir in (Path(""), Path("."), REPO_ROOT):
             jl, tl = append_tick_logs(
                 bad_dir,
@@ -195,8 +197,8 @@ class TestPostgresDialectAndBackendControl(unittest.TestCase):
             )
             self.assertEqual(jl, Path("/dev/null"))
             self.assertEqual(tl, Path("/dev/null"))
-        self.assertFalse((REPO_ROOT / "commander.jsonl").exists())
-        self.assertFalse((REPO_ROOT / "commander.log").exists())
+        after = {p: (p.stat().st_mtime_ns, p.stat().st_size) if p.exists() else None for p in root_logs}
+        self.assertEqual(after, before)
 
     def test_postgres_podman_migrations_concurrent_mvcc_sync_and_live_bridge_switch(self) -> None:
         harness = get_shared_pg_harness()
