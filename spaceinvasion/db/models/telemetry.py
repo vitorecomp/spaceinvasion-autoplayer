@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from sqlalchemy import Index, desc, text
+from sqlalchemy import CheckConstraint, Index, desc, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from spaceinvasion.db.models.base import Base, identity_pk
@@ -12,7 +12,19 @@ class ActionHistory(Base):
     """Append-only audit log of executed and dry-run commander actions."""
 
     __tablename__ = "action_history"
-    __table_args__ = (Index("idx_action_history_ts", "ts"),)
+    __table_args__ = (
+        CheckConstraint("executed IN (0, 1)", name="ck_action_history_executed"),
+        CheckConstraint("dry_run IN (0, 1)", name="ck_action_history_dry_run"),
+        Index("idx_action_history_ts", "ts"),
+        Index("idx_action_history_ts_brin", "ts", postgresql_using="brin"),
+        Index(
+            "idx_action_history_exec_kind_pid_ts",
+            "kind",
+            "planet_id",
+            desc("ts"),
+            postgresql_where=text("executed = 1 AND dry_run = 0"),
+        ),
+    )
 
     id: Mapped[int] = mapped_column(identity_pk(), primary_key=True)
     ts: Mapped[float] = mapped_column()
@@ -35,7 +47,10 @@ class HourlyProductionHistory(Base):
     """Minute-bucketed empire resource production rate telemetry."""
 
     __tablename__ = "hourly_production_history"
-    __table_args__ = (Index("idx_hourly_production_minute", desc("minute_bucket")),)
+    __table_args__ = (
+        Index("idx_hourly_production_minute", desc("minute_bucket")),
+        Index("idx_hourly_production_recorded_brin", "recorded_at", postgresql_using="brin"),
+    )
 
     id: Mapped[int] = mapped_column(identity_pk(), primary_key=True)
     minute_bucket: Mapped[int] = mapped_column(unique=True)

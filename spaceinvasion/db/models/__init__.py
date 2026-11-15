@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from spaceinvasion.db.models.base import Base, identity_pk
+from spaceinvasion.db.models.base import Base, JsonbText, identity_pk
 from spaceinvasion.db.models.colonies import ColonyAttempt, ColonyCandidateHot
 from spaceinvasion.db.models.galaxy import (
     GalaxyScan,
@@ -70,6 +70,7 @@ __all__ = [
     "GalaxySlotHistory",
     "GameMessage",
     "HourlyProductionHistory",
+    "JsonbText",
     "LatestStateHot",
     "LootRecycleHourly",
     "ManualQueueEvent",

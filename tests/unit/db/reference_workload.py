@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
+import json
 import time
 
 import psycopg
@@ -230,14 +231,30 @@ def run_orm_workload(dsn: str) -> None:
             _orm_workload_steps(session)
 
 
+def _normalize_snapshot_cell(col_name: str, val: object) -> object:
+    if not col_name.endswith("_json") or val is None:
+        return val
+    if isinstance(val, (dict, list)):
+        return json.dumps(val, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
+    if isinstance(val, str):
+        try:
+            parsed: object = json.loads(val)
+        except ValueError:
+            return val
+        return json.dumps(parsed, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
+    return val
+
+
 def snapshot_tables(dsn: str, tables: Sequence[str] = WAVE_A_TABLES) -> dict[str, list[tuple[object, ...]]]:
     """Read sorted row snapshots across `tables` from PostgreSQL for exact parity diffs."""
     out: dict[str, list[tuple[object, ...]]] = {}
     with psycopg.connect(dsn, autocommit=True) as conn:
         for table in tables:
-            rows = conn.execute(f'SELECT * FROM "{table}"').fetchall()
+            cur = conn.execute(f'SELECT * FROM "{table}"')
+            col_names = [desc.name for desc in (cur.description or ())]
+            rows = cur.fetchall()
             out[table] = sorted(
-                (tuple(r) for r in rows),
+                (tuple(_normalize_snapshot_cell(c, v) for c, v in zip(col_names, r, strict=True)) for r in rows),
                 key=lambda row: tuple("" if v is None else str(v) for v in row),
             )
     return out

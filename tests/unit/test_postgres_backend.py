@@ -227,7 +227,7 @@ class TestPostgresDialectAndBackendControl(unittest.TestCase):
             self.assertEqual(pg_db.backend_name, "postgres")
             ver = pg_db.verify_schema(full_integrity=True)
             self.assertTrue(ver["ok"])
-            self.assertEqual(ver["alembic_revision"], BASELINE_REVISION)
+            self.assertEqual(ver["alembic_revision"], "0004")
 
             planet = PlanetState(
                 planet_id=12476,

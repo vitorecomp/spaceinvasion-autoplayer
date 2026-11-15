@@ -226,12 +226,35 @@ def _upsert_occupied_targets(session: Session, rows: list[dict[str, object]]) ->
                 "metal": case((reset_res, 0), else_=SpyTarget.metal),
                 "kryptonite": case((reset_res, 0), else_=SpyTarget.kryptonite),
                 "spice": case((reset_res, 0), else_=SpyTarget.spice),
-                "fleet_json": case((reset_res, "{}"), else_=SpyTarget.fleet_json),
-                "defense_json": case((reset_res, "{}"), else_=SpyTarget.defense_json),
+                "fleet_json": case((reset_res, o_stmt.excluded.fleet_json), else_=SpyTarget.fleet_json),
+                "defense_json": case((reset_res, o_stmt.excluded.defense_json), else_=SpyTarget.defense_json),
                 "dug_in": case((reset_res, 0), else_=SpyTarget.dug_in),
                 "last_spied_ts": case((lost_spacia, 0.0), else_=SpyTarget.last_spied_ts),
                 "last_scanned_ts": o_stmt.excluded.last_scanned_ts,
             },
+        )
+    )
+
+
+def _reset_free_targets(session: Session, coords: Sequence[str], now_ts: float) -> None:
+    session.execute(
+        update(SpyTarget)
+        .where(SpyTarget.coords.in_(coords), SpyTarget.is_own_planet == 0)
+        .values(
+            owner="",
+            planet_name="",
+            status_color="free",
+            is_inactive=0,
+            is_spacia=0,
+            has_debris=0,
+            pig_iron=0,
+            metal=0,
+            kryptonite=0,
+            spice=0,
+            fleet_json="{}",
+            defense_json="{}",
+            dug_in=0,
+            last_scanned_ts=now_ts,
         )
     )
 
@@ -320,6 +343,8 @@ def sync_slots_to_spy_targets_and_debris(
             "is_inactive": 1 if (scolor == "yellow" or sl.is_spacia) else 0,
             "is_spacia": 1 if sl.is_spacia else 0,
             "has_debris": 1 if has_deb else 0,
+            "fleet_json": "{}",
+            "defense_json": "{}",
             "last_scanned_ts": now_ts,
             "merged_into": "",
         }
@@ -331,26 +356,7 @@ def sync_slots_to_spy_targets_and_debris(
     if probed_free:
         _upsert_probed_free_targets(session, list(probed_free.values()))
     if reset_free_coords:
-        session.execute(
-            update(SpyTarget)
-            .where(SpyTarget.coords.in_(reset_free_coords), SpyTarget.is_own_planet == 0)
-            .values(
-                owner="",
-                planet_name="",
-                status_color="free",
-                is_inactive=0,
-                is_spacia=0,
-                has_debris=0,
-                pig_iron=0,
-                metal=0,
-                kryptonite=0,
-                spice=0,
-                fleet_json="{}",
-                defense_json="{}",
-                dug_in=0,
-                last_scanned_ts=now_ts,
-            )
-        )
+        _reset_free_targets(session, reset_free_coords, now_ts)
     if occupied_rows:
         _upsert_occupied_targets(session, list(occupied_rows.values()))
     if debris_updates:

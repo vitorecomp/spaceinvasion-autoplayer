@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from sqlalchemy import Index, desc, text
+from sqlalchemy import CheckConstraint, Index, desc, text
 from sqlalchemy.orm import Mapped, mapped_column
 
-from spaceinvasion.db.models.base import Base, identity_pk
+from spaceinvasion.db.models.base import Base, JsonbText, identity_pk
 
 
 class ColonyCandidateHot(Base):
@@ -13,6 +13,10 @@ class ColonyCandidateHot(Base):
 
     __tablename__ = "colony_candidates_hot"
     __table_args__ = (
+        CheckConstraint("is_probed IN (0, 1)", name="ck_colony_candidates_hot_is_probed"),
+        CheckConstraint("is_discarded IN (0, 1)", name="ck_colony_candidates_hot_is_discarded"),
+        CheckConstraint("is_active IN (0, 1)", name="ck_colony_candidates_hot_is_active"),
+        CheckConstraint("galaxy >= 0 AND system >= 0 AND position >= 0", name="ck_colony_candidates_hot_coords_bounds"),
         Index(
             "idx_colony_candidates_hot_rank",
             "is_active",
@@ -23,6 +27,32 @@ class ColonyCandidateHot(Base):
             "coords",
         ),
         Index("idx_colony_candidates_hot_sys", "galaxy", "system", "is_active"),
+        Index(
+            "idx_colony_candidates_hot_probed",
+            desc("max_fields_est"),
+            "coords",
+            postgresql_where=text("is_active = 1 AND is_discarded = 0 AND is_probed = 1"),
+        ),
+        Index(
+            "idx_colony_candidates_hot_prime",
+            "galaxy",
+            "system",
+            "position",
+            "coords",
+            postgresql_where=text(
+                "is_active = 1 AND is_discarded = 0 AND is_probed = 0 AND position >= 7 AND position <= 12"
+            ),
+        ),
+        Index(
+            "idx_colony_candidates_hot_unprobed_other",
+            "position",
+            "galaxy",
+            "system",
+            "coords",
+            postgresql_where=text(
+                "is_active = 1 AND is_discarded = 0 AND is_probed = 0 AND (position < 7 OR position > 12)"
+            ),
+        ),
     )
 
     coords: Mapped[str] = mapped_column(primary_key=True)
@@ -68,7 +98,7 @@ class ColonyAttempt(Base):
     grade: Mapped[str] = mapped_column(server_default=text("''"))
     score: Mapped[int | None] = mapped_column()
     status_message: Mapped[str] = mapped_column(server_default=text("''"))
-    details_json: Mapped[str] = mapped_column(server_default=text("'{}'"))
+    details_json: Mapped[str] = mapped_column(JsonbText(), server_default=text("'{}'::jsonb"))
 
 
 __all__ = ["ColonyAttempt", "ColonyCandidateHot"]

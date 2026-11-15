@@ -222,9 +222,9 @@ class DatabaseStore:
         if current_rev is None and allow_stamp_existing:
             existing = set(inspect(self._db_engine.engine).get_table_names(schema="public"))
             if all(tbl in existing for tbl in GAME_REQUIRED_TABLES):
-                stamp_res = stamp_baseline_database(self._db_engine, verify_schema=verify_schema)
+                stamp_res = stamp_baseline_database(self._db_engine, verify_schema=False)
                 upgrade_res = upgrade_database(self._db_engine, "head", backup_fn=backup_fn)
-                if verify_schema and upgrade_res.applied_revisions:
+                if verify_schema:
                     diffs = verify_models_match_migrations(self._db_engine)
                     if diffs:
                         raise SchemaDriftError(diffs)
