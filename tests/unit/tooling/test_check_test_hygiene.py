@@ -16,9 +16,9 @@ def test_private_import_scanner_counts_imports_and_module_attrs(tmp_path: Path) 
     (tests_dir / "test_sample.py").write_text(
         "\n".join(
             [
-                "from spaceinvasion.core import catalog as gd",
-                "from spaceinvasion.core.coercion import _helper_fn, __all__, coerce_int",
-                "import spaceinvasion.combat.flight as flt",
+                "from backend.core import catalog as gd",
+                "from backend.core.coercion import _helper_fn, __all__, coerce_int",
+                "import backend.combat.flight as flt",
                 "def test_x():",
                 "    _ = gd._internal_dict",
                 "    _ = flt._private_helper()",
@@ -63,7 +63,7 @@ def test_coverage_evaluator_handles_split_packages_and_regressions(tmp_path: Pat
             {
                 "totals": {"percent_covered": 82.24},
                 "files": {
-                    "spaceinvasion/planner/strategy.py": {
+                    "backend/planner/strategy.py": {
                         "covered_lines": 80,
                         "num_statements": 100,
                         "percent_covered": 80.0,
@@ -81,11 +81,11 @@ def test_coverage_evaluator_handles_split_packages_and_regressions(tmp_path: Pat
             {
                 "totals": {"percent_covered": 83.1},
                 "files": {
-                    "spaceinvasion/planner/heuristics/assembly.py": {
+                    "backend/planner/heuristics/assembly.py": {
                         "executed_lines": [1],
                         "summary": {"covered_lines": 45, "num_statements": 50},
                     },
-                    "spaceinvasion/planner/heuristics/economy.py": {
+                    "backend/planner/heuristics/economy.py": {
                         "executed_lines": [1],
                         "summary": {"covered_lines": 40, "num_statements": 50},
                     },
@@ -105,7 +105,7 @@ def test_coverage_evaluator_handles_split_packages_and_regressions(tmp_path: Pat
             {
                 "totals": {"percent_covered": 82.5},
                 "files": {
-                    "spaceinvasion/planner/heuristics/assembly.py": {
+                    "backend/planner/heuristics/assembly.py": {
                         "executed_lines": [1],
                         "summary": {"covered_lines": 30, "num_statements": 50},
                     },
@@ -135,8 +135,8 @@ def test_lazy_package_exports_and_capture_goldens_list() -> None:
     import pytest
 
     from scripts import capture_goldens
-    import spaceinvasion.db as db_pkg
-    import spaceinvasion.planner as planner_pkg
+    import backend.db as db_pkg
+    import backend.planner as planner_pkg
 
     assert planner_pkg.__getattr__("heuristics") is not None
     with pytest.raises(AttributeError):

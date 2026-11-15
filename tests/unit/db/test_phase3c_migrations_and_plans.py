@@ -12,7 +12,7 @@ import pytest
 from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 
-from spaceinvasion.db.migrations import (
+from backend.db.migrations import (
     BASELINE_REVISION,
     NO_BACKUP,
     build_alembic_config,
@@ -21,14 +21,14 @@ from spaceinvasion.db.migrations import (
     upgrade_database,
     verify_models_match_migrations,
 )
-from spaceinvasion.db.models import (
+from backend.db.models import (
     ManualQueueEvent,
     ManualQueueItem,
     SchemaMigrationEvent,
     SpyTarget,
     UiNotification,
 )
-from spaceinvasion.db.queries import (
+from backend.db.queries import (
     query_active_debris_targets,
     query_bash_window,
     query_colony_candidates,
@@ -40,9 +40,9 @@ from spaceinvasion.db.queries import (
     query_raid_stats,
     query_spy_targets,
 )
-from spaceinvasion.db.repos import SnapshotsRepository
-from spaceinvasion.db.session import DatabaseEngine, count_statements, db_uow
-from spaceinvasion.db.store import DatabaseStore
+from backend.db.repos import SnapshotsRepository
+from backend.db.session import DatabaseEngine, count_statements, db_uow
+from backend.db.store import DatabaseStore
 from tests.pg_harness import DisposablePostgresServer
 from tests.unit.db.reference_workload import run_orm_workload
 from tests.unit.db.reference_workload_b import run_orm_workload_b
@@ -228,13 +228,13 @@ def test_phase3c_orm_workloads_and_queries_pass_at_revision_0004(
 def test_phase3c_modules_obey_section4_standards() -> None:
     """All new and edited Phase 3c modules obey Section 4 LOC/typing/layering standards."""
     paths = [
-        _REPO_ROOT / "spaceinvasion" / "db" / "store.py",
-        *sorted((_REPO_ROOT / "spaceinvasion" / "db" / "models").glob("*.py")),
-        *sorted((_REPO_ROOT / "spaceinvasion" / "db" / "migrations" / "versions").glob("*.py")),
-        *sorted((_REPO_ROOT / "spaceinvasion" / "db" / "queries").glob("*.py")),
-        _REPO_ROOT / "spaceinvasion" / "db" / "repos" / "snapshots.py",
-        _REPO_ROOT / "spaceinvasion" / "db" / "repos" / "_galaxy_sync.py",
-        _REPO_ROOT / "spaceinvasion" / "db" / "repos" / "_message_ingest.py",
+        _REPO_ROOT / "backend" / "db" / "store.py",
+        *sorted((_REPO_ROOT / "backend" / "db" / "models").glob("*.py")),
+        *sorted((_REPO_ROOT / "backend" / "db" / "migrations" / "versions").glob("*.py")),
+        *sorted((_REPO_ROOT / "backend" / "db" / "queries").glob("*.py")),
+        _REPO_ROOT / "backend" / "db" / "repos" / "snapshots.py",
+        _REPO_ROOT / "backend" / "db" / "repos" / "_galaxy_sync.py",
+        _REPO_ROOT / "backend" / "db" / "repos" / "_message_ingest.py",
     ]
     for path in paths:
         _audit_module_standards(path)

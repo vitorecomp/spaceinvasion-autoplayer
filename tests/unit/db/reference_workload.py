@@ -10,8 +10,8 @@ import time
 import psycopg
 from sqlalchemy.orm import Session
 
-from spaceinvasion.db.models import BattleReport, RecycleReport
-from spaceinvasion.db.repos import (
+from backend.db.models import BattleReport, RecycleReport
+from backend.db.repos import (
     ColoniesRepository,
     ColonyCandidateHotInput,
     ManualQueueRepository,
@@ -20,8 +20,8 @@ from spaceinvasion.db.repos import (
     SettingsRepository,
     TelemetryRepository,
 )
-from spaceinvasion.db.session import DatabaseEngine, db_uow
-from spaceinvasion.runtime.bridge._db_gateway import RuntimeDatabaseGateway
+from backend.db.session import DatabaseEngine, db_uow
+from backend.runtime.bridge._db_gateway import RuntimeDatabaseGateway
 from tests.unit.db._workload_a_fixtures import (
     AI_PLAN_PARAMS,
     AI_PLAN_RESULT,

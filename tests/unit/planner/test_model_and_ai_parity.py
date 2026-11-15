@@ -11,20 +11,20 @@ from types import ModuleType
 
 import pytest
 
-from spaceinvasion.core import model as new_model
-from spaceinvasion.core.config import StrategyConfig
-from spaceinvasion.planner import ai as new_ai
-from spaceinvasion.planner.graph import build_ai_planner_graph
+from backend.core import model as new_model
+from backend.core.config import StrategyConfig
+from backend.planner import ai as new_ai
+from backend.planner.graph import build_ai_planner_graph
 from tests.goldens.scenarios import AI_PLANNER_PARAMS, GOLDEN_EPOCH, STATES, ai_target_config
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 MODEL_FILES = (
-    "spaceinvasion/core/_model_helpers.py",
-    "spaceinvasion/core/_model_types.py",
-    "spaceinvasion/core/_model_codec.py",
-    "spaceinvasion/core/model.py",
+    "backend/core/_model_helpers.py",
+    "backend/core/_model_types.py",
+    "backend/core/_model_codec.py",
+    "backend/core/model.py",
 )
-FORBIDDEN_AI_PREFIXES = ("spaceinvasion.db", "spaceinvasion.session", "spaceinvasion.runtime", "bin")
+FORBIDDEN_AI_PREFIXES = ("backend.db", "backend.session", "backend.runtime", "bin")
 
 
 def _load_capture_goldens() -> ModuleType:
@@ -90,7 +90,7 @@ def test_core_model_dataclasses_and_codec_parity() -> None:
 
 @pytest.mark.parametrize("state_name", ("midgame_three_colonies", "lategame_five_colonies"))
 def test_ai_planner_reproduces_all_golden_reference_outputs_byte_for_byte(state_name: str) -> None:
-    """Prove `spaceinvasion.planner.ai` reproduces all 8 golden files in `tests/goldens/reference/ai_planner/`."""
+    """Prove `backend.planner.ai` reproduces all 8 golden files in `tests/goldens/reference/ai_planner/`."""
     capture = _load_capture_goldens()
     cfg = StrategyConfig(planner_mode="ai_planner")
     with capture.frozen_time(GOLDEN_EPOCH):
@@ -149,7 +149,7 @@ def test_ai_planner_golden_directory_full_coverage() -> None:
 
 
 def test_plan_v4_adaptive_live_fill_rule_parity(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Run every `TestLiveFillRule` Plan v4 test case against `spaceinvasion.planner.ai`."""
+    """Run every `TestLiveFillRule` Plan v4 test case against `backend.planner.ai`."""
     from tests.unit.planner import test_adaptive_v4 as v4
 
     assert new_ai.AI_FILL_REASON_PREFIX == "AI-Planner fill"
@@ -201,21 +201,19 @@ def _check_ast_standards(path: Path, rel: str, stdlib_names: set[str], *, is_mod
                 top = mod.split(".")[0]
                 if is_model:
                     ok = top in stdlib_names or mod in (
-                        "spaceinvasion.core.coercion",
-                        "spaceinvasion.core.coords",
-                        "spaceinvasion.core.redaction",
-                        "spaceinvasion.core._inflight",
-                        "spaceinvasion.core._model_helpers",
-                        "spaceinvasion.core._model_types",
-                        "spaceinvasion.core._model_codec",
-                        "spaceinvasion.core.catalog",
+                        "backend.core.coercion",
+                        "backend.core.coords",
+                        "backend.core.redaction",
+                        "backend.core._inflight",
+                        "backend.core._model_helpers",
+                        "backend.core._model_types",
+                        "backend.core._model_codec",
+                        "backend.core.catalog",
                     )
                     assert ok, f"{rel}: core/model forbidden import {mod!r}"
                 else:
                     assert not mod.startswith(FORBIDDEN_AI_PREFIXES), f"{rel}: planner/ai forbidden import {mod!r}"
-                    assert mod != "spaceinvasion.planner.strategy", (
-                        f"{rel}: must use core.model.PlannedAction, not strategy"
-                    )
+                    assert mod != "backend.planner.strategy", f"{rel}: must use core.model.PlannedAction, not strategy"
 
 
 def test_section4_engineering_standards_and_layering_rules() -> None:
@@ -223,7 +221,7 @@ def test_section4_engineering_standards_and_layering_rules() -> None:
     stdlib = set(sys.stdlib_module_names) | {"__future__"}
     for rel in MODEL_FILES:
         _check_ast_standards(REPO_ROOT / rel, rel, stdlib, is_model=True)
-    ai_files = sorted((REPO_ROOT / "spaceinvasion" / "planner" / "ai").rglob("*.py"))
+    ai_files = sorted((REPO_ROOT / "backend" / "planner" / "ai").rglob("*.py"))
     assert len(ai_files) >= 20
     for path in ai_files:
         _check_ast_standards(path, path.relative_to(REPO_ROOT).as_posix(), stdlib, is_model=False)

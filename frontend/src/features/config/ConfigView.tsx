@@ -41,12 +41,12 @@ export const ConfigView: React.FC = () => {
   const modeVal = uiPrefs.modeOverride || botCtrl.mode_override || "auto";
   const activeDbBackend: "postgres" | "sqlite" =
     String(
-      dashboard?.db_backend?.backend || dashboard?.db_summary?.backend || "sqlite"
-    ).toLowerCase() === "postgres"
-      ? "postgres"
-      : "sqlite";
+      dashboard?.db_backend?.backend || dashboard?.db_summary?.backend || "postgres"
+    ).toLowerCase() === "sqlite"
+      ? "sqlite"
+      : "postgres";
   const activeDbTarget = String(
-    dashboard?.db_backend?.target || dashboard?.db_summary?.db_path || "state/spaceinvasion.db"
+    dashboard?.db_backend?.target || dashboard?.db_summary?.target || "./data/postgres"
   );
 
   const onModeChange = async (mode: string) => {

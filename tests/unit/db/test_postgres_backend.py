@@ -14,25 +14,25 @@ from unittest.mock import MagicMock, patch
 import psycopg
 import psycopg_pool
 
-from spaceinvasion.parsing.models import (
+from backend.parsing.models import (
     GalaxySlot,
     SpyReport,
 )
-from spaceinvasion.runtime.logs import append_tick_logs
-from spaceinvasion.core.model import (
+from backend.runtime.logs import append_tick_logs
+from backend.core.model import (
     EnergyBalance,
     GameState,
     PlanetState,
     Resources,
 )
-from spaceinvasion.db.dsn import (
+from backend.db.dsn import (
     is_unix_socket_dsn,
     redact_db_url,
     resolve_database_config,
 )
-from spaceinvasion.db.migrations import BASELINE_REVISION
-from spaceinvasion.runtime.bridge import GameApiBridge
-from spaceinvasion.runtime.postgres_ctl import (
+from backend.db.migrations import BASELINE_REVISION
+from backend.runtime.bridge import GameApiBridge
+from backend.runtime.postgres_ctl import (
     ensure_postgres_container_ready,
     ping_postgres,
 )
@@ -440,15 +440,15 @@ class TestPostgresDialectAndBackendControl(unittest.TestCase):
 
     def test_postgres_ctl_status_and_container_start_helpers(self) -> None:
         from types import SimpleNamespace
-        from spaceinvasion.runtime import postgres_ctl
+        from backend.runtime import postgres_ctl
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            (root / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
+            (root / "podman-compose.yml").write_text("services: {}\n", encoding="utf-8")
             with (
-                patch("spaceinvasion.runtime.postgres_ctl.shutil.which", side_effect=lambda b: f"/usr/bin/{b}"),
+                patch("backend.runtime.postgres_ctl.shutil.which", side_effect=lambda b: f"/usr/bin/{b}"),
                 patch(
-                    "spaceinvasion.runtime.postgres_ctl.subprocess.run",
+                    "backend.runtime.postgres_ctl.subprocess.run",
                     return_value=SimpleNamespace(returncode=0, stdout="running|Up 2m\n", stderr=""),
                 ),
             ):
@@ -457,17 +457,17 @@ class TestPostgresDialectAndBackendControl(unittest.TestCase):
 
             with (
                 patch(
-                    "spaceinvasion.runtime.postgres_ctl.ping_postgres",
+                    "backend.runtime.postgres_ctl.ping_postgres",
                     side_effect=[(False, 1.0, "down"), (True, 1.2, "PG16")],
                 ),
-                patch("spaceinvasion.runtime.postgres_ctl.check_postgres_tcp_open", return_value=True),
-                patch("spaceinvasion.runtime.postgres_ctl.shutil.which", side_effect=lambda b: f"/usr/bin/{b}"),
+                patch("backend.runtime.postgres_ctl.check_postgres_tcp_open", return_value=True),
+                patch("backend.runtime.postgres_ctl.shutil.which", side_effect=lambda b: f"/usr/bin/{b}"),
                 patch(
-                    "spaceinvasion.runtime.postgres_ctl.subprocess.run",
+                    "backend.runtime.postgres_ctl.subprocess.run",
                     return_value=SimpleNamespace(returncode=0, stdout="", stderr=""),
                 ),
                 patch(
-                    "spaceinvasion.runtime.postgres_ctl.get_postgres_container_status",
+                    "backend.runtime.postgres_ctl.get_postgres_container_status",
                     return_value={"container_running": True},
                 ),
             ):
@@ -479,7 +479,7 @@ class TestPostgresDialectAndBackendControl(unittest.TestCase):
                 self.assertTrue(res["ok"])
                 self.assertTrue(res["started_container"])
 
-            with patch("spaceinvasion.runtime.postgres_ctl.ping_postgres", return_value=(False, 1.0, "down")):
+            with patch("backend.runtime.postgres_ctl.ping_postgres", return_value=(False, 1.0, "down")):
                 res_no = postgres_ctl.ensure_postgres_container_ready(
                     "postgresql://postgres:pw@127.0.0.1:5433/spaceinvasion",
                     root_dir=root,

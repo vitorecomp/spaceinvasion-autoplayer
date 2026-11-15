@@ -1,14 +1,14 @@
 # SpaceInvasion Autoplayer — Operator & System Manual
 
-Operational handbook for installing, running, monitoring, backing up, and verifying `spaceinvasion-autoplayer` in both **Docker/Podman** and **Host** modes.
+Operational handbook for installing, running, monitoring, backing up, and verifying `spaceinvasion-autoplayer` using the **Podman Compose** stack (`podman-compose.yml`).
 
 ---
 
 ## 1. Prerequisites & Credentials
 
-- **PostgreSQL 16** (managed automatically via `docker-compose.yml` / Podman in both Docker and Host modes).
-- **Python 3.12+** (`.venv/` for Host mode and local verification).
-- **Node.js 22+** (only required in Host mode for `npm --prefix frontend run build` and Vitest; built inside `docker/Containerfile.backend` in Docker mode).
+- **Podman & `podman-compose`** (runs PostgreSQL 16, Chromium/noVNC, `game_api`, `commander`, and Vite `frontend`).
+- **Python 3.12+** (`.venv/` for running local verification suites `scripts/check.py` and `pytest`).
+- **Node.js 22+** (built inside `docker/Containerfile.backend` in containers; used on host for `npm --prefix frontend test`).
 - **Credentials (`.env`)**: Copy `.env.example` to git-ignored `.env`:
 
 ```env
@@ -17,13 +17,11 @@ SPACEINVASION_PASSWORD=your-password
 SPACEINVASION_UNIVERSE=RETRO
 ```
 
-Never commit `.env`, `.sessions/`, `.browser_profile/`, `data/`, `state/`, or `logs/`.
+Never commit `.env`, `.sessions/`, `.browser_profile/`, `data/`, or `logs/`.
 
 ---
 
-## 2. Running the Stack
-
-### Mode A: Docker / Podman Compose (5 Containers)
+## 2. Running the Stack (Podman Compose, 5 Containers)
 
 ```bash
 podman-compose up -d --build
@@ -37,21 +35,7 @@ Services & local ports (`127.0.0.1` only):
 - **`commander`**: Pure-HTTP autonomous loop (`bin/commander.py --live --loop --reload`).
 - **`frontend`** (`127.0.0.1:5173`): Optional live Vite dev server proxying API calls to `game_api`.
 
-### Mode B: Host Mode (`./starter.sh` + PostgreSQL 16)
-
-```bash
-./starter.sh                 # Live supervised stack (auto-builds stale UI, ensures PG16, auto-restarts crashes)
-./starter.sh --dry-run       # Dry-run commander (no in-game clicks)
-./starter.sh --check-ui-build # Rebuild spaceinvasion/ui/ only if missing or stale, then exit
-```
-
-Individual host-mode entrypoints:
-- `bin/login.py --debug-port 9222 --detach` — Opens persistent host Chrome profile and logs into BitMeUp.
-- `bin/game_api.py --reload` — Runs the local HTTP API bridge on `127.0.0.1:8787`.
-- `bin/commander.py --loop --reload [--live]` — Runs the pure-HTTP autonomous decision loop.
-- `bin/run_stack.py [--live]` — Supervises Chrome, `game_api.py`, and `commander.py`.
-
-**CAPTCHA / Anti-Bot Stop Behavior**: If Cloudflare Turnstile or a BitMeUp challenge appears, automation pauses immediately, persists a `captcha_gate` notification in the Operator Console, and exits `starter.sh` with code `2` (never auto-restarting into an anti-bot gate). Resolve the challenge manually in Chrome (or noVNC `:7900`), then click **Resume** in the console or re-run `./starter.sh`.
+**CAPTCHA / Anti-Bot Stop Behavior**: If Cloudflare Turnstile or a BitMeUp challenge appears, automation pauses immediately and persists a `captcha_gate` notification in the Operator Console (zero browser calls while blocked). Resolve the challenge manually in noVNC (`http://127.0.0.1:7900`), then click **Resume** in the Operator Console.
 
 ---
 
@@ -84,7 +68,7 @@ curl -s -X POST http://127.0.0.1:8787/command -H 'Content-Type: application/json
 podman exec spaceinvasion_postgres pg_dump -U spaceinvasion -Fc spaceinvasion > data/backups/manual_$(date -u +%Y%m%dT%H%M%SZ).dump
 ```
 
-- **Programmatic Alembic upgrades** (`spaceinvasion.db.alembic_migrations.upgrade_database`) require a `backup_fn` callback (creating a pre-upgrade `pg_dump` snapshot) and append SHA-256 checksums + timings to `schema_migration_events`.
+- **Programmatic Alembic upgrades** (`backend.db.migrations.upgrade_database`) require a `backup_fn` callback (creating a pre-upgrade `pg_dump` snapshot) and append SHA-256 checksums + timings to `schema_migration_events`.
 - **Query performance inspection**:
 
 ```bash

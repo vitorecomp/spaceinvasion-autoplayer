@@ -1,4 +1,4 @@
-"""Unit & notebook mathematical parity tests for `spaceinvasion/planner/ai_planner.py`."""
+"""Unit & notebook mathematical parity tests for `backend/planner/ai_planner.py`."""
 
 from __future__ import annotations
 
@@ -10,9 +10,9 @@ import unittest
 
 import numpy as np
 
-from spaceinvasion.core import catalog as game_data
-from spaceinvasion.core.config import StrategyConfig
-from spaceinvasion.core.model import (
+from backend.core import catalog as game_data
+from backend.core.config import StrategyConfig
+from backend.core.model import (
     BuildingOffer,
     EnergyBalance,
     GameState,
@@ -21,11 +21,11 @@ from spaceinvasion.core.model import (
     ResearchOffer,
     Resources,
 )
-from spaceinvasion.planner import ai as ap
-from spaceinvasion.planner import config_optimizer as co
+from backend.planner import ai as ap
+from backend.planner import config_optimizer as co
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-AI_PKG_DIR = REPO_ROOT / "spaceinvasion" / "planner" / "ai"
+AI_PKG_DIR = REPO_ROOT / "backend" / "planner" / "ai"
 NOTEBOOK_PATH = REPO_ROOT / "notebooks" / "full_planner.ipynb"
 
 
@@ -128,7 +128,7 @@ class AiPlannerUnitTests(unittest.TestCase):
         for path in sorted(AI_PKG_DIR.glob("*.py")):
             source = path.read_text(encoding="utf-8")
             self.assertNotIn("9222", source)
-            self.assertNotIn("spaceinvasion.db", source)
+            self.assertNotIn("backend.db", source)
             tree = ast.parse(source)
             for node in ast.walk(tree):
                 if isinstance(node, ast.Import):
@@ -3524,7 +3524,7 @@ class AiPlannerUnitTests(unittest.TestCase):
         self.assertEqual(ap.compute_inbound_friendly_cargo_by_planet(st), {})
 
     def test_allow_demolition_triggers_demolish_strictly_when_planet_is_out_of_fields(self) -> None:
-        from spaceinvasion.planner import graph as ag
+        from backend.planner import graph as ag
 
         # Planet starts at 38/40 fields (2 free fields):
         # b1: 5 -> 9 (+4 fields needed -> 2 free fields used first, then 2 demolitions of b3 triggered @ 40/40!)

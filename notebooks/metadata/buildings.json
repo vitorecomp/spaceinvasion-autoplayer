@@ -1,5 +1,5 @@
 {
-  "description": "Static descriptions of buildings b1-b21 for notebooks/full_planner.ipynb. Costs, build times, production and requirements come from spaceinvasion.core.game_data; this file only adds what that catalog lacks. 'name' must match game_data (checked when the notebook loads the file). 'cost_scale_factor' is the nominal cost ratio between consecutive levels.",
+  "description": "Static descriptions of buildings b1-b21 for notebooks/full_planner.ipynb. Costs, build times, production and requirements come from backend.core.game_data; this file only adds what that catalog lacks. 'name' must match game_data (checked when the notebook loads the file). 'cost_scale_factor' is the nominal cost ratio between consecutive levels.",
   "buildings": {
     "b1": {
       "name": "Pig iron mine",

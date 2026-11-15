@@ -13,14 +13,14 @@ import time
 import pytest
 import requests
 
-from spaceinvasion.core.config import StrategyConfig
-from spaceinvasion.core.model import PlannedAction
-from spaceinvasion.runtime.api.handlers import build_command_registry
-from spaceinvasion.runtime.api.http_server import create_modular_api_server
-from spaceinvasion.runtime.api.registry import CommandRegistry, generate_command_reference_markdown
-from spaceinvasion.runtime.bridge.bridge import ModularGameApiBridge
-from spaceinvasion.session.auth import AntiBotChallengeError
-from spaceinvasion.session.executor import ExecutionResult
+from backend.core.config import StrategyConfig
+from backend.core.model import PlannedAction
+from backend.runtime.api.handlers import build_command_registry
+from backend.runtime.api.http_server import create_modular_api_server
+from backend.runtime.api.registry import CommandRegistry, generate_command_reference_markdown
+from backend.runtime.bridge.bridge import ModularGameApiBridge
+from backend.session.auth import AntiBotChallengeError
+from backend.session.executor import ExecutionResult
 from tests.e2e.harness import E2ETestHarness
 from tests.goldens.api_scenario import (
     API_STEPS,
@@ -34,9 +34,9 @@ from tests.goldens.scenarios import GOLDEN_EPOCH
 REPO_ROOT = Path(__file__).resolve().parents[3]
 PREEXISTING_PHASE4_FILES = frozenset(
     {
-        "spaceinvasion/runtime/bridge/snapshot.py",
-        "spaceinvasion/runtime/api/registry.py",
-        "spaceinvasion/runtime/api/validation.py",
+        "backend/runtime/bridge/snapshot.py",
+        "backend/runtime/api/registry.py",
+        "backend/runtime/api/validation.py",
     }
 )
 
@@ -355,8 +355,8 @@ def test_command_registry_60_commands_docs_dispatcher_loc_and_section4_ast() -> 
 
     # Section 4 AST check across every new Phase 4 production file.
     prod_files = sorted(
-        list((REPO_ROOT / "spaceinvasion/runtime/bridge").rglob("*.py"))
-        + list((REPO_ROOT / "spaceinvasion/runtime/api").rglob("*.py"))
+        list((REPO_ROOT / "backend/runtime/bridge").rglob("*.py"))
+        + list((REPO_ROOT / "backend/runtime/api").rglob("*.py"))
     )
     prod_files = [p for p in prod_files if "/payloads/" not in p.as_posix()]
     assert len(prod_files) >= 25

@@ -10,10 +10,10 @@ import unittest
 
 import pytest
 
-from spaceinvasion.planner.eta import estimate_planet_hourly_economy
-from spaceinvasion.core import catalog as game_data
-from spaceinvasion.core.config import StrategyConfig
-from spaceinvasion.core.model import (
+from backend.planner.eta import estimate_planet_hourly_economy
+from backend.core import catalog as game_data
+from backend.core.config import StrategyConfig
+from backend.core.model import (
     BuildingOffer,
     EnergyBalance,
     FleetAlert,
@@ -25,7 +25,7 @@ from spaceinvasion.core.model import (
     TutorialTask,
     UnitOffer,
 )
-from spaceinvasion.planner.heuristics import plan_actions
+from backend.planner.heuristics import plan_actions
 
 pytestmark = pytest.mark.invariants
 

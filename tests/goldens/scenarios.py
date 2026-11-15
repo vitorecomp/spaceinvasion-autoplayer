@@ -9,10 +9,10 @@ from __future__ import annotations
 
 from typing import Any, Mapping, Optional
 
-from spaceinvasion.core import catalog as game_data
-from spaceinvasion.core.catalog import SHIP_SLUG_BY_KEY
-from spaceinvasion.core.config import StrategyConfig
-from spaceinvasion.core.model import (
+from backend.core import catalog as game_data
+from backend.core.catalog import SHIP_SLUG_BY_KEY
+from backend.core.config import StrategyConfig
+from backend.core.model import (
     BuildingOffer,
     EnergyBalance,
     FleetAlert,

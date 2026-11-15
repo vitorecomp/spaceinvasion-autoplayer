@@ -1,4 +1,4 @@
-"""Parity, invariant, and layering tests for `spaceinvasion.core.catalog` vs `game_data`."""
+"""Parity, invariant, and layering tests for `backend.core.catalog` vs `game_data`."""
 
 from __future__ import annotations
 
@@ -9,12 +9,12 @@ import sys
 
 import pytest
 
-from spaceinvasion.core import catalog, game_data
-from spaceinvasion.core.catalog import DEFENSE_SLUG_BY_KEY as FLEET_DEFENSE_SLUGS
-from spaceinvasion.core.catalog import SHIP_SLUG_BY_KEY as FLEET_SHIP_SLUGS
-from spaceinvasion.core.model import Resources
+from backend.core import catalog, game_data
+from backend.core.catalog import DEFENSE_SLUG_BY_KEY as FLEET_DEFENSE_SLUGS
+from backend.core.catalog import SHIP_SLUG_BY_KEY as FLEET_SHIP_SLUGS
+from backend.core.model import Resources
 
-CATALOG_DIR = Path(__file__).resolve().parents[3] / "spaceinvasion" / "core" / "catalog"
+CATALOG_DIR = Path(__file__).resolve().parents[3] / "backend" / "core" / "catalog"
 
 
 def test_catalog_data_tables_and_constants_match_game_data_exactly() -> None:
@@ -204,8 +204,8 @@ def test_catalog_imports_stdlib_only_and_meets_size_standards() -> None:
                 top = node.module.split(".")[0]
                 allowed = (
                     top in stdlib
-                    or node.module.startswith("spaceinvasion.core.catalog")
-                    or node.module == "spaceinvasion.core.coercion"
+                    or node.module.startswith("backend.core.catalog")
+                    or node.module == "backend.core.coercion"
                 )
                 assert allowed, f"{path.name} imports forbidden module {node.module}"
         line_count = len(src.splitlines())

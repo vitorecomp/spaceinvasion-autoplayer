@@ -16,19 +16,19 @@ from __future__ import annotations
 from dataclasses import replace
 import unittest
 
-from spaceinvasion.core import catalog as game_data
-from spaceinvasion.core.config import StrategyConfig
-from spaceinvasion.core.model import (
+from backend.core import catalog as game_data
+from backend.core.config import StrategyConfig
+from backend.core.model import (
     EnergyBalance,
     GameState,
     PlanetState,
     QueueJob,
     Resources,
 )
-from spaceinvasion.planner import ai as ap
-from spaceinvasion.planner.config_optimizer import full_cost
-from spaceinvasion.core.model import PlannedAction
-from spaceinvasion.planner.heuristics import (
+from backend.planner import ai as ap
+from backend.planner.config_optimizer import full_cost
+from backend.core.model import PlannedAction
+from backend.planner.heuristics import (
     AI_PLAN_ORDER_LOAN_TAG,
     EMPIRE_SMELT_MIN_SPARE_PIG,
     INFRA_TRANSPORT_FLEET_CAP_RATIO,
@@ -365,7 +365,7 @@ class TestLiveFillRule(unittest.TestCase):
         self.assertEqual(self._kinds(actions), [("WAIT_RESOURCES", 101, 7, 10), ("BUILD", 101, 1, 20)])
 
     def _fill_duration_hours(self, state, key: str, level: int) -> float:
-        from spaceinvasion.planner.config_optimizer import build_monotonic_base_times, building_time_divisor
+        from backend.planner.config_optimizer import build_monotonic_base_times, building_time_divisor
 
         planet = state.planets[0]
         info = game_data.BUILDING_BY_ID[int(key[1:])]

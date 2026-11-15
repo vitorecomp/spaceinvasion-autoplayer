@@ -15,17 +15,17 @@ import time
 import unittest
 from unittest.mock import MagicMock, patch
 
-from spaceinvasion.core.config import StrategyConfig
-from spaceinvasion.db.config_store import save_strategy_config
-from spaceinvasion.core.model import (
+from backend.core.config import StrategyConfig
+from backend.db.config_store import save_strategy_config
+from backend.core.model import (
     GameState,
     QueueJob,
     Resources,
     UnitOffer,
 )
-from spaceinvasion.planner import ai as ap
-from spaceinvasion.core.model import PlannedAction
-from spaceinvasion.planner.heuristics import (
+from backend.planner import ai as ap
+from backend.core.model import PlannedAction
+from backend.planner.heuristics import (
     AI_INFRA_CARGO_TAG,
     INFRA_TRANSPORT_MAX_BATCH,
     INFRA_TRANSPORT_MIN_UTILIZATION,
@@ -36,7 +36,7 @@ from spaceinvasion.planner.heuristics import (
     plan_planet_shipyard_targets,
     ship_offer_map,
 )
-from spaceinvasion.runtime.bridge import GameApiBridge
+from backend.runtime.bridge import GameApiBridge
 from tests.unit.planner.test_ai_planner import _make_planet, _sample_target_config, _target_planet_entry
 from tests.unit.planner.test_strategy import _adaptive_cfg, _colony, _state
 
@@ -559,7 +559,7 @@ class TestBridgeLedgersAndRealizedLoot(unittest.TestCase):
             bridge = self._bridge(tmp, adaptive=True)
             try:
                 with patch(
-                    "spaceinvasion.runtime.bridge._ledgers_production.get_loot_recycle_hourly",
+                    "backend.runtime.bridge._ledgers_production.get_loot_recycle_hourly",
                     return_value={"history": [], "summary": summary},
                 ):
                     realized = bridge.ledgers.get_realized_loot_hourly_locked()
@@ -592,7 +592,7 @@ class TestBridgeLedgersAndRealizedLoot(unittest.TestCase):
 
                 # A loot summary without per-resource totals (query failed) keeps the model in use.
                 with patch(
-                    "spaceinvasion.runtime.bridge._ledgers_production.get_loot_recycle_hourly",
+                    "backend.runtime.bridge._ledgers_production.get_loot_recycle_hourly",
                     return_value={"history": [], "summary": {"total_stolen": 0.0, "window_hours": 24}},
                 ):
                     self.assertIsNone(bridge.ledgers.get_realized_loot_hourly_locked())

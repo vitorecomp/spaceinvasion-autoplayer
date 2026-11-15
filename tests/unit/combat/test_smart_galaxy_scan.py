@@ -7,26 +7,26 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from spaceinvasion.combat.scanner import (
+from backend.combat.scanner import (
     order_sectors_for_smooth_walk,
     score_galaxy_scan_sectors,
     select_smart_galaxy_scan_batch,
 )
-from spaceinvasion.core.coords import ARROW_NAV_MAX_DISTANCE
-from spaceinvasion.parsing.galaxy import extract_galaxy_universe_bounds
-from spaceinvasion.parsing.models import (
+from backend.core.coords import ARROW_NAV_MAX_DISTANCE
+from backend.parsing.galaxy import extract_galaxy_universe_bounds
+from backend.parsing.models import (
     GalaxySlot,
     SpyReport,
 )
-from spaceinvasion.core.config import (
+from backend.core.config import (
     StrategyConfig,
     strategy_config_from_dict,
 )
-from spaceinvasion.db.config_store import (
+from backend.db.config_store import (
     load_strategy_config,
     save_strategy_config,
 )
-from spaceinvasion.core.model import (
+from backend.core.model import (
     EnergyBalance,
     GameState,
     PlanetState,
@@ -579,13 +579,13 @@ class TestSmartGalaxyScanTwoPhaseEngine(unittest.TestCase):
         self.assertEqual(len(spilled["selected_sectors"]), 10)
 
     def test_scanned_sectors_command_and_refresh_pct_config_roundtrip(self) -> None:
-        from spaceinvasion.runtime.bridge import GameApiBridge
-        from spaceinvasion.core.config import StrategyConfig
-        from spaceinvasion.db.config_store import (
+        from backend.runtime.bridge import GameApiBridge
+        from backend.core.config import StrategyConfig
+        from backend.db.config_store import (
             load_strategy_config,
             save_strategy_config,
         )
-        from spaceinvasion.core.model import (
+        from backend.core.model import (
             EnergyBalance,
             GameState,
             PlanetState,
@@ -749,10 +749,10 @@ class TestSmartGalaxyScanTwoPhaseEngine(unittest.TestCase):
                 db.close()
 
     def test_mixed_split_spills_discovery_to_all_14_galaxies_when_owned_galaxy_is_full(self) -> None:
-        from spaceinvasion.runtime.bridge import GameApiBridge
-        from spaceinvasion.core.config import StrategyConfig
-        from spaceinvasion.db.config_store import save_strategy_config
-        from spaceinvasion.core.model import (
+        from backend.runtime.bridge import GameApiBridge
+        from backend.core.config import StrategyConfig
+        from backend.db.config_store import save_strategy_config
+        from backend.core.model import (
             EnergyBalance,
             GameState,
             PlanetState,
@@ -821,10 +821,10 @@ class TestSmartGalaxyScanTwoPhaseEngine(unittest.TestCase):
                 db.close()
 
     def test_scanned_sectors_live_preview_rebuilds_queue_without_mutating_saved_config(self) -> None:
-        from spaceinvasion.runtime.bridge import GameApiBridge
-        from spaceinvasion.core.config import StrategyConfig
-        from spaceinvasion.db.config_store import save_strategy_config
-        from spaceinvasion.core.model import (
+        from backend.runtime.bridge import GameApiBridge
+        from backend.core.config import StrategyConfig
+        from backend.db.config_store import save_strategy_config
+        from backend.core.model import (
             EnergyBalance,
             GameState,
             PlanetState,

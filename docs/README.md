@@ -8,11 +8,11 @@ Welcome to the unified technical documentation suite for **`spaceinvasion-autopl
 
 | Document | Scope |
 |---|---|
-| **[Architecture Guide](./architecture.md)** | Both runtime modes (Docker/Podman & Host on PostgreSQL 16), modular package boundaries (`core`, `parsing`, `combat`, `planner`, `session`, `db`, `runtime`, `frontend`), lock-free published snapshot reads, Kahn Action Graph DAG, hot-reload order, and anti-bot/security guardrails. |
+| **[Architecture Guide](./architecture.md)** | Podman Compose runtime on PostgreSQL 16, modular package boundaries (`core`, `parsing`, `combat`, `planner`, `session`, `db`, `runtime`, `frontend`), lock-free published snapshot reads, Kahn Action Graph DAG, hot-reload order, and anti-bot/security guardrails. |
 | **[Database MER & Migrations](./database-mer.md)** | Entity-Relationship Diagram (`erDiagram`), append-only retention model, complete dictionary across all **40 PostgreSQL tables** (19 Hot + 21 History), SQLAlchemy 2.0 ORM (`models/`, `repos/`, `queries/`, `session.py`, `DatabaseStore`), and Alembic migrations (`0001` baseline + Phase 3c `0002`–`0004`). |
-| **[Operator & System Manual](./manual.md)** | Setup and daily operations for both Docker (`podman-compose up -d`) and Host (`./starter.sh`) modes, CLI entrypoints, frontend bundle builds, Alembic backup/migration workflow, quality gates (`scripts/check.py`, `scripts/generate_docs.py`), and troubleshooting. |
+| **[Operator & System Manual](./manual.md)** | Setup and daily operations for the Podman stack (`podman-compose up -d`), container entrypoints, frontend bundle builds, Alembic backup/migration workflow, quality gates (`scripts/check.py`, `scripts/generate_docs.py`), and troubleshooting. |
 | **[API Command Reference](./api-commands.md)** | *(Generated)* Complete reference for all **60 `POST /command` endpoints** with browser-lock requirements, mutation flags, parameter schemas, and summaries. |
-| **[Strategy Settings Reference](./settings-reference.md)** | *(Generated)* Complete reference for all **50 `StrategyConfig` fields** (types, defaults, bounds, choices, and descriptions) exported from `spaceinvasion.core.settings`. |
+| **[Strategy Settings Reference](./settings-reference.md)** | *(Generated)* Complete reference for all **50 `StrategyConfig` fields** (types, defaults, bounds, choices, and descriptions) exported from `backend.core.settings`. |
 | **[Heuristic Strategy Specification](./heuristic-strategy.md)** | Complete deterministic `P0`–`P3` heuristic (`priority`) planner ruleset: `SAVE` escape flights, energy recovery, manual queue Metal frontier & `2:1` `Blast furnace` auto-throttling, `b6` solar tear-down, tutorial solver, mine ROI math, free daily Transmitter guard, and fleet dispatch rules. |
 | **[System Specification](./specification.md)** | Core runtime specification, API contracts, safety boundaries, and component design. |
 

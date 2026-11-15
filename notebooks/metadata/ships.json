@@ -1,5 +1,5 @@
 {
-  "description": "Role of each ship for notebooks/full_planner.ipynb, keyed by the s-key that spaceinvasion.combat.fleet.SHIP_SLUG_BY_KEY maps to the catalog. Costs and stats come from spaceinvasion.core.game_data. 'name' must match game_data (checked when the notebook loads the file).",
+  "description": "Role of each ship for notebooks/full_planner.ipynb, keyed by the s-key that backend.combat.fleet.SHIP_SLUG_BY_KEY maps to the catalog. Costs and stats come from backend.core.game_data. 'name' must match game_data (checked when the notebook loads the file).",
   "ships": {
     "s1": {
       "name": "Small transport",

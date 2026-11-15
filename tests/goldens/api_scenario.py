@@ -16,9 +16,9 @@ from unittest import mock
 
 import requests
 
-from spaceinvasion.db import config_store as config_store_mod
-from spaceinvasion.core.config import StrategyConfig
-from spaceinvasion.parsing import overview as overview_mod, queues as queues_mod
+from backend.db import config_store as config_store_mod
+from backend.core.config import StrategyConfig
+from backend.parsing import overview as overview_mod, queues as queues_mod
 from tests.e2e.harness import E2ETestHarness, FakeClock, FakeSpaceInvasionServer, _ClockTimeProxy
 from tests.goldens.scenarios import GOLDEN_EPOCH, NICKNAME, SID, UNIVERSE_ID, USER_ID
 

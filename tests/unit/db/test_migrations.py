@@ -16,37 +16,37 @@ from unittest.mock import MagicMock
 import psycopg
 import requests
 
-from spaceinvasion.core.model import (
+from backend.core.model import (
     EnergyBalance,
     GameState,
     PlanetState,
     PlannedAction,
     Resources,
 )
-from spaceinvasion.db.migrations import (
+from backend.db.migrations import (
     BASELINE_REVISION,
     NO_BACKUP,
     get_current_revision,
     upgrade_database,
     verify_models_match_migrations,
 )
-from spaceinvasion.db.migrations.cli import main as migrations_cli_main
-from spaceinvasion.db.queries.dashboard import (
+from backend.db.migrations.cli import main as migrations_cli_main
+from backend.db.queries.dashboard import (
     GAME_REQUIRED_TABLES,
     HISTORY_TABLES,
     HOT_TABLES,
     TABLE_TIER_BY_NAME,
 )
-from spaceinvasion.db.store import DatabaseStore
-from spaceinvasion.parsing.models import GalaxySlot, InboxMessage, SpyReport
-from spaceinvasion.runtime.api.http_server import create_api_server
-from spaceinvasion.runtime.bridge import GameApiBridge
+from backend.db.store import DatabaseStore
+from backend.parsing.models import GalaxySlot, InboxMessage, SpyReport
+from backend.runtime.api.http_server import create_api_server
+from backend.runtime.bridge import GameApiBridge
 from tests.pg_harness import get_shared_pg_harness, open_test_db as GameDatabase
 
 
 class TestDatabaseMigrationsAndVersioning(unittest.TestCase):
     def test_append_only_ddl_invariants_and_alembic_fresh_upgrade_and_drift_detection(self) -> None:
-        for src_path in sorted(Path("spaceinvasion/db").rglob("*.py")):
+        for src_path in sorted(Path("backend/db").rglob("*.py")):
             txt = src_path.read_text(encoding="utf-8")
             self.assertIsNone(re.search(r"\bDELETE\s+FROM\b", txt, re.IGNORECASE), str(src_path))
             self.assertIsNone(re.search(r"\bDROP\s+TABLE\b", txt, re.IGNORECASE), str(src_path))

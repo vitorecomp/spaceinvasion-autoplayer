@@ -1,6 +1,6 @@
 # Strategy Settings Reference
 
-Generated from `spaceinvasion.core.settings`. Every surviving `StrategyConfig` field is listed below.
+Generated from `backend.core.settings`. Every surviving `StrategyConfig` field is listed below.
 
 Removed legacy `ga_nn` keys (ignored on load, rejected on strict API patches): `ga_horizon_steps`, `ga_nn_weight`, `ga_seed`.
 

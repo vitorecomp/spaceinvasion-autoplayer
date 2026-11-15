@@ -12,7 +12,7 @@ from selenium.common.exceptions import NoSuchElementException
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 
-from spaceinvasion.session.auth import (
+from backend.session.auth import (
     AntiBotChallengeError,
     ConfigurationError,
     Credentials,
@@ -20,7 +20,7 @@ from spaceinvasion.session.auth import (
     SpaceInvasionAuthError,
     TwoFactorRequiredError,
 )
-from spaceinvasion.session.browser import (
+from backend.session.browser import (
     BrowserConfig,
     close_or_detach_driver,
     login_with_browser,
@@ -311,7 +311,7 @@ class TestBrowserLogin(unittest.TestCase):
 
     def test_attach_fails_cleanly_when_debug_port_closed(self) -> None:
         cfg = BrowserConfig(attach=True, debug_port=19999)
-        with unittest.mock.patch("spaceinvasion.session.browser.is_debug_port_open", return_value=False):
+        with unittest.mock.patch("backend.session.browser.is_debug_port_open", return_value=False):
             with self.assertRaises(SpaceInvasionAuthError):
                 open_browser_session(cfg)
 
@@ -333,7 +333,7 @@ class TestBrowserLogin(unittest.TestCase):
             creds = Credentials(email="pilot@example.com", password="secret", universe="RETRO")
 
             with unittest.mock.patch(
-                "spaceinvasion.session.browser.open_browser_session",
+                "backend.session.browser.open_browser_session",
                 return_value=(driver, None, True),
             ):
                 result = login_with_browser(
@@ -359,7 +359,7 @@ class TestBrowserLogin(unittest.TestCase):
         driver2.quit.assert_called_once()
 
     def test_multi_tab_switches_to_ingame_and_ignores_control_ui_tab(self) -> None:
-        from spaceinvasion.session.client import GameBrowserClient
+        from backend.session.client import GameBrowserClient
 
         tab_ui = MagicMock()
         tab_ui_switch = MagicMock()
@@ -398,7 +398,7 @@ class TestBrowserLogin(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             driver.get_cookies.return_value = []
             with unittest.mock.patch(
-                "spaceinvasion.session.browser.open_browser_session",
+                "backend.session.browser.open_browser_session",
                 return_value=(driver, None, True),
             ):
                 res = login_with_browser(
@@ -448,7 +448,7 @@ class TestBrowserLogin(unittest.TestCase):
         import subprocess
         import sys
         import time
-        from spaceinvasion.session import browser
+        from backend.session import browser
 
         def _spawn_sigign(flag_path: Path) -> subprocess.Popen:
             code = (
@@ -471,7 +471,7 @@ class TestBrowserLogin(unittest.TestCase):
 
         with (
             tempfile.TemporaryDirectory() as tmp,
-            unittest.mock.patch("spaceinvasion.session._browser_driver._TERMINATE_GRACE_SECONDS", 0.1),
+            unittest.mock.patch("backend.session._browser_driver._TERMINATE_GRACE_SECONDS", 0.1),
         ):
             tp = Path(tmp)
             # 1. close_or_detach_driver(keep_running=False) kills SIG_IGN child
@@ -491,10 +491,10 @@ class TestBrowserLogin(unittest.TestCase):
             try:
                 cfg = BrowserConfig(profile_dir=tp / "prof2", debug_port=19998)
                 with (
-                    unittest.mock.patch("spaceinvasion.session.browser.is_debug_port_open", return_value=False),
-                    unittest.mock.patch("spaceinvasion.session.browser.launch_chrome_with_debug_port", return_value=p2),
+                    unittest.mock.patch("backend.session.browser.is_debug_port_open", return_value=False),
+                    unittest.mock.patch("backend.session.browser.launch_chrome_with_debug_port", return_value=p2),
                     unittest.mock.patch(
-                        "spaceinvasion.session.browser.attach_chrome_driver", side_effect=RuntimeError("attach boom")
+                        "backend.session.browser.attach_chrome_driver", side_effect=RuntimeError("attach boom")
                     ),
                 ):
                     with self.assertRaises(RuntimeError):
@@ -512,12 +512,10 @@ class TestBrowserLogin(unittest.TestCase):
             try:
                 cfg3 = BrowserConfig(profile_dir=tp / "prof3", debug_port=19997, timeout=0.1)
                 with (
-                    unittest.mock.patch(
-                        "spaceinvasion.session.browser.find_chrome_binary", return_value="/usr/bin/true"
-                    ),
-                    unittest.mock.patch("spaceinvasion.session.browser.is_debug_port_open", return_value=False),
-                    unittest.mock.patch("spaceinvasion.session.browser.subprocess.Popen", return_value=p3),
-                    unittest.mock.patch("spaceinvasion.session.browser.time.monotonic", side_effect=[0.0, 0.0, 20.0]),
+                    unittest.mock.patch("backend.session.browser.find_chrome_binary", return_value="/usr/bin/true"),
+                    unittest.mock.patch("backend.session.browser.is_debug_port_open", return_value=False),
+                    unittest.mock.patch("backend.session.browser.subprocess.Popen", return_value=p3),
+                    unittest.mock.patch("backend.session.browser.time.monotonic", side_effect=[0.0, 0.0, 20.0]),
                 ):
                     with self.assertRaises(SpaceInvasionAuthError):
                         browser.launch_chrome_with_debug_port(cfg3, 19997)
@@ -530,7 +528,7 @@ class TestBrowserLogin(unittest.TestCase):
             gc.collect()
 
     def test_r7_sync_browser_cookies_closes_http_session_and_clamps_nan_inf_timeouts(self) -> None:
-        from spaceinvasion.session import browser
+        from backend.session import browser
 
         with tempfile.TemporaryDirectory() as tmp:
             tp = Path(tmp)
@@ -557,7 +555,7 @@ class TestBrowserLogin(unittest.TestCase):
 
             drv = FakeDriver(scenario="already_logged_in")
             creds = Credentials(email="pilot@example.com", password="secret")
-            with unittest.mock.patch("spaceinvasion.session.browser.build_http_session", side_effect=_TrackedSession):
+            with unittest.mock.patch("backend.session.browser.build_http_session", side_effect=_TrackedSession):
                 cpath, cnames = browser.sync_browser_cookies(
                     drv, tp / ".sessions", creds, "https://spaceinvasion.bitmeup.com/"
                 )
@@ -575,7 +573,7 @@ class TestBrowserLogin(unittest.TestCase):
                 resp.__exit__.return_value = None
                 return resp
 
-            with unittest.mock.patch("spaceinvasion.session.browser.urllib.request.urlopen", side_effect=_fake_urlopen):
+            with unittest.mock.patch("backend.session.browser.urllib.request.urlopen", side_effect=_fake_urlopen):
                 self.assertTrue(browser.is_debug_port_open(9222, timeout=float("nan")))
                 self.assertTrue(browser.is_debug_port_open(9222, timeout=float("inf")))
                 self.assertTrue(browser.is_debug_port_open(9222, timeout=1e9))
@@ -595,11 +593,11 @@ class TestLoginCli(unittest.TestCase):
         import os
         from unittest.mock import patch
         import login as login_cli
-        from spaceinvasion.session.auth import (
+        from backend.session.auth import (
             LoginResult,
             UniverseOption,
         )
-        from spaceinvasion.session.browser import BrowserLoginResult
+        from backend.session.browser import BrowserLoginResult
 
         with patch.dict(os.environ, {"SPACEINVASION_NO_REEXEC": "1"}):
             with patch("sys.stdout", new_callable=io.StringIO):
@@ -712,7 +710,7 @@ class TestLoginCli(unittest.TestCase):
             self.assertEqual(huge_uni.url, raw_url)
 
     def test_r10_browser_port_bool_bounds_and_timeout_bytes(self) -> None:
-        from spaceinvasion.session.browser import (
+        from backend.session.browser import (
             finite_bounded_timeout,
             is_debug_port_open,
         )
@@ -730,8 +728,8 @@ class TestLoginCli(unittest.TestCase):
         import json
         from unittest.mock import patch
         import login as login_cli
-        from spaceinvasion.session.auth import LoginResult
-        from spaceinvasion.session.browser import safe_browser_err
+        from backend.session.auth import LoginResult
+        from backend.session.browser import safe_browser_err
 
         out_json = io.StringIO()
         err_json = io.StringIO()
@@ -848,7 +846,7 @@ class TestLoginCli(unittest.TestCase):
         import subprocess
         import sys
         from selenium.common.exceptions import WebDriverException
-        from spaceinvasion.session import browser as browser_mod
+        from backend.session import browser as browser_mod
 
         # 1. _configure_driver_timeouts sets page/script timeouts and finite command_executor pool timeout
         class _FakeCfg:

@@ -7,18 +7,18 @@ from contextlib import redirect_stderr
 import unittest
 from unittest.mock import MagicMock, patch
 
-from spaceinvasion.core.config import StrategyConfig
-from spaceinvasion.core.model import (
+from backend.core.config import StrategyConfig
+from backend.core.model import (
     EnergyBalance,
     GameState,
     PlanetState,
     QueueJob,
     Resources,
 )
-from spaceinvasion.core.model import PlannedAction
-from spaceinvasion.runtime.bridge import GameApiBridge
-from spaceinvasion.session.client import GameBrowserClient
-from spaceinvasion.session.executor import ActionExecutor
+from backend.core.model import PlannedAction
+from backend.runtime.bridge import GameApiBridge
+from backend.session.client import GameBrowserClient
+from backend.session.executor import ActionExecutor
 
 
 def _mk_planet(
@@ -79,7 +79,7 @@ class TestFleetSlotAndGalaxyDiag(unittest.TestCase):
             patch.object(client, "_open_frame_url_with_retry", return_value=sample_galaxy_html),
             patch.object(client, "_wait_galaxy_ajax_ready", return_value=sample_galaxy_html),
             patch.object(client, "_record_galaxy_universe_bounds", return_value=(8, 400)),
-            patch("spaceinvasion.session.client.append_crash_debug_log") as mock_crash_log,
+            patch("backend.session.client.append_crash_debug_log") as mock_crash_log,
             redirect_stderr(stderr_buf),
         ):
             out_html, out_g, out_s = client.open_galaxy_with_coords(galaxy=2, system=390)

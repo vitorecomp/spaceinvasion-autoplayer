@@ -10,22 +10,22 @@ import unittest
 
 import pytest
 
-from spaceinvasion.combat.cargo import plan_escape_flight
-from spaceinvasion.combat.flight import BashTracker
-from spaceinvasion.combat.simulator import simulate_raid_outcome
-from spaceinvasion.parsing.fleet_page import parse_send_fleet_mission_block
-from spaceinvasion.parsing.models import SpyReport
-from spaceinvasion.combat.points import build_combat_overview
-from spaceinvasion.combat.simulator import simulate_combat_matchup
-from spaceinvasion.core.config import StrategyConfig
-from spaceinvasion.core.model import (
+from backend.combat.cargo import plan_escape_flight
+from backend.combat.flight import BashTracker
+from backend.combat.simulator import simulate_raid_outcome
+from backend.parsing.fleet_page import parse_send_fleet_mission_block
+from backend.parsing.models import SpyReport
+from backend.combat.points import build_combat_overview
+from backend.combat.simulator import simulate_combat_matchup
+from backend.core.config import StrategyConfig
+from backend.core.model import (
     EnergyBalance,
     FleetAlert,
     GameState,
     PlanetState,
     Resources,
 )
-from spaceinvasion.planner.heuristics import plan_actions
+from backend.planner.heuristics import plan_actions
 
 pytestmark = pytest.mark.invariants
 

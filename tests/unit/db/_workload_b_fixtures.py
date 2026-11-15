@@ -4,14 +4,14 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 
-from spaceinvasion.parsing.models import GalaxySlot as CombatGalaxySlot
-from spaceinvasion.parsing.models import (
+from backend.parsing.models import GalaxySlot as CombatGalaxySlot
+from backend.parsing.models import (
     InboxMessage,
     JsonObject,
     JsonValue,
     SpyReport,
 )
-from spaceinvasion.core.model import (
+from backend.core.model import (
     EnergyBalance,
     GameState,
     PlanetState,
@@ -19,7 +19,7 @@ from spaceinvasion.core.model import (
     TutorialStatus,
     TutorialTask,
 )
-from spaceinvasion.db.repos import GalaxySlotInput, GameMessageInput, PlanetSnapshotInput, SpyReportInput
+from backend.db.repos import GalaxySlotInput, GameMessageInput, PlanetSnapshotInput, SpyReportInput
 
 T0: float = 1700010000.0
 

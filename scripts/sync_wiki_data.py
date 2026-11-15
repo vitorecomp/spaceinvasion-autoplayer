@@ -3,7 +3,7 @@
 
 Fetches all unit pages (`/wiki/en/{buildings,research,ships,defense}/...`) plus
 economy/resource constants from https://spaceinvasion.bitmeup.com/wiki/en/ and
-writes the offline catalog tables under `spaceinvasion/core/catalog/tables/`.
+writes the offline catalog tables under `backend/core/catalog/tables/`.
 """
 
 from __future__ import annotations
@@ -45,7 +45,7 @@ from _wiki_sync_tpl_json import _HELPER_CODE_JSON  # noqa: E402
 from _wiki_sync_tpl_lookup import _HELPER_CODE_LOOKUP  # noqa: E402
 from _wiki_sync_tpl_math import _HELPER_CODE_MATH  # noqa: E402
 
-OUTPUT_TABLES_DIR = Path(__file__).resolve().parent.parent / "spaceinvasion" / "core" / "catalog" / "tables"
+OUTPUT_TABLES_DIR = Path(__file__).resolve().parent.parent / "backend" / "core" / "catalog" / "tables"
 _HELPER_CODE = _HELPER_CODE_LOOKUP + _HELPER_CODE_JSON + _HELPER_CODE_MATH
 
 
@@ -118,7 +118,7 @@ from typing import Any, Optional
 
 
 def write_catalog_tables(payload: dict[str, Any], tables_dir: Path = OUTPUT_TABLES_DIR) -> None:
-    """Write scraped SpaceInvasion Classic tables into ``spaceinvasion/core/catalog/tables/*.json``."""
+    """Write scraped SpaceInvasion Classic tables into ``backend/core/catalog/tables/*.json``."""
     tables_dir.mkdir(parents=True, exist_ok=True)
     for filename, key in (
         ("buildings.json", "buildings"),

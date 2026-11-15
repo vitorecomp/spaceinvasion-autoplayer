@@ -8,11 +8,10 @@ See [docs/README.md](docs/README.md) for the full documentation portal, [docs/ar
 
 ```text
 spaceinvasion-autoplayer/
-├── starter.sh             # Host-mode supervisor (auto-builds stale UI, ensures PG16, restarts crashes, stops on CAPTCHA)
-├── docker-compose.yml     # Docker/Podman 5-container stack (postgres, browser/noVNC, game_api, commander, frontend)
+├── podman-compose.yml     # Podman 5-container stack (postgres, browser/noVNC, game_api, commander, frontend)
 ├── docker/                # Containerfiles (Containerfile.backend builds frontend into /opt/spaceinvasion-ui)
-├── bin/                   # Thin CLI entrypoints (run_stack.py, game_api.py, commander.py, login.py)
-├── spaceinvasion/         # Modular Python package:
+├── bin/                   # Container CLI entrypoints (game_api.py, commander.py, login.py)
+├── backend/               # Modular Python package:
 │   ├── core/              #   model.py, catalog/, settings/ (50-field schema), redaction/coercion/coords
 │   ├── parsing/           #   Pure HTML/DOM parsers (overview, buildings, galaxy, spy, messages, fleet)
 │   ├── combat/            #   1:1 simulator, Escape flight packer, 3/24h Bash tracker, colony grader, points
@@ -36,12 +35,10 @@ spaceinvasion-autoplayer/
 [Tier 2] bin/game_api.py @ 127.0.0.1:8787 (--reload) ──► PostgreSQL 16 (40 tables, Alembic)
              │  Serialized browser lock (GameBrowserClient + ActionExecutor)
              ▼
-[Tier 1] Persistent Chrome @ 127.0.0.1:9222 (host --detach or browser container + noVNC :7900)
+[Tier 1] Persistent Chrome @ 127.0.0.1:9222 (browser container + noVNC :7900)
 ```
 
-## Quickstart
-
-### Option A: Docker / Podman Mode (Recommended)
+## Quickstart (Podman Stack)
 
 1. Copy `.env.example` to `.env` and fill in your BitMeUp credentials (`SPACEINVASION_EMAIL`, `SPACEINVASION_PASSWORD`, `SPACEINVASION_UNIVERSE`).
 2. Start all five containers:
@@ -53,23 +50,6 @@ podman-compose up -d --build
 - **Operator Console**: `http://127.0.0.1:8787/` (built into `/opt/spaceinvasion-ui` inside `game_api`) or live Vite dev server at `http://127.0.0.1:5173/`.
 - **Live Browser (noVNC)**: `http://127.0.0.1:7900/vnc.html?autoconnect=true&resize=scale` (for resolving login/CAPTCHA gates).
 - **PostgreSQL 16**: `127.0.0.1:5433` (persisted in `./data/postgres`).
-
-### Option B: Host Mode (`./starter.sh` + PostgreSQL 16)
-
-1. Create `.venv/` and install dependencies:
-
-```bash
-python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt
-```
-
-2. Configure git-ignored `.env` (see [.env.example](.env.example)).
-3. Launch the supervised stack (automatically builds `frontend/` when missing or stale and starts the `postgres` container if needed):
-
-```bash
-./starter.sh                              # Supervised live stack with crash auto-restart
-./starter.sh --dry-run                    # Dry-run commander (no in-game clicks)
-```
 
 Strategy settings live directly in PostgreSQL (`strategy_config_store`), editable live from the Web Operator Console and documented in [docs/settings-reference.md](docs/settings-reference.md).
 

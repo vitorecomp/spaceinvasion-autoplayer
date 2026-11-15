@@ -7,8 +7,8 @@ import unittest
 
 import requests
 
-from spaceinvasion.core.config import StrategyConfig
-from spaceinvasion.db.config_store import load_strategy_config
+from backend.core.config import StrategyConfig
+from backend.db.config_store import load_strategy_config
 from tests.e2e.harness import E2ETestHarness, FakeSpaceInvasionServer
 
 

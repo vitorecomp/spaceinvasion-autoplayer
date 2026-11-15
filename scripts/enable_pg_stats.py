@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Switch on and read PostgreSQL statement statistics (refactor plan phase 0.8, decision D15).
 
-`docker-compose.yml` starts PostgreSQL with `shared_preload_libraries=pg_stat_statements`,
+`podman-compose.yml` starts PostgreSQL with `shared_preload_libraries=pg_stat_statements`,
 `pg_stat_statements.track=all`, `pg_stat_statements.max=10000` and
 `log_min_duration_statement=50`. Those settings need the `postgres` container to be
 recreated once (`podman-compose up -d postgres`; the data in `./data/postgres` stays).
@@ -45,7 +45,7 @@ LOG = logging.getLogger("enable_pg_stats")
 EXTENSION = "pg_stat_statements"
 CREATE_EXTENSION_SQL = f"CREATE EXTENSION IF NOT EXISTS {EXTENSION};"
 
-# Settings docker-compose.yml is expected to apply: name -> expected value (None: any value).
+# Settings podman-compose.yml is expected to apply: name -> expected value (None: any value).
 EXPECTED_SETTINGS: dict[str, str | None] = {
     "shared_preload_libraries": None,
     "pg_stat_statements.track": "all",
@@ -137,15 +137,15 @@ def _as_float(value: object, default: float = 0.0) -> float:
 
 def default_dsn() -> str:
     """Build the default PostgreSQL DSN from process environment variables."""
-    from spaceinvasion.db.dsn import build_default_postgres_url
-    from spaceinvasion.runtime.postgres_ctl import get_process_env
+    from backend.db.dsn import build_default_postgres_url
+    from backend.runtime.postgres_ctl import get_process_env
 
     return build_default_postgres_url(get_process_env())
 
 
 def redact(dsn: str) -> str:
     """Redact credentials from a PostgreSQL DSN for safe logging."""
-    from spaceinvasion.db.dsn import redact_db_url
+    from backend.db.dsn import redact_db_url
 
     return redact_db_url(dsn)
 
@@ -269,7 +269,7 @@ def _readiness_exit_code(status: ServerStatus) -> int:
     if not status.preloaded:
         LOG.error(
             "%s is not in shared_preload_libraries (%r). Recreate the postgres container so that the command "
-            "in docker-compose.yml applies: podman-compose up -d postgres",
+            "in podman-compose.yml applies: podman-compose up -d postgres",
             EXTENSION,
             status.settings.get("shared_preload_libraries"),
         )

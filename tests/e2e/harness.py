@@ -27,24 +27,24 @@ from selenium.common.exceptions import (
 from selenium.webdriver.common.by import By
 
 import commander
-import spaceinvasion.runtime.api as api_pkg
-from spaceinvasion.runtime.api.http_server import create_api_server
-import spaceinvasion.runtime.bridge as bridge_pkg
-from spaceinvasion.runtime.bridge import GameApiBridge
-import spaceinvasion.runtime.commander as commander_pkg
-import spaceinvasion.session.browser as browser_mod
-import spaceinvasion.session.client as client_mod
-from spaceinvasion.session.client import GameBrowserClient
-from spaceinvasion.runtime.commander_client import GameApiClient
-from spaceinvasion.core.config import StrategyConfig
-from spaceinvasion.db.config_store import save_strategy_config
-import spaceinvasion.session.executor as executor_mod
-import spaceinvasion.combat.flight as fleet_mod
-import spaceinvasion.combat._rank_history as rank_history_mod
-from spaceinvasion.core import catalog as game_data
-import spaceinvasion.db.storage as storage_mod
-import spaceinvasion.planner.heuristics._fleet_context as fleet_ctx_mod
-import spaceinvasion.planner.heuristics.blast_furnace as blast_furnace_mod
+import backend.runtime.api as api_pkg
+from backend.runtime.api.http_server import create_api_server
+import backend.runtime.bridge as bridge_pkg
+from backend.runtime.bridge import GameApiBridge
+import backend.runtime.commander as commander_pkg
+import backend.session.browser as browser_mod
+import backend.session.client as client_mod
+from backend.session.client import GameBrowserClient
+from backend.runtime.commander_client import GameApiClient
+from backend.core.config import StrategyConfig
+from backend.db.config_store import save_strategy_config
+import backend.session.executor as executor_mod
+import backend.combat.flight as fleet_mod
+import backend.combat._rank_history as rank_history_mod
+from backend.core import catalog as game_data
+import backend.db.storage as storage_mod
+import backend.planner.heuristics._fleet_context as fleet_ctx_mod
+import backend.planner.heuristics.blast_furnace as blast_furnace_mod
 
 
 def _fmt_dot_int(val: int) -> str:
@@ -64,7 +64,7 @@ def _get_clock_patch_modules() -> tuple[Any, ...]:
     global _CLOCK_PATCH_MODULES
     if _CLOCK_PATCH_MODULES is not None:
         return _CLOCK_PATCH_MODULES
-    import spaceinvasion.db as db_pkg
+    import backend.db as db_pkg
 
     clock_mods: list[Any] = [
         client_mod,
@@ -128,7 +128,7 @@ class FakeClock:
 
 
 class _ClockTimeProxy:
-    """Module-level drop-in replacement for `time` scoped strictly to spaceinvasion modules."""
+    """Module-level drop-in replacement for `time` scoped strictly to backend modules."""
 
     def __init__(self, clock: FakeClock) -> None:
         self._clock = clock
@@ -1948,7 +1948,7 @@ class E2ETestHarness:
         try:
             self.config_path = self.tmp_dir / "config.json"
             self.log_dir = self.tmp_dir / "logs"
-            self.db_path = self.tmp_dir / "state" / "spaceinvasion.db"
+            self.db_path = self.tmp_dir / "state" / "backend.db"
             self.env_file = self.tmp_dir / ".env"
             self.env_file.write_text("# isolated e2e dummy env\n", encoding="utf-8")
 

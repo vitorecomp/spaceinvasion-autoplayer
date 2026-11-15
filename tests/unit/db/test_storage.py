@@ -9,11 +9,11 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from spaceinvasion.parsing.models import (
+from backend.parsing.models import (
     GalaxySlot,
     SpyReport,
 )
-from spaceinvasion.core.model import (
+from backend.core.model import (
     EnergyBalance,
     GameState,
     PlanetState,
@@ -22,7 +22,7 @@ from spaceinvasion.core.model import (
     TutorialTask,
 )
 from tests.pg_harness import open_test_db as GameDatabase, run_pg_exec, run_pg_query
-from spaceinvasion.core.model import PlannedAction
+from backend.core.model import PlannedAction
 
 
 def _sample_db_state(*, ts: float = 1000.0, step: int = 6, b1: int = 12, b2_rate: int = 0) -> GameState:
@@ -69,7 +69,7 @@ class TestGameDatabase(unittest.TestCase):
     def test_persists_snapshots_tutorial_economy_actions_and_intel(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            db = GameDatabase(tmp_path / "spaceinvasion.db")
+            db = GameDatabase(tmp_path / "backend.db")
             try:
                 samples = db.record_state_snapshot(_sample_db_state(ts=1000.0, step=6, b1=12, b2_rate=0))
                 self.assertEqual(len(samples), 1)
@@ -153,7 +153,7 @@ class TestGameDatabase(unittest.TestCase):
 
     def test_get_raid_stats_empty_database(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            db = GameDatabase(Path(tmp) / "spaceinvasion.db")
+            db = GameDatabase(Path(tmp) / "backend.db")
             try:
                 stats = db.get_raid_stats()
                 ov = stats["overall"]
@@ -179,7 +179,7 @@ class TestGameDatabase(unittest.TestCase):
 
     def test_get_raid_stats_aggregates_spice_eq_recency_and_window_filtering(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            db = GameDatabase(Path(tmp) / "spaceinvasion.db")
+            db = GameDatabase(Path(tmp) / "backend.db")
             try:
                 # Target A (02:380:04): growing loot over time -> recency_weighted > avg
                 db.record_raid(
@@ -249,7 +249,7 @@ class TestGameDatabase(unittest.TestCase):
 
     def test_get_full_history_summary_all_five_tables_and_sid_redaction(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            db = GameDatabase(Path(tmp) / "spaceinvasion.db")
+            db = GameDatabase(Path(tmp) / "backend.db")
             try:
                 db.record_state_snapshot(_sample_db_state(ts=1000.0, step=6, b1=12))
                 db.record_state_snapshot(_sample_db_state(ts=2000.0, step=7, b1=14))
@@ -355,7 +355,7 @@ class TestGameDatabase(unittest.TestCase):
                 self.assertTrue(str(mem_sum["db_path"]).startswith("postgresql://"))
             finally:
                 db_mem.close()
-            db_tmp = GameDatabase(tmp_path / "spaceinvasion.db")
+            db_tmp = GameDatabase(tmp_path / "backend.db")
             try:
                 db_tmp.record_raid("02:380:04", attacked_ts=100.0, outcome="Victory", loot={"spice": 100})
                 self.assertFalse((tmp_path / "attack_history.json").exists())
@@ -367,7 +367,7 @@ class TestGameDatabase(unittest.TestCase):
     def test_record_raid_auto_sync_atomic_json_and_reopen_persistence(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            db_path = tmp_path / "spaceinvasion.db"
+            db_path = tmp_path / "backend.db"
             db1 = GameDatabase(db_path)
             try:
                 db1.record_state_snapshot(_sample_db_state(ts=5000.0))
@@ -482,13 +482,13 @@ class TestGameDatabase(unittest.TestCase):
                 db_c.close()
 
             # Migration error after connect disposes SQLAlchemy engine cleanly without leaking connections
-            from spaceinvasion.db.store import DatabaseStore
+            from backend.db.store import DatabaseStore
             from tests.pg_harness import get_shared_pg_harness
 
             err_dsn = get_shared_pg_harness().create_database(prefix="broken_ddl", from_template=False)
             with DatabaseStore.from_dsn(err_dsn, pool_size=1, max_overflow=0) as err_store:
                 with patch(
-                    "spaceinvasion.db.store.upgrade_database",
+                    "backend.db.store.upgrade_database",
                     side_effect=RuntimeError("boom"),
                 ):
                     with self.assertRaises(RuntimeError):
@@ -701,7 +701,7 @@ class TestGameDatabase(unittest.TestCase):
                 db.close()
 
     def test_r9_coord_candidates_arabic_indic_and_direct_summary_sid_redaction(self) -> None:
-        from spaceinvasion.core.coords import coord_query_variants as _coord_query_candidates
+        from backend.core.coords import coord_query_variants as _coord_query_candidates
 
         ar = "\u0660\u0662:\u0663\u0668\u0660:\u0660\u0664"
         norm, cands, like_pat = _coord_query_candidates(ar)
@@ -745,8 +745,8 @@ class TestGameDatabase(unittest.TestCase):
                 db.close()
 
     def test_r10_blob_sid_redaction_literal_sid_json_and_planet_history(self) -> None:
-        from spaceinvasion.core.coercion import sanitize_json_tree
-        from spaceinvasion.core.redaction import redact_sensitive
+        from backend.core.coercion import sanitize_json_tree
+        from backend.core.redaction import redact_sensitive
 
         s1 = "BLOB_SECRET_11"
         s2 = "JSON_SID_22"
@@ -834,9 +834,9 @@ class TestGameDatabase(unittest.TestCase):
 
     def test_r11_normalized_planet_type_plannedaction_class_mapping_path_and_complex(self) -> None:
         from types import MappingProxyType
-        from spaceinvasion.db.repos._helpers import is_win_outcome as _is_win_outcome
-        from spaceinvasion.db.repos._helpers import json_dumps as _json_dumps
-        from spaceinvasion.db.repos._helpers import sanitize_obj as _sanitize_obj
+        from backend.db.repos._helpers import is_win_outcome as _is_win_outcome
+        from backend.db.repos._helpers import json_dumps as _json_dumps
+        from backend.db.repos._helpers import sanitize_obj as _sanitize_obj
 
         class _BytesPath:
             def __fspath__(self) -> bytes:
@@ -926,7 +926,7 @@ class TestGameDatabase(unittest.TestCase):
 
     def test_r12_storage_redacts_authorization_json_pw_exceptions_and_broken_pathlike(self) -> None:
         from types import MappingProxyType
-        from spaceinvasion.db.repos._helpers import json_dumps as _json_dumps
+        from backend.db.repos._helpers import json_dumps as _json_dumps
 
         class _RaiseFspath:
             def __fspath__(self) -> str:
@@ -992,9 +992,9 @@ class TestGameDatabase(unittest.TestCase):
                 db.close()
 
     def test_r13_storage_redacts_compound_secrets_unicode_fastpath_and_quoted_bearer(self) -> None:
-        from spaceinvasion.core.redaction import redact_sensitive as _raw_text
-        from spaceinvasion.db.repos._helpers import json_dumps as _json_dumps
-        from spaceinvasion.db.repos._helpers import sanitize_text as _sanitize_text
+        from backend.core.redaction import redact_sensitive as _raw_text
+        from backend.db.repos._helpers import json_dumps as _json_dumps
+        from backend.db.repos._helpers import sanitize_text as _sanitize_text
 
         cyc = RuntimeError("cyc")
         cyc.args = (10**5000, cyc)
@@ -1055,9 +1055,9 @@ class TestGameDatabase(unittest.TestCase):
 
     def test_r14_storage_sid_delim_url_json_cycle_and_dag20_safety(self) -> None:
         import time
-        from spaceinvasion.core.catalog.json_sanitize import safe_key, sanitize_json_tree
-        from spaceinvasion.core.redaction import redact_sensitive
-        from spaceinvasion.db.repos._helpers import sanitize_text
+        from backend.core.catalog.json_sanitize import safe_key, sanitize_json_tree
+        from backend.core.redaction import redact_sensitive
+        from backend.db.repos._helpers import sanitize_text
 
         vectors = (
             "%22password%22%3A%22ST_UE_PW%22",
@@ -1194,14 +1194,14 @@ class TestGameDatabase(unittest.TestCase):
                 db.close()
 
     def test_record_spy_report_rejects_fleet_return_and_startup_repairs_poisoned_free_slots(self) -> None:
-        from spaceinvasion.parsing.models import (
+        from backend.parsing.models import (
             GalaxySlot,
             SpyReport,
         )
-        from spaceinvasion.core.model import Resources
+        from backend.core.model import Resources
 
         with tempfile.TemporaryDirectory() as td:
-            db_path = Path(td) / "spaceinvasion.db"
+            db_path = Path(td) / "backend.db"
             db = GameDatabase(db_path)
             try:
                 # 1. Seed a genuine free slot in galaxy_slots (e.g. 02:379:02)
@@ -1516,13 +1516,13 @@ class TestGameDatabase(unittest.TestCase):
                 db.close()
 
     def test_debris_amounts_proximity_ranking_and_non_destructive_recycle_filter(self) -> None:
-        from spaceinvasion.parsing.models import (
+        from backend.parsing.models import (
             GalaxySlot,
             InboxMessage,
         )
 
         with tempfile.TemporaryDirectory(prefix="si_deb_store_") as tmp:
-            db = GameDatabase(Path(tmp) / "spaceinvasion.db")
+            db = GameDatabase(Path(tmp) / "backend.db")
             try:
                 db.record_galaxy_slots(
                     [
@@ -1605,18 +1605,18 @@ class TestGameDatabase(unittest.TestCase):
                 db.close()
 
     def test_custom_planet_names_transport_dispatches_v014_telemetry_and_max_galaxies(self) -> None:
-        from spaceinvasion.parsing.models import (
+        from backend.parsing.models import (
             GalaxySlot,
             InboxMessage,
         )
-        from spaceinvasion.core.model import PlannedAction
+        from backend.core.model import PlannedAction
 
         base_hr = 1_760_000_000 // 3600 * 3600
         with tempfile.TemporaryDirectory(prefix="si_store_v14_") as tmp:
             db = GameDatabase(Path(tmp) / "store_v14.db")
             try:
                 # 1. Custom planet names: sanitization, 48-char cap, sid redaction, clear & batch
-                from spaceinvasion.runtime.bridge._db_gateway import RuntimeDatabaseGateway
+                from backend.runtime.bridge._db_gateway import RuntimeDatabaseGateway
 
                 self.assertEqual(
                     RuntimeDatabaseGateway.sanitize_custom_planet_name("  Capital\x07  Prime  "),
@@ -1767,7 +1767,7 @@ class TestGameDatabase(unittest.TestCase):
 
     def test_hot_read_caches_telemetry_toggle_blocked_expiry_and_cte_snapshot_parity(self) -> None:
         import time
-        from spaceinvasion.parsing.models import GalaxySlot
+        from backend.parsing.models import GalaxySlot
 
         db = GameDatabase(":memory:")
         try:

@@ -9,9 +9,9 @@ import time
 
 from sqlalchemy.orm import Session
 
-from spaceinvasion.combat._points_helpers import estimate_hourly_economy
-from spaceinvasion.combat.points import estimate_account_points
-from spaceinvasion.db.repos import (
+from backend.combat._points_helpers import estimate_hourly_economy
+from backend.combat.points import estimate_account_points
+from backend.db.repos import (
     GalaxyRepository,
     IntelRepository,
     MessagesRepository,
@@ -22,9 +22,9 @@ from spaceinvasion.db.repos import (
     StateSnapshotInput,
     TelemetryRepository,
 )
-from spaceinvasion.db.repos._hot_refresh import refresh_colony_candidates_hot, refresh_galaxy_sectors_hot
-from spaceinvasion.db.session import DatabaseEngine, db_uow
-from spaceinvasion.runtime.bridge._db_gateway import RuntimeDatabaseGateway
+from backend.db.repos._hot_refresh import refresh_colony_candidates_hot, refresh_galaxy_sectors_hot
+from backend.db.session import DatabaseEngine, db_uow
+from backend.runtime.bridge._db_gateway import RuntimeDatabaseGateway
 from tests.unit.db._workload_b_fixtures import (
     T0,
     build_game_state,

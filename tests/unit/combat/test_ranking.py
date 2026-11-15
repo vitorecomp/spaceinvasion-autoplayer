@@ -8,8 +8,8 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from spaceinvasion.core import catalog as game_data
-from spaceinvasion.combat.points import (
+from backend.core import catalog as game_data
+from backend.combat.points import (
     attack_zone_for_points,
     build_combat_overview,
     build_ranking_evolution,
@@ -17,21 +17,21 @@ from spaceinvasion.combat.points import (
     estimate_hourly_economy,
     record_rank_snapshot,
 )
-from spaceinvasion.combat.simulator import simulate_combat_matchup
-from spaceinvasion.planner.eta import (
+from backend.combat.simulator import simulate_combat_matchup
+from backend.planner.eta import (
     compute_resource_eta as _compute_resource_eta,
     attach_action_etas,
     build_buildings_eta,
     compute_action_eta,
     estimate_planet_hourly_economy,
 )
-from spaceinvasion.core.model import (
+from backend.core.model import (
     EnergyBalance,
     GameState,
     PlanetState,
     Resources,
 )
-from spaceinvasion.core.model import PlannedAction
+from backend.core.model import PlannedAction
 
 
 def _sample_ranking_state(*, net_deficit: bool = False) -> GameState:
@@ -752,13 +752,13 @@ class TestActionEtaEngine(unittest.TestCase):
 
     def test_format_duration_half_second_huge_ints_clamp_micro_and_malformed_ranking_fields(self) -> None:
         import time
-        from spaceinvasion.combat._points_helpers import safe_big_mul_div as _safe_big_mul_div
-        from spaceinvasion.combat.points import (
+        from backend.combat._points_helpers import safe_big_mul_div as _safe_big_mul_div
+        from backend.combat.points import (
             build_combat_overview,
             build_ranking_evolution,
             estimate_account_points,
         )
-        from spaceinvasion.planner.eta import (
+        from backend.planner.eta import (
             format_duration as _format_duration,
             build_buildings_eta,
         )
@@ -966,8 +966,8 @@ class TestActionEtaEngine(unittest.TestCase):
 
     def test_buildings_eta_combat_overview_huge_levels_and_rank_history_nan_sanitized(self) -> None:
         import json
-        from spaceinvasion.combat.points import load_rank_history
-        from spaceinvasion.planner.eta import format_duration as _format_duration
+        from backend.combat.points import load_rank_history
+        from backend.planner.eta import format_duration as _format_duration
 
         self.assertEqual(_format_duration(0.5), "1s")
         p_huge = PlanetState(
@@ -1151,7 +1151,7 @@ class TestActionEtaEngine(unittest.TestCase):
     def test_r8_build_buildings_eta_bounds_nonfinite_bad_and_huge_horizon_count(self) -> None:
         import json
         import time
-        from spaceinvasion.planner.eta import build_buildings_eta
+        from backend.planner.eta import build_buildings_eta
 
         st = _sample_ranking_state()
         for bad_h in (float("nan"), float("inf"), float("-inf"), "bad", None, True):
@@ -1212,12 +1212,12 @@ class TestActionEtaEngine(unittest.TestCase):
     def test_r10_huge_precision_nonascii_bytes_and_safe_key(self) -> None:
         import json
         from dataclasses import replace
-        from spaceinvasion.combat.points import (
+        from backend.combat.points import (
             build_combat_overview,
             estimate_account_points,
         )
-        from spaceinvasion.planner.eta import attach_action_etas
-        from spaceinvasion.core.model import PlannedAction
+        from backend.planner.eta import attach_action_etas
+        from backend.core.model import PlannedAction
 
         st = _sample_ranking_state()
         pts = estimate_account_points(
@@ -1268,8 +1268,8 @@ class TestActionEtaEngine(unittest.TestCase):
     def test_r11_build_buildings_eta_huge_research_key_and_normalized_asteroid_type(self) -> None:
         import json
         from dataclasses import replace
-        from spaceinvasion.planner.eta import build_buildings_eta
-        from spaceinvasion.core.model import ResearchOffer
+        from backend.planner.eta import build_buildings_eta
+        from backend.core.model import ResearchOffer
 
         st = _sample_ranking_state()
         ast_p = replace(st.planets[0], planet_type=" Asteroid ")
@@ -1289,8 +1289,8 @@ class TestActionEtaEngine(unittest.TestCase):
 
     def test_r12_ranking_resists_broken_fspath_raise_str_and_huge_reward_fields(self) -> None:
         import json
-        from spaceinvasion.planner._eta_helpers import safe_eta_int as _safe_eta_int
-        from spaceinvasion.core.model import (
+        from backend.planner._eta_helpers import safe_eta_int as _safe_eta_int
+        from backend.core.model import (
             TutorialStatus,
             TutorialTask,
         )
@@ -1351,9 +1351,9 @@ class TestActionEtaEngine(unittest.TestCase):
 
     def test_r14_safe_eta_int_resists_base_exception_dag20(self) -> None:
         import time
-        from spaceinvasion.combat._points_helpers import safe_nonneg_int as _safe_nonneg_int
-        from spaceinvasion.combat._points_helpers import safe_optional_finite_int as _safe_optional_finite_int
-        from spaceinvasion.planner._eta_helpers import safe_eta_int as _safe_eta_int
+        from backend.combat._points_helpers import safe_nonneg_int as _safe_nonneg_int
+        from backend.combat._points_helpers import safe_optional_finite_int as _safe_optional_finite_int
+        from backend.planner._eta_helpers import safe_eta_int as _safe_eta_int
 
         dag: BaseException = RuntimeError("leaf")
         for _ in range(20):

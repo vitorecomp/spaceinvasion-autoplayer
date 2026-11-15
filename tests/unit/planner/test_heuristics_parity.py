@@ -11,8 +11,8 @@ import random
 
 import pytest
 
-from spaceinvasion.core.config import StrategyConfig
-from spaceinvasion.core.model import (
+from backend.core.config import StrategyConfig
+from backend.core.model import (
     BuildingOffer,
     EnergyBalance,
     FleetAlert,
@@ -23,11 +23,11 @@ from spaceinvasion.core.model import (
     TutorialStatus,
     TutorialTask,
 )
-from spaceinvasion.planner import heuristics as new_heur
+from backend.planner import heuristics as new_heur
 from tests.goldens.scenarios import CONFIGS, GOLDEN_EPOCH, STATES
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
-_HEUR_DIR = _REPO_ROOT / "spaceinvasion" / "planner" / "heuristics"
+_HEUR_DIR = _REPO_ROOT / "backend" / "planner" / "heuristics"
 _GOLDENS_DIR = _REPO_ROOT / "tests" / "goldens" / "reference" / "planner"
 
 
@@ -382,12 +382,12 @@ def test_section4_ast_loc_and_layering_constraints() -> None:
     py_files = sorted(_HEUR_DIR.glob("*.py"))
     assert len(py_files) >= 12
     forbidden_prefixes = (
-        "spaceinvasion.db",
-        "spaceinvasion.session",
-        "spaceinvasion.runtime",
-        "spaceinvasion.ui",
-        "spaceinvasion.planner.strategy",
-        "spaceinvasion.planner.optimizer",
+        "backend.db",
+        "backend.session",
+        "backend.runtime",
+        "backend.ui",
+        "backend.planner.strategy",
+        "backend.planner.optimizer",
     )
     for path in py_files:
         src = path.read_text(encoding="utf-8")

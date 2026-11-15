@@ -3,15 +3,11 @@
 from __future__ import annotations
 
 import ast
-import os
 from pathlib import Path
-import stat
 import subprocess
 import sys
-import time
 
 REPO_ROOT: Path = Path(__file__).resolve().parents[3]
-STARTER_SH: Path = REPO_ROOT / "starter.sh"
 GEN_DOCS_SCRIPT: Path = REPO_ROOT / "scripts" / "generate_docs.py"
 
 _HOT_TABLES: tuple[str, ...] = (
@@ -122,118 +118,25 @@ def test_docker_backend_builds_ui_into_opt_and_compose_preserves_pg_stats() -> N
     containerfile = (REPO_ROOT / "docker" / "Containerfile.backend").read_text(encoding="utf-8")
     assert "AS ui-builder" in containerfile
     assert "npm run build" in containerfile
+    assert "/app/backend/ui" in containerfile
+    assert "COPY backend /app/backend" in containerfile
     assert "/opt/spaceinvasion-ui" in containerfile
     assert "SPACEINVASION_UI_DIR=/opt/spaceinvasion-ui" in containerfile
+    assert "spaceinvasion/ui" not in containerfile
+    assert "COPY spaceinvasion" not in containerfile
+    for rel in ("frontend/vite.config.ts", "frontend/scripts/prerender.mjs"):
+        build_src = (REPO_ROOT / rel).read_text(encoding="utf-8")
+        assert "../backend/ui" in build_src
+        assert "spaceinvasion/ui" not in build_src
     for icon in ("bell.svg", "favicon.svg", "favicon.ico"):
-        assert f"spaceinvasion/ui/{icon}" in containerfile
-        assert (REPO_ROOT / "spaceinvasion" / "ui" / icon).is_file()
+        assert f"backend/ui/{icon}" in containerfile
+        assert (REPO_ROOT / "backend" / "ui" / icon).is_file()
 
-    compose = (REPO_ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+    compose = (REPO_ROOT / "podman-compose.yml").read_text(encoding="utf-8")
     assert "./data/postgres:/var/lib/postgresql/data" in compose
     assert "shared_preload_libraries=pg_stat_statements" in compose
     assert "pg_stat_statements.track=all" in compose
     assert 'SPACEINVASION_UI_DIR: "/opt/spaceinvasion-ui"' in compose
-
-
-def _run_starter_ui_check(
-    tmp_path: Path,
-    frontend_dir: Path,
-    ui_dir: Path,
-    npm_stub: Path,
-) -> subprocess.CompletedProcess[str]:
-    env = dict(os.environ)
-    env.update(
-        {
-            "PYTHON_BIN": sys.executable,
-            "WATCHDOG_LOG": str(tmp_path / "watchdog.log"),
-            "WATCHDOG_PID_FILE": str(tmp_path / "watchdog.pid"),
-            "SPACEINVASION_FRONTEND_DIR": str(frontend_dir),
-            "SPACEINVASION_UI_DIR": str(ui_dir),
-            "NPM_BIN": str(npm_stub),
-        }
-    )
-    return subprocess.run(
-        ["bash", str(STARTER_SH), "--check-ui-build"],
-        env=env,
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=15.0,
-    )
-
-
-def test_starter_sh_ui_staleness_rebuilds_when_missing_or_stale_and_skips_when_fresh(
-    tmp_path: Path,
-) -> None:
-    """`starter.sh` rebuilds UI when `app.js` is missing or older than frontend sources, and skips when fresh."""
-    frontend_dir = tmp_path / "frontend"
-    (frontend_dir / "src").mkdir(parents=True)
-    (frontend_dir / "scripts").mkdir(parents=True)
-    ui_dir = tmp_path / "ui"
-    ui_dir.mkdir(parents=True)
-
-    pkg_json = frontend_dir / "package.json"
-    index_html = frontend_dir / "index.html"
-    tsconfig_json = frontend_dir / "tsconfig.json"
-    vite_cfg = frontend_dir / "vite.config.ts"
-    src_file = frontend_dir / "src" / "App.tsx"
-    prerender_script = frontend_dir / "scripts" / "prerender.mjs"
-    all_inputs = (pkg_json, index_html, tsconfig_json, vite_cfg, src_file, prerender_script)
-    for fpath, body in (
-        (pkg_json, '{"name":"test"}\n'),
-        (index_html, "<html></html>\n"),
-        (tsconfig_json, "{}\n"),
-        (vite_cfg, "export default {};\n"),
-        (src_file, "export const App = () => null;\n"),
-        (prerender_script, "// prerender\n"),
-    ):
-        fpath.write_text(body, encoding="utf-8")
-
-    build_log = tmp_path / "npm_builds.log"
-    npm_stub = tmp_path / "fake_npm.sh"
-    npm_stub.write_text(
-        "#!/usr/bin/env bash\n"
-        f'echo "$*" >> "{build_log}"\n'
-        f'mkdir -p "{ui_dir}"\n'
-        f'echo "// built" > "{ui_dir / "app.js"}"\n',
-        encoding="utf-8",
-    )
-    npm_stub.chmod(npm_stub.stat().st_mode | stat.S_IXUSR)
-
-    # 1. Missing app.js -> MUST build.
-    res1 = _run_starter_ui_check(tmp_path, frontend_dir, ui_dir, npm_stub)
-    assert res1.returncode == 0, res1.stderr
-    assert (ui_dir / "app.js").is_file()
-    assert len(build_log.read_text(encoding="utf-8").splitlines()) == 1
-
-    # 2. app.js newer than all frontend sources -> MUST skip.
-    now = time.time()
-    for fpath in all_inputs:
-        os.utime(fpath, (now - 20.0, now - 20.0))
-    os.utime(ui_dir / "app.js", (now - 5.0, now - 5.0))
-    res2 = _run_starter_ui_check(tmp_path, frontend_dir, ui_dir, npm_stub)
-    assert res2.returncode == 0, res2.stderr
-    assert len(build_log.read_text(encoding="utf-8").splitlines()) == 1
-
-    # 3. frontend/src/App.tsx newer than app.js -> MUST rebuild.
-    os.utime(src_file, (now + 5.0, now + 5.0))
-    res3 = _run_starter_ui_check(tmp_path, frontend_dir, ui_dir, npm_stub)
-    assert res3.returncode == 0, res3.stderr
-    assert len(build_log.read_text(encoding="utf-8").splitlines()) == 2
-
-    # 4. frontend/scripts/prerender.mjs newer than app.js -> MUST rebuild.
-    os.utime(ui_dir / "app.js", (now + 10.0, now + 10.0))
-    os.utime(prerender_script, (now + 15.0, now + 15.0))
-    res4 = _run_starter_ui_check(tmp_path, frontend_dir, ui_dir, npm_stub)
-    assert res4.returncode == 0, res4.stderr
-    assert len(build_log.read_text(encoding="utf-8").splitlines()) == 3
-
-    # 5. frontend/tsconfig.json newer than app.js -> MUST rebuild.
-    os.utime(ui_dir / "app.js", (now + 20.0, now + 20.0))
-    os.utime(tsconfig_json, (now + 25.0, now + 25.0))
-    res5 = _run_starter_ui_check(tmp_path, frontend_dir, ui_dir, npm_stub)
-    assert res5.returncode == 0, res5.stderr
-    assert len(build_log.read_text(encoding="utf-8").splitlines()) == 4
 
 
 def test_generate_docs_script_obeys_section4_standards() -> None:
