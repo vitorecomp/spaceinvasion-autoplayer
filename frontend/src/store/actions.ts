@@ -19,6 +19,49 @@ import { normalizePageKey } from "./persistence";
 import { createViewRefreshActions } from "./refreshActions";
 import { ConsoleActions, ConsoleStore, UiPrefs } from "./types";
 
+const HOT_RELOAD_GUARD_KEY = "si_hot_reload_guard";
+const HOT_RELOAD_GUARD_TTL_MS = 15_000;
+
+function isViteDevDocument(): boolean {
+  if (typeof document === "undefined") return false;
+  const hasViteMain = Boolean(
+    document.querySelector('script[type="module"][src*="/src/main"]')
+  );
+  const hasBuiltBundle = Boolean(document.querySelector('script[src*="/app.js"]'));
+  return hasViteMain && !hasBuiltBundle;
+}
+
+function shouldSuppressHotReloadLoop(targetSig: string): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    const raw = window.sessionStorage?.getItem(HOT_RELOAD_GUARD_KEY);
+    if (!raw) return false;
+    const parsed = JSON.parse(raw);
+    if (
+      parsed &&
+      parsed.sig === targetSig &&
+      Date.now() - Number(parsed.ts || 0) < HOT_RELOAD_GUARD_TTL_MS
+    ) {
+      return true;
+    }
+  } catch {
+    // Ignore sessionStorage errors
+  }
+  return false;
+}
+
+function recordHotReloadGuard(targetSig: string): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.sessionStorage?.setItem(
+      HOT_RELOAD_GUARD_KEY,
+      JSON.stringify({ sig: targetSig, ts: Date.now() })
+    );
+  } catch {
+    // Ignore sessionStorage errors
+  }
+}
+
 export interface CreateConsoleActionsOptions {
   shouldPersist: boolean;
   disableInitialFetch: boolean;
@@ -197,9 +240,10 @@ export function createConsoleActions(
       uiVersions.server_boot_id = vData.server_boot_id || null;
       return false;
     }
-    const codeChanged = Boolean(
-      vData.code_version && vData.code_version !== uiVersions.code_version
-    );
+    const viteDev = isViteDevDocument();
+    const codeChanged =
+      !viteDev &&
+      Boolean(vData.code_version && vData.code_version !== uiVersions.code_version);
     const bootChanged = Boolean(
       vData.server_boot_id &&
         uiVersions.server_boot_id &&
@@ -207,6 +251,14 @@ export function createConsoleActions(
     );
     if (store.getSnapshot().dashboard?.bot_control?.captcha_blocked) return false;
     if (codeChanged || bootChanged) {
+      const targetSig = `${vData.server_boot_id || uiVersions.server_boot_id || ""}|${vData.code_version || uiVersions.code_version || ""}`;
+      if (shouldSuppressHotReloadLoop(targetSig)) {
+        uiVersions.code_version = vData.code_version || uiVersions.code_version;
+        uiVersions.css_version = vData.css_version || uiVersions.css_version;
+        uiVersions.server_boot_id = vData.server_boot_id || uiVersions.server_boot_id;
+        return false;
+      }
+      recordHotReloadGuard(targetSig);
       store.flushPersistence(true);
       showFeedback(
         codeChanged
@@ -217,13 +269,17 @@ export function createConsoleActions(
       if (typeof window !== "undefined") setTimeout(() => window.location.reload(), 120);
       return true;
     }
-    if (vData.css_version && vData.css_version !== uiVersions.css_version) {
+    if (!viteDev && vData.css_version && vData.css_version !== uiVersions.css_version) {
       uiVersions.css_version = vData.css_version;
       if (typeof document !== "undefined") {
         const link = document.getElementById("ui-stylesheet") as HTMLLinkElement | null;
         if (link) link.href = `/styles.css?v=${encodeURIComponent(vData.css_version)}`;
       }
       showFeedback("Hot-reloaded styles.css live.", "ok", { autoHideMs: 2600 });
+    } else if (viteDev) {
+      uiVersions.code_version = vData.code_version || uiVersions.code_version;
+      uiVersions.css_version = vData.css_version || uiVersions.css_version;
+      uiVersions.server_boot_id = vData.server_boot_id || uiVersions.server_boot_id;
     }
     return false;
   };

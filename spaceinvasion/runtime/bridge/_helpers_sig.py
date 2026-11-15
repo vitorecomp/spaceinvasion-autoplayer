@@ -7,14 +7,19 @@ import hashlib
 import inspect
 import math
 from pathlib import Path
+import threading
 
 from spaceinvasion.core.model import GameState, PlannedAction
 from spaceinvasion.runtime.bridge._helpers import (
     BRIDGE_RUNTIME_ERRORS,
-    UI_DIR,
     redact_api_payload,
+    resolve_ui_dir,
     scrub_api_str,
 )
+
+_ASSET_DIGEST_LOCK = threading.Lock()
+_ASSET_DIGEST_CACHE: dict[tuple[str, int, int], str] = {}
+_MAX_ASSET_DIGEST_CACHE = 256
 
 
 def fleet_subrank(action: PlannedAction) -> int:
@@ -44,14 +49,25 @@ def fleet_subrank(action: PlannedAction) -> int:
     return 0
 
 
-def compute_ui_assets_state(ui_dir: Path = UI_DIR) -> dict[str, str]:
-    """Return lightweight digest tokens for hot-reloading UI CSS and code assets."""
+def compute_ui_assets_state(ui_dir: Path | None = None) -> dict[str, str]:
+    """Return content-SHA1 digest tokens for hot-reloading UI CSS and code assets."""
+    eff_dir = resolve_ui_dir(ui_dir)
 
     def _file_sig(name: str) -> str:
-        path = ui_dir / name
+        path = eff_dir / name
         try:
             st = path.stat()
-            return f"{st.st_mtime_ns:x}-{st.st_size:x}"
+            cache_key = (str(path.resolve()), int(st.st_mtime_ns), int(st.st_size))
+            with _ASSET_DIGEST_LOCK:
+                cached = _ASSET_DIGEST_CACHE.get(cache_key)
+            if cached is not None:
+                return cached
+            digest = hashlib.sha1(path.read_bytes()).hexdigest()[:12]
+            with _ASSET_DIGEST_LOCK:
+                if len(_ASSET_DIGEST_CACHE) >= _MAX_ASSET_DIGEST_CACHE:
+                    _ASSET_DIGEST_CACHE.clear()
+                _ASSET_DIGEST_CACHE[cache_key] = digest
+            return digest
         except OSError:
             return "missing"
 

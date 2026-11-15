@@ -6,6 +6,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 import hashlib
 import json
+from pathlib import Path
 import threading
 import time
 from types import MappingProxyType
@@ -13,6 +14,8 @@ from typing import Any
 
 from spaceinvasion.core.catalog.coercion import safe_int
 from spaceinvasion.core.catalog.json_sanitize import sanitize_json_tree
+from spaceinvasion.runtime.bridge._helpers import SERVER_BOOT_ID
+from spaceinvasion.runtime.bridge._helpers_sig import compute_ui_assets_state
 
 
 def _freeze_mapping(raw: Mapping[str, object]) -> Mapping[str, object]:
@@ -206,6 +209,7 @@ def build_dashboard_delta_response(
     client_section_versions: Mapping[str, str] | None = None,
     since_minute_bucket: int | None = None,
     since_loot_hour: int | None = None,
+    ui_dir: Path | None = None,
 ) -> dict[str, object]:
     """Assemble a Phase 4.3 versioned dashboard response omitting unchanged sections.
 
@@ -216,11 +220,14 @@ def build_dashboard_delta_response(
     client_versions = client_section_versions or {}
     unchanged: list[str] = []
     section_versions = dict(snapshot.section_versions)
+    ui_assets = compute_ui_assets_state(ui_dir)
     payload: dict[str, object] = {
         "ok": True,
         "delta": bool(client_versions) or since_minute_bucket is not None or since_loot_hour is not None,
         "snapshot_generation": snapshot.generation,
         "published_at": snapshot.published_at,
+        "server_boot_id": SERVER_BOOT_ID,
+        **ui_assets,
         "health": dict(snapshot.health),
         "section_versions": section_versions,
         "unchanged_sections": unchanged,
