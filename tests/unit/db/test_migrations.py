@@ -54,9 +54,9 @@ class TestDatabaseMigrationsAndVersioning(unittest.TestCase):
         dsn = get_shared_pg_harness().create_database(prefix="mig_alembic", from_template=False)
         with DatabaseStore.from_dsn(dsn, pool_size=1, max_overflow=0) as store:
             self.assertIsNone(get_current_revision(store.db_engine))
-            res = upgrade_database(store.db_engine, BASELINE_REVISION, backup_fn=NO_BACKUP)
-            self.assertEqual(res.current_revision, BASELINE_REVISION)
-            self.assertEqual(get_current_revision(store.db_engine), BASELINE_REVISION)
+            res = upgrade_database(store.db_engine, "head", backup_fn=NO_BACKUP)
+            self.assertEqual(res.current_revision, "0004")
+            self.assertEqual(get_current_revision(store.db_engine), "0004")
             self.assertEqual(verify_models_match_migrations(store.db_engine), [])
 
             # Injecting an unmodeled table must be caught by verify_models_match_migrations
@@ -68,7 +68,8 @@ class TestDatabaseMigrationsAndVersioning(unittest.TestCase):
     def test_pg_cli_status_migrate_verify_and_http_api_commands(self) -> None:
         cli_dsn = get_shared_pg_harness().create_database(prefix="mig_cli", from_template=False)
 
-        # Fresh empty DB -> CLI status --json reports pending revision "0001"
+        # Fresh empty DB -> CLI status --json reports pending revisions 0001..0004
+        expected_revs = [BASELINE_REVISION, "0002", "0003", "0004"]
         buf_st = io.StringIO()
         with contextlib.redirect_stdout(buf_st):
             rc = migrations_cli_main(["--db-url", cli_dsn, "--json", "status"])
@@ -76,7 +77,7 @@ class TestDatabaseMigrationsAndVersioning(unittest.TestCase):
         st_payload = json.loads(buf_st.getvalue())
         self.assertIsNone(st_payload["current_revision"])
         self.assertFalse(st_payload["up_to_date"])
-        self.assertEqual(st_payload["pending_revisions"], [BASELINE_REVISION])
+        self.assertEqual(st_payload["pending_revisions"], expected_revs)
 
         # Dry-run does not mutate the database
         buf_dry = io.StringIO()
@@ -85,7 +86,7 @@ class TestDatabaseMigrationsAndVersioning(unittest.TestCase):
         self.assertEqual(rc_d, 0)
         dry_payload = json.loads(buf_dry.getvalue())
         self.assertTrue(dry_payload["dry_run"])
-        self.assertEqual(dry_payload["pending_revisions"], [BASELINE_REVISION])
+        self.assertEqual(dry_payload["pending_revisions"], expected_revs)
 
         with tempfile.TemporaryDirectory(prefix="si_mig_reg_") as tmp:
             root = Path(tmp)
@@ -95,7 +96,7 @@ class TestDatabaseMigrationsAndVersioning(unittest.TestCase):
                 bkp_file.write_bytes(b"PGDMP-TEST")
                 return bkp_file
 
-            # CLI migrate --backup upgrades cleanly to baseline head "0001"
+            # CLI migrate --backup upgrades cleanly to head "0004"
             buf_mig = io.StringIO()
             with contextlib.redirect_stdout(buf_mig):
                 rc_m = migrations_cli_main(
@@ -105,7 +106,7 @@ class TestDatabaseMigrationsAndVersioning(unittest.TestCase):
             self.assertEqual(rc_m, 0)
             mig_payload = json.loads(buf_mig.getvalue())
             self.assertTrue(mig_payload["ok"])
-            self.assertEqual(mig_payload["current_revision"], BASELINE_REVISION)
+            self.assertEqual(mig_payload["current_revision"], "0004")
             self.assertTrue(bkp_file.exists())
 
             # CLI verify --full-integrity

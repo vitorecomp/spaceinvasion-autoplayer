@@ -10125,7 +10125,10 @@ class TestApiAndCommander(unittest.TestCase):
                         active_builders=1,
                         ts=float(base_min + idx * 60),
                     )
-                bridge._db.record_ai_planner_run(fake_plan, config_run_id=1, set_active=True)
+                cfg_run_id = bridge._db.record_config_optimizer_run(
+                    {"summary": {}}, trigger_source="test", set_active=False
+                )
+                bridge._db.record_ai_planner_run(fake_plan, config_run_id=cfg_run_id, set_active=True)
                 bridge.state_cache.record_state(
                     st, fetched_buildings=True, fetched_home=True, observed_active_planet=True
                 )

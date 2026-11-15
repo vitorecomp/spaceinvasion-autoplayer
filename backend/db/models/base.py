@@ -2,13 +2,69 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+import json
 from typing import ClassVar
 
 from sqlalchemy import BigInteger, Double, Identity, Text
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.engine.interfaces import Dialect
 from sqlalchemy.orm import DeclarativeBase
+from sqlalchemy.types import TypeDecorator
 
 _ScalarType = type[int] | type[float] | type[str]
 _SqlType = type[BigInteger] | type[Double[float]] | type[Text]
+
+
+class JsonbText(TypeDecorator[str]):
+    """Native PostgreSQL `JSONB` column exposing compact JSON `str` at the ORM boundary.
+
+    Preserves 100% DTO/repository `str` compatibility while storing structured binary
+    `JSONB` in PostgreSQL (queryable via `->`/`->>`/`@>`) and remaining safe against
+    pre-0002 `TEXT` tables during transitional parity tests.
+    """
+
+    impl = JSONB
+    cache_ok = True
+
+    def __init__(self, *, default_empty: str = "{}") -> None:
+        super().__init__()
+        self._default_empty = default_empty
+
+    def bind_processor(self, dialect: Dialect) -> Callable[[object], object]:
+        del dialect
+        default_empty = self._default_empty
+
+        def _process(value: object) -> object:
+            if value is None:
+                return None
+            if isinstance(value, str):
+                stripped = value.strip()
+                if not stripped:
+                    return default_empty
+                try:
+                    json.loads(stripped)
+                except ValueError:
+                    return default_empty
+                return stripped
+            return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
+
+        return _process
+
+    def process_result_value(self, value: object, dialect: Dialect) -> str:
+        del dialect
+        if value is None:
+            return self._default_empty
+        if isinstance(value, str):
+            stripped = value.strip()
+            if not stripped:
+                return self._default_empty
+            try:
+                parsed: object = json.loads(stripped)
+            except ValueError:
+                return value
+            return json.dumps(parsed, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
+        return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
 
 
 class Base(DeclarativeBase):
@@ -26,4 +82,4 @@ def identity_pk() -> Identity:
     return Identity(always=False)
 
 
-__all__ = ["Base", "identity_pk"]
+__all__ = ["Base", "JsonbText", "identity_pk"]

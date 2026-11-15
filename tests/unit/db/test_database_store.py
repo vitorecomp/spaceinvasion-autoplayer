@@ -6,10 +6,11 @@ from dataclasses import is_dataclass
 from pathlib import Path
 
 import pytest
+from sqlalchemy import text
 from sqlalchemy.orm import DeclarativeBase
 
-from backend.db.migrations import BASELINE_REVISION, NO_BACKUP
-from backend.db.models import Base, SchemaMigration
+from backend.db.migrations import BASELINE_REVISION, NO_BACKUP, upgrade_database
+from backend.db.models import SchemaMigration
 from backend.db.queries import (
     GAME_REQUIRED_TABLES,
     HISTORY_TABLES,
@@ -52,14 +53,14 @@ def test_database_store_ensure_ready_and_verify_fresh_and_existing_v14(
 
     with DatabaseStore.from_dsn(fresh_dsn, pool_size=2, max_overflow=0) as store:
         mig_res = store.ensure_ready(backup_fn=_record_backup, verify_schema=True)
-        assert mig_res.current_revision == BASELINE_REVISION
+        assert mig_res.current_revision == "0004"
         assert len(backup_calls) == 1
 
         verify = store.verify()
         assert verify.ok is True
         assert verify.backend == "postgres"
-        assert verify.alembic_revision == BASELINE_REVISION
-        assert verify.target_revision == BASELINE_REVISION
+        assert verify.alembic_revision == "0004"
+        assert verify.target_revision == "0004"
         assert verify.up_to_date is True
         assert verify.missing_tables == ()
         assert verify.schema_diffs == ()
@@ -72,13 +73,16 @@ def test_database_store_ensure_ready_and_verify_fresh_and_existing_v14(
 
         # Idempotent second call performs zero extra upgrades or backups.
         second_res = store.ensure_ready(backup_fn=_record_backup, verify_schema=True)
-        assert second_res.current_revision == BASELINE_REVISION
+        assert second_res.current_revision == "0004"
         assert len(backup_calls) == 1
 
-    # Existing V14 database: `ensure_ready` stamps `0001` with zero table DDL and preserves all rows.
+    # Existing V14 database: `ensure_ready` stamps `0001`, upgrades to `0004`, and preserves all rows.
     v14_dsn = pg_harness.create_database(prefix="store_v14", from_template=False)
     with DatabaseEngine.from_dsn(v14_dsn, pool_size=1, max_overflow=0) as raw_eng:
-        Base.metadata.create_all(raw_eng.engine)
+        upgrade_database(raw_eng, BASELINE_REVISION, backup_fn=NO_BACKUP)
+        with raw_eng.engine.begin() as conn:
+            conn.execute(text("DROP TABLE alembic_version"))
+            conn.execute(text("DELETE FROM schema_migration_events"))
         with db_uow(raw_eng) as sess:
             sess.add(
                 SchemaMigration(
@@ -95,7 +99,7 @@ def test_database_store_ensure_ready_and_verify_fresh_and_existing_v14(
     run_orm_workload_b(v14_dsn)
     with DatabaseStore.from_dsn(v14_dsn, pool_size=2, max_overflow=0) as v14_store:
         stamp_res = v14_store.ensure_ready(backup_fn=NO_BACKUP, allow_stamp_existing=True, verify_schema=True)
-        assert stamp_res.current_revision == BASELINE_REVISION
+        assert stamp_res.current_revision == "0004"
         v14_verify = v14_store.verify()
         assert v14_verify.ok is True
         assert v14_verify.schema_diffs == ()
@@ -111,7 +115,6 @@ def test_query_db_summary_matches_runtime_gateway_summary_with_bounded_sql(
     run_orm_workload_b(dsn)
 
     with DatabaseStore.from_dsn(dsn, pool_size=2, max_overflow=0) as store:
-        store.ensure_ready(backup_fn=NO_BACKUP, verify_schema=True)
         with store.repositories() as repos:
             repos.telemetry.record_action(
                 source="commander",
@@ -136,6 +139,7 @@ def test_query_db_summary_matches_runtime_gateway_summary_with_bounded_sql(
         gw.close()
 
     with DatabaseStore.from_dsn(dsn, pool_size=2, max_overflow=0) as store:
+        store.ensure_ready(backup_fn=NO_BACKUP, verify_schema=True)
         with count_statements(store.db_engine, max_statements=8) as c_sum:
             with store.session() as session:
                 orm_sum = query_db_summary(session, recent_actions_limit=12, spy_targets_limit=25)
@@ -145,7 +149,7 @@ def test_query_db_summary_matches_runtime_gateway_summary_with_bounded_sql(
 
     assert orm_sum.backend == "postgres"
     assert orm_sum.size_bytes > 0
-    assert orm_sum.alembic_revision == BASELINE_REVISION
+    assert orm_sum.alembic_revision == "0004"
     gw_counts = gw_sum["counts"]
     assert isinstance(gw_counts, dict)
     assert "meta" not in gw_counts and len(gw_counts) == 39

@@ -163,7 +163,7 @@ def query_spy_research_observations(session: Session) -> tuple[tuple[str, str, s
     """List chronological `(target_coords, owner, researches_json)` rows from `spy_reports`."""
     rows = session.execute(
         select(SpyReportRecord.target_coords, SpyReportRecord.owner, SpyReportRecord.researches_json)
-        .where(SpyReportRecord.researches_json != "", SpyReportRecord.researches_json != "{}")
+        .where(SpyReportRecord.researches_json != "{}")
         .order_by(SpyReportRecord.ts.asc(), SpyReportRecord.id.asc())
     ).all()
     return tuple((normalize_coords(str(r[0] or "")), sanitize_text(r[1] or ""), str(r[2] or "{}")) for r in rows)

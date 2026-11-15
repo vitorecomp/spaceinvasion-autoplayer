@@ -95,7 +95,21 @@ def query_galaxy_sector_intel(
 
     hot_rows = (
         session.execute(
-            select(GalaxySectorHot)
+            select(
+                GalaxySectorHot.galaxy,
+                GalaxySectorHot.system,
+                GalaxySectorHot.last_scanned_ts,
+                GalaxySectorHot.scan_count,
+                GalaxySectorHot.occupied_count,
+                GalaxySectorHot.target_count,
+                GalaxySectorHot.inactive_count,
+                GalaxySectorHot.spacia_count,
+                GalaxySectorHot.debris_count,
+                GalaxySectorHot.free_count,
+                GalaxySectorHot.prime_colony_free_count,
+                GalaxySectorHot.owners_json,
+                GalaxySectorHot.spacia_coords_json,
+            )
             .where(
                 GalaxySectorHot.galaxy.in_(active_gals),
                 GalaxySectorHot.system >= 1,
@@ -103,7 +117,7 @@ def query_galaxy_sector_intel(
             )
             .order_by(GalaxySectorHot.galaxy.asc(), GalaxySectorHot.system.asc())
         )
-        .scalars()
+        .mappings()
         .all()
     )
 
@@ -131,22 +145,22 @@ def query_galaxy_sector_intel(
 
     sectors = tuple(
         GalaxySectorIntelRecord(
-            galaxy=int(h.galaxy),
-            system=int(h.system),
-            sector_key=f"{int(h.galaxy):02d}:{int(h.system):03d}",
-            last_scanned_ts=round(float(h.last_scanned_ts), 3),
-            scan_count=int(h.scan_count),
-            occupied_count=int(h.occupied_count),
-            target_count=int(h.target_count),
-            inactive_count=int(h.inactive_count),
-            spacia_count=int(h.spacia_count),
-            debris_count=int(h.debris_count),
-            free_count=int(h.free_count),
-            prime_colony_free_count=int(h.prime_colony_free_count),
-            raid_count=raid_sector_counts.get((int(h.galaxy), int(h.system)), 0),
-            battle_loot_spice_eq=battle_loot_by_sec.get((int(h.galaxy), int(h.system)), 0.0),
-            owners=tuple(str(x) for x in loads_json_list(h.owners_json)),
-            spacia_coords=tuple(str(x) for x in loads_json_list(h.spacia_coords_json)),
+            galaxy=int(h["galaxy"]),
+            system=int(h["system"]),
+            sector_key=f"{int(h['galaxy']):02d}:{int(h['system']):03d}",
+            last_scanned_ts=round(float(h["last_scanned_ts"]), 3),
+            scan_count=int(h["scan_count"]),
+            occupied_count=int(h["occupied_count"]),
+            target_count=int(h["target_count"]),
+            inactive_count=int(h["inactive_count"]),
+            spacia_count=int(h["spacia_count"]),
+            debris_count=int(h["debris_count"]),
+            free_count=int(h["free_count"]),
+            prime_colony_free_count=int(h["prime_colony_free_count"]),
+            raid_count=raid_sector_counts.get((int(h["galaxy"]), int(h["system"])), 0),
+            battle_loot_spice_eq=battle_loot_by_sec.get((int(h["galaxy"]), int(h["system"])), 0.0),
+            owners=tuple(str(x) for x in loads_json_list(str(h["owners_json"] or "[]"))),
+            spacia_coords=tuple(str(x) for x in loads_json_list(str(h["spacia_coords_json"] or "[]"))),
         )
         for h in hot_rows
     )

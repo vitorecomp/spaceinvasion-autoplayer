@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass
 
-from sqlalchemy import ColumnElement, Double, case, cast, func, literal, select
+from sqlalchemy import ColumnElement, Double, Select, case, cast, func, literal, select, union_all
 from sqlalchemy.orm import Session
 
 from backend.db.dto import ColonyCandidateRecord
@@ -87,6 +87,87 @@ def _distance_expr(origin_coords: str) -> ColumnElement[float]:
     )
 
 
+def _unprobed_score_expr(dist_col: ColumnElement[float]) -> ColumnElement[float]:
+    pos = ColonyCandidateHot.position
+    pot_expr = case(
+        ((pos >= 4) & (pos <= 6), 56 - func.abs(pos - 5) * 3),
+        ((pos >= 13) & (pos <= 16), 48 - func.abs(pos - 14) * 2),
+        else_=30,
+    )
+    d_pen = func.least(5, func.floor(func.greatest(0.0, dist_col - 1000.0) / 800.0))
+    return cast(func.greatest(5, func.least(85, pot_expr - d_pen)), Double())
+
+
+def _build_tiered_candidate_rows(
+    session: Session,
+    *,
+    origin_coords: str,
+    min_tgt: int,
+    excl: list[str],
+    include_discarded: bool,
+    eff_limit: int,
+) -> list[tuple[object, ...]]:
+    dist_col = _distance_expr(origin_coords)
+    pos = ColonyCandidateHot.position
+    eff_fields = ColonyCandidateHot.max_fields_est
+    unprobed_score = _unprobed_score_expr(dist_col)
+
+    base_conds: list[ColumnElement[bool]] = [ColonyCandidateHot.is_active == 1]
+    if not include_discarded:
+        base_conds.append(ColonyCandidateHot.is_discarded == 0)
+    if excl:
+        base_conds.append(ColonyCandidateHot.coords.notin_(excl))
+
+    def _branch(
+        tier_val: int,
+        meets_val: bool,
+        extra: ColumnElement[bool],
+        primary_col: ColumnElement[float],
+    ) -> Select[str, float, bool, int, float]:
+        return (
+            select(
+                ColonyCandidateHot.coords.label("coords"),
+                dist_col.label("distance"),
+                literal(meets_val).label("meets_target"),
+                literal(tier_val).label("tier"),
+                primary_col.label("primary_sort"),
+            )
+            .where(*base_conds, extra)
+            .order_by(primary_col.asc(), dist_col.asc(), ColonyCandidateHot.coords.asc())
+            .limit(eff_limit)
+        )
+
+    neg_fields: ColumnElement[float] = cast(-eff_fields, Double[float]())
+    t0 = _branch(0, True, (ColonyCandidateHot.is_probed == 1) & (eff_fields >= min_tgt), neg_fields)
+    t1 = _branch(1, False, (ColonyCandidateHot.is_probed == 0) & (pos >= 7) & (pos <= 12), dist_col)
+    t2 = _branch(2, False, (ColonyCandidateHot.is_probed == 0) & ((pos < 7) | (pos > 12)), -unprobed_score)
+    t3 = _branch(3, False, (ColonyCandidateHot.is_probed == 1) & (eff_fields < min_tgt), neg_fields)
+
+    ranked = union_all(t0, t1, t2, t3).subquery("tiered_colonies")
+    top_ranked = (
+        select(ranked)
+        .order_by(ranked.c.tier.asc(), ranked.c.primary_sort.asc(), ranked.c.distance.asc(), ranked.c.coords.asc())
+        .limit(eff_limit)
+        .subquery("top_colonies")
+    )
+    stmt = (
+        select(
+            ColonyCandidateHot,
+            top_ranked.c.distance,
+            top_ranked.c.meets_target,
+            top_ranked.c.tier,
+        )
+        .join(top_ranked, ColonyCandidateHot.coords == top_ranked.c.coords)
+        .order_by(
+            top_ranked.c.tier.asc(),
+            top_ranked.c.primary_sort.asc(),
+            top_ranked.c.distance.asc(),
+            top_ranked.c.coords.asc(),
+        )
+    )
+    return [tuple(r) for r in session.execute(stmt).all()]
+
+
 def query_colony_candidates(
     session: Session,
     *,
@@ -96,56 +177,21 @@ def query_colony_candidates(
     include_discarded: bool = False,
     limit: int = 200,
 ) -> tuple[ColonyCandidateRecord, ...]:
-    """Rank active colony candidates in a single set-based PostgreSQL `SELECT` statement."""
+    """Rank active colony candidates in a single index-backed tiered PostgreSQL `SELECT`."""
     min_tgt = max(50, min(600, to_int(min_fields_target, 300)))
     eff_limit = clamp_limit(limit, 200)
     excl = sorted({nc for raw in exclude_coords if (nc := normalize_coords(raw))})
 
-    dist_col: ColumnElement[float] = _distance_expr(origin_coords)
-    pos = ColonyCandidateHot.position
-    eff_fields = ColonyCandidateHot.max_fields_est
-    is_probed: ColumnElement[bool] = ColonyCandidateHot.is_probed == 1
-    meets: ColumnElement[bool] = is_probed & (eff_fields >= min_tgt)
-
-    tier_expr: ColumnElement[int] = case(
-        (meets, 0),
-        ((~is_probed) & (pos >= 7) & (pos <= 12), 1),
-        (~is_probed, 2),
-        else_=3,
+    raw_rows = _build_tiered_candidate_rows(
+        session,
+        origin_coords=origin_coords,
+        min_tgt=min_tgt,
+        excl=excl,
+        include_discarded=include_discarded,
+        eff_limit=eff_limit,
     )
-    pot_expr = case(
-        ((pos >= 4) & (pos <= 6), 56 - func.abs(pos - 5) * 3),
-        ((pos >= 13) & (pos <= 16), 48 - func.abs(pos - 14) * 2),
-        else_=30,
-    )
-    d_pen = func.least(5, func.floor(func.greatest(0.0, dist_col - 1000.0) / 800.0))
-    unprobed_score = func.greatest(5, func.least(85, pot_expr - d_pen))
-    primary_expr: ColumnElement[float] = cast(
-        case(
-            (tier_expr == 0, -eff_fields),
-            (tier_expr == 1, dist_col),
-            (tier_expr == 2, -unprobed_score),
-            else_=-eff_fields,
-        ),
-        Double(),
-    )
-
-    stmt = select(
-        ColonyCandidateHot,
-        dist_col.label("distance"),
-        meets.label("meets_target"),
-        tier_expr.label("tier"),
-    ).where(ColonyCandidateHot.is_active == 1)
-    if not include_discarded:
-        stmt = stmt.where(ColonyCandidateHot.is_discarded == 0)
-    if excl:
-        stmt = stmt.where(ColonyCandidateHot.coords.notin_(excl))
-    stmt = stmt.order_by(tier_expr.asc(), primary_expr.asc(), dist_col.asc(), ColonyCandidateHot.coords.asc()).limit(
-        eff_limit
-    )
-
     out: list[ColonyCandidateRecord] = []
-    for raw_row in session.execute(stmt).all():
+    for raw_row in raw_rows:
         cand = raw_row[0]
         if not isinstance(cand, ColonyCandidateHot):
             continue

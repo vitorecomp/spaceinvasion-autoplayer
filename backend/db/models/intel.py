@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
-from sqlalchemy import Index, text
+from sqlalchemy import CheckConstraint, Index, desc, text
 from sqlalchemy.orm import Mapped, mapped_column
 
-from backend.db.models.base import Base, identity_pk
+from backend.db.models.base import Base, JsonbText, identity_pk
+
+_ACTIVE_SPY_TARGET_PREDICATE: str = "merged_into = '' AND is_own_planet = 0"
 
 
 class SpyTarget(Base):
@@ -13,12 +15,64 @@ class SpyTarget(Base):
 
     __tablename__ = "spy_targets"
     __table_args__ = (
+        CheckConstraint("is_inactive IN (0, 1)", name="ck_spy_targets_is_inactive"),
+        CheckConstraint("is_spacia IN (0, 1)", name="ck_spy_targets_is_spacia"),
+        CheckConstraint("has_debris IN (0, 1)", name="ck_spy_targets_has_debris"),
+        CheckConstraint("dug_in IN (0, 1)", name="ck_spy_targets_dug_in"),
+        CheckConstraint("is_own_planet IN (0, 1)", name="ck_spy_targets_is_own_planet"),
         Index(
             "idx_spy_targets_colony_filter",
             "is_own_planet",
             "merged_into",
             "is_spacia",
             "is_inactive",
+        ),
+        Index(
+            "idx_spy_targets_priority_spied",
+            "is_inactive",
+            "is_spacia",
+            "has_debris",
+            desc("last_scanned_ts"),
+            desc("points").nulls_last(),
+            "coords",
+            postgresql_where=text(f"{_ACTIVE_SPY_TARGET_PREDICATE} AND last_spied_ts > 0.0"),
+        ),
+        Index(
+            "idx_spy_targets_priority_unspied",
+            "is_inactive",
+            "is_spacia",
+            "has_debris",
+            desc("last_scanned_ts"),
+            desc("points").nulls_last(),
+            "coords",
+            postgresql_where=text(f"{_ACTIVE_SPY_TARGET_PREDICATE} AND last_spied_ts <= 0.0"),
+        ),
+        Index(
+            "idx_spy_targets_active_debris",
+            desc("last_scanned_ts"),
+            desc("points").nulls_last(),
+            "coords",
+            postgresql_where=text("merged_into = '' AND is_own_planet = 0 AND has_debris = 1"),
+        ),
+        Index(
+            "idx_spy_targets_active_blocked",
+            desc("blocked_until_ts"),
+            "coords",
+            postgresql_where=text("blocked_until_ts > 0.0"),
+        ),
+        Index(
+            "idx_spy_targets_active_spied",
+            desc("last_scanned_ts"),
+            "coords",
+            postgresql_where=text("merged_into = '' AND is_own_planet = 0 AND last_spied_ts > 0.0"),
+        ),
+        Index(
+            "idx_spy_targets_active_non_own",
+            "is_inactive",
+            "is_spacia",
+            "has_debris",
+            "last_spied_ts",
+            postgresql_where=text("merged_into = '' AND is_own_planet = 0"),
         ),
     )
 
@@ -34,8 +88,8 @@ class SpyTarget(Base):
     metal: Mapped[int] = mapped_column(server_default=text("0"))
     kryptonite: Mapped[int] = mapped_column(server_default=text("0"))
     spice: Mapped[int] = mapped_column(server_default=text("0"))
-    fleet_json: Mapped[str] = mapped_column(server_default=text("'{}'"))
-    defense_json: Mapped[str] = mapped_column(server_default=text("'{}'"))
+    fleet_json: Mapped[str] = mapped_column(JsonbText(), server_default=text("'{}'::jsonb"))
+    defense_json: Mapped[str] = mapped_column(JsonbText(), server_default=text("'{}'::jsonb"))
     dug_in: Mapped[int] = mapped_column(server_default=text("0"))
     last_scanned_ts: Mapped[float] = mapped_column()
     last_spied_ts: Mapped[float] = mapped_column(server_default=text("0.0"))
@@ -56,7 +110,11 @@ class SpyReportRecord(Base):
     """Append-only archive of parsed espionage reports."""
 
     __tablename__ = "spy_reports"
-    __table_args__ = (Index("idx_spy_reports_coords_ts", "target_coords", "ts"),)
+    __table_args__ = (
+        CheckConstraint("is_spacia IN (0, 1)", name="ck_spy_reports_is_spacia"),
+        CheckConstraint("dug_in IS NULL OR dug_in IN (0, 1)", name="ck_spy_reports_dug_in"),
+        Index("idx_spy_reports_coords_ts", "target_coords", "ts"),
+    )
 
     id: Mapped[int] = mapped_column(identity_pk(), primary_key=True)
     ts: Mapped[float] = mapped_column()
@@ -69,10 +127,10 @@ class SpyReportRecord(Base):
     kryptonite: Mapped[int] = mapped_column(server_default=text("0"))
     spice: Mapped[int] = mapped_column(server_default=text("0"))
     loot_spice_eq: Mapped[float] = mapped_column(server_default=text("0.0"))
-    buildings_json: Mapped[str] = mapped_column(server_default=text("'{}'"))
-    fleet_json: Mapped[str] = mapped_column(server_default=text("'{}'"))
-    defense_json: Mapped[str] = mapped_column(server_default=text("'{}'"))
-    researches_json: Mapped[str] = mapped_column(server_default=text("'{}'"))
+    buildings_json: Mapped[str] = mapped_column(JsonbText(), server_default=text("'{}'::jsonb"))
+    fleet_json: Mapped[str] = mapped_column(JsonbText(), server_default=text("'{}'::jsonb"))
+    defense_json: Mapped[str] = mapped_column(JsonbText(), server_default=text("'{}'::jsonb"))
+    researches_json: Mapped[str] = mapped_column(JsonbText(), server_default=text("'{}'::jsonb"))
     dug_in: Mapped[int | None] = mapped_column()
     uninhabited_fields: Mapped[int | None] = mapped_column()
     server_msg_id: Mapped[str] = mapped_column(server_default=text("''"))
@@ -108,7 +166,7 @@ class UniverseResearchMaxHistory(Base):
     id: Mapped[int] = mapped_column(identity_pk(), primary_key=True)
     ts: Mapped[float] = mapped_column()
     source: Mapped[str] = mapped_column(server_default=text("'refresh'"))
-    records_json: Mapped[str] = mapped_column()
+    records_json: Mapped[str] = mapped_column(JsonbText(default_empty="[]"))
 
 
 __all__ = [

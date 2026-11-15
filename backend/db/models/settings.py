@@ -5,7 +5,7 @@ from __future__ import annotations
 from sqlalchemy import CheckConstraint, Index, text
 from sqlalchemy.orm import Mapped, mapped_column
 
-from backend.db.models.base import Base, identity_pk
+from backend.db.models.base import Base, JsonbText, identity_pk
 
 
 class MetaEntry(Base):
@@ -25,7 +25,7 @@ class StrategyConfigStore(Base):
     __table_args__ = (CheckConstraint("id = 1", name="strategy_config_store_id_check"),)
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=False)
-    config_json: Mapped[str] = mapped_column()
+    config_json: Mapped[str] = mapped_column(JsonbText())
     updated_ts: Mapped[float] = mapped_column()
     source: Mapped[str] = mapped_column(server_default=text("'sqlite'"))
 
@@ -38,7 +38,7 @@ class ConfigHistory(Base):
 
     id: Mapped[int] = mapped_column(identity_pk(), primary_key=True)
     ts: Mapped[float] = mapped_column()
-    config_json: Mapped[str] = mapped_column()
+    config_json: Mapped[str] = mapped_column(JsonbText())
 
 
 class SchemaMigration(Base):

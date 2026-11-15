@@ -619,14 +619,23 @@ class TestTier5Adversarial(unittest.TestCase):
                 os.chdir(old_cwd)
 
         with E2ETestHarness(config=StrategyConfig()) as h:
+            import psycopg
+
             assert h.bridge._db is not None
+            with self.assertRaises(psycopg.errors.InvalidTextRepresentation):
+                run_pg_exec(
+                    h.bridge._db,
+                    "INSERT INTO spy_targets(coords, owner, fleet_json, defense_json, last_scanned_ts) "
+                    "VALUES('01:001:99', 'Bad', '{bad', '[]', 10.0)",
+                )
             run_pg_exec(
                 h.bridge._db,
                 "INSERT INTO economy_rates_cache(planet_id, coords, rates_json, updated_ts) VALUES(1, '01:001:01', 'null', 10.0)",
             )
             run_pg_exec(
                 h.bridge._db,
-                "INSERT INTO spy_targets(coords, owner, fleet_json, defense_json, last_scanned_ts) VALUES('01:001:09', 'Bad', '{bad', '[]', 10.0)",
+                "INSERT INTO spy_targets(coords, owner, fleet_json, defense_json, last_scanned_ts) "
+                "VALUES('01:001:09', 'Bad', '123', '[]', 10.0)",
             )
             run_pg_exec(
                 h.bridge._db,
@@ -635,12 +644,12 @@ class TestTier5Adversarial(unittest.TestCase):
                 "energy_produced, energy_used, buildings_json, ships_json, defense_json, "
                 "economy_rates_json, researches_json) "
                 "VALUES(10.0, 31, 1, '01:001:01', 'P', 'normal', 20, 10, 200, 0, 0, 0, 0, 0, 0, "
-                "'{bad', 'null', 'null', '{bad', 'null')",
+                "'[]', 'null', 'null', '123', 'null')",
             )
             run_pg_exec(
                 h.bridge._db,
                 "INSERT INTO tutorial_progress(step, total_steps, tasks_json, reward_text, can_complete, first_seen_ts, last_seen_ts) "
-                "VALUES(1, 5, '{bad', 'Reward', 0, 10.0, 10.0)",
+                "VALUES(1, 5, '{}', 'Reward', 0, 10.0, 10.0)",
             )
             db_res = h.api.send_command({"command": "db_summary"})
             self.assertTrue(db_res.get("ok"))

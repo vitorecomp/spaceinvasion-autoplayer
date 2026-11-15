@@ -6,7 +6,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 import re
 
-from sqlalchemy import case, func
+from sqlalchemy import Text, case, cast, func
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
@@ -286,7 +286,7 @@ def upsert_message_rows(session: Session, rows: list[dict[str, object]]) -> None
                 "parsed_json": case(
                     (
                         (func.length(stmt.excluded.body_text) >= func.length(GameMessage.body_text))
-                        & (stmt.excluded.parsed_json != "{}"),
+                        & (cast(stmt.excluded.parsed_json, Text) != "{}"),
                         stmt.excluded.parsed_json,
                     ),
                     else_=GameMessage.parsed_json,

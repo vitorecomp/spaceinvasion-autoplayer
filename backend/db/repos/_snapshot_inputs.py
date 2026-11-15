@@ -188,7 +188,24 @@ def snap_to_latest_hot_dto(row: StateSnapshot, *, include_payload: bool) -> Late
     )
 
 
+LATEST_PLANET_SNAPSHOTS_SQL: str = (
+    "WITH RECURSIVE pids AS ("
+    "  (SELECT planet_id FROM planet_snapshots ORDER BY planet_id ASC LIMIT 1)"
+    "  UNION ALL"
+    "  SELECT (SELECT ps.planet_id FROM planet_snapshots ps"
+    "          WHERE ps.planet_id > pids.planet_id ORDER BY ps.planet_id ASC LIMIT 1)"
+    "  FROM pids WHERE pids.planet_id IS NOT NULL"
+    ") "
+    "SELECT latest.* FROM pids "
+    "CROSS JOIN LATERAL ("
+    "  SELECT ps.* FROM planet_snapshots ps WHERE ps.planet_id = pids.planet_id"
+    "  ORDER BY ps.ts DESC, ps.id DESC LIMIT 1"
+    ") latest WHERE pids.planet_id IS NOT NULL ORDER BY latest.planet_id ASC"
+)
+
+
 __all__ = [
+    "LATEST_PLANET_SNAPSHOTS_SQL",
     "PlanetSnapshotInput",
     "RankSnapshotInput",
     "StateSnapshotInput",

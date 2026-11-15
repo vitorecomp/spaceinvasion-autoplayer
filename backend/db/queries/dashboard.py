@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 
+from alembic.script import ScriptDirectory
 from sqlalchemy import Engine, case, func, inspect, select, text
 from sqlalchemy.orm import Session
 from sqlalchemy.sql.elements import ColumnElement
@@ -19,6 +20,7 @@ from backend.db.dto import (
 )
 from backend.db.migrations import (
     BASELINE_REVISION,
+    build_alembic_config,
     get_current_revision,
     verify_models_match_migrations,
 )
@@ -235,13 +237,14 @@ def query_db_verify(
         bad_events = int(ev_row[1] or 0)
         ledger_ok = bad_events == 0 and (events_count > 0 or alembic_rev is not None)
 
-    up_to_date = alembic_rev == BASELINE_REVISION
+    target_rev = ScriptDirectory.from_config(build_alembic_config()).get_current_head() or BASELINE_REVISION
+    up_to_date = alembic_rev == target_rev
     ok = (not missing) and (not schema_diffs) and ledger_ok and up_to_date
     return DbVerifyRecord(
         ok=ok,
         backend="postgres",
         alembic_revision=alembic_rev,
-        target_revision=BASELINE_REVISION,
+        target_revision=target_rev,
         up_to_date=up_to_date,
         missing_tables=missing,
         schema_diffs=schema_diffs,

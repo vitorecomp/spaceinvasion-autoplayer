@@ -24,7 +24,6 @@ from backend.db.migrations import (
     verify_schema_against_models,
 )
 from backend.db.models import (
-    Base,
     ManualQueueItem,
     MetaEntry,
     SchemaMigration,
@@ -78,8 +77,10 @@ def test_fresh_upgrade_matches_si_template_and_records_audit_and_backup(
         with pytest.raises(TypeError, match="NO_BACKUP"):
             upgrade_database(db, "head", backup_fn=None)  # type: ignore[arg-type]
 
-        result = upgrade_database(db, "head", backup_fn=_fake_backup)
-        assert result.previous_revision is None and result.current_revision == BASELINE_REVISION
+        result = upgrade_database(db, BASELINE_REVISION, backup_fn=_fake_backup)
+
+        assert result.previous_revision is None
+        assert result.current_revision == BASELINE_REVISION
         assert result.backup_path == "/tmp/fake_pre_upgrade_0001.dump"
         assert backup_calls == ["/tmp/fake_pre_upgrade_0001.dump"]
         assert len(result.applied_revisions) == 1
@@ -87,19 +88,29 @@ def test_fresh_upgrade_matches_si_template_and_records_audit_and_backup(
         assert applied.revision == BASELINE_REVISION and applied.event_type == "APPLY"
         assert applied.checksum == compute_revision_checksum(BASELINE_REVISION) and applied.elapsed_ms >= 0.0
 
-        alembic_schema = _introspect_pg_schema(fresh_dsn, exclude_tables=_EXCLUDED_CATALOG_TABLES)
+        # Upgrade 0001 -> head (0004) and assert exact 1:1 pg_catalog match against si_template + zero drift.
+        head_res = upgrade_database(db, "head", backup_fn=NO_BACKUP)
+        assert head_res.current_revision == "0004"
+        assert [r.revision for r in head_res.applied_revisions] == ["0002", "0003", "0004"]
+        alembic_schema = _introspect_pg_schema(
+            fresh_dsn,
+            exclude_tables=_EXCLUDED_CATALOG_TABLES,
+        )
         assert set(alembic_schema.keys()) == set(migrated_schema.keys())
         for table_name in sorted(migrated_schema.keys()):
             expected, actual = migrated_schema[table_name], alembic_schema[table_name]
             assert actual.columns == expected.columns, f"Column mismatch on {table_name}"
             assert actual.constraints == expected.constraints, f"Constraint mismatch on {table_name}"
             assert actual.indexes == expected.indexes, f"Index mismatch on {table_name}"
+        assert verify_models_match_migrations(db) == []
+        assert verify_schema_against_models(fresh_dsn) == []
 
-        assert verify_models_match_migrations(db) == [] and verify_schema_against_models(fresh_dsn) == []
-
+        # Audit rows appended in schema_migration_events (legacy int columns stay 0/None on fresh DB).
         with db_uow(db) as session:
-            events = list(session.execute(select(SchemaMigrationEvent)).scalars().all())
-            assert len(events) == 1
+            events = list(
+                session.execute(select(SchemaMigrationEvent).order_by(SchemaMigrationEvent.id.asc())).scalars().all()
+            )
+            assert len(events) == 4
             ev = events[0]
             assert ev.event_type == "APPLY" and ev.from_version == 0 and ev.to_version == 0 and ev.version is None
             assert ev.name == "0001_baseline_schema" and ev.checksum == applied.checksum
@@ -115,7 +126,8 @@ def test_fresh_upgrade_matches_si_template_and_records_audit_and_backup(
             command.downgrade(build_alembic_config(connection=conn), "base")
         assert get_current_revision(db) is None
         re_upgraded = upgrade_database(db, "head", backup_fn=NO_BACKUP)
-        assert re_upgraded.current_revision == BASELINE_REVISION and verify_models_match_migrations(db) == []
+        assert re_upgraded.current_revision == "0004"
+        assert verify_models_match_migrations(db) == []
 
 
 def test_stamp_baseline_on_migrated_db_zero_table_ddl_and_preserves_rows(
@@ -125,7 +137,10 @@ def test_stamp_baseline_on_migrated_db_zero_table_ddl_and_preserves_rows(
     cloned_dsn = pg_harness.create_database(prefix="alembic_stamp", from_template=False)
 
     with DatabaseEngine.from_dsn(cloned_dsn, pool_size=2, max_overflow=0) as db:
-        Base.metadata.create_all(db.engine)
+        upgrade_database(db, BASELINE_REVISION, backup_fn=NO_BACKUP)
+        with db.engine.begin() as conn:
+            conn.execute(text("DROP TABLE alembic_version"))
+            conn.execute(text("DELETE FROM schema_migration_events"))
         with db_uow(db) as session:
             session.add_all(
                 [
@@ -150,7 +165,7 @@ def test_stamp_baseline_on_migrated_db_zero_table_ddl_and_preserves_rows(
             )
 
         with count_statements(db) as counter:
-            result = stamp_baseline_database(db)
+            result = stamp_baseline_database(db, verify_schema=False)
 
         # Zero DDL statements may touch any of the 40 game tables (only alembic_version is allowed).
         game_table_ddl = [
@@ -163,11 +178,13 @@ def test_stamp_baseline_on_migrated_db_zero_table_ddl_and_preserves_rows(
 
         assert result.current_revision == BASELINE_REVISION
         assert get_current_revision(db) == BASELINE_REVISION
+        upgrade_database(db, "head", backup_fn=NO_BACKUP)
+        assert get_current_revision(db) == "0004"
         assert verify_models_match_migrations(db) == []
 
         with db_uow(db) as session:
             ver: object = session.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
-            assert ver == BASELINE_REVISION
+            assert ver == "0004"
 
             sentinel = session.execute(select(MetaEntry).where(MetaEntry.key == "stamp_sentinel")).scalar_one()
             assert sentinel.value == "keep_me"

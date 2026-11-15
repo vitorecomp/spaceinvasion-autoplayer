@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 
-from sqlalchemy import func, select, update
+from sqlalchemy import func, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
@@ -35,6 +35,7 @@ from backend.db.repos._helpers import (
     to_int,
 )
 from backend.db.repos._snapshot_inputs import (
+    LATEST_PLANET_SNAPSHOTS_SQL,
     PlanetSnapshotInput,
     RankSnapshotInput,
     StateSnapshotInput,
@@ -370,31 +371,30 @@ class SnapshotsRepository:
         rows = self._session.execute(stmt.order_by(EmpirePlanetHot.planet_id.asc())).scalars().all()
         return tuple(empire_hot_to_dto(r) for r in rows)
 
-    def list_planet_history(self, planet_id: int, *, limit: int = 50) -> tuple[PlanetSnapshotRecord, ...]:
-        """List per-planet snapshots newest first."""
-        rows = (
-            self._session.execute(
-                select(PlanetSnapshot)
-                .where(PlanetSnapshot.planet_id == clamp_int64(to_int(planet_id, 0)))
-                .order_by(PlanetSnapshot.id.desc())
-                .limit(clamp_limit(limit, 50))
-            )
+    def list_latest_planet_snapshots(self) -> tuple[PlanetSnapshotRecord, ...]:
+        """Return latest snapshot per planet in 1 recursive index skip-scan + LATERAL query."""
+        rows: Sequence[PlanetSnapshot] = (
+            self._session.execute(select(PlanetSnapshot).from_statement(text(LATEST_PLANET_SNAPSHOTS_SQL)))
             .scalars()
             .all()
         )
         return tuple(planet_snap_to_dto(r) for r in rows)
 
+    def list_planet_history(self, planet_id: int, *, limit: int = 50) -> tuple[PlanetSnapshotRecord, ...]:
+        """List per-planet snapshots newest first."""
+        stmt = (
+            select(PlanetSnapshot)
+            .where(PlanetSnapshot.planet_id == clamp_int64(to_int(planet_id, 0)))
+            .order_by(PlanetSnapshot.id.desc())
+            .limit(clamp_limit(limit, 50))
+        )
+        return tuple(planet_snap_to_dto(r) for r in self._session.execute(stmt).scalars().all())
+
     def list_rank_history(self, *, limit: int = 240) -> tuple[RankSnapshotRecord, ...]:
         """Return the latest `limit` rank samples ordered chronologically in 1 SQL statement."""
         sub = select(RankSnapshot).order_by(RankSnapshot.id.desc()).limit(clamp_limit(limit, 240)).subquery()
-        rows = (
-            self._session.execute(
-                select(RankSnapshot).join(sub, RankSnapshot.id == sub.c.id).order_by(RankSnapshot.id.asc())
-            )
-            .scalars()
-            .all()
-        )
-        return tuple(rank_to_dto(r) for r in rows)
+        stmt = select(RankSnapshot).join(sub, RankSnapshot.id == sub.c.id).order_by(RankSnapshot.id.asc())
+        return tuple(rank_to_dto(r) for r in self._session.execute(stmt).scalars().all())
 
 
 __all__ = ["PlanetSnapshotInput", "RankSnapshotInput", "SnapshotsRepository", "StateSnapshotInput"]

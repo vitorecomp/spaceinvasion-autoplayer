@@ -320,7 +320,7 @@ def test_runtime_db_gateway_config_store_and_migrations_cli_end_to_end(
         _verify_combat_intel_and_colonies(gw)
         summ = gw.summary()
         ver = gw.verify_schema(full_integrity=True)
-        assert ver["ok"] is True and ver["alembic_revision"] == "0001"
+        assert ver["ok"] is True and ver["alembic_revision"] == "0004"
         assert isinstance(summ["counts"], dict) and len(summ["counts"]) == 39 and "meta" not in summ["counts"]
         recent = summ["recent_actions"]
         assert isinstance(recent, list) and len(recent) >= 2

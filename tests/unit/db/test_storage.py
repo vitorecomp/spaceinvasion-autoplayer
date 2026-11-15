@@ -441,16 +441,24 @@ class TestGameDatabase(unittest.TestCase):
             finally:
                 os.chdir(old_cwd)
 
-            # Corrupt cells & null JSON values in tables degrade safely
+            # Corrupt/non-object JSONB cells degrade safely; malformed raw JSON is rejected by PG JSONB
+            import psycopg
+
             db_c = GameDatabase(tmp_root / "corrupt.db")
             try:
+                with self.assertRaises(psycopg.errors.InvalidTextRepresentation):
+                    run_pg_exec(
+                        db_c,
+                        "INSERT INTO spy_targets(coords, owner, fleet_json, defense_json, last_scanned_ts) "
+                        "VALUES('01:001:99', 'Bad', '{bad', 'null', 10.0)",
+                    )
                 run_pg_exec(
                     db_c,
                     "INSERT INTO economy_rates_cache(planet_id, coords, rates_json, updated_ts) VALUES(1, '01:001:01', 'null', 10.0)",
                 )
                 run_pg_exec(
                     db_c,
-                    "INSERT INTO spy_targets(coords, owner, fleet_json, defense_json, last_scanned_ts) VALUES('01:001:02', 'X', '{bad', 'null', 10.0)",
+                    "INSERT INTO spy_targets(coords, owner, fleet_json, defense_json, last_scanned_ts) VALUES('01:001:02', 'X', '[]', 'null', 10.0)",
                 )
                 run_pg_exec(
                     db_c,
@@ -459,12 +467,12 @@ class TestGameDatabase(unittest.TestCase):
                     "energy_produced, energy_used, buildings_json, ships_json, defense_json, "
                     "economy_rates_json, researches_json) "
                     "VALUES(10.0, 31, 1, '01:001:01', 'P', 'normal', 20, 10, 200, 0, 0, 0, 0, 0, 0, "
-                    "'[]', '{bad', 'null', 'null', '{bad')",
+                    "'[]', '123', 'null', 'null', '[]')",
                 )
                 run_pg_exec(
                     db_c,
                     "INSERT INTO tutorial_progress(step, total_steps, tasks_json, reward_text, can_complete, first_seen_ts, last_seen_ts) "
-                    "VALUES(1, 5, '{bad', 'Reward', 0, 10.0, 10.0)",
+                    "VALUES(1, 5, '{}', 'Reward', 0, 10.0, 10.0)",
                 )
                 self.assertEqual(db_c.get_all_economy_rates(), {})
                 self.assertEqual(len(db_c.get_spy_targets()), 1)
@@ -498,7 +506,10 @@ class TestGameDatabase(unittest.TestCase):
                     "VALUES(?, 31, 'u', NULL, NULL, ?, ?, ?, -1)",
                     (float("nan"), float("nan"), float("inf"), float("-inf")),
                 )
-                run_pg_exec(db, "INSERT INTO galaxy_scans(galaxy, system, last_scanned_ts) VALUES(0, 10, 100.0)")
+                import psycopg
+
+                with self.assertRaises(psycopg.errors.CheckViolation):
+                    run_pg_exec(db, "INSERT INTO galaxy_scans(galaxy, system, last_scanned_ts) VALUES(0, 10, 100.0)")
                 run_pg_exec(
                     db,
                     "INSERT INTO galaxy_scans(galaxy, system, last_scanned_ts) VALUES(2, 380, ?)",

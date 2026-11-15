@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from sqlalchemy import Index, text
+from sqlalchemy import CheckConstraint, Index, text
 from sqlalchemy.orm import Mapped, mapped_column
 
-from backend.db.models.base import Base, identity_pk
+from backend.db.models.base import Base, JsonbText, identity_pk
 
 
 class GameMessage(Base):
@@ -13,6 +13,7 @@ class GameMessage(Base):
 
     __tablename__ = "game_messages"
     __table_args__ = (
+        CheckConstraint("deleted_in_game IN (0, 1)", name="ck_game_messages_deleted_in_game"),
         Index("idx_game_messages_cat", "category", "ingested_ts"),
         Index("idx_game_messages_coords", "coords", "ingested_ts"),
         Index("idx_game_messages_ts", "ingested_ts"),
@@ -30,7 +31,7 @@ class GameMessage(Base):
     coords: Mapped[str] = mapped_column(server_default=text("''"))
     body_text: Mapped[str] = mapped_column(server_default=text("''"))
     raw_html: Mapped[str] = mapped_column(server_default=text("''"))
-    parsed_json: Mapped[str] = mapped_column(server_default=text("'{}'"))
+    parsed_json: Mapped[str] = mapped_column(JsonbText(), server_default=text("'{}'::jsonb"))
     deleted_in_game: Mapped[int] = mapped_column(server_default=text("0"))
     deleted_ts: Mapped[float | None] = mapped_column()
 

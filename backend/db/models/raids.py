@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from sqlalchemy import Index, text
+from sqlalchemy import CheckConstraint, Index, text
 from sqlalchemy.orm import Mapped, mapped_column
 
-from backend.db.models.base import Base, identity_pk
+from backend.db.models.base import Base, JsonbText, identity_pk
 
 
 class RaidHistory(Base):
@@ -13,6 +13,7 @@ class RaidHistory(Base):
 
     __tablename__ = "raid_history"
     __table_args__ = (
+        CheckConstraint("is_exempt IN (0, 1)", name="ck_raid_history_is_exempt"),
         Index("idx_raid_history_coords_ts", "target_coords", "attacked_ts"),
         Index("idx_raid_history_ts", "attacked_ts"),
     )
@@ -22,7 +23,7 @@ class RaidHistory(Base):
     attacked_ts: Mapped[float] = mapped_column()
     is_exempt: Mapped[int] = mapped_column(server_default=text("0"))
     outcome: Mapped[str] = mapped_column(server_default=text("''"))
-    loot_json: Mapped[str] = mapped_column(server_default=text("'{}'"))
+    loot_json: Mapped[str] = mapped_column(JsonbText(), server_default=text("'{}'::jsonb"))
 
 
 class BashBlock(Base):
@@ -30,6 +31,7 @@ class BashBlock(Base):
 
     __tablename__ = "bash_blocks"
     __table_args__ = (
+        CheckConstraint("is_bash IN (0, 1)", name="ck_bash_blocks_is_bash"),
         Index("idx_bash_blocks_coords_ts", "target_coords", "blocked_ts"),
         Index("idx_bash_blocks_until_ts", "blocked_until_ts"),
     )
