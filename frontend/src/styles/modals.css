@@ -65,6 +65,27 @@
   overflow: hidden;
 }
 
+.notif-modal-card .module-meta {
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.modal-close-btn {
+  flex-shrink: 0;
+  margin-left: auto;
+}
+
+.notif-center-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+  padding: 8px 16px;
+  background: var(--bg-panel-alt);
+  border-bottom: 1px solid var(--line-dim);
+}
+
 .notif-help-card {
   max-width: 540px;
 }

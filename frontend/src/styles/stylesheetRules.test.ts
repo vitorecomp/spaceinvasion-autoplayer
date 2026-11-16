@@ -45,6 +45,8 @@ function extractMediaBlocks(css: string, queryPattern: RegExp): string[] {
 
 describe("Stylesheet invariants (responsive floors, typography & 3-column dashboard layout)", () => {
   let combinedCss = "";
+  let tokensCss = "";
+  let nonTokenCss = "";
   let cleanDashboardCss = "";
   let mobile1100Blocks: string[] = [];
   let mobile1100Css = "";
@@ -67,10 +69,16 @@ describe("Stylesheet invariants (responsive floors, typography & 3-column dashbo
     );
     expect(imports.length).toBeGreaterThan(0);
 
-    const moduleContents = imports.map((specifier) =>
-      stripCssComments(fs.readFileSync(pathMod.resolve(stylesDir, specifier), "utf8")),
-    );
-    combinedCss = moduleContents.join("\n");
+    const moduleEntries = imports.map((specifier) => ({
+      specifier,
+      css: stripCssComments(fs.readFileSync(pathMod.resolve(stylesDir, specifier), "utf8")),
+    }));
+    combinedCss = moduleEntries.map((m) => m.css).join("\n");
+    tokensCss = moduleEntries.find((m) => m.specifier.endsWith("tokens.css"))?.css ?? "";
+    nonTokenCss = moduleEntries
+      .filter((m) => !m.specifier.endsWith("tokens.css"))
+      .map((m) => m.css)
+      .join("\n");
     cleanDashboardCss = stripCssComments(
       fs.readFileSync(pathMod.resolve(stylesDir, "dashboard.css"), "utf8"),
     );
@@ -84,6 +92,23 @@ describe("Stylesheet invariants (responsive floors, typography & 3-column dashbo
   it("enforces readable 0.86rem typography floors for .nav-title and .eta-pill", () => {
     expect(combinedCss).toMatch(/\.nav-title\s*\{[^}]*font-size\s*:\s*0\.86rem/);
     expect(combinedCss).toMatch(/\.eta-pill\s*\{[^}]*font-size\s*:\s*0\.86rem/);
+  });
+
+  it("enforces WCAG AA red tokens (C16), >= 0.79rem typography floor (C17), and zero raw hex outside tokens.css (C18)", () => {
+    expect(tokensCss).toMatch(/--red\s*:\s*#c91f2d/i);
+    expect(tokensCss).toMatch(/--red-text\s*:\s*#ff5c68/i);
+
+    const subFloorRem = Array.from(
+      combinedCss.matchAll(/font-size\s*:\s*([0-9.]+)rem/g),
+      (m) => Number(m[1]),
+    ).filter((size) => size < 0.79);
+    expect(subFloorRem).toEqual([]);
+
+    const rawHexOutsideTokens = Array.from(
+      nonTokenCss.matchAll(/#[0-9a-fA-F]{3,8}\b/g),
+      (m) => m[0],
+    );
+    expect(rawHexOutsideTokens).toEqual([]);
   });
 
   it("releases 100vh viewport lock and preserves scroll/min-height floors in @media (max-width: 1100px)", () => {

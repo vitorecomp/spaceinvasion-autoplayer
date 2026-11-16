@@ -200,7 +200,7 @@ export const SectorsQueueTable: React.FC<SectorsQueueTableProps> = ({
                 </td>
               </tr>
             ) : (
-              pagedQueue.map((qItem) => {
+              pagedQueue.map((qItem, idx) => {
                 const isDisc = qItem.phase === "exploratory";
                 const distFmt = formatSectorDistance(qItem);
                 const isRowBusy = refreshingSector === qItem.sector;
@@ -208,11 +208,17 @@ export const SectorsQueueTable: React.FC<SectorsQueueTableProps> = ({
                 const occ = Math.max(0, Math.round(finiteNum(qItem.occupied_count, 0)));
                 const deb = Math.max(0, Math.round(finiteNum(qItem.debris_count, 0)));
                 const tgt = Math.max(0, Math.round(finiteNum(qItem.target_count, 0)));
+                const fallbackPos = (effectiveQueuePage - 1) * queuePageSize + idx + 1;
+                const rawPos = qItem.queue_pos ?? qItem.position ?? qItem.rank;
+                const displayPos =
+                  rawPos != null && Number.isFinite(Number(rawPos))
+                    ? Math.round(Number(rawPos))
+                    : fallbackPos;
 
                 return (
-                  <tr key={`${qItem.queue_pos}-${qItem.sector}`}>
+                  <tr key={`${displayPos}-${qItem.sector}`}>
                     <td className="tabular">
-                      <strong>{`#${qItem.queue_pos}`}</strong>
+                      <strong>{`#${displayPos}`}</strong>
                     </td>
                     <td>
                       <span

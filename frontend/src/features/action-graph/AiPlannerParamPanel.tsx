@@ -90,9 +90,11 @@ export const AiPlannerParamPanel: React.FC<AiPlannerParamPanelProps> = ({
     />
   );
 
+  const [showHelp, setShowHelp] = React.useState(false);
+
   return (
     <aside
-      className="hud-window ag-control-panel"
+      className={`hud-window ag-control-panel${showHelp ? "" : " ag-help-collapsed"}`}
       id="ag-ai-control-panel"
       aria-label="AI-Planner parameters"
     >
@@ -101,12 +103,23 @@ export const AiPlannerParamPanel: React.FC<AiPlannerParamPanelProps> = ({
           <span className="module-code tabular">PTH</span>
           <h2>AI-Planner Parameters</h2>
         </div>
-        <span
-          className={`ag-dirty-badge tabular ${draftDirty ? "is-dirty" : "is-synced"}`}
-          id="ai-dirty-badge"
-        >
-          {draftDirty ? "MODIFIED" : "SYNCED"}
-        </span>
+        <div className="inline-actions">
+          <button
+            type="button"
+            className={`btn btn-secondary btn-sm ag-help-toggle${showHelp ? " active" : ""}`}
+            id="btn-ai-help-toggle"
+            aria-pressed={showHelp}
+            onClick={() => setShowHelp((v) => !v)}
+          >
+            {showHelp ? "Hide Help" : "Show Help"}
+          </button>
+          <span
+            className={`ag-dirty-badge tabular ${draftDirty ? "is-dirty" : "is-synced"}`}
+            id="ai-dirty-badge"
+          >
+            {draftDirty ? "MODIFIED" : "SYNCED"}
+          </span>
+        </div>
       </div>
 
       <div className="ag-panel-tabs" role="tablist" aria-label="AI-Planner parameter tabs">

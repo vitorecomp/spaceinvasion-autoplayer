@@ -857,7 +857,7 @@ describe("Combat, Intel & Ranking React Feature Modules", () => {
       }),
       scan_queue: [
         {
-          queue_pos: 1,
+          // Intentionally omit queue_pos/position to verify 1-based fallback index (C02)
           sector: "01:380",
           galaxy: 1,
           system: 380,
@@ -1006,12 +1006,17 @@ describe("Combat, Intel & Ranking React Feature Modules", () => {
     expect(container.querySelector("#sec-kpi-coverage")?.textContent).toContain("UNI 0.0%");
     expect(container.querySelector("#sec-kpi-occupied")?.textContent).toContain("15 Occupied");
     expect(container.querySelector("#sec-kpi-debris")?.textContent).toContain("2 Debris");
-    // All 14 galaxy chips (G1..G14) + All G chip render
-    expect(container.querySelectorAll('[data-sec-gal]').length).toBe(15);
+    // Compact galaxy selector renders All Galaxies + G1..G14 options (C10)
+    const galSelect = container.querySelector("#sec-galaxy-select") as HTMLSelectElement | null;
+    expect(galSelect).not.toBeNull();
+    expect(container.querySelectorAll('#sec-galaxy-select option[data-sec-gal]').length).toBe(15);
     expect(container.querySelector('[data-sec-gal="14"]')?.textContent).toContain("G14 (0)");
-    // Upcoming Scan Queue table renders both discovery & refresh entries
+    // Upcoming Scan Queue table renders both discovery & refresh entries without #undefined (C02)
     expect(container.querySelector("#sec-queue-meta")?.textContent).toContain("2 QUEUED");
     expect(container.querySelectorAll("#sectors-queue-tbody tr").length).toBe(2);
+    expect(container.querySelector("#sectors-queue-tbody")?.textContent).not.toContain("#undefined");
+    expect(container.querySelector("#sectors-queue-tbody")?.textContent).toContain("#1");
+    expect(container.querySelector("#sectors-queue-tbody")?.textContent).toContain("#2");
     expect(container.querySelector("#sectors-queue-tbody")?.textContent).toContain("01:380");
     expect(container.querySelector("#sectors-queue-tbody")?.textContent).toContain("DISCOVERY");
     expect(container.querySelector("#sectors-queue-tbody")?.textContent).toContain("REFRESH");
@@ -1061,8 +1066,8 @@ describe("Combat, Intel & Ranking React Feature Modules", () => {
       ).toBe(true);
     });
 
-    // Clicking G4 chip requests galaxy 4 including unscanned sectors
-    fireEvent.click(container.querySelector('[data-sec-gal="4"]')!);
+    // Selecting G4 in the galaxy dropdown requests galaxy 4 including unscanned sectors (C10)
+    fireEvent.change(galSelect!, { target: { value: "4" } });
     await waitFor(() => {
       expect(
         commandCalls.some(

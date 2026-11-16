@@ -249,4 +249,48 @@ describe("ConfigView dirty guards, mid-save poll protection, rate-limit resilien
     expect(bootCalls).toBeGreaterThanOrEqual(2);
     expect(container.querySelector("#feedback-banner")?.textContent?.toLowerCase()).toContain("restarted");
   });
+
+  it("displays PostgreSQL heading, section jump pills, and filters settings via #cfg-search-input (C12)", async () => {
+    const dash = createBaseDashboard();
+    installMockFetch({ getDashboard: () => dash });
+
+    const { container } = render(
+      <ConsoleProvider>
+        <ConfigView />
+      </ConsoleProvider>
+    );
+
+    await waitFor(() => {
+      expect(container.querySelector("#cfg-search-input")).not.toBeNull();
+    });
+
+    const heading = container.querySelector("#view-config h2")?.textContent || "";
+    expect(heading).toContain("PostgreSQL");
+    expect(heading).not.toContain("SQLite");
+
+    const jumpButtons = Array.from(container.querySelectorAll("[data-cfg-jump]"));
+    expect(jumpButtons.length).toBeGreaterThanOrEqual(4);
+    expect(jumpButtons.some((b) => b.getAttribute("data-cfg-jump") === "cfg-grp-univ-research")).toBe(true);
+
+    const allItemsBefore = container.querySelectorAll("#view-config .config-item").length;
+    expect(allItemsBefore).toBeGreaterThan(10);
+
+    const searchInput = container.querySelector("#cfg-search-input") as HTMLInputElement;
+    fireEvent.change(searchInput, { target: { value: "blast_furnace" } });
+
+    await waitFor(() => {
+      const countText = (container.querySelector("#cfg-filter-count")?.textContent || "").toLowerCase();
+      expect(countText).toContain("match");
+    });
+
+    const filteredItems = container.querySelectorAll("#view-config .config-item").length;
+    expect(filteredItems).toBeGreaterThan(0);
+    expect(filteredItems).toBeLessThan(allItemsBefore);
+
+    // Clear filter restores full list
+    fireEvent.change(searchInput, { target: { value: "" } });
+    await waitFor(() => {
+      expect(container.querySelectorAll("#view-config .config-item").length).toBe(allItemsBefore);
+    });
+  });
 });

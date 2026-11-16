@@ -110,7 +110,7 @@ describe("DashboardView ETA rendering, Blast Furnace controls, Sim actions, queu
     });
     const thCount = emptyView.container.querySelectorAll("#dash-queue-card-building thead th").length;
     const emptyTd = emptyView.container.querySelector("#dash-plan-tbody td.empty-cell") as HTMLTableCellElement;
-    expect(thCount).toBeGreaterThanOrEqual(6);
+    expect(thCount).toBe(5);
     expect(emptyTd.colSpan).toBe(thCount);
   });
 

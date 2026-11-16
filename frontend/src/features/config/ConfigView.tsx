@@ -65,6 +65,7 @@ export const ConfigView: React.FC = () => {
     buildFormStateFromConfig(dashboard?.config)
   );
   const [localResearchRows, setLocalResearchRows] = useState<UniverseResearchMaxRow[] | null>(null);
+  const [configFilter, setConfigFilter] = useState<string>("");
 
   const hydrateFromConfig = useCallback((cfg: StrategyConfigData | null | undefined) => {
     if (!cfg) return;
@@ -210,6 +211,25 @@ export const ConfigView: React.FC = () => {
     ? dashboard!.universe_research_max!
     : localResearchRows || [];
 
+  const filterNeedle = configFilter.trim().toLowerCase();
+  const visibleGroups = CONFIG_GROUPS.map((group) => {
+    if (!filterNeedle) return { group, matchedCount: group.items.length };
+    const matched = group.items.filter((item) => {
+      const hay = `${item.title} ${item.key} ${item.description} ${item.boundsLabel}`.toLowerCase();
+      return hay.includes(filterNeedle);
+    });
+    return { group: { ...group, items: matched }, matchedCount: matched.length };
+  });
+  const totalMatchedSettings = visibleGroups.reduce((acc, g) => acc + g.matchedCount, 0);
+
+  const jumpToSection = (headingId: string) => {
+    if (typeof document === "undefined") return;
+    const el = document.getElementById(headingId);
+    if (el && typeof el.scrollIntoView === "function") {
+      el.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+  };
+
   return (
     <section
       id="view-config"
@@ -223,7 +243,7 @@ export const ConfigView: React.FC = () => {
             <span className="module-code tabular">CFG</span>
             <h2>
               Strategy Profile &amp; Decision Buckets (
-              {activeDbBackend === "postgres" ? "PostgreSQL · Podman" : "SQLite"})
+              {activeDbBackend === "postgres" ? "PostgreSQL" : "SQLite"})
             </h2>
           </div>
           <div className="inline-actions">
@@ -262,29 +282,85 @@ export const ConfigView: React.FC = () => {
           </div>
         </div>
 
-        <div className="config-body">
-          <RuntimeExecutionSection
-            modeVal={modeVal}
-            activeDbBackend={activeDbBackend}
-            activeDbTarget={activeDbTarget}
-            onModeChange={onModeChange}
+        <div className="config-nav-bar" aria-label="Filter and jump to configuration sections">
+          <input
+            type="search"
+            id="cfg-search-input"
+            className="table-search-input cfg-search-input"
+            placeholder="Filter settings by name, key, or description..."
+            aria-label="Filter strategy settings"
+            value={configFilter}
+            onChange={(e) => setConfigFilter(e.target.value)}
           />
+          <div className="filter-chips cfg-jump-pills" role="navigation" aria-label="Jump to config section">
+            <button
+              type="button"
+              className="chip-btn"
+              data-cfg-jump="cfg-grp-execution-mode"
+              onClick={() => jumpToSection("cfg-grp-execution-mode")}
+            >
+              Runtime
+            </button>
+            {CONFIG_GROUPS.map((g) => (
+              <button
+                key={g.id}
+                type="button"
+                className="chip-btn"
+                data-cfg-jump={g.headingId}
+                onClick={() => jumpToSection(g.headingId)}
+              >
+                {g.title.split("&")[0].trim()}
+              </button>
+            ))}
+            <button
+              type="button"
+              className="chip-btn"
+              data-cfg-jump="cfg-grp-univ-research"
+              onClick={() => jumpToSection("cfg-grp-univ-research")}
+            >
+              Max Research
+            </button>
+          </div>
+          {filterNeedle ? (
+            <span className="module-meta tabular" id="cfg-filter-count">
+              {`${totalMatchedSettings} MATCH${totalMatchedSettings === 1 ? "" : "ES"}`}
+            </span>
+          ) : null}
+        </div>
 
-          {CONFIG_GROUPS.map((group) => (
-            <ConfigGroupSection
-              key={group.id}
-              group={group}
-              galaxySweep={dashboard?.galaxy_sweep}
-              formValues={formValues}
-              nonRaidPlanets={nonRaidPlanets}
-              savedSpyPid={savedSpyPid}
-              hasSavedPlanetOption={hasSavedPlanetOption}
-              onFieldChange={markFieldChanged}
+        <div className="config-body">
+          {!filterNeedle ? (
+            <RuntimeExecutionSection
+              modeVal={modeVal}
+              activeDbBackend={activeDbBackend}
+              activeDbTarget={activeDbTarget}
+              onModeChange={onModeChange}
             />
-          ))}
+          ) : null}
 
-          {/* 6th Section: Persisted Universe Max Research Levels in SQLite (universe_research_max) */}
-          <ConfigResearchTable researchRows={researchRows} />
+          {visibleGroups
+            .filter((entry) => entry.matchedCount > 0)
+            .map(({ group }) => (
+              <ConfigGroupSection
+                key={group.id}
+                group={group}
+                galaxySweep={dashboard?.galaxy_sweep}
+                formValues={formValues}
+                nonRaidPlanets={nonRaidPlanets}
+                savedSpyPid={savedSpyPid}
+                hasSavedPlanetOption={hasSavedPlanetOption}
+                onFieldChange={markFieldChanged}
+              />
+            ))}
+
+          {filterNeedle && totalMatchedSettings === 0 ? (
+            <p className="muted" id="cfg-filter-empty">
+              {`No settings match "${configFilter.trim()}".`}
+            </p>
+          ) : null}
+
+          {/* Persisted Universe Max Research Levels in PostgreSQL (universe_research_max) */}
+          {!filterNeedle ? <ConfigResearchTable researchRows={researchRows} /> : null}
         </div>
       </article>
     </section>

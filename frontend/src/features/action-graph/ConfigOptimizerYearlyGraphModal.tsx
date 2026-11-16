@@ -105,9 +105,11 @@ export const ConfigOptimizerYearlyGraphModal: React.FC<
       ctx.fillText(fmtShipsRate(val), padLeft - 8, py);
     }
 
-    // Steady-state 100% target dashed line
+    // Steady-state 100% target dashed line (left-aligned to avoid colliding with right-side bar values)
+    let targetLineY: number | null = null;
     if (targetRate > 0) {
       const ty = yFor(targetRate);
+      targetLineY = ty;
       ctx.save();
       ctx.setLineDash([6, 4]);
       ctx.strokeStyle = "#efb03b";
@@ -119,11 +121,11 @@ export const ConfigOptimizerYearlyGraphModal: React.FC<
       ctx.restore();
 
       ctx.fillStyle = "#efb03b";
-      ctx.textAlign = "right";
+      ctx.textAlign = "left";
       ctx.textBaseline = "bottom";
       ctx.fillText(
         `Steady Target: ${fmtShipsRate(targetRate)}/wk`,
-        padLeft + plotW,
+        padLeft + 6,
         Math.max(14, ty - 4)
       );
     }
@@ -149,13 +151,19 @@ export const ConfigOptimizerYearlyGraphModal: React.FC<
         ctx.fillRect(bx, avgY, barW, barH);
         ctx.strokeRect(bx, avgY, barW, barH);
 
-        // Value label above bar
+        // Value label above bar (offset downward inside bar if colliding with target line label)
         ctx.fillStyle = "#e7f3f7";
         ctx.textAlign = "center";
-        ctx.textBaseline = "bottom";
         const topY = Math.min(avgY, yFor(yr.end_ships_per_week));
+        let labelY = Math.max(padTop + 10, topY - 6);
+        if (targetLineY !== null && Math.abs(labelY - targetLineY) < 14 && cx < padLeft + 185) {
+          ctx.textBaseline = "top";
+          labelY = Math.min(padTop + plotH - 14, avgY + 6);
+        } else {
+          ctx.textBaseline = "bottom";
+        }
         if (n <= 10 || idx % 2 === 0 || isHovered) {
-          ctx.fillText(fmtShipsRate(yr.avg_ships_per_week), cx, Math.max(padTop + 10, topY - 6));
+          ctx.fillText(fmtShipsRate(yr.avg_ships_per_week), cx, labelY);
         }
 
         // X-axis year label
@@ -312,15 +320,27 @@ export const ConfigOptimizerYearlyGraphModal: React.FC<
         className="notif-modal-card ag-co-yearly-modal-card"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="panel-head ag-co-modal-head">
-          <div>
+        <div className="window-bar ag-co-modal-window-bar">
+          <div className="window-title-group">
+            <span className="module-code tabular">RMP</span>
             <h2 id="co-yearly-graph-title" className="tabular">
               {`Year-by-Year Ships / Week Projection — ${shipLabel}`}
             </h2>
-            <span className="ag-toolbar-meta tabular">
-              Simulated multi-colony construction &amp; research ramp from current built levels to Config Optimizer target.
-            </span>
           </div>
+          <button
+            type="button"
+            className="btn btn-secondary btn-sm modal-close-btn"
+            id="btn-co-yearly-close"
+            onClick={onClose}
+          >
+            Close
+          </button>
+        </div>
+
+        <div className="ag-co-modal-toolbar">
+          <span className="ag-toolbar-meta tabular">
+            Simulated multi-colony construction &amp; research ramp from current built levels to Config Optimizer target.
+          </span>
           <div className="inline-actions">
             <div className="tab-group" role="group" aria-label="Projection horizon">
               {HORIZON_OPTIONS.map((yr) => (
@@ -354,14 +374,6 @@ export const ConfigOptimizerYearlyGraphModal: React.FC<
                 Weekly Curve
               </button>
             </div>
-            <button
-              type="button"
-              className="btn btn-secondary btn-sm"
-              id="btn-co-yearly-close"
-              onClick={onClose}
-            >
-              Close
-            </button>
           </div>
         </div>
 

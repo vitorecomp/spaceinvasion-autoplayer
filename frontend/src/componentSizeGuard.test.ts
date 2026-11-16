@@ -69,4 +69,12 @@ describe("Phase 5.3 component modularity & SVG invariants", () => {
       "features/ranking/RankTrajectorySvg.tsx",
     ]);
   });
+
+  it("forbids dead legacy (window as any).state writes in AppHeader (C20)", async () => {
+    const tsxFiles = await collectProductionFiles(".tsx");
+    const appHeader = tsxFiles.find((f) => f.relPath === "components/layout/AppHeader.tsx");
+    expect(appHeader).toBeDefined();
+    expect(appHeader!.content).not.toMatch(/window\s+as\s+any\)\s*\.state\b/);
+    expect(appHeader!.content).not.toMatch(/\bwindow\.state\b/);
+  });
 });

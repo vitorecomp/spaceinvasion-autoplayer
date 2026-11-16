@@ -158,39 +158,34 @@ export const SectorsAllTable: React.FC<SectorsAllTableProps> = ({
           </span>
         </div>
         <div className="filter-toolbar">
-          <div className="filter-chips sector-gal-chips" role="group" aria-label="Galaxy filter">
-            <button
-              type="button"
-              className={`chip-btn${galaxyFilter === 0 ? " active" : ""}`}
-              data-sec-gal="0"
-              onClick={() => onSelectGalaxy(0)}
+          <div className="sector-gal-select-wrap">
+            <label className="sr-only" htmlFor="sec-galaxy-select">
+              Galaxy filter
+            </label>
+            <select
+              id="sec-galaxy-select"
+              className="sector-gal-select tabular"
+              aria-label="Galaxy filter"
+              value={String(galaxyFilter)}
+              onChange={(e) => onSelectGalaxy(Math.max(0, Math.round(Number(e.target.value) || 0)))}
             >
-              {`All G (${fmtInt(totalScannedAll)})`}
-            </button>
-            {galaxyStats.map((gs) => {
-              const cls = [
-                "chip-btn",
-                "sector-gal-chip",
-                galaxyFilter === gs.galaxy ? "active" : "",
-                gs.is_owned ? "is-owned" : "",
-                gs.scanned_count === 0 ? "is-empty" : "",
-              ]
-                .filter(Boolean)
-                .join(" ");
-              const qSuffix = gs.queued_count > 0 ? ` · Q${gs.queued_count}` : "";
-              return (
-                <button
-                  key={gs.galaxy}
-                  type="button"
-                  className={cls}
-                  data-sec-gal={String(gs.galaxy)}
-                  title={`Galaxy ${gs.galaxy}: ${gs.scanned_count}/400 scanned (${gs.coverage_pct.toFixed(1)}%), ${gs.queued_count} queued`}
-                  onClick={() => onSelectGalaxy(gs.galaxy)}
-                >
-                  {`G${gs.galaxy} (${gs.scanned_count}${qSuffix})`}
-                </button>
-              );
-            })}
+              <option value="0" data-sec-gal="0">
+                {`All Galaxies (${fmtInt(totalScannedAll)})`}
+              </option>
+              {galaxyStats.map((gs) => {
+                const qSuffix = gs.queued_count > 0 ? ` · Q${gs.queued_count}` : "";
+                const ownedSuffix = gs.is_owned ? " ★" : "";
+                return (
+                  <option
+                    key={gs.galaxy}
+                    value={String(gs.galaxy)}
+                    data-sec-gal={String(gs.galaxy)}
+                  >
+                    {`G${gs.galaxy}${ownedSuffix} (${gs.scanned_count}${qSuffix})`}
+                  </option>
+                );
+              })}
+            </select>
           </div>
           <div className="filter-chips" role="group" aria-label="Sector status filter">
             {STATUS_FILTERS.map((f) => (

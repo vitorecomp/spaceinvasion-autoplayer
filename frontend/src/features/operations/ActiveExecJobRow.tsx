@@ -11,6 +11,7 @@ import { formatQueueJobCargo } from "./queueJobCargo";
 
 export interface ActiveExecJobRowProps {
   job: QueueJobData;
+  compact?: boolean;
   nowEpochSec?: number;
   planetNameById?: ReadonlyMap<number, string>;
   planetNameByCoords?: ReadonlyMap<string, string>;
@@ -18,6 +19,7 @@ export interface ActiveExecJobRowProps {
 
 export const ActiveExecJobRow: React.FC<ActiveExecJobRowProps> = ({
   job,
+  compact = false,
   nowEpochSec,
   planetNameById,
   planetNameByCoords,
@@ -93,17 +95,33 @@ export const ActiveExecJobRow: React.FC<ActiveExecJobRowProps> = ({
           </div>
         ) : null}
       </td>
-      <td className="col-right tabular">
-        <span
-          className="eta-pill is-exec-timer"
-          data-finish-ts={finTs !== null && finTs > 0 ? String(finTs) : undefined}
-        >
-          {remDisplay}
-        </span>
-      </td>
-      <td className="col-right tabular">
-        <span className="eta-pill is-finish-at">{finDisplay}</span>
-      </td>
+      {compact ? (
+        <td className="col-right tabular dash-eta-cell">
+          <div className="dash-eta-stack">
+            <span
+              className="eta-pill is-exec-timer"
+              data-finish-ts={finTs !== null && finTs > 0 ? String(finTs) : undefined}
+            >
+              {remDisplay}
+            </span>{" "}
+            <span className="eta-pill is-finish-at">{finDisplay}</span>
+          </div>
+        </td>
+      ) : (
+        <>
+          <td className="col-right tabular">
+            <span
+              className="eta-pill is-exec-timer"
+              data-finish-ts={finTs !== null && finTs > 0 ? String(finTs) : undefined}
+            >
+              {remDisplay}
+            </span>
+          </td>
+          <td className="col-right tabular">
+            <span className="eta-pill is-finish-at">{finDisplay}</span>
+          </td>
+        </>
+      )}
       <td className="col-right">
         <span className={slot > 1 ? "exec-live-label is-slot" : "exec-live-label"}>
           {liveLabel}
