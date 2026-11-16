@@ -227,155 +227,159 @@ export const AiPlannerStatusStrips: React.FC<AiPlannerStatusStripsProps> = ({
         </div>
       </div>
 
-      <div
-        className="ag-smelt-strip"
-        id="ag-ai-smelting-strip"
-        role="region"
-        aria-label="Blast furnace smelting state"
-      >
-        <div className="ag-smelt-strip-main">
-          <span className="module-code tabular">B2</span>
-          <span className="ag-smelt-label">Blast furnace:</span>
-          <span
-            className={`ag-smelt-pill tabular ${
-              initLiveMode === "on"
-                ? "is-on"
-                : initLiveMode === "mixed"
-                  ? "is-toggle"
-                  : "is-off"
-            }`}
-            id="ai-smelt-live-badge"
+      <div className="ag-ai-compact-strips" id="ag-ai-compact-strips">
+        <div className="ag-ai-compact-strips-row">
+          <div
+            className="ag-smelt-strip"
+            id="ag-ai-smelting-strip"
+            role="region"
+            aria-label="Blast furnace smelting state"
           >
-            {`Initial ${liveModeLabel}`}
-          </span>
-          {hasSmeltingTarget ? (
-            <>
-              <span className="ag-smelt-arrow" aria-hidden="true">
-                →
-              </span>
+            <div className="ag-smelt-strip-main">
+              <span className="module-code tabular">B2</span>
+              <span className="ag-smelt-label">Blast furnace:</span>
               <span
                 className={`ag-smelt-pill tabular ${
-                  initToggleNeeded ? "is-toggle" : initTargetEnabled ? "is-on" : "is-off"
+                  initLiveMode === "on"
+                    ? "is-on"
+                    : initLiveMode === "mixed"
+                      ? "is-toggle"
+                      : "is-off"
                 }`}
-                id="ai-smelt-target-badge"
+                id="ai-smelt-live-badge"
               >
-                {`t=0 ${initTargetEnabled ? "ON 100%" : "OFF 0%"}${
-                  initToggleNeeded ? " · TOGGLE NEEDED" : " · ALIGNED"
-                }`}
+                {`Initial ${liveModeLabel}`}
               </span>
-            </>
-          ) : null}
-        </div>
-        <div className="ag-smelt-strip-meta tabular">
-          {metalSmelted !== null
-            ? `Smelted ${fmtCompact(metalSmelted)} Metal · ${smeltingTimeText} · ${smeltingTogglesCount} toggles`
-            : "Run AI-Planner to compute smelting schedule"}
-        </div>
-      </div>
-
-      <div
-        className="ag-adaptive-strip"
-        id="ag-ai-adaptive-strip"
-        role="region"
-        aria-label="Adaptive execution switch and per-colony idle diagnostics"
-      >
-        <div className="ag-adaptive-strip-head">
-          <div className="ag-adaptive-strip-controls">
-            <label className="ag-adaptive-toggle" htmlFor="ai-adaptive-exec-toggle">
-              <input
-                type="checkbox"
-                className="config-checkbox"
-                id="ai-adaptive-exec-toggle"
-                checked={adaptiveEnabled}
-                disabled={isTogglingAdaptive}
-                onChange={(e) => onToggleAdaptiveExecution(e.target.checked)}
-              />
-              <span className="module-code tabular">V2</span>
-              <span className="ag-smelt-label">Adaptive Execution</span>
-              <span
-                className={`ag-smelt-pill tabular ${adaptiveEnabled ? "is-on" : "is-off"}`}
-                id="ai-adaptive-exec-state"
-              >
-                {adaptiveEnabled ? "ON" : "OFF"}
-              </span>
-            </label>
-
-            <span
-              className={`ag-smelt-pill tabular ${
-                adaptiveTotalColonies > 0 && adaptiveActiveBuilders >= adaptiveTotalColonies
-                  ? "is-on"
-                  : adaptiveActiveBuilders > 0
-                    ? "is-toggle"
-                    : "is-off"
-              }`}
-              id="ai-adaptive-builders-badge"
-            >
-              {`Builders ${adaptiveActiveBuilders}/${adaptiveTotalColonies}`}
-            </span>
-
-            {transportFleet
-              ? (() => {
-                  const delivCph = safeFiniteNumber(
-                    transportFleet.delivered_cargo_per_hour_24h ??
-                      transportFleet.delivered_cargo_per_hour,
-                    null
-                  );
-                  const delivPct = safeFiniteNumber(transportFleet.delivered_vs_planned_pct, null);
-                  const delivNote =
-                    delivCph !== null
-                      ? ` · Delivered 24h: ${fmtCompact(delivCph)}/h${
-                          delivPct !== null ? ` (${formatSharePct(delivPct)}% of plan)` : ""
-                        }`
-                      : "";
-                  return (
-                    <span
-                      className={`ag-smelt-pill tabular ${
-                        (safeFiniteNumber(transportFleet.target_fleet_cargo, 0) ?? 0) <= 0 ||
-                        (safeFiniteNumber(transportFleet.total_fleet_cargo, 0) ?? 0) >=
-                          (safeFiniteNumber(transportFleet.target_fleet_cargo, 0) ?? 0)
-                          ? "is-on"
-                          : "is-toggle"
-                      }`}
-                      id="ai-adaptive-fleet-badge"
-                      title={`Parked: ${fmtInt(transportFleet.owned_parked_cargo)} · In-flight: ${fmtInt(
-                        transportFleet.in_flight_cargo
-                      )} · Planned 24h flow: ${fmtCompact(transportFleet.planned_cargo_per_hour_24h)}/h${delivNote} · Util: ${Math.round(
-                        (safeFiniteNumber(transportFleet.realized_utilization, 0.5) ?? 0.5) * 100
-                      )}%`}
-                    >
-                      {`Cargo ${fmtCompact(transportFleet.total_fleet_cargo)} / ${fmtCompact(
-                        transportFleet.target_fleet_cargo
-                      )}`}
-                    </span>
-                  );
-                })()
-              : null}
-
-            {hasWindow24hSamples && window24h ? (
-              <span
-                className={`ag-smelt-pill tabular ${
-                  (safeFiniteNumber(window24h.idle_with_affordable_share_pct, 0) ?? 0) > 15 ||
-                  (safeFiniteNumber(window24h.ready_not_started_share_pct, 0) ?? 0) > 5
-                    ? "is-toggle"
-                    : "is-on"
-                }`}
-                id="ai-adaptive-gate24h-badge"
-                title={`24h Step-5 diagnostics (${window24h.colony_samples} colony samples across ${window24h.bucket_count} x 10m buckets)`}
-              >
-                {`Idle w/ affordable: ${formatSharePct(
-                  window24h.idle_with_affordable_share_pct
-                )}% · Ready gap: ${formatSharePct(window24h.ready_not_started_share_pct)}%`}
-              </span>
-            ) : null}
+              {hasSmeltingTarget ? (
+                <>
+                  <span className="ag-smelt-arrow" aria-hidden="true">
+                    →
+                  </span>
+                  <span
+                    className={`ag-smelt-pill tabular ${
+                      initToggleNeeded ? "is-toggle" : initTargetEnabled ? "is-on" : "is-off"
+                    }`}
+                    id="ai-smelt-target-badge"
+                  >
+                    {`t=0 ${initTargetEnabled ? "ON 100%" : "OFF 0%"}${
+                      initToggleNeeded ? " · TOGGLE NEEDED" : " · ALIGNED"
+                    }`}
+                  </span>
+                </>
+              ) : null}
+            </div>
+            <div className="ag-smelt-strip-meta tabular">
+              {metalSmelted !== null
+                ? `Smelted ${fmtCompact(metalSmelted)} Metal · ${smeltingTimeText} · ${smeltingTogglesCount} toggles`
+                : "Run AI-Planner to compute smelting schedule"}
+            </div>
           </div>
 
-          {autoReplan ? (
-            <div className="ag-smelt-strip-meta tabular" id="ai-adaptive-replan-badge">
-              {`Auto-replan: ${autoReplan.drift_ready ? "Drift ready" : "Cooldown"}${
-                autoReplan.last_trigger_reason ? ` · Last: ${autoReplan.last_trigger_reason}` : ""
-              }`}
+          <div
+            className="ag-adaptive-strip"
+            id="ag-ai-adaptive-strip"
+            role="region"
+            aria-label="Adaptive execution switch and per-colony idle diagnostics"
+          >
+            <div className="ag-adaptive-strip-head">
+              <div className="ag-adaptive-strip-controls">
+                <label className="ag-adaptive-toggle" htmlFor="ai-adaptive-exec-toggle">
+                  <input
+                    type="checkbox"
+                    className="config-checkbox"
+                    id="ai-adaptive-exec-toggle"
+                    checked={adaptiveEnabled}
+                    disabled={isTogglingAdaptive}
+                    onChange={(e) => onToggleAdaptiveExecution(e.target.checked)}
+                  />
+                  <span className="module-code tabular">V2</span>
+                  <span className="ag-smelt-label">Adaptive Execution</span>
+                  <span
+                    className={`ag-smelt-pill tabular ${adaptiveEnabled ? "is-on" : "is-off"}`}
+                    id="ai-adaptive-exec-state"
+                  >
+                    {adaptiveEnabled ? "ON" : "OFF"}
+                  </span>
+                </label>
+
+                <span
+                  className={`ag-smelt-pill tabular ${
+                    adaptiveTotalColonies > 0 && adaptiveActiveBuilders >= adaptiveTotalColonies
+                      ? "is-on"
+                      : adaptiveActiveBuilders > 0
+                        ? "is-toggle"
+                        : "is-off"
+                  }`}
+                  id="ai-adaptive-builders-badge"
+                >
+                  {`Builders ${adaptiveActiveBuilders}/${adaptiveTotalColonies}`}
+                </span>
+
+                {transportFleet
+                  ? (() => {
+                      const delivCph = safeFiniteNumber(
+                        transportFleet.delivered_cargo_per_hour_24h ??
+                          transportFleet.delivered_cargo_per_hour,
+                        null
+                      );
+                      const delivPct = safeFiniteNumber(transportFleet.delivered_vs_planned_pct, null);
+                      const delivNote =
+                        delivCph !== null
+                          ? ` · Delivered 24h: ${fmtCompact(delivCph)}/h${
+                              delivPct !== null ? ` (${formatSharePct(delivPct)}% of plan)` : ""
+                            }`
+                          : "";
+                      return (
+                        <span
+                          className={`ag-smelt-pill tabular ${
+                            (safeFiniteNumber(transportFleet.target_fleet_cargo, 0) ?? 0) <= 0 ||
+                            (safeFiniteNumber(transportFleet.total_fleet_cargo, 0) ?? 0) >=
+                              (safeFiniteNumber(transportFleet.target_fleet_cargo, 0) ?? 0)
+                              ? "is-on"
+                              : "is-toggle"
+                          }`}
+                          id="ai-adaptive-fleet-badge"
+                          title={`Parked: ${fmtInt(transportFleet.owned_parked_cargo)} · In-flight: ${fmtInt(
+                            transportFleet.in_flight_cargo
+                          )} · Planned 24h flow: ${fmtCompact(transportFleet.planned_cargo_per_hour_24h)}/h${delivNote} · Util: ${Math.round(
+                            (safeFiniteNumber(transportFleet.realized_utilization, 0.5) ?? 0.5) * 100
+                          )}%`}
+                        >
+                          {`Cargo ${fmtCompact(transportFleet.total_fleet_cargo)} / ${fmtCompact(
+                            transportFleet.target_fleet_cargo
+                          )}`}
+                        </span>
+                      );
+                    })()
+                  : null}
+
+                {hasWindow24hSamples && window24h ? (
+                  <span
+                    className={`ag-smelt-pill tabular ${
+                      (safeFiniteNumber(window24h.idle_with_affordable_share_pct, 0) ?? 0) > 15 ||
+                      (safeFiniteNumber(window24h.ready_not_started_share_pct, 0) ?? 0) > 5
+                        ? "is-toggle"
+                        : "is-on"
+                    }`}
+                    id="ai-adaptive-gate24h-badge"
+                    title={`24h Step-5 diagnostics (${window24h.colony_samples} colony samples across ${window24h.bucket_count} x 10m buckets)`}
+                  >
+                    {`Idle w/ affordable: ${formatSharePct(
+                      window24h.idle_with_affordable_share_pct
+                    )}% · Ready gap: ${formatSharePct(window24h.ready_not_started_share_pct)}%`}
+                  </span>
+                ) : null}
+              </div>
+
+              {autoReplan ? (
+                <div className="ag-smelt-strip-meta tabular" id="ai-adaptive-replan-badge">
+                  {`Auto-replan: ${autoReplan.drift_ready ? "Drift ready" : "Cooldown"}${
+                    autoReplan.last_trigger_reason ? ` · Last: ${autoReplan.last_trigger_reason}` : ""
+                  }`}
+                </div>
+              ) : null}
             </div>
-          ) : null}
+          </div>
         </div>
 
         <div className="ag-adaptive-diag-list" id="ag-ai-colony-diag-list">

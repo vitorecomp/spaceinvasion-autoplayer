@@ -94,19 +94,35 @@ export const FleetPlannerParamPanel: React.FC<FleetPlannerParamPanelProps> = ({
     />
   );
 
+  const [showHelp, setShowHelp] = React.useState(false);
+
   return (
-    <aside className="hud-window ag-control-panel" id="ag-flt-control-panel">
+    <aside
+      className={`hud-window ag-control-panel${showHelp ? "" : " ag-help-collapsed"}`}
+      id="ag-flt-control-panel"
+    >
       <div className="window-bar window-bar-wrap">
         <div className="window-title-group">
           <span className="module-code tabular">CTL</span>
           <h2>Fleet &amp; Tactical Settings</h2>
         </div>
-        <span
-          className={`ag-status-pill tabular ${draftDirty ? "is-sim" : "is-live"}`}
-          id="flt-panel-pill"
-        >
-          {draftDirty ? "EDITED" : "SYNCED"}
-        </span>
+        <div className="inline-actions">
+          <button
+            type="button"
+            className={`btn btn-secondary btn-sm ag-help-toggle${showHelp ? " active" : ""}`}
+            id="btn-flt-help-toggle"
+            aria-pressed={showHelp}
+            onClick={() => setShowHelp((v) => !v)}
+          >
+            {showHelp ? "Hide Help" : "Show Help"}
+          </button>
+          <span
+            className={`ag-status-pill tabular ${draftDirty ? "is-sim" : "is-live"}`}
+            id="flt-panel-pill"
+          >
+            {draftDirty ? "EDITED" : "SYNCED"}
+          </span>
+        </div>
       </div>
 
       <div className="ag-panel-tabs" role="tablist" aria-label="Fleet settings sections">

@@ -257,7 +257,7 @@ export const CombatView: React.FC<CombatViewProps> = ({ hidden }) => {
           <div className="window-bar">
             <div className="window-title-group">
               <span className="module-code tabular">SHP</span>
-              <h2>Fleet Build — Shipyard, Defenses &amp; Escape Flight</h2>
+              <h2>Shipyard &amp; Defenses</h2>
             </div>
             <div className="tab-group" role="tablist" aria-label="Fleet Build subtabs">
               <button

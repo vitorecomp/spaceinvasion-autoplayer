@@ -141,9 +141,7 @@ export const AppHeader: React.FC = () => {
     if (!dashboard || scanToggling) return;
     const nextAllowed = !scansAllowed;
     setScanToggling(true);
-    const gState = typeof window !== "undefined" ? (window as any).state : null;
     setConfigSaving((c) => c + 1);
-    if (gState) gState.configSaving = (gState.configSaving || 0) + 1;
     bumpDashboardSeq();
     try {
       await apiCommand({
@@ -172,7 +170,6 @@ export const AppHeader: React.FC = () => {
       showFeedback(`Failed toggling galaxy scans: ${err.message}`, feedbackKindForError(err));
     } finally {
       setConfigSaving((c) => Math.max(0, c - 1));
-      if (gState) gState.configSaving = Math.max(0, (gState.configSaving || 0) - 1);
       setScanToggling(false);
     }
   };

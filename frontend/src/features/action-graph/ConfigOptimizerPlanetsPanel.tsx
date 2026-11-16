@@ -155,7 +155,7 @@ export const ConfigOptimizerPlanetsPanel: React.FC<ConfigOptimizerPlanetsPanelPr
         </div>
       </div>
 
-      <div className="table-wrap table-scroll">
+      <div className="table-wrap table-scroll ag-co-planets-table-wrap">
         <table id="co-planets-table">
           <thead>
             <tr>
@@ -257,10 +257,15 @@ export const ConfigOptimizerPlanetsPanel: React.FC<ConfigOptimizerPlanetsPanelPr
                           onCancel={onCancelRename}
                         />
                       ) : (
-                        <div className="ag-co-planet-head">
-                          <div className="action-title tabular">
-                            {`#${row.slot} ${row.name}`}
-                            {row.isCentral ? " ★" : ""}
+                        <>
+                          <div className="ag-co-planet-head">
+                            <div className="action-title tabular">
+                              {`#${row.slot} ${row.name}`}
+                              {row.isCentral ? " ★" : ""}
+                            </div>
+                          </div>
+                          <div className="action-sub tabular">
+                            {`[${row.coords}]${row.isPlaceholder ? " · PREVIEW" : ""}${row.hasCustomName && row.gameName && row.gameName !== row.name ? ` · Unsynced (Game: ${row.gameName})` : ""}`}
                           </div>
                           <div className="ag-co-planet-row-btns">
                             <button
@@ -292,11 +297,8 @@ export const ConfigOptimizerPlanetsPanel: React.FC<ConfigOptimizerPlanetsPanelPr
                               </button>
                             ) : null}
                           </div>
-                        </div>
+                        </>
                       )}
-                      <div className="action-sub tabular">
-                        {`[${row.coords}]${row.isPlaceholder ? " · PREVIEW" : ""}${row.hasCustomName && row.gameName && row.gameName !== row.name ? ` · Unsynced (Game: ${row.gameName})` : ""}`}
-                      </div>
                     </td>
                     <td className="ag-co-spec-cell" onClick={(e) => e.stopPropagation()}>
                       <div className="ag-co-spec-tags">

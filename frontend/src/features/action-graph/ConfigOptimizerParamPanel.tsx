@@ -105,9 +105,11 @@ export const ConfigOptimizerParamPanel: React.FC<ConfigOptimizerParamPanelProps>
     />
   );
 
+  const [showHelp, setShowHelp] = React.useState(false);
+
   return (
     <aside
-      className="hud-window ag-control-panel"
+      className={`hud-window ag-control-panel${showHelp ? "" : " ag-help-collapsed"}`}
       id="ag-co-control-panel"
       aria-label="Config optimizer parameters"
     >
@@ -116,12 +118,23 @@ export const ConfigOptimizerParamPanel: React.FC<ConfigOptimizerParamPanelProps>
           <span className="module-code tabular">CFG</span>
           <h2>Optimizer Parameters</h2>
         </div>
-        <span
-          className={`ag-dirty-badge tabular ${draftDirty ? "is-dirty" : "is-synced"}`}
-          id="co-dirty-badge"
-        >
-          {draftDirty ? "MODIFIED" : "SYNCED"}
-        </span>
+        <div className="inline-actions">
+          <button
+            type="button"
+            className={`btn btn-secondary btn-sm ag-help-toggle${showHelp ? " active" : ""}`}
+            id="btn-co-help-toggle"
+            aria-pressed={showHelp}
+            onClick={() => setShowHelp((v) => !v)}
+          >
+            {showHelp ? "Hide Help" : "Show Help"}
+          </button>
+          <span
+            className={`ag-dirty-badge tabular ${draftDirty ? "is-dirty" : "is-synced"}`}
+            id="co-dirty-badge"
+          >
+            {draftDirty ? "MODIFIED" : "SYNCED"}
+          </span>
+        </div>
       </div>
 
       <div className="ag-panel-tabs" role="tablist" aria-label="Config optimizer parameter tabs">

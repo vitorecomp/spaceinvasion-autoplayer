@@ -428,7 +428,6 @@ export const AppSidebar: React.FC = () => {
           <FeedbackBanner />
           <div className="sidebar-foot tabular">
             <span>WIN // VIEWS</span>
-            <span>API :8787</span>
           </div>
         </div>
       </div>

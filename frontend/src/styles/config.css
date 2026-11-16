@@ -5,6 +5,29 @@
   }
 }
 
+.config-nav-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  padding: 10px 24px;
+  background: var(--bg-panel-alt);
+  border-bottom: 1px solid var(--line-dim);
+}
+
+.cfg-search-input {
+  min-width: 240px;
+  flex: 1 1 260px;
+  max-width: 380px;
+}
+
+.cfg-jump-pills {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
 .config-body {
   padding: 20px 24px 28px;
   display: flex;

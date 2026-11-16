@@ -291,15 +291,7 @@ export const DashboardQueueCard: React.FC<DashboardQueueCardProps> = ({
                 onSort={planSort.requestSort}
               />
               <SortableTh
-                label="Wait ETA"
-                sortKey="waitEta"
-                activeKey={planSort.sortKey}
-                direction={planSort.sortDirection}
-                onSort={planSort.requestSort}
-                align="right"
-              />
-              <SortableTh
-                label="Total ETA / Finish"
+                label="ETA"
                 sortKey="totalEta"
                 activeKey={planSort.sortKey}
                 direction={planSort.sortDirection}
@@ -314,6 +306,7 @@ export const DashboardQueueCard: React.FC<DashboardQueueCardProps> = ({
               <ActiveExecJobRow
                 key={execRowKeys[idx]}
                 job={job}
+                compact={true}
                 nowEpochSec={nowEpochSec}
                 planetNameById={planetNameMaps.byId}
                 planetNameByCoords={planetNameMaps.byCoords}
@@ -338,7 +331,7 @@ export const DashboardQueueCard: React.FC<DashboardQueueCardProps> = ({
               ))
             ) : activeList.length === 0 ? (
               <tr>
-                <td colSpan={6} className="empty-cell">
+                <td colSpan={5} className="empty-cell">
                   {emptyText}
                 </td>
               </tr>

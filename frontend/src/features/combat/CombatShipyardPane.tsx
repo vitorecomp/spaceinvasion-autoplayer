@@ -121,7 +121,7 @@ export const CombatShipyardPane: React.FC<CombatShipyardPaneProps> = ({
                       </td>
                       <td className="col-right tabular">{fmtInt(s.cargo)}</td>
                       <td className="col-right">
-                        <div className="row-actions-wrap">
+                        <div className="row-actions-wrap shipyard-order-row">
                           <input
                             type="number"
                             min={1}
@@ -146,7 +146,7 @@ export const CombatShipyardPane: React.FC<CombatShipyardPaneProps> = ({
                             aria-label={`Add ${s.name} order to P1 priority queue`}
                             onClick={() => onQueueShip(s)}
                           >
-                            + Queue
+                            +Q
                           </button>
                         </div>
                       </td>

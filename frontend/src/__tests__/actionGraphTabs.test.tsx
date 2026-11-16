@@ -977,9 +977,24 @@ describe("ActionGraph 4-Tab Workspace", () => {
       </Harness>
     );
 
-    const assertPanelHasDetailedDocs = (panelId: string, minExpectedItems: number) => {
+    const assertPanelHasDetailedDocs = (
+      panelId: string,
+      minExpectedItems: number,
+      helpToggleId: string
+    ) => {
       const panel = document.getElementById(panelId);
       expect(panel).not.toBeNull();
+      // C15: parameter help starts collapsed by default and toggles open on click
+      expect(panel!.classList.contains("ag-help-collapsed")).toBe(true);
+      const helpToggle = document.getElementById(helpToggleId) as HTMLButtonElement | null;
+      expect(helpToggle).not.toBeNull();
+      expect(helpToggle!.getAttribute("aria-pressed")).toBe("false");
+      fireEvent.click(helpToggle!);
+      expect(panel!.classList.contains("ag-help-collapsed")).toBe(false);
+      expect(helpToggle!.getAttribute("aria-pressed")).toBe("true");
+      fireEvent.click(helpToggle!);
+      expect(panel!.classList.contains("ag-help-collapsed")).toBe(true);
+
       const items = Array.from(panel!.querySelectorAll(".ag-param-item"));
       expect(items.length).toBeGreaterThanOrEqual(minExpectedItems);
 
@@ -1003,7 +1018,7 @@ describe("ActionGraph 4-Tab Workspace", () => {
     };
 
     // Tab 1: Heuristics (29 parameters across Mode & Thresholds + Automation & Limits)
-    assertPanelHasDetailedDocs("ag-control-panel", 29);
+    assertPanelHasDetailedDocs("ag-control-panel", 29, "btn-ag-heuristics-help-toggle");
     expect(document.getElementById("ag-control-panel")?.textContent).toContain("planner_mode");
     expect(document.getElementById("ag-control-panel")?.textContent).toContain("auto_throttle_blast_furnace");
 
@@ -1012,7 +1027,7 @@ describe("ActionGraph 4-Tab Workspace", () => {
     await waitFor(() => {
       expect(document.getElementById("ag-co-control-panel")).not.toBeNull();
     });
-    assertPanelHasDetailedDocs("ag-co-control-panel", 36);
+    assertPanelHasDetailedDocs("ag-co-control-panel", 36, "btn-co-help-toggle");
     expect(document.getElementById("ag-co-control-panel")?.textContent).toContain("central_planet_slot");
     expect(document.getElementById("ag-co-control-panel")?.textContent).toContain("preserve_previous_specializations");
     expect(document.getElementById("ag-co-control-panel")?.textContent).toContain("specialization_switch_threshold_pct");
@@ -1024,7 +1039,7 @@ describe("ActionGraph 4-Tab Workspace", () => {
     await waitFor(() => {
       expect(document.getElementById("ag-ai-control-panel")).not.toBeNull();
     });
-    assertPanelHasDetailedDocs("ag-ai-control-panel", 17);
+    assertPanelHasDetailedDocs("ag-ai-control-panel", 17, "btn-ai-help-toggle");
     expect(document.getElementById("ag-ai-control-panel")?.textContent).toContain("weekly_discount");
     expect(document.getElementById("ag-ai-control-panel")?.textContent).toContain("transport_dispatch_delay_minutes");
     expect(document.getElementById("ag-ai-control-panel")?.textContent).toContain("resource_spare_percent.spice");
@@ -1048,7 +1063,7 @@ describe("ActionGraph 4-Tab Workspace", () => {
     await waitFor(() => {
       expect(document.getElementById("ag-flt-control-panel")).not.toBeNull();
     });
-    assertPanelHasDetailedDocs("ag-flt-control-panel", 53);
+    assertPanelHasDetailedDocs("ag-flt-control-panel", 53, "btn-flt-help-toggle");
     expect(document.getElementById("ag-flt-control-panel")?.textContent).toContain("combat_safety_margin");
     expect(document.getElementById("ag-flt-control-panel")?.textContent).toContain("attack_min_res_per_hour");
     expect(document.getElementById("ag-flt-control-panel")?.textContent).toContain("recycle_min_res_per_hour");

@@ -186,29 +186,51 @@ export const PlanActionRow: React.FC<PlanActionRowProps> = ({
         ) : null}
       </td>
 
-      <td className="col-right tabular">
-        <span
-          className={`eta-pill${isBlocked ? " is-blocked" : isWaiting ? " is-wait" : ""}`}
-          title={bnTag ? `Bottleneck: ${bnTag}` : undefined}
-        >
-          {waitPillText}
-        </span>
-      </td>
-
-      <td className="col-right tabular">
-        <span
-          className={`eta-pill${totalBlocked ? " is-blocked" : isWaiting ? " is-wait" : ""}`}
-        >
-          {totalEta}
-        </span>
-        {compact && !totalBlocked && totSecNum !== null && totSecNum > 0 ? (
-          <div className="finish-clock-sub tabular">
-            {`at ${fmtClockTime(effNowSec + totSecNum, effNowSec)}`}
+      {compact ? (
+        <td className="col-right tabular dash-eta-cell">
+          <div className="dash-eta-stack">
+            <span
+              className={`eta-pill${isBlocked ? " is-blocked" : isWaiting ? " is-wait" : ""}`}
+              title={bnTag ? `Wait ETA · Bottleneck: ${bnTag}` : "Wait ETA"}
+            >
+              {waitPillText}
+            </span>
+            <span
+              className={`eta-pill dash-eta-total${totalBlocked ? " is-blocked" : isWaiting ? " is-wait" : ""}`}
+              title="Total ETA"
+            >
+              {totalEta}
+            </span>
+            {!totalBlocked && totSecNum !== null && totSecNum > 0 ? (
+              <div className="finish-clock-sub tabular">
+                {`at ${fmtClockTime(effNowSec + totSecNum, effNowSec)}`}
+              </div>
+            ) : null}
           </div>
-        ) : !compact && durText && durText !== totalEta ? (
-          <div className="action-sub">{durText === "Instant" ? "Instant" : `Dur: ${durText}`}</div>
-        ) : null}
-      </td>
+        </td>
+      ) : (
+        <>
+          <td className="col-right tabular">
+            <span
+              className={`eta-pill${isBlocked ? " is-blocked" : isWaiting ? " is-wait" : ""}`}
+              title={bnTag ? `Bottleneck: ${bnTag}` : undefined}
+            >
+              {waitPillText}
+            </span>
+          </td>
+
+          <td className="col-right tabular">
+            <span
+              className={`eta-pill${totalBlocked ? " is-blocked" : isWaiting ? " is-wait" : ""}`}
+            >
+              {totalEta}
+            </span>
+            {durText && durText !== totalEta ? (
+              <div className="action-sub">{durText === "Instant" ? "Instant" : `Dur: ${durText}`}</div>
+            ) : null}
+          </td>
+        </>
+      )}
 
       {!compact ? <td>{act.reason || ""}</td> : null}
 

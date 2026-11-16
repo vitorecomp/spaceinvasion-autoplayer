@@ -67,48 +67,48 @@ export const NotificationCenterModal: React.FC = () => {
       hidden={!notifCenterOpen}
     >
       <div className="notif-modal-card notif-center-card">
-        <div className="window-bar window-bar-wrap">
+        <div className="window-bar">
           <div className="window-title-group">
             <span className="module-code tabular">NTF</span>
             <h2 id="notif-center-title">Persistent System Notifications</h2>
           </div>
-          <div className="inline-actions">
-            <div className="tab-group">
-              {(
-                [
-                  ["active", "Active"],
-                  ["unread", "Unread"],
-                  ["all", "All History"],
-                ] as const
-              ).map(([key, label]) => (
-                <button
-                  key={key}
-                  type="button"
-                  className={`tab-btn${curFilter === key ? " active" : ""}`}
-                  data-notif-filter={key}
-                  onClick={() => onFilterClick(key)}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
-            <button
-              type="button"
-              className="btn btn-secondary btn-sm"
-              id="btn-notif-mark-all"
-              onClick={onMarkAllRead}
-            >
-              Mark All Read
-            </button>
-            <button
-              type="button"
-              className="btn btn-secondary btn-sm"
-              id="btn-notif-center-close"
-              onClick={closeNotificationCenter}
-            >
-              Close
-            </button>
+          <button
+            type="button"
+            className="btn btn-secondary btn-sm modal-close-btn"
+            id="btn-notif-center-close"
+            onClick={closeNotificationCenter}
+          >
+            Close
+          </button>
+        </div>
+        <div className="notif-center-toolbar">
+          <div className="tab-group">
+            {(
+              [
+                ["active", "Active"],
+                ["unread", "Unread"],
+                ["all", "All History"],
+              ] as const
+            ).map(([key, label]) => (
+              <button
+                key={key}
+                type="button"
+                className={`tab-btn${curFilter === key ? " active" : ""}`}
+                data-notif-filter={key}
+                onClick={() => onFilterClick(key)}
+              >
+                {label}
+              </button>
+            ))}
           </div>
+          <button
+            type="button"
+            className="btn btn-secondary btn-sm"
+            id="btn-notif-mark-all"
+            onClick={onMarkAllRead}
+          >
+            Mark All Read
+          </button>
         </div>
         <div className="notif-center-body" id="notif-center-list">
           {items.length === 0 ? (

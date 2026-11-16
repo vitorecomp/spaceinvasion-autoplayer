@@ -226,10 +226,10 @@ export const RecyclersView: React.FC<RecyclersViewProps> = ({ hidden }) => {
               ? `${fmtInt(sum.other_email_count ?? emails.length)} Notices`
               : "0 Emails"}
           </strong>
-          <div className="combat-jumps">
-            <span className="kpi-sub tabular" id="rec-kpi-cats">
-              {recData ? `User ${userCnt} · Return ${retCnt}` : "User 0 · Fleet 0"}
-            </span>
+          <span className="kpi-sub tabular" id="rec-kpi-cats">
+            {recData ? `User ${userCnt} · Return ${retCnt}` : "User 0 · Fleet 0"}
+          </span>
+          <div className="inline-actions rec-sync-actions">
             <button
               type="button"
               className="btn btn-primary btn-sm"

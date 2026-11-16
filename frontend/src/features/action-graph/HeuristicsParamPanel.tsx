@@ -62,12 +62,13 @@ export const HeuristicsParamPanel: React.FC<HeuristicsParamPanelProps> = ({
   onResetSim,
   onApplySim,
 }) => {
+  const [showHelp, setShowHelp] = React.useState(false);
   const draftModeNorm = normalizeUiPlannerMode(draftValues.planner_mode);
   const curPlaystyle = String(draftValues.playstyle || "fleeter");
 
   return (
     <aside
-      className="hud-window ag-control-panel"
+      className={`hud-window ag-control-panel${showHelp ? "" : " ag-help-collapsed"}`}
       id="ag-control-panel"
       aria-label="Planner parameter simulation and apply controls"
     >
@@ -76,12 +77,23 @@ export const HeuristicsParamPanel: React.FC<HeuristicsParamPanelProps> = ({
           <span className="module-code tabular">PRM</span>
           <h2>Heuristic Parameters</h2>
         </div>
-        <span
-          className={`ag-dirty-badge tabular ${agSimDirty ? "is-dirty" : "is-synced"}`}
-          id="ag-dirty-badge"
-        >
-          {agSimDirty ? "MODIFIED (PREVIEW)" : "ACTIVE SYNCED"}
-        </span>
+        <div className="inline-actions">
+          <button
+            type="button"
+            className={`btn btn-secondary btn-sm ag-help-toggle${showHelp ? " active" : ""}`}
+            id="btn-ag-heuristics-help-toggle"
+            aria-pressed={showHelp}
+            onClick={() => setShowHelp((v) => !v)}
+          >
+            {showHelp ? "Hide Help" : "Show Help"}
+          </button>
+          <span
+            className={`ag-dirty-badge tabular ${agSimDirty ? "is-dirty" : "is-synced"}`}
+            id="ag-dirty-badge"
+          >
+            {agSimDirty ? "MODIFIED (PREVIEW)" : "ACTIVE SYNCED"}
+          </span>
+        </div>
       </div>
 
       <div className="ag-panel-tabs" role="tablist" aria-label="Parameter categories">

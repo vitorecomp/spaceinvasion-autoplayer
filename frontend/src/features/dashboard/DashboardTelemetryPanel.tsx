@@ -180,28 +180,34 @@ export const DashboardTelemetryPanel: React.FC<DashboardTelemetryPanelProps> = (
 
       <div className="digital-readout-row">
         <div className="digital-counter">
-          <span className="digital-tag tabular">ENG</span>
-          <span className="digital-number tabular" id="val-energy">
-            {energyValText}
-          </span>
+          <div className="digital-counter-top">
+            <span className="digital-tag tabular">ENG</span>
+            <span className="digital-number tabular" id="val-energy">
+              {energyValText}
+            </span>
+          </div>
           <span className="digital-sub tabular" id="energy-ratio">
             {energyRatioText}
           </span>
         </div>
         <div className="digital-counter">
-          <span className="digital-tag tabular">RNK</span>
-          <span className="digital-number tabular" id="dash-rank-val">
-            {dashRankText}
-          </span>
+          <div className="digital-counter-top">
+            <span className="digital-tag tabular">RNK</span>
+            <span className="digital-number tabular" id="dash-rank-val">
+              {dashRankText}
+            </span>
+          </div>
           <span className="digital-sub tabular" id="dash-az-val">
             {dashAzText}
           </span>
         </div>
         <div className="digital-counter">
-          <span className="digital-tag tabular">FLW</span>
-          <span className="digital-number tabular" id="dash-pts-hr">
-            {dashPtsHrText}
-          </span>
+          <div className="digital-counter-top">
+            <span className="digital-tag tabular">FLW</span>
+            <span className="digital-number tabular" id="dash-pts-hr">
+              {dashPtsHrText}
+            </span>
+          </div>
           <span className="digital-sub tabular" id="dash-spice-hr">
             {dashSpiceHrText}
           </span>

@@ -261,7 +261,7 @@ describe("Fleet Build rename & Fleet Control tab", () => {
     expect(section).toBeTruthy();
     expect(section.getAttribute("aria-label")).toContain("Fleet Build");
     expect(section.textContent).toContain("Fleet Build Navigation");
-    expect(section.textContent).toContain("Fleet Build — Shipyard, Defenses & Escape Flight");
+    expect(section.textContent).toContain("Shipyard & Defenses");
     expect(section.textContent).not.toContain("Combat & Fleet");
 
     // Existing controls & IDs remain intact
