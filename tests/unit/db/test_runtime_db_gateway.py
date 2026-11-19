@@ -321,6 +321,11 @@ def test_runtime_db_gateway_config_store_and_migrations_cli_end_to_end(
         summ = gw.summary()
         ver = gw.verify_schema(full_integrity=True)
         assert ver["ok"] is True and ver["alembic_revision"] == "0004"
+        assert isinstance(summ["schema"], dict)
+        assert summ["schema"]["alembic_revision"] == "0004"
+        assert summ["schema"]["target_version_tag"] == "0004"
+        assert summ["schema"]["up_to_date"] is True
+        assert summ["schema"]["pending_count"] == 0
         assert isinstance(summ["counts"], dict) and len(summ["counts"]) == 39 and "meta" not in summ["counts"]
         recent = summ["recent_actions"]
         assert isinstance(recent, list) and len(recent) >= 2

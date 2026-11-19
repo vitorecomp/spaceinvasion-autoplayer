@@ -135,6 +135,24 @@ def get_current_revision(engine: Engine | DatabaseEngine | Connection) -> str | 
         return ctx.get_current_revision()
 
 
+def get_head_revision() -> str:
+    """Return the Alembic script directory head revision (falling back to ``BASELINE_REVISION``)."""
+    script_dir = ScriptDirectory.from_config(build_alembic_config())
+    return script_dir.get_current_head() or BASELINE_REVISION
+
+
+def get_revision_status(current_revision: str | None, target: str = "head") -> tuple[str, tuple[str, ...]]:
+    """Return ``(target_revision, pending_revision_ids)`` for ``current_revision`` against ``target``."""
+    script_dir = ScriptDirectory.from_config(build_alembic_config())
+    target_rev_obj = script_dir.get_revision(target)
+    if target_rev_obj is None:
+        return script_dir.get_current_head() or BASELINE_REVISION, ()
+    if current_revision is not None and script_dir.get_revision(current_revision) is None:
+        return target_rev_obj.revision, (target_rev_obj.revision,)
+    steps = _resolve_pending_revisions(script_dir, current_revision, target_rev_obj.revision)
+    return target_rev_obj.revision, tuple(rev_id for rev_id, _, _ in steps)
+
+
 def _compare_metadata_on_conn(conn: Connection) -> list[object]:
     ctx = MigrationContext.configure(
         conn,
@@ -370,6 +388,8 @@ __all__ = [
     "build_alembic_config",
     "compute_revision_checksum",
     "get_current_revision",
+    "get_head_revision",
+    "get_revision_status",
     "make_pg_dump_backup_fn",
     "stamp_baseline_database",
     "upgrade_database",

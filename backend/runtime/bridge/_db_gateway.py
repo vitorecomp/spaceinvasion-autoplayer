@@ -10,7 +10,7 @@ from backend.db.dto.serializers import (
     spy_target_to_dict,
     tutorial_progress_to_dict,
 )
-from backend.db.migrations import NO_BACKUP, BackupOption
+from backend.db.migrations import BASELINE_REVISION, NO_BACKUP, BackupOption, get_revision_status
 from backend.db.queries import query_db_summary, query_db_verify
 from backend.db.repos.notifications import format_notification_code, parse_notification_id
 from backend.db.session import DEFAULT_MAX_OVERFLOW, DEFAULT_POOL_SIZE, DEFAULT_STATEMENT_TIMEOUT_MS
@@ -146,6 +146,7 @@ class RuntimeDatabaseGateway(
         spy_dicts = [spy_target_to_dict(t) for t in rec.spy_targets]
         self._enrich_debris(spy_dicts)
         rev = rec.alembic_revision or ""
+        target_rev, pending_revs = get_revision_status(rec.alembic_revision)
         return {
             "backend": rec.backend,
             "db_path": self.display_target,
@@ -153,13 +154,13 @@ class RuntimeDatabaseGateway(
             "schema": {
                 "version": rec.legacy_schema_version,
                 "version_tag": rev
-                or (f"V{rec.legacy_schema_version:03d}" if rec.legacy_schema_version > 0 else "0001"),
+                or (f"V{rec.legacy_schema_version:03d}" if rec.legacy_schema_version > 0 else BASELINE_REVISION),
                 "target_version": rec.legacy_schema_version,
-                "target_version_tag": "0001",
+                "target_version_tag": target_rev,
                 "alembic_revision": rec.alembic_revision,
-                "up_to_date": rec.alembic_revision == "0001",
+                "up_to_date": rec.alembic_revision == target_rev,
                 "applied_count": len(migs) if migs else (1 if rec.alembic_revision else 0),
-                "pending_count": 0 if rec.alembic_revision == "0001" else 1,
+                "pending_count": len(pending_revs),
                 "checksum_drift": [],
                 "applied_migrations": [
                     {
