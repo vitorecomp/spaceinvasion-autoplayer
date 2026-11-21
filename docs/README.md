@@ -27,6 +27,8 @@ Welcome to the unified technical documentation suite for **`spaceinvasion-autopl
   - [03 — Buildings & Research Catalog](./specifications/03-buildings-and-research.md)
   - [04 — Ships, Defense & 1:1 Combat](./specifications/04-ships-defense-and-combat.md)
   - [05 — Fleet Missions & Progression](./specifications/05-fleet-missions-and-progression.md)
+- **AI Strategy Plans (`docs/ai-strategy-plan/`)**:
+  - [Index of the plans](./ai-strategy-plan/README.md) — one page per plan for the AI-Planner's live behaviour: what it set out to do, what it changed from the plan before, who decided what, and what happened. Includes the check of the planner before and after the refactor.
 - **Engineering Notes (`docs/notes/`)**:
   - [R2 2D Galaxy & Rate-Limit Diagnosis](./notes/r2-galaxy-diagnosis.md)
   - [Adaptive AI-Planner Execution (Plan v2, v3 and v4)](./notes/adaptive-execution-plan-v2.md) — baseline numbers and `scripts/validate_adaptive_execution.py`.

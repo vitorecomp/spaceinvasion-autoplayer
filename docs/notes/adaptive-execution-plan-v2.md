@@ -4,9 +4,18 @@ This note records why the adaptive execution work was done, what was planned, wh
 
 All times are UTC on 2026-11-19 unless a date is given; everything about plan v4 happened on 2026-11-20 and says so. The operator's local time is UTC-03:00.
 
+> [!NOTE]
+> Since 2026-11-21 each plan has its own page in [docs/ai-strategy-plan](../ai-strategy-plan/README.md), with what it changed from the plan before and who decided what. This note stays as the measurement record and the validation procedure. It was written before the refactor of 2026-11-20 and 21: the file and function names in its "Where" columns are the old ones, and the [code map](../ai-strategy-plan/README.md#where-the-rules-live-in-the-code) gives the current ones. Commit hashes were updated to the ones on `main`.
+
+## Status on 2026-11-21 at 02:41
+
+- Plan v4 has run for 18.8 hours, 17.95 of them running. **No verdict yet**: it needs 24 hours. The reading and what else changed in those hours are in [plan v4](../ai-strategy-plan/04-plan-v4-pooled-empire.md#after-188-hours-not-a-verdict): builders busy 3.36 of 11, building levels 11.58 per hour, idle with an affordable step 49.0%, and Metal made at 48% of what the furnaces could make.
+- The whole system was refactored during those hours. The planner's decisions were compared before and after and found the same: [check after the refactor](../ai-strategy-plan/05-refactor-check.md).
+- Turning the switch off is now the only way back. Reverting the plan v4 commits no longer applies, because the files they changed were split up.
+
 ## Status on 2026-11-20 at 09:01
 
-- The switch `ai_adaptive_execution` has been on since 14:36:33 on 2026-11-19. Plan v3 was live from 18:26:36 that day. **Plan v4 has been live since 07:51:42 on 2026-11-20** (commit `17a66a6`; two refinements in `0ae95d1` live since 08:31:51).
+- The switch `ai_adaptive_execution` has been on since 14:36:33 on 2026-11-19. Plan v3 was live from 18:26:36 that day. **Plan v4 has been live since 07:51:42 on 2026-11-20** (commit `d233335`; two refinements in `676949b` live since 08:31:51).
 - **Plan v3 did not make builders busier.** Over 11.18 running hours it had 1.76 of 11 builders busy, against 2.10 before any change. Colonies did advance faster: building levels went from 5.1 to 9.3 per hour and Metal made per hour from 50,600 to 245,400. 23 of the 111 levels were cheap Blast furnace levels.
 - The review on 2026-11-20 found why (see [Review after twelve hours of plan v3](#review-after-twelve-hours-of-plan-v3)):
   - The empire is limited by its income, above all Metal, not by its builders.
@@ -17,13 +26,13 @@ All times are UTC on 2026-11-19 unless a date is given; everything about plan v4
 - First hour of plan v4, which is not evidence (read at 09:01, 1.06 running hours): 4.69 of 11 builders busy; 22 building levels completed, 19 per hour, 10 of them Blast furnace levels; furnaces on at 10 of 11 colonies; 411,200 Metal made per hour, 89% of what the furnaces could make at the time. The new furnace levels raised what the furnaces can make from 427,100 to 520,800 Metal per hour. Eight Large transports were ordered in the first ten minutes and none since the fleet ceiling was tightened. Loans are planned; whether one has flown cannot be read from the action log.
 - Mark 1 is computed differently since 09:01 (see [Read the result](#read-the-result)). The first version divided the period's mean by the capacity at the moment of the run. The fill rule's own furnace levels made that read 79% an hour after the landing, a fail, while the furnaces were making 87% to 94% of their capacity at every reading. The script now compares each recorded point with the capacity at its own time and still prints the old figure.
 - **No verdict on plan v4 is possible before 07:52 on 2026-11-21**, and not before 12 running hours.
-- Outside this plan: another work session moved the stack into containers and the database to PostgreSQL between 06:56 and 07:22 on 2026-11-20. Since that move the recorded series has no points between 04:54 and 06:48 of that day, so the script now reports plan v3 over fewer hours than the figures above, which were taken at 06:15. The operator committed that work at 08:37 as `28df30f`, on top of the plan v4 commits. Plan v4's code is unchanged in it; the rest of that commit was not reviewed here.
-- Four branches named `refactor/p0-*` were created from `28df30f` between 08:38 and 08:49, and two of them had commits by 09:02: the refactor of the whole system that another session planned has started. It will change the files plan v4 lives in during the 24 hours plan v4 is being measured.
+- Outside this plan: another work session moved the stack into containers and the database to PostgreSQL between 06:56 and 07:22 on 2026-11-20. Since that move the recorded series has no points between 04:54 and 06:48 of that day, so the script now reports plan v3 over fewer hours than the figures above, which were taken at 06:15. The operator committed that work at 08:37 as `3ab9a0c`, on top of the plan v4 commits. Plan v4's code is unchanged in it; the rest of that commit was not reviewed here.
+- Four branches named `refactor/p0-*` were created from `3ab9a0c` between 08:38 and 08:49, and two of them had commits by 09:02: the refactor of the whole system that another session planned has started. It will change the files plan v4 lives in during the 24 hours plan v4 is being measured.
 - The operator asked for the review and the changes to be made without being asked for decisions. Every decision taken on their behalf is listed in [Decisions taken for the operator](#decisions-taken-for-the-operator).
 
 ## Status at the plan v3 hand-off (18:40)
 
-- The switch `ai_adaptive_execution` has been **on since 14:36:33**. The plan v3 follow-up has been **live since 18:26:36** (commit `6ea7736`).
+- The switch `ai_adaptive_execution` has been **on since 14:36:33**. The plan v3 follow-up has been **live since 18:26:36** (commit `124bc85`).
 - Working as designed:
   - Blast furnaces follow each colony's Metal need. Metal produced per hour while the bot ran went from 50,600 before the switch to 202,400 after it.
   - The planner and the ship budgets now use the raid income actually received. In the active plan, raid income pays for 6% of what the plan spends. Before the follow-up it paid for 112%.
@@ -77,7 +86,7 @@ Plan v3 keeps the steps of v2 and adds five decisions, taken after four hours of
 
 Every behaviour below is inactive while `ai_adaptive_execution` is off.
 
-### Plan v2, commits `6c08e97..1a1a8d3`
+### Plan v2, commits `3442591..292edc2`
 
 | Step | Behaviour | Where |
 |---|---|---|
@@ -92,7 +101,7 @@ Every behaviour below is inactive while `ai_adaptive_execution` is off.
 | 4a | Those builds are tagged `[Plan infra cargo target]` and paid only from a separate allowance: 25% of hourly Metal and Kryptonite income, with a spend ledger and up to 2 hours of carry-over | `compute_spare_ship_budget`, `filter_shipyard_actions_by_spare_budget` |
 | 6 | Re-tune in the background when the Config Optimizer result or colony count changes, loot shifts by 25%, or the plan is 4 hours old. 30-minute cooldown. Starts from the saved genes | `_evaluate_ai_drift_replan_locked` |
 
-### Plan v3 follow-up, commit `6ea7736`
+### Plan v3 follow-up, commit `124bc85`
 
 | Decision | Behaviour | Where |
 |---|---|---|
@@ -106,7 +115,7 @@ Every behaviour below is inactive while `ai_adaptive_execution` is off.
 | D5 | Sizing never uses a utilization below 0.5. Measured utilization can still shrink the target | `compute_infra_transport_targets`, `_build_transport_fleet_summary_locked` |
 | D5 | Hulls ordered in the last hour count toward the fleet before they leave the Weapons factory | `_get_infra_cargo_ordered_last_hour_locked` |
 
-### Plan v4, commits `17a66a6` and `0ae95d1` (2026-11-20)
+### Plan v4, commits `d233335` and `676949b` (2026-11-20)
 
 | Decision | Behaviour | Where |
 |---|---|---|
@@ -117,28 +126,28 @@ Every behaviour below is inactive while `ai_adaptive_execution` is off.
 | E2 | The fill must not hold the waiting step back by more than `patience` times its own duration. The waiting step is expected to start at the earlier of two moments: when the colony can pay for it alone, or when the empire can pay for it in plan order (all stock pooled, earlier steps first, never sooner than 20 minutes). `patience` is the plan's tuned value, kept between 0.25 and 0.75. A research step waiting on the colony gets the same protection. A resource the colony does not produce is never touched if the waiting step lacks it | same |
 | E2 | The fill spends nothing the empire is short of: for each resource it costs, the empire's stock plus cargo in flight must cover every colony's next step, the research step, the fills already chosen, and the fill | same |
 | E3 | **Plan-order loans.** Shipments between colonies serve AI-Planner needs in plan order. A colony that cannot yet pay for its own next step lends what it holds back for it to a waiting step that comes earlier in the plan. The shipment's reason carries `[Plan order loan]` | `plan_interplanet_transports` in `planner/strategy.py` |
-| E3 | A loan is used only when spare stock cannot cover the need. It covers only what the borrower's own building step lacks, not research and not a need that is not due yet. The lender keeps what it holds for a step it can already pay, for research, its cushion and its fuel. A loan is flown when it pays for the whole need, or carries at least 20,000 and a quarter of it. It is not flown for an amount the borrower makes itself before the cargo could land (`0ae95d1`) | same |
-| E4 | **The transport target leaves out raiding hulls.** Hulls on an Attack flight, out or back, no longer count toward the plan-sized logistics fleet. The whole fleet, raiding hulls included, stops growing at twice the target, and never more than 900,000 cargo (30 Large transports) above it (`0ae95d1`) | `compute_infra_transport_targets`, `_transport_hulls_on_raids` in `planner/strategy.py` |
+| E3 | A loan is used only when spare stock cannot cover the need. It covers only what the borrower's own building step lacks, not research and not a need that is not due yet. The lender keeps what it holds for a step it can already pay, for research, its cushion and its fuel. A loan is flown when it pays for the whole need, or carries at least 20,000 and a quarter of it. It is not flown for an amount the borrower makes itself before the cargo could land (`676949b`) | same |
+| E4 | **The transport target leaves out raiding hulls.** Hulls on an Attack flight, out or back, no longer count toward the plan-sized logistics fleet. The whole fleet, raiding hulls included, stops growing at twice the target, and never more than 900,000 cargo (30 Large transports) above it (`676949b`) | `compute_infra_transport_targets`, `_transport_hulls_on_raids` in `planner/strategy.py` |
 
 Unchanged on purpose: furnaces are 100% or 0% only, with the Metal-overflow pause at 100% storage and resume below 95%; the simulator's maths and the 14-line export header; the page-view limit and every anti-bot safeguard; how raids choose targets and ships. Demolitions were added by another work session and are not part of this plan.
 
 ### Tests
 
-- Plan v2, as reported by the verifier agent at `1a1a8d3` and not re-run for this note: 664 unit tests with the same 11 failures as before the change, 62 frontend tests passing, 12 of 12 in two end-to-end files, database integrity check passing. With the switch off, the old and new code produced identical actions on a live snapshot.
+- Plan v2, as reported by the verifier agent at `292edc2` and not re-run for this note: 664 unit tests with the same 11 failures as before the change, 62 frontend tests passing, 12 of 12 in two end-to-end files, database integrity check passing. With the switch off, the old and new code produced identical actions on a live snapshot.
 - Plan v3, run for this note in a clean worktree of the commit: 675 unit tests, 3 failing, the same 3 that fail without the change (`test_commander_backs_off_at_least_retry_after_on_rate_limit`, `test_notebook_is_saved_without_outputs`, `test_run_stack_and_game_api_main_redaction_reload_sigterm_and_cleanup`). The 11 new tests are in `tests/unit/test_adaptive_followup.py`.
 - Not run for v3: the end-to-end suite and the frontend tests. No frontend file was changed.
-- Plan v4, run in a clean worktree of commit `5d53a55` plus the change: 703 unit tests, 3 failing, the same 3 as above. The 28 new tests are in `tests/unit/test_adaptive_v4.py`; the donor test in `tests/unit/test_strategy.py` was changed to pin the new furnace rule. The last full run was made just before a three-line guard was added around the fill rule; after it, `test_ai_planner`, `test_adaptive_v4` and `test_adaptive_followup` were run again (64 tests, all passing).
+- Plan v4, run in a clean worktree of commit `16f95a4` plus the change: 703 unit tests, 3 failing, the same 3 as above. The 28 new tests are in `tests/unit/test_adaptive_v4.py`; the donor test in `tests/unit/test_strategy.py` was changed to pin the new furnace rule. The last full run was made just before a three-line guard was added around the fill rule; after it, `test_ai_planner`, `test_adaptive_v4` and `test_adaptive_followup` were run again (64 tests, all passing).
 - Plan v4 against the other session's uncommitted code: the patch was applied to a copy of the working tree and `test_adaptive_v4`, `test_adaptive_followup` and `test_strategy` were run there (112 tests, all passing). The full suite was not run on that copy.
 - Plan v4 on live data, without touching the game: old and new code were run on the same cached snapshot taken at 07:29 on 2026-11-20. Old code: 12 planner actions, 2 shipments, no furnace change. New code: 4 fills, 2 loans that each pay for a whole step, 2 furnaces turned on.
-- Refinements in `0ae95d1`: the full unit suite was run again in a clean worktree, 705 tests, the same 3 failing. `tests/unit/test_adaptive_v4.py` now holds 30 tests. On a live snapshot taken at 08:25 the refinements changed no action.
+- Refinements in `676949b`: the full unit suite was run again in a clean worktree, 705 tests, the same 3 failing. `tests/unit/test_adaptive_v4.py` now holds 30 tests. On a live snapshot taken at 08:25 the refinements changed no action.
 - Not run for v4: the end-to-end suite and the frontend tests. No frontend file was changed.
-- Plan v4 inside the operator's commit `28df30f`, which holds it together with the other sessions' work: the unit suite was run in a clean worktree of that commit at 08:43 on 2026-11-20. 720 tests, 14 failing, none of them caused by plan v4:
+- Plan v4 inside the operator's commit `3ab9a0c`, which holds it together with the other sessions' work: the unit suite was run in a clean worktree of that commit at 08:43 on 2026-11-20. 720 tests, 14 failing, none of them caused by plan v4:
   - 8 test `notebooks/optimizer_experimentation.ipynb`, which that commit deletes.
   - 4 are tests of the API and the console: `test_demolish_building_command_guards_cache_invalidation_and_null_planet_offers`, `test_perf_and_stability_regressions_toctou_plan_fastpath_unknown_cmd_and_cmd_reconnect`, `test_r7_api_rejects_unicode_digits_bad_fleetsave_reserve_and_closes_bridge` and `test_favicon_top_bar_notifications_and_auto_help_popup_persistence`. They fail in the same way with both plan v4 commits reverted in that worktree.
   - 2 failed before this work: `test_commander_backs_off_at_least_retry_after_on_rate_limit` and `test_notebook_is_saved_without_outputs`. The third old failure, `test_run_stack_and_game_api_main_redaction_reload_sigterm_and_cleanup`, passes on that commit.
   - One test was left out: `test_postgres_podman_migrations_concurrent_mvcc_sync_and_live_bridge_switch` creates and drops a database on whatever PostgreSQL answers on port 5433, which is the live one.
   - The console tests that run in Node were run a second time after `frontend/node_modules` was linked into the worktree; without it 20 more of them fail on a missing module.
-  - `git revert --no-commit 0ae95d1 17a66a6` applied cleanly on `28df30f`, so the way back still works.
+  - `git revert --no-commit 676949b d233335` applied cleanly on `3ab9a0c`, so the way back worked at that commit. It does not after the refactor.
 - The new arithmetic of mark 1 in the script was checked on made-up series: a constant capacity, a capacity that doubles between two readings, points outside the readings, and a capacity file with unreadable lines.
 
 ### To turn it off
@@ -217,7 +226,7 @@ The operator asked on 2026-11-20 for the best result without being asked. These 
 
 | Decision | Value | To reverse |
 |---|---|---|
-| Everything in plan v4 | Behind `ai_adaptive_execution` | Turn the switch off, or `git revert 0ae95d1 17a66a6` |
+| Everything in plan v4 | Behind `ai_adaptive_execution` | Turn the switch off. Reverting commits `676949b` and `d233335` worked until the refactor and no longer applies |
 | Pass marks for plan v4 | Listed under [How to validate](#how-to-validate) | Constants `V4_*` in `scripts/validate_adaptive_execution.py` |
 | Furnace hold band and Pig iron reserve | 10% and 50,000 | `EMPIRE_SMELT_HOLD_RATIO`, `EMPIRE_SMELT_MIN_SPARE_PIG` in `planner/strategy.py` |
 | Fill patience bounds and the pooled lead time | 0.25 to 0.75, 20 minutes | `AI_FILL_MIN_PATIENCE`, `AI_FILL_MAX_PATIENCE`, `AI_FILL_POOL_LEAD_HOURS` in `planner/ai_planner.py` |
@@ -231,7 +240,7 @@ The operator asked on 2026-11-20 for the best result without being asked. These 
 |---|---|
 | 06:39 to 07:45 | Diagnosis and review of plan v1 |
 | 12:56:58 | First plan v2 code merged into `main`; switch off |
-| 14:11 | Last plan v2 fix commit, `1a1a8d3` |
+| 14:11 | Last plan v2 fix commit, `292edc2` |
 | 14:25 | Planner run by hand |
 | **14:36:33** | **Switch turned on** through the local API, at the operator's request |
 | 14:37:08 to 14:37:30 | Four furnaces set to 100% |
@@ -248,14 +257,14 @@ The operator asked on 2026-11-20 for the best result without being asked. These 
 | 2026-11-20 03:22 | Anti-bot gate; bot stopped until 03:52 |
 | 2026-11-20 06:15 to 07:30 | Review of plan v3 (this note's review section) |
 | 2026-11-20 06:56 to 07:22 | Another work session moved the stack into containers with a PostgreSQL database. The recorded series has had no points between 04:54 and 06:48 since |
-| **2026-11-20 07:51:42** | **Plan v4 live** (commit `17a66a6`); API and commander restarted by the file change |
+| **2026-11-20 07:51:42** | **Plan v4 live** (commit `d233335`); API and commander restarted by the file change |
 | 2026-11-20 07:53 to 08:05 | Six steps started by the fill rule: a Kryptonite mine on 02:381:07, two Blast furnace levels on 02:379:05 and three on 02:380:08. Two furnaces turned on for the empire. Eight Large transports ordered |
 | 2026-11-20 08:02:30 | API restarted by the other session's edits to `db/storage.py` and `runtime/api_server.py` |
 | 2026-11-20 08:21 | A shipment from 02:381:08, a lending colony, to 02:381:07 (step 18). The action log does not record whether it was the planned loan |
-| 2026-11-20 08:31:51 | Refinements live (commit `0ae95d1`): the fleet allowance and the loan guard |
+| 2026-11-20 08:31:51 | Refinements live (commit `676949b`): the fleet allowance and the loan guard |
 | 2026-11-20 08:32 to 08:35 | The plan re-tuned itself in the background (its research step moved from number 100 to number 60). Six more steps started in those minutes |
-| 2026-11-20 08:37 | The operator committed the other sessions' work as `28df30f`, on top of the plan v4 commits. No file on disk changed, so nothing restarted |
-| 2026-11-20 08:38 to 08:49 | Four `refactor/p0-*` branches created from `28df30f` by the session that planned the refactor of the whole system |
+| 2026-11-20 08:37 | The operator committed the other sessions' work as `3ab9a0c`, on top of the plan v4 commits. No file on disk changed, so nothing restarted |
+| 2026-11-20 08:38 to 08:49 | Four `refactor/p0-*` branches created from `3ab9a0c` by the session that planned the refactor of the whole system |
 | 2026-11-20 09:01 | Mark 1 of the script now compares each point with the furnace capacity at its own time |
 
 ## Baseline, before the change

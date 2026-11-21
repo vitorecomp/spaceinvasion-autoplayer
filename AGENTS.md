@@ -22,7 +22,7 @@ Guide for coding agents working in `spaceinvasion-autoplayer`. Read [docs/README
   - `scripts/generate_docs.py` — Deterministic `--write` / `--check` generator for `docs/api-commands.md` and `docs/settings-reference.md`.
   - `scripts/enable_pg_stats.py` — Enable/report `pg_stat_statements` on PostgreSQL.
   - `scripts/sync_wiki_data.py` — Offline SpaceInvasion Classic Wiki catalog scraper.
-- **`docs/` — Unified Documentation Hub**: `architecture.md`, `database-mer.md`, `manual.md`, `api-commands.md` (generated), `settings-reference.md` (generated), `heuristic-strategy.md`, `specification.md`, `specifications/`, `notes/`, `images/`.
+- **`docs/` — Unified Documentation Hub**: `architecture.md`, `database-mer.md`, `manual.md`, `api-commands.md` (generated), `settings-reference.md` (generated), `heuristic-strategy.md`, `specification.md`, `specifications/`, `ai-strategy-plan/`, `notes/`, `images/`.
 - **`notebooks/` — Offline Analytics Notebooks**: `full_planner.ipynb` and `config_optimizer.ipynb` (kept untouched; tests tagged `@pytest.mark.notebooks`).
 - **`tests/` — Layered Test Suite**: `tests/invariants/` (tagged `@pytest.mark.invariants`, never deleted), `tests/unit/` (Hermetic + disposable Unix-socket PostgreSQL 16 via `tests/pg_harness.py`), and `tests/e2e/`.
 
